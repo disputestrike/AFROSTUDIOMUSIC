@@ -35,12 +35,13 @@ export async function responsesJson<T>(opts: ResponsesJsonOptions): Promise<T> {
     model,
     response_format: { type: 'json_object' },
     temperature: opts.temperature ?? 0.8,
-    max_tokens: opts.maxOutputTokens ?? 2_000,
+    // Newer OpenAI models require max_completion_tokens (max_tokens is rejected).
+    max_completion_tokens: opts.maxOutputTokens ?? 2_000,
     messages: [
       { role: 'system', content: opts.system },
       { role: 'user', content: opts.user },
     ],
-  });
+  } as never);
   const content = res.choices[0]?.message?.content ?? '{}';
   return JSON.parse(content) as T;
 }
