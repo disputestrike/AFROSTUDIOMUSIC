@@ -242,14 +242,17 @@ export const presignUploadSchema = z.object({
   ext: z.string().min(1).max(8),
 });
 
+const AUDIO_FORMATS = ['wav', 'mp3', 'flac', 'aiff', 'm4a', 'ogg', 'webm'] as const;
+
 export const attachBeatUploadSchema = z.object({
   key: z.string().min(4), // R2 object key returned by /uploads/presign
   songId: z.string().cuid().optional(),
   bpm: z.number().int().min(40).max(220).optional(),
   keySignature: z.string().max(12).optional(),
   durationS: z.number().min(1).max(1200).optional(),
-  format: z.enum(['wav', 'mp3', 'flac', 'aiff', 'm4a', 'ogg']).default('wav'),
+  format: z.enum(AUDIO_FORMATS).default('wav'),
   title: z.string().max(120).optional(),
+  instrumental: z.boolean().optional(), // full instrumental vs a loop/beat
 });
 
 export const attachVocalUploadSchema = z.object({
@@ -258,6 +261,30 @@ export const attachVocalUploadSchema = z.object({
   role: z.enum(['lead', 'double', 'ad-lib', 'harmony']).default('lead'),
   durationS: z.number().min(1).max(1200).optional(),
   language: langSchema.optional(),
+});
+
+// Upload a FINISHED song / full mix — stored as a mix and (by default) sent
+// straight to the mastering chain. This is the "master my track" path.
+export const attachSongUploadSchema = z.object({
+  key: z.string().min(4),
+  songId: z.string().cuid().optional(),
+  title: z.string().max(120).optional(),
+  masterPreset: z.enum(MASTER_PRESETS).default('streaming_lufs_-14'),
+  autoMaster: z.boolean().default(true),
+});
+
+// Import audio from a URL the artist has the RIGHTS to (own files, direct audio
+// links, royalty-free / Creative-Commons sources). Not a streaming-platform
+// ripper — the API refuses YouTube/Spotify/etc. hosts.
+export const importUrlSchema = z.object({
+  projectId: z.string().cuid(),
+  url: z.string().url(),
+  kind: z.enum(['beat', 'instrumental', 'vocal', 'song', 'reference']),
+  songId: z.string().cuid().optional(),
+  bpm: z.number().int().min(40).max(220).optional(),
+  keySignature: z.string().max(12).optional(),
+  role: z.enum(['lead', 'double', 'ad-lib', 'harmony']).optional(),
+  title: z.string().max(120).optional(),
 });
 
 // ---------- Chat (Studio Chat) ---------------------------------------------

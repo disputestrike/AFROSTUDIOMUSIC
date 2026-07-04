@@ -124,7 +124,12 @@ export default async function beats(app: FastifyInstance) {
           duration: input.durationS ?? null,
           provider: 'upload',
           approved: true, // the artist's own beat is authentic — auto-approved
-          meta: { uploaded: true, source: 'artist_upload', title: input.title ?? null },
+          meta: {
+            uploaded: true,
+            source: 'artist_upload',
+            title: input.title ?? null,
+            instrumental: input.instrumental ?? false,
+          },
         },
       });
 
