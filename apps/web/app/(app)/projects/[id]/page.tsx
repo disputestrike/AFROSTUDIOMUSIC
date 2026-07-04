@@ -3,6 +3,7 @@ import { apiServer } from '@/lib/api-server';
 import { StudioUpload } from '@/components/StudioUpload';
 import { Mixer } from '@/components/Mixer';
 import { ReferenceListen } from '@/components/ReferenceListen';
+import { SnippetMaker } from '@/components/SnippetMaker';
 
 interface Project {
   id: string;
@@ -59,6 +60,8 @@ export default async function ProjectPage({ params }: { params: Promise<{ id: st
       <ReferenceListen projectId={p.id} />
 
       <Mixer projectId={p.id} />
+
+      <SnippetMaker projectId={p.id} />
 
       <Section title="Latest brief">
         {p.briefs[0] ? (

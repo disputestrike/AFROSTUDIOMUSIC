@@ -22,6 +22,16 @@ export async function processAnalyze(p: AnalyzePayload) {
       select: { musicApiKey: true },
     });
     const profile = await analyzeAudio(p.url, ws?.musicApiKey ?? undefined);
+    // Taste graph — what the artist chose to listen to / build from. Compounds.
+    await prisma.analyticsEvent
+      .create({
+        data: {
+          workspaceId: p.workspaceId,
+          name: 'taste.reference_listen',
+          properties: { bpm: profile.bpm, genre: profile.genre, mood: profile.mood, energy: profile.energy } as never,
+        },
+      })
+      .catch(() => {});
     await markSucceeded(p.jobId, { profile });
   } catch (err) {
     await markFailed(p.jobId, err);

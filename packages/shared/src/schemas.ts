@@ -337,6 +337,13 @@ export const analyzeAudioSchema = z.object({
   url: z.string().url(), // an uploaded/imported track url the artist has rights to
 });
 
+// ---------- Snippet (vertical shareable clip) ------------------------------
+
+export const snippetInputSchema = z.object({
+  songId: z.string().cuid().optional(), // defaults to the project's latest song
+  startS: z.number().int().min(0).max(600).optional(), // clip start; default ~8s
+});
+
 // ---------- Integrations (in-app music engine key) -------------------------
 
 export const integrationsInputSchema = z.object({

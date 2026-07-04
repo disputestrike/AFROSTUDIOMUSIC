@@ -43,6 +43,10 @@ export async function processExport(p: ExportPayload) {
       include: { stems: true },
       orderBy: { createdAt: 'desc' },
     });
+    const vocal = await prisma.vocalRender.findFirst({
+      where: { songId: song.id },
+      orderBy: { createdAt: 'desc' },
+    });
     const cover = await prisma.imageAsset.findFirst({
       where: { projectId: song.projectId, kind: 'cover' },
       orderBy: { createdAt: 'desc' },
@@ -58,6 +62,26 @@ export async function processExport(p: ExportPayload) {
           orderBy: { createdAt: 'desc' },
         });
 
+    // Provenance + AI disclosure — what DSPs (Spotify/Apple/Audiomack) and PROs
+    // require, and the proof behind the "we never rip" position: which models
+    // made what, plus an attestation that no third-party audio was copied.
+    const beatMeta = (beat?.meta ?? {}) as { uploaded?: boolean; imported?: boolean };
+    const vocalMeta = (vocal?.meta ?? {}) as { uploaded?: boolean };
+    const provenance = {
+      aiAssisted: true,
+      disclosure: 'GenAI-assisted, human-directed and edited.',
+      beat: beat
+        ? { provider: beat.provider, source: beatMeta.uploaded ? 'artist_upload' : beatMeta.imported ? 'rights_cleared_import' : 'ai_generated' }
+        : null,
+      vocal: vocal
+        ? { provider: (vocal as { provider?: string }).provider ?? (vocalMeta.uploaded ? 'artist' : 'ai_generated'), source: vocalMeta.uploaded ? 'artist_performance' : 'ai_generated' }
+        : null,
+      lyrics: 'AI-assisted, human-edited',
+      noCopyAttestation:
+        'No third-party audio was copied, ripped, or sampled without clearance. Beats/vocals are original generations or artist-provided.',
+      generatedAt: new Date().toISOString(),
+    };
+
     const bundle = {
       mp3: master?.url ?? mix?.url ?? null,
       wav: master?.url ?? null,
@@ -68,6 +92,7 @@ export async function processExport(p: ExportPayload) {
       video: video?.url ?? null,
       receiptHash: receipt?.hash ?? null,
       receiptId: receipt?.id ?? null,
+      provenance,
     };
 
     const exp = await prisma.export.create({

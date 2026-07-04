@@ -11,7 +11,7 @@ declare module 'fastify' {
       multiplier?: number;
       refTable?: string;
       refId?: string;
-    }): Promise<{ ok: true; balance: number } | { ok: false; needed: number; balance: number }>;
+    }): Promise<{ ok: true; balance: number } | { ok: false; needed: number; balance: number; reason?: string }>;
 
     refundCredits(opts: {
       workspaceId: string;
@@ -36,8 +36,21 @@ export const creditsPlugin = fp(async function (app) {
     refId?: string;
   }) => {
     // Internal single-owner mode: the operator pays provider costs directly via
-    // their own API keys — no internal credit wall. Generation is free for them.
+    // their own API keys — no internal credit wall. Generation is free for them,
+    // BUT a hard daily generation cap still applies so a runaway loop, a batch,
+    // or a bot can never drain the operator's provider card. Set MAX_DAILY_GENERATIONS.
     if (isInternalMode()) {
+      const cap = Number(process.env.MAX_DAILY_GENERATIONS ?? 300);
+      if (cap > 0) {
+        const since = new Date();
+        since.setUTCHours(0, 0, 0, 0);
+        const usedToday = await prisma.providerJob.count({
+          where: { workspaceId: opts.workspaceId, createdAt: { gte: since } },
+        });
+        if (usedToday >= cap) {
+          return { ok: false as const, needed: cap, balance: usedToday, reason: 'daily_cap' };
+        }
+      }
       return { ok: true as const, balance: Number.MAX_SAFE_INTEGER };
     }
     const cost = costOf(opts.key) * (opts.multiplier ?? 1);

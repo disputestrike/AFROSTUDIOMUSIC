@@ -231,3 +231,64 @@ export async function master(opts: {
     await rm(dir, { recursive: true, force: true });
   }
 }
+
+/**
+ * Build a vertical 9:16 shareable snippet (TikTok/Reels/Shorts) from a clip of
+ * the finished track: cover art centered on a dark canvas, an animated waveform,
+ * and the hook burned in as a caption. Cover + caption are optional (graceful
+ * fallback if no cover art or no font is available).
+ */
+export async function buildSnippet(opts: {
+  audio: Buffer;
+  cover?: Buffer;
+  captionText?: string; // pre-wrapped; rendered from a textfile to avoid escaping
+  fontPath?: string;
+  startS: number;
+  durS: number;
+}): Promise<Buffer> {
+  const dir = await mkdtemp(join(tmpdir(), 'afrohit-snip-'));
+  try {
+    const dur = Math.max(5, Math.min(opts.durS, 40));
+    const audioPath = join(dir, 'a.bin');
+    await writeFile(audioPath, opts.audio);
+
+    const inputs: string[] = ['-ss', String(Math.max(0, opts.startS)), '-t', String(dur), '-i', audioPath];
+    const chains: string[] = [`color=c=0x0B0B12:s=1080x1920:d=${dur}[bg]`];
+    let base = '[bg]';
+
+    if (opts.cover) {
+      const coverPath = join(dir, 'c.bin');
+      await writeFile(coverPath, opts.cover);
+      inputs.push('-loop', '1', '-i', coverPath);
+      chains.push('[1:v]scale=1080:1080:force_original_aspect_ratio=increase,crop=1080:1080,setsar=1[cov]');
+      chains.push(`${base}[cov]overlay=(W-w)/2:120[b1]`);
+      base = '[b1]';
+    }
+
+    chains.push('[0:a]showwaves=s=1080x240:mode=cline:rate=25:colors=0xF97316|0xE23E8C[wave]');
+    chains.push(`${base}[wave]overlay=0:1560[b2]`);
+    base = '[b2]';
+
+    if (opts.captionText && opts.fontPath) {
+      const capPath = join(dir, 'cap.txt');
+      await writeFile(capPath, opts.captionText);
+      chains.push(
+        `${base}drawtext=fontfile=${opts.fontPath}:textfile=${capPath}:fontcolor=white:fontsize=54:line_spacing=14:box=1:boxcolor=0x000000AA:boxborderw=28:x=(w-text_w)/2:y=1250[out]`
+      );
+    } else {
+      chains[chains.length - 1] = chains[chains.length - 1]!.replace(/\[b2\]$/, '[out]');
+    }
+
+    const outPath = join(dir, 'snippet.mp4');
+    await runFfmpeg([
+      ...inputs,
+      '-filter_complex', chains.join(';'),
+      '-map', '[out]', '-map', '0:a',
+      '-r', '25', '-c:v', 'libx264', '-preset', 'veryfast', '-pix_fmt', 'yuv420p',
+      '-c:a', 'aac', '-b:a', '192k', '-shortest', outPath,
+    ]);
+    return await readFile(outPath);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+}
