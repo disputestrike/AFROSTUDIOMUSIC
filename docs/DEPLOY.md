@@ -43,7 +43,9 @@ For each service, do **New Service** → **GitHub Repo** → set:
 | `worker` | `apps/worker` | `apps/worker/**`, `packages/**` |
 | `web` | `apps/web` | `apps/web/**`, `packages/shared/**` |
 
-Each service has its own `railway.json` (already committed) with the correct nixpacks build plan. Railway will pick it up automatically.
+Each service has its own `railway.json` (already committed) with a `buildCommand` that installs the workspace (with dev deps) and compiles the shared packages in dependency order (`shared → db → ai → app`) before building the service. Railway's default builder (Railpack) runs it automatically. Keep each service's **Root Directory at the repo root** (`/`) — the build commands are pnpm workspace filters that must run from root.
+
+**Note on ffmpeg (worker):** the worker boots and runs all stub jobs without ffmpeg. Real mix/master needs the `ffmpeg` binary — add it when you move to real audio, either by switching the worker service to a Dockerfile (`apt-get install -y ffmpeg`) or a Railpack package step. Until then, mix/master jobs fail with a clear "ffmpeg not found" message; nothing else is affected.
 
 Link each service to the Postgres + Redis plugins via the **Variables** tab → **Add Reference**.
 
