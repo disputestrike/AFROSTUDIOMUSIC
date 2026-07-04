@@ -39,6 +39,7 @@ import admin from './routes/admin';
 import reviews from './routes/reviews';
 import songs from './routes/songs';
 import uploads from './routes/uploads';
+import mixer from './routes/mixer';
 
 initObservability('api');
 
@@ -90,6 +91,7 @@ async function bootstrap() {
       await api.register(beats, { prefix: '/projects/:projectId/beats' });
       await api.register(vocals, { prefix: '/projects/:projectId/vocals' });
       await api.register(mixes, { prefix: '/projects/:projectId/mixes' });
+      await api.register(mixer, { prefix: '/projects/:projectId/mixer' });
       await api.register(images, { prefix: '/images' });
       await api.register(videos, { prefix: '/videos' });
       await api.register(voices, { prefix: '/voices' });

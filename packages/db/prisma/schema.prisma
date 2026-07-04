@@ -440,9 +440,10 @@ model Mix {
   id          String   @id @default(cuid())
   projectId   String
   songId      String?
-  preset      String   // "radio","club","tiktok","youtube"
+  preset      String   // "radio","club","tiktok","youtube","console"
   url         String
   notes       String?
+  settings    Json?    // per-track mixer console state (faders/eq/comp/reverb)
   approved    Boolean  @default(false)
   createdAt   DateTime @default(now()) @db.Timestamptz(6)
 

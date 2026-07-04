@@ -287,6 +287,46 @@ export const importUrlSchema = z.object({
   title: z.string().max(120).optional(),
 });
 
+// ---------- Mixer console (hands-on, DAW-style) ----------------------------
+// Every track gets a channel strip: fader + pan + mute/solo + EQ + comp + verb.
+// The AI can propose a full settings set ("AI mix it"), or you drive it by hand.
+
+export const mixerEqSchema = z.object({
+  low: z.number().min(-12).max(12).default(0), // ~110 Hz shelf
+  mid: z.number().min(-12).max(12).default(0), // ~1.5 kHz bell
+  high: z.number().min(-12).max(12).default(0), // ~8 kHz shelf
+});
+
+export const mixerCompSchema = z.object({
+  on: z.boolean().default(false),
+  threshold: z.number().min(-40).max(0).default(-18),
+  ratio: z.number().min(1).max(20).default(3),
+});
+
+export const mixerTrackSchema = z.object({
+  id: z.string(),
+  kind: z.enum(['beat', 'vocal']),
+  label: z.string().max(60).optional(),
+  gainDb: z.number().min(-24).max(12).default(0),
+  pan: z.number().min(-1).max(1).default(0),
+  mute: z.boolean().default(false),
+  solo: z.boolean().default(false),
+  eq: mixerEqSchema.default({ low: 0, mid: 0, high: 0 }),
+  comp: mixerCompSchema.default({ on: false, threshold: -18, ratio: 3 }),
+  reverb: z.number().min(0).max(1).default(0),
+});
+export type MixerTrack = z.infer<typeof mixerTrackSchema>;
+
+export const mixerRenderSchema = z.object({
+  songId: z.string().cuid(),
+  tracks: z.array(mixerTrackSchema).min(1),
+});
+
+export const mixerAiSchema = z.object({
+  songId: z.string().cuid(),
+  goal: z.string().max(300).optional(), // e.g. "radio-ready, vocal forward"
+});
+
 // ---------- Chat (Studio Chat) ---------------------------------------------
 
 export const chatMessageInputSchema = z.object({

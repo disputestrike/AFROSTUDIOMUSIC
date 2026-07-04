@@ -126,6 +126,88 @@ export async function mixdown(opts: {
   }
 }
 
+export interface ConsoleTrack {
+  path: string;
+  gainDb: number;
+  pan: number; // -1 (L) .. 1 (R)
+  mute: boolean;
+  solo: boolean;
+  eq: { low: number; mid: number; high: number };
+  comp: { on: boolean; threshold: number; ratio: number };
+  reverb: number; // 0..1
+}
+
+const clampNum = (n: number, lo: number, hi: number) =>
+  Number.isFinite(n) ? Math.min(hi, Math.max(lo, n)) : 0;
+
+/** Build the per-track filter chain for the mixer console. */
+function channelChain(t: ConsoleTrack): string {
+  const gainLin = Math.pow(10, clampNum(t.gainDb, -24, 12) / 20).toFixed(4);
+  const low = clampNum(t.eq.low, -12, 12);
+  const mid = clampNum(t.eq.mid, -12, 12);
+  const high = clampNum(t.eq.high, -12, 12);
+  const pan = clampNum(t.pan, -1, 1);
+  const lGain = (pan <= 0 ? 1 : 1 - pan).toFixed(3);
+  const rGain = (pan >= 0 ? 1 : 1 + pan).toFixed(3);
+
+  const parts = [
+    'aformat=channel_layouts=stereo',
+    `volume=${gainLin}`,
+    `bass=g=${low}:f=110`,
+    `equalizer=f=1500:width_type=o:width=1.4:g=${mid}`,
+    `treble=g=${high}:f=8000`,
+  ];
+  if (t.comp.on) {
+    parts.push(
+      `acompressor=threshold=${clampNum(t.comp.threshold, -40, 0)}dB:ratio=${clampNum(t.comp.ratio, 1, 20)}:attack=10:release=120`
+    );
+  }
+  const verb = clampNum(t.reverb, 0, 1);
+  if (verb > 0.02) {
+    parts.push(`aecho=0.8:${(0.3 + 0.4 * verb).toFixed(2)}:${Math.round(40 + 60 * verb)}:${(0.2 + 0.3 * verb).toFixed(2)}`);
+  }
+  parts.push(`pan=stereo|c0=${lGain}*c0|c1=${rGain}*c1`);
+  return parts.join(',');
+}
+
+/**
+ * Console mixdown — the hands-on mixer. Each track carries its own
+ * gain/pan/EQ/comp/reverb; solo overrides mute. Sums to one WAV (pre-master).
+ */
+export async function mixdownConsole(tracks: ConsoleTrack[]): Promise<Buffer> {
+  const anySolo = tracks.some((t) => t.solo);
+  const active = tracks.filter((t) => (anySolo ? t.solo : !t.mute));
+  if (active.length === 0) throw new Error('mixer: every track is muted');
+
+  const dir = await mkdtemp(join(tmpdir(), 'afrohit-console-'));
+  try {
+    const inputs: string[] = [];
+    const chains: string[] = [];
+    const labels: string[] = [];
+    active.forEach((t, i) => {
+      inputs.push('-i', t.path);
+      chains.push(`[${i}:a]${channelChain(t)}[c${i}]`);
+      labels.push(`[c${i}]`);
+    });
+    const outPath = join(dir, 'console.wav');
+    const filter =
+      active.length === 1
+        ? `${chains[0]!.replace(/\[c0\]$/, '[out]')}`
+        : `${chains.join(';')};${labels.join('')}amix=inputs=${active.length}:duration=longest:normalize=0[out]`;
+    await runFfmpeg([
+      ...inputs,
+      '-filter_complex', filter,
+      '-map', '[out]',
+      '-ar', '44100',
+      '-ac', '2',
+      outPath,
+    ]);
+    return await readFile(outPath);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+}
+
 /**
  * Master a mix: two-pass style loudnorm in one pass (dynamic mode) to the
  * preset target, encode both WAV and MP3. Returns both.
