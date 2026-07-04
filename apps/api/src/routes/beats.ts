@@ -1,6 +1,7 @@
 import type { FastifyInstance } from 'fastify';
 import { prisma } from '@afrohit/db';
 import { generateBeatInputSchema, attachBeatUploadSchema } from '@afrohit/shared';
+import { enrichLyricsForVocals } from '@afrohit/ai';
 import { requireAuth } from '../middleware/auth';
 import { enqueue, QUEUES } from '../lib/queue';
 import { publicUrlFor } from '../lib/storage';
@@ -32,6 +33,7 @@ export default async function beats(app: FastifyInstance) {
 
       // Full song WITH AI vocals: use provided lyrics, else pull the latest.
       let lyrics = input.lyrics;
+      let styleHints = '';
       if (input.withVocals && !lyrics) {
         const lyric = await prisma.lyricDraft.findFirst({
           where: { projectId: project.id, ...(input.songId ? { songId: input.songId } : {}) },
@@ -39,6 +41,18 @@ export default async function beats(app: FastifyInstance) {
         });
         lyrics = lyric?.cleanVersion ?? lyric?.body ?? undefined;
         if (!lyrics) return reply.code(400).send({ error: 'no_lyrics — write lyrics first for a vocal song' });
+      }
+      // Arrange the vocal to sound ALIVE (ad-libs, doubled/harmonized hook).
+      if (input.withVocals && lyrics && input.richVocals) {
+        const enriched = await enrichLyricsForVocals({
+          lyricBody: lyrics,
+          languages: project.artist.languages,
+          laneSummary: project.artist.laneSummary ?? undefined,
+        });
+        if (enriched) {
+          lyrics = enriched.enrichedLyrics;
+          styleHints = enriched.styleTags.join(', ');
+        }
       }
 
       const charge = await app.chargeCredits({
@@ -68,7 +82,13 @@ export default async function beats(app: FastifyInstance) {
           workspaceId,
           projectId: project.id,
           songId: input.songId,
-          input: { ...input, lyrics, artistTone: project.artist.vocalTone, languages: project.artist.languages },
+          input: {
+            ...input,
+            lyrics,
+            vibePrompt: [input.vibePrompt, styleHints].filter(Boolean).join(', ') || undefined,
+            artistTone: project.artist.vocalTone,
+            languages: project.artist.languages,
+          },
         },
       });
 

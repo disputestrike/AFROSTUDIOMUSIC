@@ -123,6 +123,9 @@ export const generateBeatInputSchema = z.object({
   // pull the latest lyric for the song). Routes to the vocals model.
   withVocals: z.boolean().default(false),
   lyrics: z.string().max(6000).optional(),
+  // Arrange the vocal to sound alive — ad-libs, doubled/harmonized hook,
+  // call-and-response — before generation. On by default for vocal songs.
+  richVocals: z.boolean().default(true),
 });
 
 // ---------- Voice -----------------------------------------------------------

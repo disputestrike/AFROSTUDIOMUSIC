@@ -10,7 +10,7 @@
  */
 import type { FastifyInstance } from 'fastify';
 import { prisma } from '@afrohit/db';
-import { prompts, responsesJson, scoreItems, runRightsCheck, canonicalReceiptHash, directorRefineHooks, researchTrends } from '@afrohit/ai';
+import { prompts, responsesJson, scoreItems, runRightsCheck, canonicalReceiptHash, directorRefineHooks, researchTrends, enrichLyricsForVocals } from '@afrohit/ai';
 import { enqueue } from '../lib/queue';
 import { memoryContext, recordFeedback } from './artist-memory';
 
@@ -273,6 +273,24 @@ async function createBeatJob(ctx: Ctx, a: { genre: string; bpm: number; keySigna
     if (!lyrics) return { error: 'no_lyrics — write the lyrics first, then make the full song' };
   }
 
+  // Arrange the vocal to sound ALIVE — ad-libs, doubled/harmonized hook.
+  let styleHints = '';
+  if (a.withVocals && lyrics) {
+    const project = await prisma.project.findUnique({
+      where: { id: ctx.projectId },
+      include: { artist: true },
+    });
+    const enriched = await enrichLyricsForVocals({
+      lyricBody: lyrics,
+      languages: project?.artist.languages,
+      laneSummary: project?.artist.laneSummary ?? undefined,
+    });
+    if (enriched) {
+      lyrics = enriched.enrichedLyrics;
+      styleHints = enriched.styleTags.join(', ');
+    }
+  }
+
   const charge = await ctx.app.chargeCredits({
     workspaceId: ctx.workspaceId,
     key: a.withVocals || a.withStems ? 'full_song_demo' : 'beat_idea_short_30s',
@@ -298,6 +316,7 @@ async function createBeatJob(ctx: Ctx, a: { genre: string; bpm: number; keySigna
       songId,
       input: {
         ...a,
+        vibePrompt: [a.vibePrompt, styleHints].filter(Boolean).join(', ') || undefined,
         durationS: a.durationS ?? (a.withVocals ? 150 : 60),
         withStems: a.withStems ?? !a.withVocals,
         withVocals: a.withVocals ?? false,
