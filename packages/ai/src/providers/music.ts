@@ -167,15 +167,29 @@ class ReplicateMusicGenAdapter implements MusicProviderAdapter {
   ): Promise<ProviderJobResult<MusicGenerationOutput>> {
     const token = this.apiKey || replicateToken();
     if (!token) return { status: 'failed', error: 'REPLICATE_API_TOKEN missing' };
+    const auth = { authorization: `Bearer ${token}` };
+
+    // meta/musicgen is a community model → use the versioned /predictions
+    // endpoint (the /models/{owner}/{name}/predictions path is official-only,
+    // hence the 404). Resolve the current version unless one is pinned.
+    let version = process.env.REPLICATE_MUSIC_VERSION;
+    if (!version) {
+      const slug = process.env.REPLICATE_MUSIC_MODEL ?? 'meta/musicgen';
+      const mres = await fetch(`https://api.replicate.com/v1/models/${slug}`, { headers: auth });
+      if (!mres.ok) {
+        return { status: 'failed', error: `replicate model lookup ${mres.status}: ${(await mres.text()).slice(0, 160)}` };
+      }
+      const mdata = (await mres.json()) as { latest_version?: { id?: string } };
+      version = mdata.latest_version?.id;
+      if (!version) return { status: 'failed', error: 'replicate: model has no version' };
+    }
+
     const duration = Math.min(Math.max(Math.round(input.durationS ?? 30), 5), 30);
-    const res = await fetch('https://api.replicate.com/v1/models/meta/musicgen/predictions', {
+    const res = await fetch('https://api.replicate.com/v1/predictions', {
       method: 'POST',
-      headers: {
-        authorization: `Bearer ${token}`,
-        'content-type': 'application/json',
-        prefer: 'wait', // block up to ~60s; MusicGen usually finishes in-window
-      },
+      headers: { ...auth, 'content-type': 'application/json', prefer: 'wait' },
       body: JSON.stringify({
+        version,
         input: {
           prompt: this.composePrompt(input),
           duration,
