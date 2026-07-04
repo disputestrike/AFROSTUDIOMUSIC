@@ -1,0 +1,159 @@
+'use client';
+
+import { useEffect, useState } from 'react';
+import { useApi } from '@/lib/api';
+
+interface Artist {
+  id: string;
+  stageName: string;
+  bio: string | null;
+  vocalRangeLow: string | null;
+  vocalRangeHigh: string | null;
+  vocalTone: string[];
+  languages: string[];
+  laneSummary: string | null;
+  cornyBanned: string[];
+  morningDrop: boolean;
+}
+
+/**
+ * Settings = the Artist DNA editor.
+ * Without this filled in, hooks/lyrics will be generic.
+ */
+export default function SettingsPage() {
+  const api = useApi();
+  const [artist, setArtist] = useState<Artist | null>(null);
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    api.get<Artist[]>('/artists').then((list) => setArtist(list[0] ?? null)).catch(() => setArtist(null));
+  }, []);
+
+  if (!artist) {
+    return (
+      <div className="mx-auto max-w-3xl px-6 py-10">
+        <h1 className="font-display text-4xl">Artist DNA</h1>
+        <p className="mt-3 text-sm text-slate-300">No artist profile yet. Create one in your workspace to start.</p>
+      </div>
+    );
+  }
+
+  async function save() {
+    if (!artist) return;
+    setSaving(true);
+    try {
+      await api.patch(`/artists/${artist.id}`, {
+        stageName: artist.stageName,
+        bio: artist.bio,
+        vocalRangeLow: artist.vocalRangeLow,
+        vocalRangeHigh: artist.vocalRangeHigh,
+        vocalTone: artist.vocalTone,
+        languages: artist.languages,
+        laneSummary: artist.laneSummary,
+        cornyBanned: artist.cornyBanned,
+        morningDrop: artist.morningDrop,
+      });
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div className="mx-auto max-w-3xl px-6 py-10">
+      <h1 className="font-display text-4xl">Artist DNA</h1>
+      <p className="mt-2 text-sm text-slate-400">
+        This shapes every hook, lyric, and beat. The more specific you are about your lane and banned clichés, the less generic the output.
+      </p>
+
+      <div className="mt-6 grid gap-4">
+        <Field label="Stage name">
+          <input className="input" value={artist.stageName} onChange={(e) => setArtist({ ...artist, stageName: e.target.value })} />
+        </Field>
+        <Field label="Bio">
+          <textarea className="input" rows={3} value={artist.bio ?? ''} onChange={(e) => setArtist({ ...artist, bio: e.target.value })} />
+        </Field>
+        <div className="grid grid-cols-2 gap-3">
+          <Field label="Vocal range low (e.g. A2)">
+            <input className="input" value={artist.vocalRangeLow ?? ''} onChange={(e) => setArtist({ ...artist, vocalRangeLow: e.target.value })} />
+          </Field>
+          <Field label="Vocal range high (e.g. F5)">
+            <input className="input" value={artist.vocalRangeHigh ?? ''} onChange={(e) => setArtist({ ...artist, vocalRangeHigh: e.target.value })} />
+          </Field>
+        </div>
+        <Field label="Vocal tone (comma separated)">
+          <input
+            className="input"
+            value={artist.vocalTone.join(', ')}
+            onChange={(e) => setArtist({ ...artist, vocalTone: e.target.value.split(',').map((s) => s.trim()).filter(Boolean) })}
+          />
+        </Field>
+        <Field label="Languages (yo, ig, ha, pcm, en)">
+          <input
+            className="input"
+            value={artist.languages.join(', ')}
+            onChange={(e) => setArtist({ ...artist, languages: e.target.value.split(',').map((s) => s.trim()).filter(Boolean) })}
+          />
+        </Field>
+        <Field label="Lane summary (free text — your fingerprint)">
+          <textarea className="input" rows={3} value={artist.laneSummary ?? ''} onChange={(e) => setArtist({ ...artist, laneSummary: e.target.value })} />
+        </Field>
+        <Field label="Banned/corny phrases (comma separated)">
+          <input
+            className="input"
+            value={artist.cornyBanned.join(', ')}
+            onChange={(e) => setArtist({ ...artist, cornyBanned: e.target.value.split(',').map((s) => s.trim()).filter(Boolean) })}
+          />
+        </Field>
+
+        <label className="mt-2 flex items-start gap-3 rounded-2xl border border-slate-800 bg-slate-900/40 p-4">
+          <input
+            type="checkbox"
+            checked={artist.morningDrop}
+            onChange={(e) => setArtist({ ...artist, morningDrop: e.target.checked })}
+            className="mt-1 h-4 w-4 accent-afrobrand-500"
+          />
+          <span>
+            <span className="block font-medium text-slate-200">☀️ Morning Drop</span>
+            <span className="block text-xs text-slate-400">
+              Every night the studio writes and scores 20 fresh hooks against your DNA and taste
+              history, then emails you the top 10. Costs one hooks batch (~$0.15/night) from your credits.
+            </span>
+          </span>
+        </label>
+      </div>
+
+      <button
+        onClick={() => void save()}
+        disabled={saving}
+        className="mt-6 rounded-full bg-afrobrand-500 px-4 py-2 text-sm font-medium text-ink hover:bg-afrobrand-400 disabled:opacity-60"
+      >
+        {saving ? 'Saving…' : 'Save DNA'}
+      </button>
+
+      <style jsx>{`
+        :global(.input) {
+          width: 100%;
+          background: #0f172a;
+          border: 1px solid #1f2937;
+          color: #e2e8f0;
+          padding: 8px 12px;
+          border-radius: 10px;
+          font-size: 14px;
+        }
+        :global(.input:focus) {
+          outline: none;
+          border-color: #f97316;
+        }
+      `}</style>
+    </div>
+  );
+}
+
+function Field({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <label className="block text-sm">
+      <span className="mb-1 block text-slate-400">{label}</span>
+      {children}
+    </label>
+  );
+}

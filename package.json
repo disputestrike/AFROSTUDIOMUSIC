@@ -1,0 +1,35 @@
+{
+  "name": "afrohit-studio",
+  "version": "0.1.0",
+  "private": true,
+  "description": "AfroHit Studio — AI production house for African and diaspora artists",
+  "packageManager": "pnpm@9.12.0",
+  "engines": {
+    "node": ">=20.10.0",
+    "pnpm": ">=9.0.0"
+  },
+  "scripts": {
+    "build": "turbo run build",
+    "dev": "turbo run dev --parallel",
+    "lint": "turbo run lint",
+    "typecheck": "turbo run typecheck",
+    "test": "turbo run test",
+    "db:generate": "pnpm --filter @afrohit/db generate",
+    "db:migrate": "pnpm --filter @afrohit/db migrate",
+    "db:push": "pnpm --filter @afrohit/db push",
+    "db:studio": "pnpm --filter @afrohit/db studio",
+    "db:seed": "pnpm --filter @afrohit/db seed",
+    "api:dev": "pnpm --filter @afrohit/api dev",
+    "web:dev": "pnpm --filter @afrohit/web dev",
+    "worker:dev": "pnpm --filter @afrohit/worker dev",
+    "infra:up": "docker compose -f docker-compose.dev.yml up -d",
+    "infra:down": "docker compose -f docker-compose.dev.yml down",
+    "format": "prettier --write \"**/*.{ts,tsx,md,json}\""
+  },
+  "devDependencies": {
+    "turbo": "^2.3.0",
+    "typescript": "^5.6.3",
+    "prettier": "^3.3.3",
+    "@types/node": "^22.9.0"
+  }
+}

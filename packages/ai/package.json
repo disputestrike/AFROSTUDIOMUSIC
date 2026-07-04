@@ -1,0 +1,27 @@
+{
+  "name": "@afrohit/ai",
+  "version": "0.1.0",
+  "private": true,
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": { "types": "./dist/index.d.ts", "default": "./dist/index.js" },
+    "./providers": { "types": "./dist/providers/index.d.ts", "default": "./dist/providers/index.js" },
+    "./prompts": { "types": "./dist/prompts/index.d.ts", "default": "./dist/prompts/index.js" },
+    "./taste": { "types": "./dist/taste.d.ts", "default": "./dist/taste.js" },
+    "./rights": { "types": "./dist/rights.d.ts", "default": "./dist/rights.js" }
+  },
+  "files": ["dist"],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@afrohit/shared": "workspace:*",
+    "openai": "^4.73.0",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "typescript": "^5.6.3"
+  }
+}

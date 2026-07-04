@@ -1,0 +1,201 @@
+import type { FastifyInstance } from 'fastify';
+import { z } from 'zod';
+import { prisma } from '@afrohit/db';
+import { requireAuth } from '../middleware/auth';
+import {
+  approveUrlOf,
+  cancelSubscription,
+  captureOrder,
+  createOrder,
+  createSubscription,
+  getSubscription,
+} from '../lib/paypal';
+
+/** PayPal Billing Plan IDs per tier — created once in the PayPal dashboard. */
+const PLAN_ID_FOR_TIER: Record<string, string | undefined> = {
+  STARTER: process.env.PAYPAL_PLAN_STARTER,
+  CREATOR: process.env.PAYPAL_PLAN_CREATOR,
+  PRO: process.env.PAYPAL_PLAN_PRO,
+  STUDIO: process.env.PAYPAL_PLAN_STUDIO,
+};
+
+/** Credit pack USD amount → credits granted (in 1/100-cent units). */
+const PACK_USD: Record<string, number> = {
+  pack_10: 10,
+  pack_25: 25,
+  pack_50: 50,
+  pack_100: 100,
+};
+const PACK_CREDITS_CENTS: Record<string, number> = {
+  pack_10: 10 * 100 * 100, // $10 → 1,000,000 micro-cents
+  pack_25: 25 * 100 * 100,
+  pack_50: 50 * 100 * 100,
+  pack_100: 100 * 100 * 100,
+};
+
+function urls() {
+  const web = process.env.WEB_URL ?? 'http://localhost:3000';
+  const api = process.env.API_URL ?? 'http://localhost:4000';
+  return {
+    // After approval, PayPal redirects user to the API, which finalizes (capture/refresh) and forwards to the web success page.
+    subscribeReturn: `${api}/api/v1/billing/return/subscription`,
+    subscribeCancel: `${web}/billing/cancel`,
+    orderReturn: `${api}/api/v1/billing/return/order`,
+    orderCancel: `${web}/billing/cancel`,
+    webSuccess: `${web}/billing/success`,
+    webCancel: `${web}/billing/cancel`,
+  };
+}
+
+const subscribeSchema = z.object({ plan: z.enum(['STARTER', 'CREATOR', 'PRO', 'STUDIO']) });
+const packSchema = z.object({ pack: z.enum(['pack_10', 'pack_25', 'pack_50', 'pack_100']) });
+
+export default async function billing(app: FastifyInstance) {
+  app.get('/me', async (req) => {
+    const { workspaceId } = requireAuth(req);
+    const ws = await prisma.workspace.findUniqueOrThrow({
+      where: { id: workspaceId },
+      select: { id: true, plan: true, creditsCents: true, paypalSubscriptionId: true },
+    });
+    return ws;
+  });
+
+  /** Create a PayPal Subscription and return the approve URL the web app redirects to. */
+  app.post('/checkout/subscribe', { schema: { body: subscribeSchema } }, async (req, reply) => {
+    const { workspaceId } = requireAuth(req);
+    const { plan } = subscribeSchema.parse(req.body);
+    const planId = PLAN_ID_FOR_TIER[plan];
+    if (!planId) return reply.code(400).send({ error: 'unknown_plan_or_unconfigured' });
+
+    const u = urls();
+    const sub = await createSubscription({
+      planId,
+      workspaceId,
+      returnUrl: u.subscribeReturn,
+      cancelUrl: u.subscribeCancel,
+    });
+    const approve = approveUrlOf(sub.links);
+    if (!approve) return reply.code(502).send({ error: 'no_approve_link' });
+
+    // Stash the subscription id immediately so we can correlate the return URL
+    // even before the webhook fires. The plan tier itself isn't applied until
+    // BILLING.SUBSCRIPTION.ACTIVATED arrives.
+    await prisma.workspace.update({
+      where: { id: workspaceId },
+      data: { paypalSubscriptionId: sub.id },
+    });
+
+    return { url: approve, subscriptionId: sub.id };
+  });
+
+  /** Create a PayPal Order for a credit pack and return the approve URL. */
+  app.post('/checkout/credits', { schema: { body: packSchema } }, async (req, reply) => {
+    const { workspaceId } = requireAuth(req);
+    const { pack } = packSchema.parse(req.body);
+    const amount = PACK_USD[pack];
+    const creditsCents = PACK_CREDITS_CENTS[pack];
+    if (!amount || !creditsCents) return reply.code(400).send({ error: 'unknown_pack' });
+
+    const u = urls();
+    const order = await createOrder({
+      amountUsd: amount,
+      workspaceId,
+      packKey: pack,
+      creditsCents,
+      returnUrl: u.orderReturn,
+      cancelUrl: u.orderCancel,
+    });
+    const approve = approveUrlOf(order.links);
+    if (!approve) return reply.code(502).send({ error: 'no_approve_link' });
+    return { url: approve, orderId: order.id };
+  });
+
+  /**
+   * Return URL after the user approves a *subscription* on PayPal. We hit
+   * PayPal once to confirm the subscription is real, persist any updated
+   * status, then forward to the web success page. The plan tier itself is
+   * applied authoritatively when BILLING.SUBSCRIPTION.ACTIVATED arrives on
+   * the webhook — this just gives the user something to look at.
+   */
+  app.get<{ Querystring: { subscription_id?: string; ba_token?: string } }>(
+    '/return/subscription',
+    async (req, reply) => {
+      const u = urls();
+      const subId = req.query.subscription_id;
+      if (!subId) return reply.redirect(`${u.webCancel}?reason=missing_subscription`, 302);
+      try {
+        const sub = await getSubscription(subId);
+        req.log.info({ subId, status: sub.status, plan: sub.plan_id }, 'paypal sub return');
+        return reply.redirect(`${u.webSuccess}?type=subscription&status=${encodeURIComponent(sub.status)}`, 302);
+      } catch (err) {
+        req.log.error({ err, subId }, 'paypal sub return fetch failed');
+        return reply.redirect(`${u.webSuccess}?type=subscription&status=pending`, 302);
+      }
+    }
+  );
+
+  /**
+   * Return URL after the user approves a *credit pack order*. PayPal sends
+   * `?token=<ORDER_ID>&PayerID=<...>`. We capture the order server-side and
+   * grant credits immediately. The webhook is the safety net for the case
+   * where the user closes the tab before this fires.
+   *
+   * Idempotency: the capture id is stored on CreditLedger.paypalEventId,
+   * so a webhook arrival for the same capture is a no-op.
+   */
+  app.get<{ Querystring: { token?: string; PayerID?: string } }>(
+    '/return/order',
+    async (req, reply) => {
+      const u = urls();
+      const orderId = req.query.token;
+      if (!orderId) return reply.redirect(`${u.webCancel}?reason=missing_order`, 302);
+      try {
+        const captured = await captureOrder(orderId);
+        const cap = captured.purchase_units?.[0]?.payments?.captures?.[0];
+        const customId = cap?.custom_id;
+        if (!cap || !customId) {
+          req.log.warn({ orderId, captured }, 'paypal capture missing custom_id');
+          return reply.redirect(`${u.webSuccess}?type=order&status=${encodeURIComponent(captured.status)}`, 302);
+        }
+        const meta = JSON.parse(customId) as { workspaceId: string; pack: string; creditsCents: number };
+
+        // Idempotent credit application keyed by the *capture id*.
+        const existing = await prisma.creditLedger.findUnique({ where: { paypalEventId: cap.id } });
+        if (!existing) {
+          await prisma.$transaction([
+            prisma.workspace.update({
+              where: { id: meta.workspaceId },
+              data: { creditsCents: { increment: meta.creditsCents } },
+            }),
+            prisma.creditLedger.create({
+              data: {
+                workspaceId: meta.workspaceId,
+                delta: meta.creditsCents,
+                reason: 'topup_paypal',
+                paypalEventId: cap.id,
+                meta: { orderId, pack: meta.pack, captureAmount: cap.amount } as never,
+              },
+            }),
+          ]);
+        }
+
+        return reply.redirect(`${u.webSuccess}?type=order&status=COMPLETED`, 302);
+      } catch (err) {
+        req.log.error({ err, orderId }, 'paypal capture failed');
+        return reply.redirect(`${u.webCancel}?reason=capture_failed`, 302);
+      }
+    }
+  );
+
+  /**
+   * Cancel the active subscription. PayPal will then send
+   * BILLING.SUBSCRIPTION.CANCELLED, which downgrades the workspace plan.
+   */
+  app.post('/subscription/cancel', async (req, reply) => {
+    const { workspaceId } = requireAuth(req);
+    const ws = await prisma.workspace.findUniqueOrThrow({ where: { id: workspaceId } });
+    if (!ws.paypalSubscriptionId) return reply.code(400).send({ error: 'no_active_subscription' });
+    await cancelSubscription(ws.paypalSubscriptionId, 'user_request');
+    return { ok: true };
+  });
+}

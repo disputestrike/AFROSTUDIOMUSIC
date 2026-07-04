@@ -1,0 +1,305 @@
+openapi: 3.0.3
+info:
+  title: AfroHit Studio API
+  description: |
+    Public REST contract. All endpoints under `/api/v1` require a Clerk bearer JWT.
+    The Studio Chat endpoint accepts free-form prompts and orchestrates the labs by
+    calling internal tools (hooks, lyrics, beats, vocals, etc.).
+  version: 0.1.0
+servers:
+  - url: http://localhost:4000
+    description: local
+  - url: https://api.afrohit.studio
+    description: production
+security:
+  - bearer: []
+components:
+  securitySchemes:
+    bearer:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+  schemas:
+    ArtistDna:
+      type: object
+      required: [name, stageName]
+      properties:
+        name: { type: string }
+        stageName: { type: string }
+        bio: { type: string }
+        vocalRangeLow: { type: string }
+        vocalRangeHigh: { type: string }
+        vocalTone: { type: array, items: { type: string } }
+        languages: { type: array, items: { type: string } }
+        laneSummary: { type: string }
+        references:
+          type: array
+          items:
+            type: object
+            required: [name, lane]
+            properties:
+              name: { type: string }
+              lane: { type: string }
+              note: { type: string }
+        forbiddenStyles: { type: array, items: { type: string } }
+        cornyBanned: { type: array, items: { type: string } }
+    Project:
+      type: object
+      properties:
+        id: { type: string }
+        title: { type: string }
+        genre: { type: string }
+        bpm: { type: integer, nullable: true }
+        keySignature: { type: string, nullable: true }
+        status: { type: string }
+    Brief:
+      type: object
+      properties:
+        mood: { type: string }
+        topic: { type: string }
+        language: { type: array, items: { type: string } }
+        audience: { type: string }
+        bpm: { type: integer }
+        notes: { type: string }
+    Hook:
+      type: object
+      properties:
+        id: { type: string }
+        text: { type: string }
+        language: { type: array, items: { type: string } }
+        score: { type: number, nullable: true }
+        approved: { type: boolean }
+    ChatMessage:
+      type: object
+      required: [content]
+      properties:
+        threadId: { type: string, nullable: true }
+        projectId: { type: string, nullable: true }
+        content: { type: string, minLength: 1, maxLength: 8000 }
+    JobAccepted:
+      type: object
+      properties:
+        jobId: { type: string }
+        status: { type: string, enum: [queued] }
+paths:
+  /api/v1/artists:
+    get:
+      summary: List artists
+      responses: { '200': { description: ok } }
+    post:
+      summary: Create an artist (DNA)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ArtistDna' }
+      responses:
+        '201': { description: created }
+
+  /api/v1/projects:
+    get: { summary: List projects, responses: { '200': { description: ok } } }
+    post:
+      summary: Create a project
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [artistId, title, genre]
+              properties:
+                artistId: { type: string }
+                title: { type: string }
+                genre: { type: string }
+                bpm: { type: integer }
+                keySignature: { type: string }
+      responses: { '201': { description: created } }
+  /api/v1/projects/{projectId}:
+    get:
+      summary: Read a project (includes hooks, lyrics, beats, etc.)
+      parameters:
+        - in: path
+          name: projectId
+          required: true
+          schema: { type: string }
+      responses: { '200': { description: ok } }
+
+  /api/v1/projects/{projectId}/briefs:
+    post:
+      summary: Create a brief
+      parameters: [{ in: path, name: projectId, required: true, schema: { type: string } }]
+      responses: { '201': { description: created } }
+  /api/v1/projects/{projectId}/briefs/polish:
+    post:
+      summary: AI-polish a free-form idea into a brief
+      parameters: [{ in: path, name: projectId, required: true, schema: { type: string } }]
+      requestBody:
+        required: true
+        content: { application/json: { schema: { type: object, required: [rawIdea], properties: { rawIdea: { type: string } } } } }
+      responses: { '201': { description: created } }
+
+  /api/v1/projects/{projectId}/hooks:
+    get: { parameters: [{ in: path, name: projectId, required: true, schema: { type: string } }], responses: { '200': { description: ok } } }
+  /api/v1/projects/{projectId}/hooks/generate:
+    post:
+      summary: Generate N hooks
+      parameters: [{ in: path, name: projectId, required: true, schema: { type: string } }]
+      responses: { '201': { description: created } }
+  /api/v1/projects/{projectId}/hooks/{hookId}/approve:
+    post:
+      summary: Approve a hook (creates a Song)
+      parameters:
+        - { in: path, name: projectId, required: true, schema: { type: string } }
+        - { in: path, name: hookId, required: true, schema: { type: string } }
+      responses: { '200': { description: ok } }
+
+  /api/v1/projects/{projectId}/lyrics/generate:
+    post:
+      summary: Generate full lyrics around an approved hook
+      parameters: [{ in: path, name: projectId, required: true, schema: { type: string } }]
+      responses: { '201': { description: created } }
+  /api/v1/projects/{projectId}/lyrics/{lyricId}/approve:
+    post:
+      summary: Approve a lyric draft
+      parameters:
+        - { in: path, name: projectId, required: true, schema: { type: string } }
+        - { in: path, name: lyricId, required: true, schema: { type: string } }
+      responses: { '200': { description: ok } }
+
+  /api/v1/projects/{projectId}/beats/generate:
+    post:
+      summary: Queue a music generation job (with stems)
+      parameters: [{ in: path, name: projectId, required: true, schema: { type: string } }]
+      responses: { '202': { description: queued, content: { application/json: { schema: { $ref: '#/components/schemas/JobAccepted' } } } } }
+
+  /api/v1/projects/{projectId}/vocals/render:
+    post:
+      summary: Queue a vocal render job using consented voice
+      parameters: [{ in: path, name: projectId, required: true, schema: { type: string } }]
+      responses: { '202': { description: queued } }
+
+  /api/v1/projects/{projectId}/mixes:
+    post:
+      summary: Create a mix with a preset
+      parameters: [{ in: path, name: projectId, required: true, schema: { type: string } }]
+      responses: { '202': { description: queued } }
+  /api/v1/projects/{projectId}/mixes/master:
+    post:
+      summary: Master a mix
+      parameters: [{ in: path, name: projectId, required: true, schema: { type: string } }]
+      responses: { '202': { description: queued } }
+
+  /api/v1/projects/{projectId}/exports:
+    post:
+      summary: Bundle release kit (requires rights receipt)
+      parameters: [{ in: path, name: projectId, required: true, schema: { type: string } }]
+      responses:
+        '202': { description: queued }
+        '412': { description: no rights receipt }
+
+  /api/v1/voices/consents:
+    post: { summary: Record a voice-cloning consent, responses: { '201': { description: created } } }
+  /api/v1/voices:
+    get: { summary: List voice profiles, responses: { '200': { description: ok } } }
+    post: { summary: Create voice profile (requires consentId), responses: { '202': { description: training } } }
+  /api/v1/voices/{voiceId}/test:
+    post:
+      summary: Quick test render with a voice profile
+      parameters: [{ in: path, name: voiceId, required: true, schema: { type: string } }]
+      responses: { '202': { description: queued } }
+
+  /api/v1/images/cover-art:
+    post: { summary: Queue cover art generation, responses: { '202': { description: queued } } }
+
+  /api/v1/videos/storyboards:
+    post: { summary: Build a video storyboard (text only, cheap), responses: { '201': { description: created } } }
+  /api/v1/videos/renders:
+    post: { summary: Render a video shot (expensive), responses: { '202': { description: queued } } }
+
+  /api/v1/taste/score:
+    post: { summary: Score hooks/lyrics, responses: { '200': { description: ok } } }
+
+  /api/v1/rights/check:
+    post: { summary: Run rights/similarity check + stamp receipt, responses: { '200': { description: ok } } }
+
+  /api/v1/share/links:
+    post: { summary: Create a short share link for a song, responses: { '201': { description: created } } }
+  /api/v1/share/events:
+    post: { summary: Public event ingest (no auth), responses: { '200': { description: ok } } }
+  /api/v1/share/redirect/{code}:
+    get:
+      summary: 302 redirect for a share link (also logs event)
+      parameters: [{ in: path, name: code, required: true, schema: { type: string } }]
+      responses: { '302': { description: redirect } }
+  /api/v1/share/heatmap:
+    get: { summary: Aggregated PostGIS heatmap, responses: { '200': { description: ok } } }
+
+  /api/v1/jobs:
+    get: { summary: Recent jobs, responses: { '200': { description: ok } } }
+  /api/v1/jobs/{id}:
+    get:
+      summary: Job detail
+      parameters: [{ in: path, name: id, required: true, schema: { type: string } }]
+      responses: { '200': { description: ok } }
+
+  /api/v1/chat/threads:
+    get: { summary: List chat threads, responses: { '200': { description: ok } } }
+  /api/v1/chat/messages:
+    post:
+      summary: Send a chat message (orchestrates labs via tool calls)
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: '#/components/schemas/ChatMessage' } } }
+      responses: { '200': { description: ok } }
+  /api/v1/chat/messages/stream:
+    post:
+      summary: Streaming chat (Server-Sent Events — thread/tool_start/tool_result/assistant/done)
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: '#/components/schemas/ChatMessage' } } }
+      responses: { '200': { description: text/event-stream } }
+
+  /api/v1/reviews:
+    get: { summary: Native-language review queue (open tasks), responses: { '200': { description: ok } } }
+  /api/v1/reviews/{id}/resolve:
+    post:
+      summary: Resolve a review task (rejected → lyric un-approved)
+      parameters: [{ in: path, name: id, required: true, schema: { type: string } }]
+      responses: { '200': { description: ok } }
+
+  /api/v1/admin/stats:
+    get: { summary: Operator stats (gated by ADMIN_EMAILS), responses: { '200': { description: ok }, '403': { description: not an operator } } }
+  /api/v1/admin/workspaces:
+    get: { summary: List workspaces (operator), responses: { '200': { description: ok } } }
+  /api/v1/admin/workspaces/{id}/credits:
+    post: { summary: Grant/claw back credits (operator), parameters: [{ in: path, name: id, required: true, schema: { type: string } }], responses: { '200': { description: ok } } }
+  /api/v1/admin/workspaces/{id}/suspend:
+    post: { summary: Suspend workspace (operator), parameters: [{ in: path, name: id, required: true, schema: { type: string } }], responses: { '200': { description: ok } } }
+  /api/v1/admin/workspaces/{id}/unsuspend:
+    post: { summary: Unsuspend workspace (operator), parameters: [{ in: path, name: id, required: true, schema: { type: string } }], responses: { '200': { description: ok } } }
+  /api/v1/admin/jobs/failed:
+    get: { summary: Recent failed jobs (operator), responses: { '200': { description: ok } } }
+  /api/v1/admin/jobs/{id}/retry:
+    post: { summary: Re-enqueue a failed job (operator), parameters: [{ in: path, name: id, required: true, schema: { type: string } }], responses: { '200': { description: ok } } }
+
+  /api/v1/billing/me:
+    get: { summary: Workspace billing summary (plan, credits, PayPal subscription id), responses: { '200': { description: ok } } }
+  /api/v1/billing/checkout/subscribe:
+    post: { summary: Create PayPal Subscription, returns approve URL, responses: { '200': { description: ok } } }
+  /api/v1/billing/checkout/credits:
+    post: { summary: Create PayPal Order for a credit pack, returns approve URL, responses: { '200': { description: ok } } }
+  /api/v1/billing/return/subscription:
+    get: { summary: PayPal post-approval landing for subscriptions, responses: { '302': { description: redirect to web } } }
+  /api/v1/billing/return/order:
+    get: { summary: PayPal post-approval landing for orders — captures + credits, responses: { '302': { description: redirect to web } } }
+  /api/v1/billing/subscription/cancel:
+    post: { summary: Cancel the active PayPal subscription, responses: { '200': { description: ok } } }
+
+  /webhooks/paypal:
+    post: { summary: PayPal webhook receiver (verifies signature, handles BILLING.SUBSCRIPTION.* and PAYMENT.CAPTURE.COMPLETED), security: [], responses: { '200': { description: ok } } }
+  /webhooks/clerk:
+    post: { summary: Clerk webhook receiver, security: [], responses: { '200': { description: ok } } }
+  /webhooks/music:
+    post: { summary: Music provider callback, security: [], responses: { '200': { description: ok } } }
+  /webhooks/video:
+    post: { summary: Video provider callback, security: [], responses: { '200': { description: ok } } }

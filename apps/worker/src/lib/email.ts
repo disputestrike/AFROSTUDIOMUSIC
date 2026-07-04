@@ -1,0 +1,81 @@
+/**
+ * Worker-side email (Resend REST). Mirrors apps/api/src/lib/email.ts — the
+ * worker deliberately doesn't import from the API app.
+ * No-ops when RESEND_API_KEY is absent.
+ */
+
+const FROM = () => process.env.EMAIL_FROM ?? 'AfroHit Studio <noreply@afrohit.studio>';
+
+export async function sendEmail(opts: { to: string; subject: string; html: string }) {
+  const key = process.env.RESEND_API_KEY;
+  if (!key) {
+    console.log(`[email skipped — no RESEND_API_KEY] to=${opts.to} subject="${opts.subject}"`);
+    return { ok: true, skipped: true };
+  }
+  const res = await fetch('https://api.resend.com/emails', {
+    method: 'POST',
+    headers: { authorization: `Bearer ${key}`, 'content-type': 'application/json' },
+    body: JSON.stringify({ from: FROM(), to: [opts.to], subject: opts.subject, html: opts.html }),
+  });
+  if (!res.ok) {
+    console.error(`[email failed] ${res.status}: ${await res.text()}`);
+    return { ok: false };
+  }
+  return { ok: true };
+}
+
+const wrap = (body: string) => `
+<div style="font-family:Inter,system-ui,sans-serif;max-width:560px;margin:0 auto;padding:24px;color:#111">
+  <div style="font-size:22px;font-weight:800;letter-spacing:-0.5px;margin-bottom:16px">AFROHIT STUDIO</div>
+  ${body}
+  <p style="margin-top:32px;font-size:12px;color:#888">You're receiving this because you have an AfroHit Studio account.</p>
+</div>`;
+
+export function jobDoneEmail(kind: string, projectTitle: string | null, url: string | null) {
+  const kindLabel: Record<string, string> = {
+    music: 'Your beat is ready',
+    voice: 'Your vocal render is ready',
+    video: 'Your video render is ready',
+    export: 'Your release kit is ready',
+  };
+  return {
+    subject: `${kindLabel[kind] ?? 'Your render is ready'} — ${projectTitle ?? 'AfroHit Studio'}`,
+    html: wrap(`
+      <p>${kindLabel[kind] ?? 'A render finished'} on <b>${projectTitle ?? 'your project'}</b>.</p>
+      ${url ? `<p><a href="${url}" style="color:#EA580C">Listen / view it here</a></p>` : ''}
+      <p>Open the project in the studio to approve it or iterate.</p>
+    `),
+  };
+}
+
+export function morningDropEmail(stageName: string, hooks: Array<{ text: string; score: number | null }>) {
+  const rows = hooks
+    .map(
+      (h, i) =>
+        `<tr><td style="padding:6px 10px;color:#EA580C;font-weight:700">${(h.score ?? 0).toFixed(1)}</td><td style="padding:6px 10px;white-space:pre-wrap">${i + 1}. ${h.text}</td></tr>`
+    )
+    .join('');
+  return {
+    subject: `☀️ Morning Drop — ${hooks.length} fresh hooks for ${stageName}`,
+    html: wrap(`
+      <p>While you slept, the studio wrote and scored a new batch. Top picks:</p>
+      <table style="border-collapse:collapse;font-size:14px">${rows}</table>
+      <p>Open Studio Chat to approve one and take it to a full demo.</p>
+    `),
+  };
+}
+
+export function releaseRadarEmail(rows: Array<{ country: string | null; events: number }>) {
+  const list = rows
+    .slice(0, 10)
+    .map((r) => `<li><b>${r.country ?? 'Unknown'}</b> — ${r.events} plays/clicks</li>`)
+    .join('');
+  return {
+    subject: '📡 Release Radar — your week in listeners',
+    html: wrap(`
+      <p>Where your music moved in the last 7 days:</p>
+      <ul>${list}</ul>
+      <p>Check the heatmap in your dashboard for city-level detail.</p>
+    `),
+  };
+}

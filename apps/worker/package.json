@@ -1,0 +1,29 @@
+{
+  "name": "@afrohit/worker",
+  "version": "0.1.0",
+  "private": true,
+  "main": "./dist/index.js",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/index.js",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@afrohit/ai": "workspace:*",
+    "@afrohit/db": "workspace:*",
+    "@afrohit/shared": "workspace:*",
+    "@aws-sdk/client-s3": "^3.696.0",
+    "@sentry/node": "^8.42.0",
+    "bullmq": "^5.31.1",
+    "dotenv": "^16.4.7",
+    "ioredis": "^5.4.1",
+    "nanoid": "^5.0.9",
+    "pino": "^9.5.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.9.0",
+    "tsx": "^4.19.2",
+    "typescript": "^5.6.3"
+  }
+}
