@@ -37,6 +37,112 @@ export function replicateToken(): string | undefined {
   return process.env.REPLICATE_API_TOKEN || process.env.REPLICATE_TOKEN || undefined;
 }
 
+export function sunoKey(): string | undefined {
+  return process.env.SUNO_API_KEY || process.env.SUNOAPI_KEY || undefined;
+}
+
+interface SunoGenResp {
+  code: number;
+  msg?: string;
+  data?: { taskId?: string };
+}
+interface SunoRecordResp {
+  code: number;
+  msg?: string;
+  data?: {
+    status?: string;
+    errorMessage?: string | null;
+    response?: {
+      sunoData?: Array<{
+        id: string;
+        audioUrl?: string;
+        streamAudioUrl?: string;
+        duration?: number;
+        title?: string;
+      }>;
+    };
+  };
+}
+
+/**
+ * Suno — the catchiest full-production engine (via the sunoapi.org gateway;
+ * point SUNO_API_BASE at the official API or another gateway with the same
+ * contract if you prefer). We generate INSTRUMENTAL beats (the artist writes
+ * the lyrics + brings their own vocal), so customMode + instrumental=true.
+ *
+ * Activate: MUSIC_PROVIDER=suno + SUNO_API_KEY (optional SUNO_MODEL, default V5).
+ * ~$0.06–0.10/generation; stream ~30–40s, full audio ~2–3 min (we poll).
+ */
+class SunoAdapter implements MusicProviderAdapter {
+  readonly name = 'suno';
+  private base = (process.env.SUNO_API_BASE ?? 'https://api.sunoapi.org').replace(/\/+$/, '');
+
+  async generate(
+    input: MusicGenerationInput
+  ): Promise<ProviderJobResult<MusicGenerationOutput>> {
+    const key = sunoKey();
+    if (!key) return { status: 'failed', error: 'SUNO_API_KEY missing' };
+    const body = {
+      customMode: true,
+      instrumental: true,
+      model: process.env.SUNO_MODEL ?? 'V5',
+      style: this.composeStyle(input).slice(0, 900),
+      title: (input.vibePrompt?.slice(0, 60) || `${input.genre ?? 'Afro'} beat`).slice(0, 80),
+      callBackUrl: process.env.SUNO_CALLBACK_URL ?? 'https://afrohitstudio.app/api/suno/callback',
+    };
+    const res = await fetch(`${this.base}/api/v1/generate`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${key}`, 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) return { status: 'failed', error: `suno ${res.status}: ${(await res.text()).slice(0, 200)}` };
+    const data = (await res.json()) as SunoGenResp;
+    if (data.code !== 200 || !data.data?.taskId) {
+      return { status: 'failed', error: `suno: ${data.msg ?? 'no taskId'}` };
+    }
+    return { externalId: data.data.taskId, status: 'running', pollAfterMs: 12_000 };
+  }
+
+  async poll(externalId: string): Promise<ProviderJobResult<MusicGenerationOutput>> {
+    const key = sunoKey();
+    if (!key) return { status: 'failed', error: 'SUNO_API_KEY missing' };
+    const res = await fetch(
+      `${this.base}/api/v1/generate/record-info?taskId=${encodeURIComponent(externalId)}`,
+      { headers: { authorization: `Bearer ${key}` } }
+    );
+    if (!res.ok) return { status: 'failed', error: `suno poll ${res.status}` };
+    const data = (await res.json()) as SunoRecordResp;
+    const st = data.data?.status ?? '';
+    const song = data.data?.response?.sunoData?.[0];
+    if (st === 'SUCCESS' && song?.audioUrl) {
+      return {
+        externalId,
+        status: 'succeeded',
+        output: { mainAudioUrl: song.audioUrl, format: 'mp3', durationS: song.duration ?? 0 },
+        estimatedCostUsd: 0.08,
+      };
+    }
+    if (/FAILED|ERROR|SENSITIVE/.test(st)) {
+      return { externalId, status: 'failed', error: data.data?.errorMessage ?? st };
+    }
+    return { externalId, status: 'running', pollAfterMs: 8_000 };
+  }
+
+  private composeStyle(input: MusicGenerationInput): string {
+    return [
+      input.genre ?? 'afrobeats',
+      'afro-fusion',
+      `${input.bpm} bpm`,
+      input.keySignature ? `key ${input.keySignature}` : null,
+      input.vibePrompt ?? '',
+      input.artistTone?.length ? input.artistTone.join(', ') : null,
+      'catchy, modern, punchy drums, warm bass, melodic, instrumental, radio-ready, leave space for a lead vocal',
+    ]
+      .filter(Boolean)
+      .join(', ');
+  }
+}
+
 interface ReplicatePrediction {
   id: string;
   status: 'starting' | 'processing' | 'succeeded' | 'failed' | 'canceled';
@@ -329,6 +435,8 @@ class StubMusicAdapter implements MusicProviderAdapter {
 
 export function musicAdapter(override?: string): MusicProviderAdapter {
   switch (override ?? provider()) {
+    case 'suno':
+      return new SunoAdapter();
     case 'replicate':
       return new ReplicateMusicGenAdapter();
     case 'eleven':
