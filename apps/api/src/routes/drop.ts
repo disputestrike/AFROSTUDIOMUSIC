@@ -42,8 +42,19 @@ export default async function drop(app: FastifyInstance) {
           const hk = (await runChatTool({ ...ctx, name: 'generate_hooks', args: { count: 10 } })) as {
             hooks?: Array<{ id: string; text: string; score: number | null }>;
           };
-          const hooks = hk?.hooks ?? [];
+          let hooks = hk?.hooks ?? [];
           if (!hooks.length) continue;
+          // If the Claude A&R didn't score them (no ANTHROPIC_API_KEY), score via
+          // the taste engine (OpenAI) so the shortlist actually ranks.
+          if (hooks.every((h) => h.score == null)) {
+            const sc = (await runChatTool({
+              ...ctx,
+              name: 'score_hooks',
+              args: { hookIds: hooks.map((h) => h.id) },
+            })) as { scores?: Array<{ id: string; overall: number }> };
+            const m = new Map((sc?.scores ?? []).map((s) => [s.id, s.overall]));
+            hooks = hooks.map((h) => ({ ...h, score: m.get(h.id) ?? h.score }));
+          }
           const best = hooks.slice().sort((a, b) => (b.score ?? 0) - (a.score ?? 0))[0]!;
 
           const ap = (await runChatTool({ ...ctx, name: 'approve_hook', args: { hookId: best.id } })) as {
