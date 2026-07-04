@@ -1,8 +1,9 @@
 import type { FastifyInstance } from 'fastify';
 import { prisma } from '@afrohit/db';
-import { generateBeatInputSchema } from '@afrohit/shared';
+import { generateBeatInputSchema, attachBeatUploadSchema } from '@afrohit/shared';
 import { requireAuth } from '../middleware/auth';
 import { enqueue, QUEUES } from '../lib/queue';
+import { publicUrlFor } from '../lib/storage';
 
 export default async function beats(app: FastifyInstance) {
   app.get<{ Params: { projectId: string } }>(
@@ -62,6 +63,73 @@ export default async function beats(app: FastifyInstance) {
 
       reply.code(202);
       return { jobId: job.id, status: 'queued' };
+    }
+  );
+
+  // Bring your own beat / instrumental. The artist's authentic audio — stored
+  // as-is, auto-approved, and used verbatim through mix + master. Never invented.
+  app.post<{ Params: { projectId: string } }>(
+    '/upload',
+    { schema: { body: attachBeatUploadSchema } },
+    async (req, reply) => {
+      const { workspaceId } = requireAuth(req);
+      const input = attachBeatUploadSchema.parse(req.body);
+      const project = await prisma.project.findFirstOrThrow({
+        where: { id: req.params.projectId, workspaceId },
+      });
+
+      // If the artist gave us the beat's tempo/key, write the SONG to the beat —
+      // lyrics + melody read project.bpm/keySignature, so the words land in pocket.
+      if (input.bpm || input.keySignature) {
+        await prisma.project.update({
+          where: { id: project.id },
+          data: {
+            ...(input.bpm ? { bpm: input.bpm } : {}),
+            ...(input.keySignature ? { keySignature: input.keySignature } : {}),
+          },
+        });
+      }
+
+      // Bind to a song so mix/master pick this beat up. Use the given song, else
+      // the project's most recent one, else start a fresh session around the beat.
+      const songId =
+        input.songId ??
+        (
+          await prisma.song.findFirst({
+            where: { projectId: project.id },
+            orderBy: { createdAt: 'desc' },
+            select: { id: true },
+          })
+        )?.id ??
+        (
+          await prisma.song.create({
+            data: {
+              workspaceId,
+              projectId: project.id,
+              title: input.title ?? `${project.title} — uploaded beat`,
+              status: 'SKETCH',
+            },
+            select: { id: true },
+          })
+        ).id;
+
+      const beat = await prisma.beatAsset.create({
+        data: {
+          projectId: project.id,
+          songId,
+          url: publicUrlFor(input.key),
+          format: input.format,
+          bpm: input.bpm ?? null,
+          keySignature: input.keySignature ?? null,
+          duration: input.durationS ?? null,
+          provider: 'upload',
+          approved: true, // the artist's own beat is authentic — auto-approved
+          meta: { uploaded: true, source: 'artist_upload', title: input.title ?? null },
+        },
+      });
+
+      reply.code(201);
+      return { ...beat, songId };
     }
   );
 }

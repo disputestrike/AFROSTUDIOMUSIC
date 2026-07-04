@@ -1,9 +1,10 @@
 import type { FastifyInstance } from 'fastify';
 import { prisma } from '@afrohit/db';
-import { renderVocalInputSchema } from '@afrohit/shared';
+import { renderVocalInputSchema, attachVocalUploadSchema } from '@afrohit/shared';
 import { prompts, responsesJson } from '@afrohit/ai';
 import { requireAuth } from '../middleware/auth';
 import { enqueue } from '../lib/queue';
+import { publicUrlFor } from '../lib/storage';
 
 export default async function vocals(app: FastifyInstance) {
   app.post<{ Params: { projectId: string } }>(
@@ -86,6 +87,59 @@ export default async function vocals(app: FastifyInstance) {
 
       reply.code(202);
       return { jobId: job.id, status: 'queued', melodyGenerated: !lyric.melody };
+    }
+  );
+
+  // Bring your own vocal. The artist records/uploads their real performance —
+  // stored as-is, auto-approved, and mixed verbatim. No cloning, no synthesis.
+  app.post<{ Params: { projectId: string } }>(
+    '/upload',
+    { schema: { body: attachVocalUploadSchema } },
+    async (req, reply) => {
+      const { workspaceId } = requireAuth(req);
+      const input = attachVocalUploadSchema.parse(req.body);
+      const project = await prisma.project.findFirstOrThrow({
+        where: { id: req.params.projectId, workspaceId },
+      });
+
+      // Bind to a song so the mix picks this vocal up (mix reads the latest
+      // approved lead vocal for the song).
+      const songId =
+        input.songId ??
+        (
+          await prisma.song.findFirst({
+            where: { projectId: project.id },
+            orderBy: { createdAt: 'desc' },
+            select: { id: true },
+          })
+        )?.id ??
+        (
+          await prisma.song.create({
+            data: {
+              workspaceId,
+              projectId: project.id,
+              title: `${project.title} — recording`,
+              status: 'SKETCH',
+            },
+            select: { id: true },
+          })
+        ).id;
+
+      const vocal = await prisma.vocalRender.create({
+        data: {
+          projectId: project.id,
+          songId,
+          role: input.role,
+          url: publicUrlFor(input.key),
+          duration: input.durationS ?? null,
+          language: input.language ?? null,
+          approved: true, // the artist's own performance is authentic — auto-approved
+          meta: { uploaded: true, source: 'artist_recording' },
+        },
+      });
+
+      reply.code(201);
+      return { ...vocal, songId };
     }
   );
 }

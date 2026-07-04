@@ -38,6 +38,7 @@ import exportsRoute from './routes/exports';
 import admin from './routes/admin';
 import reviews from './routes/reviews';
 import songs from './routes/songs';
+import uploads from './routes/uploads';
 
 initObservability('api');
 
@@ -102,6 +103,7 @@ async function bootstrap() {
       await api.register(admin, { prefix: '/admin' });
       await api.register(reviews, { prefix: '/reviews' });
       await api.register(songs, { prefix: '/songs' });
+      await api.register(uploads, { prefix: '/uploads' });
     },
     { prefix: '/api/v1' }
   );

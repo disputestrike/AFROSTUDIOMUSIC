@@ -231,6 +231,35 @@ export const logShareEventSchema = z.object({
   countryCode: z.string().length(2).optional(),
 });
 
+// ---------- Uploads (bring-your-own beat / instrumental / vocal) ------------
+// The artist uploads their OWN authentic audio. We never invent or replace it.
+
+export const UPLOAD_KINDS = ['beat', 'instrumental', 'vocal', 'reference', 'stem'] as const;
+
+export const presignUploadSchema = z.object({
+  kind: z.enum(UPLOAD_KINDS),
+  contentType: z.string().min(3).max(120),
+  ext: z.string().min(1).max(8),
+});
+
+export const attachBeatUploadSchema = z.object({
+  key: z.string().min(4), // R2 object key returned by /uploads/presign
+  songId: z.string().cuid().optional(),
+  bpm: z.number().int().min(40).max(220).optional(),
+  keySignature: z.string().max(12).optional(),
+  durationS: z.number().min(1).max(1200).optional(),
+  format: z.enum(['wav', 'mp3', 'flac', 'aiff', 'm4a', 'ogg']).default('wav'),
+  title: z.string().max(120).optional(),
+});
+
+export const attachVocalUploadSchema = z.object({
+  key: z.string().min(4),
+  songId: z.string().cuid().optional(),
+  role: z.enum(['lead', 'double', 'ad-lib', 'harmony']).default('lead'),
+  durationS: z.number().min(1).max(1200).optional(),
+  language: langSchema.optional(),
+});
+
 // ---------- Chat (Studio Chat) ---------------------------------------------
 
 export const chatMessageInputSchema = z.object({

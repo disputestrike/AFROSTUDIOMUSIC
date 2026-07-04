@@ -1,5 +1,6 @@
 import Link from 'next/link';
 import { apiServer } from '@/lib/api-server';
+import { StudioUpload } from '@/components/StudioUpload';
 
 interface Project {
   id: string;
@@ -50,6 +51,8 @@ export default async function ProjectPage({ params }: { params: Promise<{ id: st
       </div>
 
       <Pipeline gateState={gateState} />
+
+      <StudioUpload projectId={p.id} />
 
       <Section title="Latest brief">
         {p.briefs[0] ? (

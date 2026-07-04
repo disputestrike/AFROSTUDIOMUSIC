@@ -37,6 +37,47 @@ export function useApi() {
       return apiFetch<void>(path, { method: 'DELETE' });
     },
     /**
+     * Upload a File/Blob straight to object storage via a presigned PUT.
+     * Returns the storage key + public url. Report progress 0..1 if provided.
+     */
+    async uploadToStorage(
+      file: Blob,
+      kind: 'beat' | 'instrumental' | 'vocal' | 'reference' | 'stem',
+      onProgress?: (fraction: number) => void
+    ): Promise<{ key: string; publicUrl: string }> {
+      const name = (file as File).name ?? '';
+      const ext = (name.split('.').pop() || (file.type.split('/').pop() ?? 'bin'))
+        .toLowerCase()
+        .replace(/[^a-z0-9]/g, '')
+        .slice(0, 8) || 'bin';
+      const contentType = file.type || 'application/octet-stream';
+      const { url, key, publicUrl } = await apiFetch<{
+        url: string;
+        key: string;
+        publicUrl: string;
+      }>('/uploads/presign', {
+        method: 'POST',
+        body: JSON.stringify({ kind, contentType, ext }),
+      });
+      // XHR (not fetch) so we get real upload progress on large audio files.
+      await new Promise<void>((resolve, reject) => {
+        const xhr = new XMLHttpRequest();
+        xhr.open('PUT', url);
+        xhr.setRequestHeader('content-type', contentType);
+        xhr.upload.onprogress = (e) => {
+          if (onProgress && e.lengthComputable) onProgress(e.loaded / e.total);
+        };
+        xhr.onload = () =>
+          xhr.status >= 200 && xhr.status < 300
+            ? resolve()
+            : reject(new Error(`upload failed: ${xhr.status} ${xhr.responseText}`));
+        xhr.onerror = () => reject(new Error('upload network error'));
+        xhr.send(file);
+      });
+      onProgress?.(1);
+      return { key, publicUrl };
+    },
+    /**
      * POST that consumes a Server-Sent-Events response. Calls onEvent for
      * every `data:` JSON object. Resolves when the stream ends.
      */

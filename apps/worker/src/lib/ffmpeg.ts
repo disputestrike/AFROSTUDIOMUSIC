@@ -69,6 +69,31 @@ export const MASTER_TARGETS: Record<string, { lufs: number; tp: number }> = {
 };
 
 /**
+ * Automated mastering chain — the pieces a mastering engineer reaches for first,
+ * applied conservatively so it flatters most Afro/Afro-fusion material without
+ * mangling it:
+ *   1. subsonic high-pass (kill rumble that steals headroom)
+ *   2. gentle tonal shaping — low warmth, vocal presence, top-end air
+ *   3. glue bus compression (2:1, slow) to round the whole thing together
+ *   4. loudnorm to the preset LUFS + true-peak target (loudness maximisation)
+ *   5. true-peak brickwall limiter as a hard ceiling so nothing clips on export
+ * It is a strong, release-ready loudness master — not a replacement for a human
+ * mastering engineer on a flagship single.
+ */
+export function masterChain(target: { lufs: number; tp: number }): string {
+  const tpLinear = Math.pow(10, target.tp / 20).toFixed(4); // dBTP → linear amplitude
+  return [
+    'highpass=f=28',
+    'bass=g=1.2:f=110', // low-end warmth
+    'equalizer=f=3000:width_type=q:width=1.5:g=1', // vocal/lead presence
+    'treble=g=1.8:f=9000', // air
+    'acompressor=threshold=-16dB:ratio=2:attack=20:release=200:makeup=1.5', // glue
+    `loudnorm=I=${target.lufs}:TP=${target.tp}:LRA=11`,
+    `alimiter=level=false:limit=${tpLinear}`, // true-peak brickwall ceiling
+  ].join(',');
+}
+
+/**
  * Mix a beat + lead vocal into one WAV. Inputs are raw bytes; output is WAV bytes.
  */
 export async function mixdown(opts: {
@@ -116,7 +141,7 @@ export async function master(opts: {
     const wavPath = join(dir, 'master.wav');
     const mp3Path = join(dir, 'master.mp3');
     await writeFile(inPath, opts.mix);
-    const filter = `loudnorm=I=${target.lufs}:TP=${target.tp}:LRA=11`;
+    const filter = masterChain(target);
     await runFfmpeg(['-i', inPath, '-af', filter, '-ar', '44100', '-ac', '2', wavPath]);
     await runFfmpeg(['-i', wavPath, '-codec:a', 'libmp3lame', '-b:a', '320k', mp3Path]);
     return { wav: await readFile(wavPath), mp3: await readFile(mp3Path) };
