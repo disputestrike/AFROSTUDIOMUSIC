@@ -1,15 +1,3 @@
--- CreateExtension
-CREATE EXTENSION IF NOT EXISTS "pg_trgm";
-
--- CreateExtension
-CREATE EXTENSION IF NOT EXISTS "postgis";
-
--- CreateExtension
-CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
-
--- CreateExtension
-CREATE EXTENSION IF NOT EXISTS "vector";
-
 -- CreateEnum
 CREATE TYPE "Role" AS ENUM ('OWNER', 'ADMIN', 'PRODUCER', 'WRITER', 'VOCALIST', 'VIEWER');
 
@@ -476,7 +464,8 @@ CREATE TABLE "ShareEvent" (
     "region" TEXT,
     "country" TEXT,
     "countryCode" CHAR(2),
-    "location" geography(Point, 4326),
+    "lat" DOUBLE PRECISION,
+    "lng" DOUBLE PRECISION,
     "ipHash" TEXT,
     "userAgent" TEXT,
     "createdAt" TIMESTAMPTZ(6) NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -492,7 +481,7 @@ CREATE TABLE "ArtistMemoryChunk" (
     "kind" TEXT NOT NULL,
     "content" TEXT NOT NULL,
     "language" TEXT,
-    "embedding" vector(1536),
+    "embedding" JSONB,
     "sourceUrl" TEXT,
     "meta" JSONB,
     "createdAt" TIMESTAMPTZ(6) NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -691,7 +680,7 @@ CREATE INDEX "ShareLink_songId_idx" ON "ShareLink"("songId");
 CREATE INDEX "ShareEvent_shareLinkId_idx" ON "ShareEvent"("shareLinkId");
 
 -- CreateIndex
-CREATE INDEX "ShareEvent_country_idx" ON "ShareEvent"("country");
+CREATE INDEX "ShareEvent_country_createdAt_idx" ON "ShareEvent"("country", "createdAt");
 
 -- CreateIndex
 CREATE INDEX "ArtistMemoryChunk_artistId_idx" ON "ArtistMemoryChunk"("artistId");

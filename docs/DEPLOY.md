@@ -1,6 +1,6 @@
 # Deploying AfroHit Studio to Railway
 
-Three services + Postgres (with PostGIS + pgvector) + Redis + object storage.
+Three services + Postgres (default, no extensions) + Redis + object storage.
 
 ## 1. Push the repo to GitHub
 
@@ -27,11 +27,13 @@ From the Railway dashboard, add three plugins:
 
 | Plugin | Notes |
 |---|---|
-| **PostgreSQL** | Use the **PostgreSQL with PostGIS** template (one click in the marketplace). pgvector is included in the PostGIS image. |
+| **PostgreSQL** | The **default** PostgreSQL template is fine — no extensions required. |
 | **Redis** | Default config is fine. |
-| **Object Storage** | Or alternatively connect Cloudflare R2 / AWS S3 by setting `S3_*` env vars manually. |
+| **Object Storage** | Or connect Cloudflare R2 / AWS S3 via `S3_*` env vars. |
 
-Railway will auto-inject `DATABASE_URL`, `REDIS_URL`, and `S3_*` vars when you link these plugins to your services in step 4.
+**Connect DB + Redis to `api` AND `worker`** (both use Prisma + BullMQ). The `web` service needs **neither** — it only talks to the API over HTTP. In each service: Variables → **Add Reference** → `DATABASE_URL` (from Postgres) and `REDIS_URL` (from Redis).
+
+Railway auto-injects `DATABASE_URL`, `REDIS_URL`, and `S3_*` when referenced.
 
 ## 4. Create the three services
 
@@ -104,16 +106,13 @@ Internal mode needs **no auth keys** — the app is open and the API resolves th
 
 Push to `main`. Railway will:
 
-1. Run nixpacks build for each service (compiles `@afrohit/shared`, `@afrohit/db`, `@afrohit/ai`, then the app).
-2. On the **api** service start: `prisma migrate deploy` runs first (uses the 880-line init migration), then `node dist/index.js` boots. **The migration applies PostGIS + pgvector + uuid-ossp + pg_trgm extensions and all tables in one transaction.**
-3. The post-deploy PostGIS index script must be run **once** by hand (Prisma can't express GIST/HNSW indexes natively):
+1. Build each service (compiles `@afrohit/shared`, `@afrohit/db`, `@afrohit/ai`, then the app).
+2. On the **api** service, the `preDeployCommand` runs `prisma db push` — it creates every table on the plain Postgres (no extensions, no migration-history fragility), then `node dist/index.js` boots. No manual index step, no PostGIS.
+3. Internal auth mode creates the default workspace on the first request — nothing to seed.
 
-```bash
-# From your laptop, against the Railway Postgres
-railway run --service api -- bash -c 'psql "$DATABASE_URL" -f packages/db/sql/01-postgis-indexes.sql'
-```
+> Already have a Postgres with a **failed migration** from an earlier attempt? No reset needed. `db push` ignores migration history and creates the tables fresh (the old attempt died on the first `CREATE EXTENSION` line, so no tables exist).
 
-4. (Optional) seed a demo workspace:
+(Optional) seed extra demo data:
 
 ```bash
 railway run --service api -- pnpm --filter @afrohit/db seed
@@ -158,9 +157,12 @@ See `docs/COSTS.md`. Starting estimate: **$30-$150/month** during light testing.
 
 ## Troubleshooting
 
-### "extension 'postgis' is not allowed" on migrate
+### Migration / `P3009` failed-migration errors
 
-The default Railway Postgres plugin does not include PostGIS. Use the **PostGIS** template from the Railway marketplace instead. (pgvector is in the same image.)
+Shouldn't happen anymore — the schema needs no extensions and the api uses
+`prisma db push` (which ignores migration history). If you see a leftover
+failed `_prisma_migrations` row from an old attempt, it's harmless; `db push`
+creates the tables regardless. No DB reset needed.
 
 ### Worker won't connect to Redis
 

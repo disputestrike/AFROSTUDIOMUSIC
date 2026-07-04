@@ -43,8 +43,7 @@ export default async function shares(app: FastifyInstance) {
    * Public event ingestion endpoint.
    *
    * Called by the /s/:code redirect handler in the web app, and by client-side
-   * "play"/"download" beacons. We hash the IP, write the row in Prisma, then
-   * stamp the PostGIS geography point via raw SQL.
+   * "play"/"download" beacons. We hash the IP and store plain lat/lng columns.
    *
    * No auth required — these are public events. We rate-limit at the
    * Fastify-level plugin (already registered).
@@ -60,7 +59,7 @@ export default async function shares(app: FastifyInstance) {
     });
     if (!link || !link.active) return reply.code(404).send({ error: 'no_such_link' });
 
-    const evt = await prisma.shareEvent.create({
+    await prisma.shareEvent.create({
       data: {
         workspaceId: link.workspaceId,
         shareLinkId: link.id,
@@ -71,20 +70,12 @@ export default async function shares(app: FastifyInstance) {
         region,
         country,
         countryCode,
+        lat: typeof lat === 'number' ? lat : null,
+        lng: typeof lng === 'number' ? lng : null,
         ipHash: hashIp(req.ip),
         userAgent: req.headers['user-agent']?.slice(0, 240) ?? null,
       },
     });
-
-    // PostGIS point set via raw SQL — Prisma doesn't speak geography natively.
-    if (typeof lat === 'number' && typeof lng === 'number') {
-      await prisma.$executeRawUnsafe(
-        'UPDATE "ShareEvent" SET location = ST_SetSRID(ST_MakePoint($1, $2), 4326)::geography WHERE id = $3',
-        lng,
-        lat,
-        evt.id
-      );
-    }
     return { ok: true };
   });
 
@@ -110,9 +101,10 @@ export default async function shares(app: FastifyInstance) {
   });
 
   /**
-   * PostGIS heatmap aggregation — buckets share events into clusters by
-   * country / region for the analytics dashboard. Bigger workspaces hit this
-   * with date filters; small ones see global totals.
+   * Heatmap aggregation — buckets share events by country/region for the
+   * analytics dashboard. Centroid = AVG(lat), AVG(lng) per bucket (a
+   * country-level centroid, identical to the old PostGIS result). Uses Prisma
+   * groupBy — fully parameterized, no raw SQL, no extensions.
    */
   app.get<{
     Querystring: { songId?: string; eventType?: string; since?: string; until?: string };
@@ -120,40 +112,33 @@ export default async function shares(app: FastifyInstance) {
     const { workspaceId } = requireAuth(req);
     const { songId, eventType, since, until } = req.query;
 
-    const sinceClause = since ? `AND "createdAt" >= '${since}'::timestamptz` : '';
-    const untilClause = until ? `AND "createdAt" <= '${until}'::timestamptz` : '';
-    const eventClause = eventType ? `AND "eventType" = '${eventType.replace(/'/g, '')}'` : '';
-    const songClause = songId ? `AND "songId" = '${songId.replace(/'/g, '')}'` : '';
+    const createdAt: { gte?: Date; lte?: Date } = {};
+    if (since) createdAt.gte = new Date(since);
+    if (until) createdAt.lte = new Date(until);
 
-    const rows = await prisma.$queryRawUnsafe<
-      Array<{
-        country: string | null;
-        region: string | null;
-        events: number;
-        lng: number | null;
-        lat: number | null;
-      }>
-    >(
-      `
-      SELECT
-        "country",
-        "region",
-        COUNT(*)::int AS events,
-        ST_X(ST_Centroid(ST_Collect(location::geometry))) AS lng,
-        ST_Y(ST_Centroid(ST_Collect(location::geometry))) AS lat
-      FROM "ShareEvent"
-      WHERE "workspaceId" = $1
-        ${eventClause}
-        ${songClause}
-        ${sinceClause}
-        ${untilClause}
-      GROUP BY "country", "region"
-      ORDER BY events DESC
-      LIMIT 500
-      `,
-      workspaceId
-    );
+    const grouped = await prisma.shareEvent.groupBy({
+      by: ['country', 'region'],
+      where: {
+        workspaceId,
+        ...(eventType ? { eventType } : {}),
+        ...(songId ? { songId } : {}),
+        ...(createdAt.gte || createdAt.lte ? { createdAt } : {}),
+      },
+      _count: { _all: true },
+      _avg: { lat: true, lng: true },
+    });
 
-    return { points: rows };
+    const points = grouped
+      .map((g) => ({
+        country: g.country,
+        region: g.region,
+        events: g._count._all,
+        lat: g._avg.lat,
+        lng: g._avg.lng,
+      }))
+      .sort((a, b) => b.events - a.events)
+      .slice(0, 500);
+
+    return { points };
   });
 }

@@ -1,5 +1,12 @@
 // AfroHit Studio — Prisma schema
-// PostGIS + pgvector + standard Postgres. See packages/db/sql/00-extensions.sql.
+// Standard PostgreSQL only — NO extensions required, so it deploys on any
+// managed Postgres (incl. Railway's default / free tier).
+//
+// Geo: share events store plain lat/lng floats; the heatmap aggregates with
+//      AVG() per country/region (a country-level centroid — identical result to
+//      the old PostGIS ST_Centroid, no extension needed).
+// Vectors: memory embeddings are stored as JSON for future semantic search;
+//      retrieval currently uses recency, so no pgvector needed yet.
 //
 // Conventions:
 //   - All IDs are CUIDs.
@@ -8,14 +15,12 @@
 //   - Soft-deletion via `deletedAt` where data matters historically.
 
 generator client {
-  provider        = "prisma-client-js"
-  previewFeatures = ["postgresqlExtensions"]
+  provider = "prisma-client-js"
 }
 
 datasource db {
-  provider   = "postgresql"
-  url        = env("DATABASE_URL")
-  extensions = [postgis, pg_trgm, vector, uuidOssp(map: "uuid-ossp")]
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
 }
 
 // ===========================================================================
@@ -656,8 +661,6 @@ model ShareLink {
   @@index([songId])
 }
 
-// ShareEvent.location is geography(Point,4326) — declared via raw SQL in migration.
-// Prisma represents it as `Unsupported("geography(Point, 4326)")`.
 model ShareEvent {
   id          String   @id @default(cuid())
   workspaceId String
@@ -669,8 +672,9 @@ model ShareEvent {
   region      String?
   country     String?
   countryCode String?  @db.Char(2)
-  // PostGIS geography point — set via raw SQL in API; null if not resolved.
-  location    Unsupported("geography(Point, 4326)")?
+  // Plain coordinates (no PostGIS). Heatmap centroids come from AVG(lat/lng).
+  lat         Float?
+  lng         Float?
   ipHash      String?  // hashed IP (never raw)
   userAgent   String?
   createdAt   DateTime @default(now()) @db.Timestamptz(6)
@@ -679,7 +683,7 @@ model ShareEvent {
   shareLink   ShareLink @relation(fields: [shareLinkId], references: [id], onDelete: Cascade)
 
   @@index([shareLinkId])
-  @@index([country])
+  @@index([country, createdAt])
 }
 
 // ===========================================================================
@@ -693,8 +697,9 @@ model ArtistMemoryChunk {
   kind         String   // "slang","phrase","reference","note","rejected","approved","melody_idea"
   content      String   @db.Text
   language     String?
-  // pgvector embedding (1536-dim — matches text-embedding-3-small / OpenAI standard)
-  embedding    Unsupported("vector(1536)")?
+  // Embedding stored as JSON (number[]) for future semantic search. Retrieval
+  // currently uses recency, so no pgvector extension is required.
+  embedding    Json?
   sourceUrl    String?
   meta         Json?
   createdAt    DateTime @default(now()) @db.Timestamptz(6)

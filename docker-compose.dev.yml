@@ -1,6 +1,7 @@
 services:
   postgres:
-    image: postgis/postgis:16-3.4
+    # Plain Postgres — no extensions required (matches Railway's default).
+    image: postgres:16-alpine
     container_name: afrohit-postgres
     restart: unless-stopped
     environment:
@@ -11,7 +12,6 @@ services:
       - "5432:5432"
     volumes:
       - afrohit_pg_data:/var/lib/postgresql/data
-      - ./packages/db/sql/00-extensions.sql:/docker-entrypoint-initdb.d/00-extensions.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U afrohit -d afrohit"]
       interval: 5s

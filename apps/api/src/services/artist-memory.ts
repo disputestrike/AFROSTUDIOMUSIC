@@ -7,7 +7,6 @@
  * taste instead of resetting every session.
  */
 import { prisma } from '@afrohit/db';
-import { embed, vectorLiteral } from '@afrohit/ai';
 
 export async function recordFeedback(opts: {
   workspaceId: string;
@@ -17,7 +16,10 @@ export async function recordFeedback(opts: {
   sourceKind: 'hook' | 'lyric';
   sourceId: string;
 }): Promise<void> {
-  const chunk = await prisma.artistMemoryChunk.create({
+  // Store the feedback chunk. Retrieval (memoryContext) uses recency, so no
+  // embedding is needed yet. When semantic search is added later, compute an
+  // embedding here and store it in the `embedding` JSON column.
+  await prisma.artistMemoryChunk.create({
     data: {
       workspaceId: opts.workspaceId,
       artistId: opts.artistId,
@@ -26,17 +28,6 @@ export async function recordFeedback(opts: {
       meta: { sourceKind: opts.sourceKind, sourceId: opts.sourceId } as never,
     },
   });
-  // Embedding is best-effort — memory rows are useful even without vectors.
-  try {
-    const vec = await embed(opts.content.slice(0, 2_000));
-    await prisma.$executeRawUnsafe(
-      `UPDATE "ArtistMemoryChunk" SET embedding = $1::vector WHERE id = $2`,
-      vectorLiteral(vec),
-      chunk.id
-    );
-  } catch {
-    /* no embedding available (no key / no pgvector) — fine */
-  }
 }
 
 export interface MemoryContext {
