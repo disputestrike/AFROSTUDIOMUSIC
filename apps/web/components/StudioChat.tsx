@@ -222,11 +222,12 @@ export default function StudioChat({ projectId }: { projectId?: string }) {
         <div className="flex-1 overflow-y-auto px-6 py-4">
           {messages.length === 0 && (
             <div className="mx-auto mt-12 max-w-2xl rounded-3xl border border-slate-800 bg-slate-900/40 p-6 text-sm text-slate-300">
-              <div className="mb-2 font-display text-lg text-slate-100">Tell the studio what you want to make.</div>
+              <div className="mb-1 font-display text-2xl text-slate-100">Ship <span className="text-gradient">your</span> Afrobeats.</div>
+              <div className="mb-3 text-slate-400">Bring your voice — the studio produces around it, masters it, and hands you a rights-clean release + a clip to post.</div>
               <ul className="space-y-2 text-slate-400">
-                <li>&ldquo;Afro-fusion love song, 103 bpm, Pidgin/Yoruba, smooth Wizkid lane. Give me 20 hooks.&rdquo;</li>
-                <li>&ldquo;Score them, pick the best, write the lyrics — clean version too.&rdquo;</li>
-                <li>&ldquo;Make the beat, cover art, then bundle the release.&rdquo;</li>
+                <li>&ldquo;Upload my beat and finish the whole song around it.&rdquo;</li>
+                <li>&ldquo;Afro-fusion love song, 103 bpm, Pidgin/Yoruba, smooth Wizkid lane — take it all the way.&rdquo;</li>
+                <li>&ldquo;Record my hook, produce it, master it, and make me a 9:16 clip to post.&rdquo;</li>
               </ul>
             </div>
           )}

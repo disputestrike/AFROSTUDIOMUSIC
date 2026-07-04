@@ -306,6 +306,7 @@ model Song {
   isrc        String?   // recording code (CC-RRR-YY-DDDDD); placeholder until a real registrant prefix is set
   upc         String?   // release barcode; distributors assign the real one free
   splitSheet  Json?     // [{name, role, share}] writer/producer splits summing to 100
+  nativeReviewOk Boolean @default(false) // a native speaker signed off on Yoruba/Igbo/Hausa delivery
   releaseReady Boolean  @default(false) // green-lit for distribution
   createdAt   DateTime @default(now()) @db.Timestamptz(6)
 

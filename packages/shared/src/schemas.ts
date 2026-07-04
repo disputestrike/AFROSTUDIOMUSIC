@@ -352,6 +352,7 @@ export const rightsInputSchema = z.object({
   splitSheet: z.array(splitEntrySchema).max(20).optional(),
   isrc: z.string().max(20).optional(),
   upc: z.string().max(20).optional(),
+  nativeReviewOk: z.boolean().optional(), // a native speaker signed off on YO/IG/HA delivery
 });
 
 // ---------- Drop Machine (batch generate → rank → shortlist) ---------------

@@ -11,8 +11,8 @@ import { useApi } from '@/lib/api';
 
 interface Split { name: string; role: string; share: number }
 interface Check { name: string; ok: boolean; detail?: string }
-interface Song { id: string; title: string; isrc: string | null; upc: string | null; splitSheet: Split[] | null; releaseReady: boolean }
-interface Status { song: Song | null; greenLight: { ready: boolean; checks: Check[] } | null }
+interface Song { id: string; title: string; isrc: string | null; upc: string | null; splitSheet: Split[] | null; releaseReady: boolean; nativeReviewOk?: boolean }
+interface Status { song: Song | null; greenLight: { ready: boolean; checks: Check[]; needsReview?: boolean } | null }
 
 const ROLES = ['writer', 'composer', 'producer', 'performer', 'featured', 'other'];
 
@@ -28,6 +28,28 @@ export function ReleaseReadiness({ projectId }: { projectId: string }) {
     if (!status?.song) return;
     try {
       setPerf(await api.get(`/projects/${projectId}/release/${status.song.id}/performance`));
+    } catch {
+      /* ignore */
+    }
+  }
+
+  const [distMsg, setDistMsg] = useState('');
+  async function distribute() {
+    if (!status?.song) return;
+    setDistMsg('Submitting…');
+    try {
+      const r = await api.post<{ message: string }>(`/projects/${projectId}/release/${status.song.id}/distribute`, {});
+      setDistMsg(r.message);
+    } catch (e) {
+      setDistMsg((e as Error).message);
+    }
+  }
+
+  async function setNativeReview(ok: boolean) {
+    if (!status?.song) return;
+    try {
+      const r = await api.patch<Status>(`/projects/${projectId}/release/${status.song.id}`, { nativeReviewOk: ok });
+      setStatus(r);
     } catch {
       /* ignore */
     }
@@ -133,6 +155,14 @@ export function ReleaseReadiness({ projectId }: { projectId: string }) {
         </div>
       </div>
 
+      {/* Native-language review gate (only when the song uses Yoruba/Igbo/Hausa) */}
+      {gl?.needsReview && (
+        <label className="mt-3 flex items-start gap-2 rounded-lg border border-amber-500/20 bg-amber-500/5 p-3 text-xs text-amber-200">
+          <input type="checkbox" checked={!!status.song.nativeReviewOk} onChange={(e) => void setNativeReview(e.target.checked)} className="mt-0.5 h-4 w-4 accent-afrobrand-500" />
+          <span>A native speaker checked the Yoruba/Igbo/Hausa delivery (tone &amp; pronunciation). Off-tone native lyrics read as fake — don’t release without this.</span>
+        </label>
+      )}
+
       {/* Share + stage */}
       <div className="mt-3 flex flex-wrap items-center gap-4 text-xs">
         <a href={`/r/${status.song.id}`} target="_blank" rel="noreferrer" className="text-afrobrand-300 hover:text-afrobrand-200">
@@ -140,6 +170,9 @@ export function ReleaseReadiness({ projectId }: { projectId: string }) {
         </a>
         <button onClick={() => void loadPerformance()} className="text-slate-400 hover:text-slate-200">
           🎤 Performance Pack
+        </button>
+        <button onClick={() => void distribute()} disabled={!gl?.ready} className="rounded-full bg-brand-gradient px-3 py-1 font-medium text-ink shadow-glow disabled:opacity-40" title={gl?.ready ? 'Send to your distributor' : 'Green-light the song first'}>
+          🚀 Distribute
         </button>
         {perf && (
           <span className="text-slate-500">
@@ -152,6 +185,7 @@ export function ReleaseReadiness({ projectId }: { projectId: string }) {
           </span>
         )}
       </div>
+      {distMsg && <div className="mt-2 text-xs text-slate-400">{distMsg}</div>}
     </section>
   );
 }
