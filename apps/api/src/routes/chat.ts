@@ -53,6 +53,21 @@ async function ensureThreadProject(
   return project.id;
 }
 
+/**
+ * Convert stored chat history into VALID OpenAI messages.
+ * Tool-role rows are dropped — OpenAI requires each 'tool' message to follow an
+ * assistant message carrying matching tool_calls, which we don't replay. The
+ * assistant summaries + WORKSPACE_CONTEXT carry state forward, so dropping them
+ * is safe and fixes the "role 'tool' must be a response to tool_calls" 400.
+ */
+function toModelMessages(
+  history: Array<{ role: string; content: string }>
+): Array<{ role: 'user' | 'assistant'; content: string }> {
+  return history
+    .filter((m) => (m.role === 'user' || m.role === 'assistant') && (m.content ?? '').trim().length > 0)
+    .map((m) => ({ role: m.role as 'user' | 'assistant', content: m.content }));
+}
+
 export default async function chat(app: FastifyInstance) {
   /** List threads for the current workspace. */
   app.get('/threads', async (req) => {
@@ -71,6 +86,14 @@ export default async function chat(app: FastifyInstance) {
       where: { id: req.params.threadId, workspaceId },
       include: { messages: { orderBy: { createdAt: 'asc' } } },
     });
+  });
+
+  /** Delete a chat session. */
+  app.delete<{ Params: { threadId: string } }>('/threads/:threadId', async (req, reply) => {
+    const { workspaceId, userId } = requireAuth(req);
+    await prisma.chatThread.deleteMany({ where: { id: req.params.threadId, workspaceId, userId } });
+    reply.code(204);
+    return null;
   });
 
   /**
@@ -142,10 +165,7 @@ export default async function chat(app: FastifyInstance) {
         messages: [
           { role: 'system', content: prompts.STUDIO_CHAT_SYSTEM },
           { role: 'system', content: `WORKSPACE_CONTEXT=${systemContext}` },
-          ...history.map((m) => ({
-            role: (m.role === 'tool' ? 'tool' : m.role) as 'user' | 'assistant' | 'tool',
-            content: m.content,
-          })),
+          ...toModelMessages(history),
         ],
         temperature: 0.5,
       });
@@ -181,10 +201,7 @@ export default async function chat(app: FastifyInstance) {
           messages: [
             { role: 'system', content: prompts.STUDIO_CHAT_SYSTEM },
             { role: 'system', content: `WORKSPACE_CONTEXT=${systemContext}` },
-            ...history.map((m) => ({
-              role: (m.role === 'tool' ? 'tool' : m.role) as 'user' | 'assistant' | 'tool',
-              content: m.content,
-            })),
+            ...toModelMessages(history),
             { role: 'assistant', content: turn.text ?? '' },
             {
               role: 'system',
@@ -299,10 +316,7 @@ export default async function chat(app: FastifyInstance) {
         const baseMessages = [
           { role: 'system' as const, content: prompts.STUDIO_CHAT_SYSTEM },
           { role: 'system' as const, content: `WORKSPACE_CONTEXT=${systemContext}` },
-          ...history.map((m) => ({
-            role: (m.role === 'tool' ? 'tool' : m.role) as 'user' | 'assistant' | 'tool',
-            content: m.content,
-          })),
+          ...toModelMessages(history),
         ];
 
         send({ type: 'stage', stage: 'thinking' });

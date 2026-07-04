@@ -33,6 +33,9 @@ export function useApi() {
     patch<T>(path: string, body: unknown): Promise<T> {
       return apiFetch<T>(path, { method: 'PATCH', body: JSON.stringify(body) });
     },
+    del(path: string): Promise<void> {
+      return apiFetch<void>(path, { method: 'DELETE' });
+    },
     /**
      * POST that consumes a Server-Sent-Events response. Calls onEvent for
      * every `data:` JSON object. Resolves when the stream ends.

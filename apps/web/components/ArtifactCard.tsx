@@ -33,6 +33,8 @@ export function ArtifactCard({ toolName, output }: Props) {
       return <ScoresList scores={(o as { scores: Array<{ id: string; overall: number; notes?: string }> }).scores ?? []} />;
     case 'generate_lyrics':
       return <LyricSummary lyric={(o as { lyric: { id: string; title: string } }).lyric} />;
+    case 'research_trends':
+      return <TrendsCard o={o as never} />;
     case 'polish_brief':
       return <BriefSummary brief={(o as { polished: Record<string, unknown> }).polished} />;
     case 'create_beat_job':
@@ -99,6 +101,28 @@ function LyricSummary({ lyric }: { lyric: { id: string; title: string } }) {
     <div className="flex items-center gap-2 text-sm text-slate-200">
       <FileText className="h-4 w-4 text-afrobrand-400" />
       Lyric ready: <span className="font-medium">{lyric.title}</span>
+    </div>
+  );
+}
+
+function TrendsCard({ o }: { o: { digest?: string; sources?: Array<{ title: string; url: string }> } }) {
+  return (
+    <div className="text-sm">
+      <div className="mb-1 flex items-center gap-2 font-medium text-slate-200">
+        <ListMusic className="h-4 w-4 text-afrobrand-400" /> Trending now
+      </div>
+      <p className="whitespace-pre-wrap text-slate-300">{o.digest}</p>
+      {o.sources && o.sources.length > 0 && (
+        <ul className="mt-2 space-y-0.5">
+          {o.sources.slice(0, 5).map((s, i) => (
+            <li key={i} className="truncate text-xs">
+              <a href={s.url} target="_blank" rel="noreferrer" className="text-afrobrand-400 hover:underline">
+                {s.title}
+              </a>
+            </li>
+          ))}
+        </ul>
+      )}
     </div>
   );
 }

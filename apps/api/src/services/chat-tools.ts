@@ -10,7 +10,7 @@
  */
 import type { FastifyInstance } from 'fastify';
 import { prisma } from '@afrohit/db';
-import { prompts, responsesJson, scoreItems, runRightsCheck, canonicalReceiptHash, directorRefineHooks } from '@afrohit/ai';
+import { prompts, responsesJson, scoreItems, runRightsCheck, canonicalReceiptHash, directorRefineHooks, researchTrends } from '@afrohit/ai';
 import { enqueue } from '../lib/queue';
 import { memoryContext, recordFeedback } from './artist-memory';
 
@@ -24,6 +24,8 @@ type Ctx = {
 export async function runChatTool(args: Ctx & { name: string; args: Record<string, unknown> }) {
   const { name, args: a, ...ctx } = args;
   switch (name) {
+    case 'research_trends':
+      return researchTrendsTool(ctx, a as never);
     case 'polish_brief':
       return polishBrief(ctx, String(a.rawIdea ?? ''));
     case 'generate_hooks':
@@ -56,6 +58,21 @@ export async function runChatTool(args: Ctx & { name: string; args: Record<strin
 }
 
 // -------------------------------------------------------------------------
+
+async function researchTrendsTool(ctx: Ctx, a: { genre?: string; region?: string; query?: string }) {
+  const project = ctx.projectId
+    ? await prisma.project.findFirst({ where: { id: ctx.projectId, workspaceId: ctx.workspaceId } })
+    : null;
+  const trends = await researchTrends({
+    genre: a.genre ?? project?.genre,
+    region: a.region,
+    query: a.query,
+  });
+  if (!trends) {
+    return { error: 'trends_unavailable', hint: 'Set TAVILY_API_KEY on the api service to enable live trend research.' };
+  }
+  return { digest: trends.digest, sources: trends.sources };
+}
 
 async function polishBrief(ctx: Ctx, rawIdea: string) {
   if (!ctx.projectId) return { error: 'no_project_in_thread' };

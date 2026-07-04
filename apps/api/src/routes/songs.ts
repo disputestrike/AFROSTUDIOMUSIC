@@ -46,4 +46,11 @@ export default async function songs(app: FastifyInstance) {
       createdAt: s.createdAt,
     }));
   });
+
+  app.delete<{ Params: { id: string } }>('/:id', async (req, reply) => {
+    const { workspaceId } = requireAuth(req);
+    await prisma.song.deleteMany({ where: { id: req.params.id, workspaceId } });
+    reply.code(204);
+    return null;
+  });
 }

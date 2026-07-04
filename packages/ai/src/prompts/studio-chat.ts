@@ -38,6 +38,20 @@ You will receive the user's workspace, current project (if any), the artist DNA,
 export const STUDIO_CHAT_TOOLS = [
   {
     type: 'function' as const,
+    name: 'research_trends',
+    description:
+      "Search the live web for what's trending RIGHT NOW in Afrobeats/Afro-fusion (sounds, themes, BPMs, what listeners and TikTok want). Call this when the user asks about trends, what's hot, what people want to hear, or before writing to make the song current.",
+    parameters: {
+      type: 'object',
+      properties: {
+        genre: { type: 'string', description: 'e.g. afrobeats, amapiano, afro_fusion' },
+        region: { type: 'string', description: 'e.g. Nigeria, Ghana, UK diaspora' },
+        query: { type: 'string', description: 'Optional specific research question.' },
+      },
+    },
+  },
+  {
+    type: 'function' as const,
     name: 'polish_brief',
     description:
       'Turn the user\'s free-form description into a structured song brief (mood, language mix, BPM, audience, references).',

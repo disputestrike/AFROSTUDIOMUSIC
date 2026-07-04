@@ -6,3 +6,4 @@ export * from './taste';
 export * from './rights';
 export * from './embeddings';
 export * from './ar-director';
+export * from './tavily';
