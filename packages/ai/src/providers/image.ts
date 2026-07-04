@@ -21,15 +21,25 @@ class OpenAiImageAdapter implements ImageProviderAdapter {
       quality: input.quality,
       n: 1,
     });
-    const url = res.data?.[0]?.url;
-    if (!url) return { status: 'failed', error: 'no image returned' };
+    const d = res.data?.[0];
     const [w, h] = input.size.split('x').map(Number) as [number, number];
     const costMap = { low: 0.006, medium: 0.053, high: 0.211 } as const;
-    return {
-      status: 'succeeded',
-      output: { imageUrl: url, width: w, height: h },
-      estimatedCostUsd: costMap[input.quality],
-    };
+    // gpt-image-1 returns base64 (b64_json); dall-e-* return a url. Handle both.
+    if (d?.b64_json) {
+      return {
+        status: 'succeeded',
+        output: { imageBase64: d.b64_json, width: w, height: h },
+        estimatedCostUsd: costMap[input.quality],
+      };
+    }
+    if (d?.url) {
+      return {
+        status: 'succeeded',
+        output: { imageUrl: d.url, width: w, height: h },
+        estimatedCostUsd: costMap[input.quality],
+      };
+    }
+    return { status: 'failed', error: 'no image returned' };
   }
 }
 

@@ -1,7 +1,7 @@
 import { prisma } from '@afrohit/db';
 import { imageAdapter } from '@afrohit/ai';
 import { markFailed, markRunning, markSucceeded } from '../lib/jobs';
-import { ingestRemoteFile } from '../lib/storage';
+import { ingestRemoteFile, uploadBytes } from '../lib/storage';
 
 interface ImagePayload {
   jobId: string;
@@ -23,13 +23,28 @@ export async function processImage(p: ImagePayload) {
       await markFailed(p.jobId, result.error ?? 'image_failed');
       return;
     }
-    const url = await ingestRemoteFile({
-      workspaceId: p.workspaceId,
-      url: result.output.imageUrl,
-      kind: `images/${p.kind}`,
-      ext: 'png',
-      contentType: 'image/png',
-    });
+    // gpt-image-1 → base64 (upload bytes directly); dall-e/stub → URL (re-host).
+    let url: string;
+    if (result.output.imageBase64) {
+      url = await uploadBytes({
+        workspaceId: p.workspaceId,
+        kind: `images/${p.kind}`,
+        bytes: Buffer.from(result.output.imageBase64, 'base64'),
+        contentType: 'image/png',
+        ext: 'png',
+      });
+    } else if (result.output.imageUrl) {
+      url = await ingestRemoteFile({
+        workspaceId: p.workspaceId,
+        url: result.output.imageUrl,
+        kind: `images/${p.kind}`,
+        ext: 'png',
+        contentType: 'image/png',
+      });
+    } else {
+      await markFailed(p.jobId, 'image provider returned neither url nor base64');
+      return;
+    }
     await prisma.imageAsset.create({
       data: {
         projectId: p.projectId,

@@ -23,8 +23,12 @@ const bad = (n, e) => { fail++; fails.push(`${n}: ${e}`); console.log(`  ✗ ${n
 const section = (t) => console.log(`\n=== ${t} ===`);
 
 async function api(path, init = {}) {
+  const method = init.method ?? 'GET';
+  // bodyless POST/PATCH still needs a JSON body ('{}') or Fastify rejects it
+  const needsEmptyBody = (method === 'POST' || method === 'PATCH') && init.body == null;
   const res = await fetch(`${API}${path}`, {
     ...init,
+    body: needsEmptyBody ? '{}' : init.body,
     headers: { 'content-type': 'application/json', ...(init.headers ?? {}) },
   });
   const text = await res.text();

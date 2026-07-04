@@ -116,7 +116,7 @@ class StubVoiceAdapter implements VoiceProviderAdapter {
     return {
       status: 'succeeded',
       output: {
-        audioUrl: 'https://cdn.pixabay.com/audio/2022/03/15/audio_115717ae5b.mp3',
+        audioUrl: 'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3',
         durationS: 30,
         format: 'mp3',
       },

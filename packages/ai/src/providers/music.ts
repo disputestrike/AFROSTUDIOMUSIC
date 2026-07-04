@@ -197,12 +197,12 @@ class StubMusicAdapter implements MusicProviderAdapter {
     return {
       status: 'succeeded',
       output: {
-        mainAudioUrl: 'https://cdn.pixabay.com/audio/2022/03/15/audio_115717ae5b.mp3',
+        mainAudioUrl: 'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3',
         stems: input.withStems
           ? [
-              { role: 'drums', url: 'https://cdn.pixabay.com/audio/2022/03/15/audio_115717ae5b.mp3' },
-              { role: 'bass', url: 'https://cdn.pixabay.com/audio/2022/03/15/audio_115717ae5b.mp3' },
-              { role: 'keys', url: 'https://cdn.pixabay.com/audio/2022/03/15/audio_115717ae5b.mp3' },
+              { role: 'drums', url: 'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3' },
+              { role: 'bass', url: 'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3' },
+              { role: 'keys', url: 'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3' },
             ]
           : undefined,
         format: 'mp3',

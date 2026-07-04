@@ -108,7 +108,10 @@ export interface ImageInput {
 }
 
 export interface ImageOutput {
-  imageUrl: string;
+  /** Present when the provider returns a fetchable URL (dall-e-*, stub). */
+  imageUrl?: string;
+  /** Present when the provider returns raw base64 (gpt-image-1). */
+  imageBase64?: string;
   width: number;
   height: number;
 }
