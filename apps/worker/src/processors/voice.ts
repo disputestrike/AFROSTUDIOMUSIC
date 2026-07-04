@@ -22,15 +22,16 @@ export async function processVoice(p: VoicePayload) {
   try {
     if (!p.providerVoiceId) throw new Error('voice not READY');
 
-    const adapter = voiceAdapter();
-    let result = await adapter.render({
+    let adapter = voiceAdapter();
+    const renderInput = {
       providerVoiceId: p.providerVoiceId,
       lyricBody: p.lyricBody,
       melody: p.melody,
       role: p.role,
       pitchCorrection: p.pitchCorrection,
       effects: p.effects,
-    });
+    };
+    let result = await adapter.render(renderInput);
 
     let attempts = 0;
     while (result.status === 'queued' || result.status === 'running') {
@@ -39,6 +40,18 @@ export async function processVoice(p: VoicePayload) {
       attempts += 1;
       if (attempts > 20) break;
       result = await adapter.poll(result.externalId);
+    }
+
+    // Graceful fallback to a marked placeholder if the real voice provider is
+    // unavailable (e.g. ElevenLabs needs a paid plan), so the render still lands.
+    let placeholder = false;
+    let fallbackReason: string | undefined;
+    if ((result.status !== 'succeeded' || !result.output) && adapter.name !== 'stub') {
+      fallbackReason = result.error ?? 'provider_failed';
+      const stub = voiceAdapter('stub');
+      result = await stub.render({ ...renderInput, providerVoiceId: p.providerVoiceId ?? 'stub' });
+      adapter = stub;
+      placeholder = true;
     }
 
     if (result.status !== 'succeeded' || !result.output) {
@@ -70,11 +83,12 @@ export async function processVoice(p: VoicePayload) {
           duration: result.output.durationS,
           pitchCorrection: p.pitchCorrection as never,
           effects: p.effects as never,
+          meta: { placeholder, fallbackReason } as never,
         },
       });
     }
 
-    await markSucceeded(p.jobId, { url: storedUrl }, result.estimatedCostUsd);
+    await markSucceeded(p.jobId, { url: storedUrl, placeholder, fallbackReason }, result.estimatedCostUsd);
   } catch (err) {
     await markFailed(p.jobId, err);
   }

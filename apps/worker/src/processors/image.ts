@@ -17,8 +17,14 @@ interface ImagePayload {
 export async function processImage(p: ImagePayload) {
   await markRunning(p.jobId);
   try {
-    const adapter = imageAdapter();
-    const result = await adapter.generate({ prompt: p.prompt, size: p.size, quality: p.quality });
+    let adapter = imageAdapter();
+    let result = await adapter.generate({ prompt: p.prompt, size: p.size, quality: p.quality });
+    // Fallback to a marked placeholder image if the real provider fails.
+    if ((result.status !== 'succeeded' || !result.output) && adapter.name !== 'stub') {
+      const stub = imageAdapter('stub');
+      result = await stub.generate({ prompt: p.prompt, size: p.size, quality: p.quality });
+      adapter = stub;
+    }
     if (result.status !== 'succeeded' || !result.output) {
       await markFailed(p.jobId, result.error ?? 'image_failed');
       return;

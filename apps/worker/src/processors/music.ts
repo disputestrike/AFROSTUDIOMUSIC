@@ -15,7 +15,7 @@ interface MusicPayload {
 export async function processMusic(p: MusicPayload) {
   await markRunning(p.jobId);
   try {
-    const adapter = musicAdapter();
+    let adapter = musicAdapter();
     let result = await adapter.generate(p.input);
 
     // Poll until terminal — exponential backoff, cap at 25 attempts.
@@ -27,6 +27,20 @@ export async function processMusic(p: MusicPayload) {
       attempts += 1;
       if (attempts > 25) break;
       result = await adapter.poll(result.externalId);
+    }
+
+    // Graceful fallback — if the real provider is unavailable (e.g. ElevenLabs
+    // Music needs a paid plan → 402), fall back to a clearly-marked placeholder
+    // so the song still bundles. Auto-upgrades to real audio once the provider
+    // works. The failure reason is preserved in the asset meta.
+    let placeholder = false;
+    let fallbackReason: string | undefined;
+    if ((result.status !== 'succeeded' || !result.output) && adapter.name !== 'stub') {
+      fallbackReason = result.error ?? 'provider_failed';
+      const stub = musicAdapter('stub');
+      result = await stub.generate(p.input);
+      adapter = stub;
+      placeholder = true;
     }
 
     if (result.status !== 'succeeded' || !result.output) {
@@ -59,7 +73,7 @@ export async function processMusic(p: MusicPayload) {
         keySignature: result.output.keySignature ?? p.input.keySignature,
         duration: result.output.durationS,
         provider: adapter.name,
-        meta: { externalId: result.externalId } as never,
+        meta: { externalId: result.externalId, placeholder, fallbackReason } as never,
       },
     });
 
@@ -87,7 +101,7 @@ export async function processMusic(p: MusicPayload) {
       );
     }
 
-    await markSucceeded(p.jobId, { beatId: beat.id, stems: result.output.stems?.length ?? 0 }, result.estimatedCostUsd);
+    await markSucceeded(p.jobId, { beatId: beat.id, stems: result.output.stems?.length ?? 0, placeholder, fallbackReason }, result.estimatedCostUsd);
   } catch (err) {
     await markFailed(p.jobId, err);
   }

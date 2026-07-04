@@ -59,6 +59,6 @@ class StubImageAdapter implements ImageProviderAdapter {
   }
 }
 
-export function imageAdapter(): ImageProviderAdapter {
-  return provider() === 'openai' ? new OpenAiImageAdapter() : new StubImageAdapter();
+export function imageAdapter(override?: string): ImageProviderAdapter {
+  return (override ?? provider()) === 'openai' ? new OpenAiImageAdapter() : new StubImageAdapter();
 }

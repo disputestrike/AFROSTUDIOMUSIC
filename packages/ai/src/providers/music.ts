@@ -226,8 +226,8 @@ class StubMusicAdapter implements MusicProviderAdapter {
   }
 }
 
-export function musicAdapter(): MusicProviderAdapter {
-  switch (provider()) {
+export function musicAdapter(override?: string): MusicProviderAdapter {
+  switch (override ?? provider()) {
     case 'eleven':
       return new ElevenMusicAdapter();
     case 'stable_audio':

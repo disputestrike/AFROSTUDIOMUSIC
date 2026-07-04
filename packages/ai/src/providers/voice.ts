@@ -125,8 +125,8 @@ class StubVoiceAdapter implements VoiceProviderAdapter {
   }
 }
 
-export function voiceAdapter(): VoiceProviderAdapter {
-  switch (provider()) {
+export function voiceAdapter(override?: string): VoiceProviderAdapter {
+  switch (override ?? provider()) {
     case 'eleven':
       return new ElevenVoiceAdapter();
     default:
