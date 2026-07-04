@@ -6,12 +6,12 @@ export default function Landing() {
       <div className="flex items-center justify-between">
         <div className="font-display text-3xl tracking-tight">AFROHIT STUDIO</div>
         <nav className="flex items-center gap-6 text-sm text-slate-300">
-          <Link href="/sign-in">Sign in</Link>
+          <Link href="/projects">Projects</Link>
           <Link
-            href="/sign-up"
+            href="/studio"
             className="rounded-full bg-afrobrand-500 px-4 py-2 font-medium text-ink hover:bg-afrobrand-400"
           >
-            Start free
+            Open Studio
           </Link>
         </nav>
       </div>

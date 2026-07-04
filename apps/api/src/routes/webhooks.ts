@@ -1,5 +1,5 @@
 /**
- * Webhooks — PayPal, music providers, video providers, Clerk.
+ * Webhooks — PayPal, music providers, video providers.
  *
  * PayPal verification is an outbound API call to /v1/notifications/verify-webhook-signature
  * with the original headers + body + the configured PAYPAL_WEBHOOK_ID.
@@ -10,7 +10,7 @@
 import type { FastifyInstance } from 'fastify';
 import { prisma } from '@afrohit/db';
 import { verifyWebhookSignature, type WebhookHeaders } from '../lib/paypal';
-import { creditReceiptEmail, sendEmail, welcomeEmail } from '../lib/email';
+import { creditReceiptEmail, sendEmail } from '../lib/email';
 import { track } from '../lib/observability';
 
 export default async function webhooks(app: FastifyInstance) {
@@ -110,41 +110,8 @@ export default async function webhooks(app: FastifyInstance) {
     return reply.send({ ok: true });
   });
 
-  // ---------- Clerk user.created → mirror into our User table ----------
-  app.post('/clerk', async (req, reply) => {
-    const event = req.body as ClerkEvent | null;
-    if (!event || !event.type || !event.data?.id) {
-      return reply.code(400).send({ error: 'bad_body' });
-    }
-    // Add svix-signature verification here in production.
-    if (event.type === 'user.created' || event.type === 'user.updated') {
-      const email = event.data.email_addresses[0]?.email_address;
-      if (!email) return reply.send({ ok: true });
-      const fullName = [event.data.first_name, event.data.last_name].filter(Boolean).join(' ').trim() || undefined;
-      const user = await prisma.user.upsert({
-        where: { clerkId: event.data.id },
-        update: { email, fullName: fullName ?? null, avatarUrl: event.data.image_url ?? null },
-        create: {
-          clerkId: event.data.id,
-          email,
-          fullName: fullName ?? null,
-          avatarUrl: event.data.image_url ?? null,
-        },
-      });
-      const existing = await prisma.workspaceMember.findFirst({ where: { userId: user.id } });
-      if (!existing) {
-        const slug = `ws-${user.id.slice(-8).toLowerCase()}`;
-        const ws = await prisma.workspace.create({
-          data: { name: `${fullName ?? 'My'} Studio`, slug, plan: 'STARTER', creditsCents: 5_000_00 /* $5 onboarding credit */ },
-        });
-        await prisma.workspaceMember.create({ data: { workspaceId: ws.id, userId: user.id, role: 'OWNER' } });
-        const tpl = welcomeEmail(fullName ?? null);
-        await sendEmail({ to: email, ...tpl });
-        track('user_signed_up', user.id, { workspaceId: ws.id });
-      }
-    }
-    return reply.send({ ok: true });
-  });
+  // (Clerk webhook removed — internal auth mode creates the default workspace
+  //  lazily; a future Google-auth mode would add its own user-provisioning here.)
 }
 
 // --------- PayPal event types (minimal) -------------------------------------
@@ -153,17 +120,6 @@ interface PaypalEvent {
   id: string;
   event_type: string;
   resource: Record<string, unknown>;
-}
-
-interface ClerkEvent {
-  type: string;
-  data: {
-    id: string;
-    email_addresses: Array<{ email_address: string }>;
-    first_name?: string;
-    last_name?: string;
-    image_url?: string;
-  };
 }
 
 // --------- handlers ---------------------------------------------------------

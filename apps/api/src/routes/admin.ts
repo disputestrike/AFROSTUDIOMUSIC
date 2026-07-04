@@ -6,11 +6,14 @@
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 import { prisma } from '@afrohit/db';
-import { requireAuth } from '../middleware/auth';
+import { isInternalMode, requireAuth } from '../middleware/auth';
 import { enqueue, QUEUES, type QueueName } from '../lib/queue';
 
 async function requireAdmin(req: FastifyRequest): Promise<void> {
   const { userId } = requireAuth(req);
+  // Internal single-tenant mode: the one resolved user IS the operator.
+  if (isInternalMode()) return;
+  // Multi-user modes: gate by ADMIN_EMAILS allowlist.
   const allow = (process.env.ADMIN_EMAILS ?? '')
     .split(',')
     .map((s) => s.trim().toLowerCase())

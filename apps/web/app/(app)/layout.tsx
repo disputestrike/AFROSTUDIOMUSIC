@@ -1,9 +1,4 @@
 import Link from 'next/link';
-import { UserButton } from '@clerk/nextjs';
-
-// Every page under (app) requires an authenticated Clerk session,
-// so prerendering them is meaningless. Force dynamic rendering at build time.
-export const dynamic = 'force-dynamic';
 
 export default function AppLayout({ children }: { children: React.ReactNode }) {
   return (
@@ -19,7 +14,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
           <Link href="/billing">Billing</Link>
           <Link href="/settings">Settings</Link>
           <Link href="/admin" className="text-slate-500 hover:text-slate-300">Admin</Link>
-          <UserButton />
+          <span className="rounded-full bg-slate-800 px-3 py-1 text-xs text-slate-400">Internal</span>
         </nav>
       </header>
       <main className="flex-1">{children}</main>

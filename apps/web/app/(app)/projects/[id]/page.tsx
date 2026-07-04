@@ -1,6 +1,5 @@
 import Link from 'next/link';
-import { auth } from '@clerk/nextjs/server';
-import { apiRaw } from '@/lib/api';
+import { apiServer } from '@/lib/api-server';
 
 interface Project {
   id: string;
@@ -24,9 +23,7 @@ const GATES = ['brief', 'hook', 'lyrics', 'beat', 'voice', 'mix', 'rights', 'rel
 
 export default async function ProjectPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
-  const { getToken } = await auth();
-  const token = await getToken();
-  const p = await apiRaw<Project>(`/projects/${id}`, token);
+  const p = await apiServer<Project>(`/projects/${id}`);
 
   const gateState = Object.fromEntries(
     GATES.map((g) => {

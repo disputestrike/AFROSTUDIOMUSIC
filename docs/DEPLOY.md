@@ -57,9 +57,10 @@ Link each service to the Postgres + Redis plugins via the **Variables** tab → 
 |---|---|
 | `DATABASE_URL` | Auto-injected from Postgres plugin |
 | `REDIS_URL` | Auto-injected from Redis plugin |
-| `OPENAI_API_KEY` | Your real key |
-| `CLERK_SECRET_KEY` | From Clerk dashboard |
-| `CLERK_WEBHOOK_SECRET` | From Clerk webhook setup |
+| `OPENAI_API_KEY` | Your real key (or `sk-...` placeholder if `STUB_AI=1`) |
+| `AUTH_MODE` | `internal` — no external auth, one default workspace (current mode) |
+| `INTERNAL_WORKSPACE_SLUG` | `studio` (default) |
+| `INTERNAL_OWNER_EMAIL` | `owner@afrohit.local` (default) |
 | `PAYPAL_MODE` | `sandbox` or `live` |
 | `PAYPAL_CLIENT_ID` | From PayPal app |
 | `PAYPAL_CLIENT_SECRET` | From PayPal app |
@@ -90,16 +91,14 @@ Link each service to the Postgres + Redis plugins via the **Variables** tab → 
 
 ### `web` service
 
+Internal mode needs **no auth keys** — the app is open and the API resolves the single default workspace.
+
 | Variable | Notes |
 |---|---|
-| `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY` | From Clerk |
-| `CLERK_SECRET_KEY` | From Clerk (also needs to be on web for `@clerk/nextjs/server`) |
 | `NEXT_PUBLIC_API_URL` | Public api URL |
 | `API_URL` | Same (server-side fetches) |
-| `NEXT_PUBLIC_CLERK_SIGN_IN_URL=/sign-in` |  |
-| `NEXT_PUBLIC_CLERK_SIGN_UP_URL=/sign-up` |  |
-| `NEXT_PUBLIC_CLERK_AFTER_SIGN_IN_URL=/studio` |  |
-| `NEXT_PUBLIC_CLERK_AFTER_SIGN_UP_URL=/studio` |  |
+
+> **Auth:** currently `AUTH_MODE=internal` — the web app has no login and every request maps to one default workspace. This is for internal/single-tenant use only; do not expose the public URL widely. When you want real accounts, add a `google` mode in `apps/api/src/middleware/auth.ts` and a sign-in page — the seam is already there.
 
 ## 6. First deploy
 
@@ -124,7 +123,6 @@ railway run --service api -- pnpm --filter @afrohit/db seed
 
 | Webhook | URL | Events |
 |---|---|---|
-| Clerk | `https://<api>.up.railway.app/webhooks/clerk` | `user.created`, `user.updated` |
 | PayPal | `https://<api>.up.railway.app/webhooks/paypal` | `BILLING.SUBSCRIPTION.ACTIVATED`, `BILLING.SUBSCRIPTION.CANCELLED`, `BILLING.SUBSCRIPTION.EXPIRED`, `BILLING.SUBSCRIPTION.SUSPENDED`, `PAYMENT.SALE.COMPLETED`, `PAYMENT.CAPTURE.COMPLETED` |
 | Music provider (if used) | `https://<api>.up.railway.app/webhooks/music` | Provider-specific |
 

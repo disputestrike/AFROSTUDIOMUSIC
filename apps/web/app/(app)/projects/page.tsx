@@ -1,6 +1,5 @@
 import Link from 'next/link';
-import { auth } from '@clerk/nextjs/server';
-import { apiRaw } from '@/lib/api';
+import { apiServer } from '@/lib/api-server';
 
 interface ProjectRow {
   id: string;
@@ -13,9 +12,7 @@ interface ProjectRow {
 }
 
 export default async function ProjectsPage() {
-  const { getToken } = await auth();
-  const token = await getToken();
-  const projects = await apiRaw<ProjectRow[]>('/projects', token).catch(() => [] as ProjectRow[]);
+  const projects = await apiServer<ProjectRow[]>('/projects').catch(() => [] as ProjectRow[]);
 
   return (
     <div className="mx-auto max-w-5xl px-6 py-10">

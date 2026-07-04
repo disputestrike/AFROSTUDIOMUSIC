@@ -14,29 +14,66 @@ declare module 'fastify' {
 }
 
 /**
- * Resolves auth from either:
- *  - Clerk-issued JWT (production browser sessions)
- *  - Internal API secret (worker -> API calls)
- *  - Demo bypass when DEV_AUTH_BYPASS=1 (local dev only)
+ * Auth modes (env AUTH_MODE):
+ *   - "internal" (default) — NO external auth. Every request resolves a single
+ *     default workspace + owner (lazily created on first request). This is for
+ *     internal / single-tenant use right now. NOT safe to expose publicly.
+ *   - future: "google" — build your own Google OAuth here (the seam is this hook).
  *
- * The `auth` decorator hangs off the request and is required by every
- * authenticated route.
+ * Service-to-service calls (worker → API) always authenticate via
+ * x-internal-secret regardless of mode.
  */
+const AUTH_MODE = (): string => (process.env.AUTH_MODE ?? 'internal').toLowerCase();
+
+export function isInternalMode(): boolean {
+  return AUTH_MODE() === 'internal';
+}
+
+// Cache the default identity so we don't re-resolve it on every request.
+let cachedIdentity: { userId: string; workspaceId: string } | null = null;
+
+async function getOrCreateDefaultIdentity(): Promise<{ userId: string; workspaceId: string }> {
+  if (cachedIdentity) return cachedIdentity;
+  const slug = process.env.INTERNAL_WORKSPACE_SLUG ?? 'studio';
+  const email = process.env.INTERNAL_OWNER_EMAIL ?? 'owner@afrohit.local';
+
+  let user = await prisma.user.findUnique({ where: { email } });
+  if (!user) {
+    user = await prisma.user.create({
+      data: { clerkId: `internal_${email}`, email, fullName: 'Studio Owner' },
+    });
+  }
+  let ws = await prisma.workspace.findUnique({ where: { slug } });
+  if (!ws) {
+    ws = await prisma.workspace.create({
+      data: { name: 'Studio', slug, plan: 'PRO', creditsCents: 10_000_00 /* $100 to start */ },
+    });
+  }
+  const membership = await prisma.workspaceMember.findFirst({
+    where: { workspaceId: ws.id, userId: user.id },
+  });
+  if (!membership) {
+    await prisma.workspaceMember.create({
+      data: { workspaceId: ws.id, userId: user.id, role: 'OWNER' },
+    });
+  }
+  cachedIdentity = { userId: user.id, workspaceId: ws.id };
+  return cachedIdentity;
+}
+
 export const authPlugin = fp(async function (app: FastifyInstance) {
   app.decorateRequest('auth', undefined);
 
-  // preValidation runs before body schema validation, so unauthenticated
-  // requests get a 401 instead of leaking schema errors as 400s.
   app.addHook('preValidation', async (req, reply) => {
     const url = req.routeOptions?.url ?? req.url ?? '';
     if (url.startsWith('/health')) return;
     if (url.startsWith('/docs')) return;
     if (url.startsWith('/webhooks')) return;
-    // Public anon endpoints (share/events ingest + public redirect)
+    // Public anon endpoints (share ingest + public redirect)
     if (url.startsWith('/api/v1/share/events')) return;
     if (url.startsWith('/api/v1/share/redirect')) return;
 
-    // Service-to-service
+    // Service-to-service (worker → API)
     const svc = req.headers['x-internal-secret'];
     if (svc && svc === process.env.INTERNAL_API_SECRET) {
       const workspaceId = String(req.headers['x-workspace-id'] ?? '');
@@ -47,70 +84,30 @@ export const authPlugin = fp(async function (app: FastifyInstance) {
       }
     }
 
-    const authz = req.headers.authorization;
-
-    // Dev bypass — opt in via env, never enable in prod.
-    // Only kicks in when a bearer token is present (any value), so anonymous
-    // requests still receive a clean 401 even when bypass is on.
-    if (process.env.DEV_AUTH_BYPASS === '1' && authz?.startsWith('Bearer ')) {
+    // Internal mode (default) — resolve the single default workspace, no token.
+    if (isInternalMode()) {
       try {
-        const ws = await prisma.workspace.findUnique({ where: { slug: 'demo' } });
-        const user = await prisma.user.findUnique({ where: { email: 'owner@demo.afrohit' } });
-        if (ws && user) {
-          if (ws.suspendedAt) return reply.forbidden('workspace suspended');
-          req.auth = { userId: user.id, workspaceId: ws.id, role: 'OWNER', isService: false };
-          return;
-        }
+        const id = await getOrCreateDefaultIdentity();
+        const ws = await prisma.workspace.findUnique({
+          where: { id: id.workspaceId },
+          select: { suspendedAt: true },
+        });
+        if (ws?.suspendedAt) return reply.forbidden('workspace suspended');
+        req.auth = { userId: id.userId, workspaceId: id.workspaceId, role: 'OWNER', isService: false };
+        return;
       } catch (err) {
-        req.log.warn({ err }, 'dev bypass DB lookup failed — falling through to JWT');
+        req.log.error({ err }, 'internal auth bootstrap failed');
+        return reply.internalServerError('auth bootstrap failed');
       }
     }
 
-    if (!authz || !authz.startsWith('Bearer ')) {
-      return reply.unauthorized('missing bearer token');
-    }
-    const token = authz.slice('Bearer '.length);
-
-    try {
-      // Clerk's verifyToken returns the session claims. We resolve the user/workspace
-      // from our DB (Clerk userId -> our User -> active workspace).
-      const { verifyToken } = await import('@clerk/backend');
-      const payload = await verifyToken(token, {
-        secretKey: process.env.CLERK_SECRET_KEY!,
-      });
-      const clerkUserId = payload.sub!;
-      const user = await prisma.user.findUnique({ where: { clerkId: clerkUserId } });
-      if (!user) return reply.unauthorized('unknown user');
-
-      // For MVP, the user's *first* workspace is the active one.
-      // Multi-workspace switching can be added with a header (x-workspace-slug).
-      const slug = (req.headers['x-workspace-slug'] as string | undefined)?.trim();
-      const membership = slug
-        ? await prisma.workspaceMember.findFirst({
-            where: { userId: user.id, workspace: { slug } },
-            include: { workspace: { select: { suspendedAt: true } } },
-          })
-        : await prisma.workspaceMember.findFirst({
-            where: { userId: user.id },
-            include: { workspace: { select: { suspendedAt: true } } },
-          });
-      if (!membership) return reply.unauthorized('no workspace membership');
-      if (membership.workspace.suspendedAt) return reply.forbidden('workspace suspended');
-
-      req.auth = {
-        userId: user.id,
-        workspaceId: membership.workspaceId,
-        role: membership.role,
-        isService: false,
-      };
-    } catch (err) {
-      req.log.warn({ err }, 'jwt verification failed');
-      return reply.unauthorized('invalid token');
-    }
+    // No other auth mode is implemented yet. Fail explicitly rather than
+    // silently letting requests through.
+    return reply.unauthorized(`auth mode "${AUTH_MODE()}" not implemented — set AUTH_MODE=internal`);
   });
 });
 
 export function requireAuth(req: import('fastify').FastifyRequest) {
-  if (!req.auth) throw new Error('auth missing — did the preHandler run?');
+  if (!req.auth) throw new Error('auth missing — did the preValidation hook run?');
   return req.auth;
 }

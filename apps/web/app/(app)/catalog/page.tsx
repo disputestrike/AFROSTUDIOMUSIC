@@ -1,5 +1,4 @@
-import { auth } from '@clerk/nextjs/server';
-import { apiRaw } from '@/lib/api';
+import { apiServer } from '@/lib/api-server';
 
 interface Job {
   id: string;
@@ -10,9 +9,7 @@ interface Job {
 }
 
 export default async function CatalogPage() {
-  const { getToken } = await auth();
-  const token = await getToken();
-  const jobs = await apiRaw<Job[]>('/jobs', token).catch(() => [] as Job[]);
+  const jobs = await apiServer<Job[]>('/jobs').catch(() => [] as Job[]);
 
   return (
     <div className="mx-auto max-w-5xl px-6 py-10">
