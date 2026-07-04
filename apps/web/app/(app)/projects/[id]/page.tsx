@@ -5,6 +5,7 @@ import { Mixer } from '@/components/Mixer';
 import { ReferenceListen } from '@/components/ReferenceListen';
 import { SnippetMaker } from '@/components/SnippetMaker';
 import { DropMachine } from '@/components/DropMachine';
+import { ReleaseReadiness } from '@/components/ReleaseReadiness';
 
 interface Project {
   id: string;
@@ -65,6 +66,8 @@ export default async function ProjectPage({ params }: { params: Promise<{ id: st
       <DropMachine projectId={p.id} />
 
       <SnippetMaker projectId={p.id} />
+
+      <ReleaseReadiness projectId={p.id} />
 
       <Section title="Latest brief">
         {p.briefs[0] ? (

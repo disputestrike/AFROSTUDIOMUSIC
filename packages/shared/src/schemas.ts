@@ -340,6 +340,20 @@ export const analyzeAudioSchema = z.object({
   url: z.string().url(), // an uploaded/imported track url the artist has rights to
 });
 
+// ---------- Rights spine (split-sheet + ISRC/UPC + green-light) -------------
+
+export const splitEntrySchema = z.object({
+  name: z.string().min(1).max(120),
+  role: z.enum(['writer', 'composer', 'producer', 'performer', 'featured', 'other']).default('writer'),
+  share: z.number().min(0).max(100),
+});
+
+export const rightsInputSchema = z.object({
+  splitSheet: z.array(splitEntrySchema).max(20).optional(),
+  isrc: z.string().max(20).optional(),
+  upc: z.string().max(20).optional(),
+});
+
 // ---------- Drop Machine (batch generate → rank → shortlist) ---------------
 
 export const dropBatchSchema = z.object({

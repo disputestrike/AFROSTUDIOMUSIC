@@ -302,6 +302,11 @@ model Song {
   versionLabel String?  // "demo-1", "club-mix"
   status      SongStatus @default(SKETCH)
   storyboard  Json?     // arrangement timeline (intro/hook/verse/bridge/outro)
+  // Rights spine — what makes a release bankable + payable.
+  isrc        String?   // recording code (CC-RRR-YY-DDDDD); placeholder until a real registrant prefix is set
+  upc         String?   // release barcode; distributors assign the real one free
+  splitSheet  Json?     // [{name, role, share}] writer/producer splits summing to 100
+  releaseReady Boolean  @default(false) // green-lit for distribution
   createdAt   DateTime @default(now()) @db.Timestamptz(6)
 
   workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)

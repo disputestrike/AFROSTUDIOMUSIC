@@ -93,6 +93,10 @@ export async function processExport(p: ExportPayload) {
       receiptHash: receipt?.hash ?? null,
       receiptId: receipt?.id ?? null,
       provenance,
+      isrc: song.isrc ?? null,
+      upc: song.upc ?? null,
+      splitSheet: song.splitSheet ?? null,
+      releaseReady: song.releaseReady,
     };
 
     const exp = await prisma.export.create({
