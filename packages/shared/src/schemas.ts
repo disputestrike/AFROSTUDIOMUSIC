@@ -331,6 +331,12 @@ export const mixerAiSchema = z.object({
   goal: z.string().max(300).optional(), // e.g. "radio-ready, vocal forward"
 });
 
+// ---------- Listen / analyze a reference track -----------------------------
+
+export const analyzeAudioSchema = z.object({
+  url: z.string().url(), // an uploaded/imported track url the artist has rights to
+});
+
 // ---------- Integrations (in-app music engine key) -------------------------
 
 export const integrationsInputSchema = z.object({
