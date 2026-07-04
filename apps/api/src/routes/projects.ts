@@ -82,4 +82,12 @@ export default async function projects(app: FastifyInstance) {
       });
     }
   );
+
+  app.delete<{ Params: { id: string } }>('/:id', async (req, reply) => {
+    const { workspaceId } = requireAuth(req);
+    // Relations cascade on delete (hooks, songs, lyrics, assets, jobs, etc.).
+    await prisma.project.deleteMany({ where: { id: req.params.id, workspaceId } });
+    reply.code(204);
+    return null;
+  });
 }

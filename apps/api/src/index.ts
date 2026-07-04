@@ -37,6 +37,7 @@ import artists from './routes/artists';
 import exportsRoute from './routes/exports';
 import admin from './routes/admin';
 import reviews from './routes/reviews';
+import songs from './routes/songs';
 
 initObservability('api');
 
@@ -100,6 +101,7 @@ async function bootstrap() {
       await api.register(exportsRoute, { prefix: '/projects/:projectId/exports' });
       await api.register(admin, { prefix: '/admin' });
       await api.register(reviews, { prefix: '/reviews' });
+      await api.register(songs, { prefix: '/songs' });
     },
     { prefix: '/api/v1' }
   );
