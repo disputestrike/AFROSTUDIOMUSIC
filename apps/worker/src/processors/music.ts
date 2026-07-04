@@ -21,7 +21,12 @@ export async function processMusic(p: MusicPayload) {
       where: { id: p.workspaceId },
       select: { musicProvider: true, musicApiKey: true },
     });
-    let adapter = musicAdapter(ws?.musicProvider ?? undefined, ws?.musicApiKey ?? undefined);
+    // Full song WITH AI vocals → vocals-capable model (ACE-Step on the same
+    // Replicate key). Otherwise the configured instrumental beat engine.
+    const wantsVocals = !!(p.input.withVocals && p.input.lyrics);
+    let adapter = wantsVocals
+      ? musicAdapter('ace_step', ws?.musicApiKey ?? undefined)
+      : musicAdapter(ws?.musicProvider ?? undefined, ws?.musicApiKey ?? undefined);
     let result = await adapter.generate(p.input);
 
     // Poll until terminal — exponential backoff, cap at 25 attempts.

@@ -44,7 +44,7 @@ AUTOPILOT MODE IS ON. Produce the whole song end to end WITHOUT asking the user 
 2. generate_hooks (20 unless told otherwise)
 3. hooks come back scored by the A&R — pick the SINGLE highest-scored hook and approve_hook it
 4. generate_lyrics for that hook, then treat the lyric as approved
-5. create_beat_job (with stems)
+5. create_beat_job with withVocals=true — this makes the FULL SONG where the AI SINGS the lyrics (the complete record, not just a beat). Only fall back to withVocals=false (instrumental) if the artist explicitly wants to sing it themselves.
 6. generate_cover_art (a vivid, on-brief prompt)
 7. generate_video_storyboard
 8. run_rights_check on the song
@@ -135,7 +135,8 @@ export const STUDIO_CHAT_TOOLS = [
   {
     type: 'function' as const,
     name: 'create_beat_job',
-    description: 'Queue an instrumental beat generation job (with stems if available).',
+    description:
+      'Generate music. Set withVocals=true to make a FULL SONG where the AI SINGS the approved lyrics (needs lyrics written first) — this is the complete, catchy record. Leave withVocals=false for an instrumental beat only.',
     parameters: {
       type: 'object',
       properties: {
@@ -145,6 +146,11 @@ export const STUDIO_CHAT_TOOLS = [
         durationS: { type: 'integer', default: 60 },
         vibePrompt: { type: 'string' },
         withStems: { type: 'boolean', default: true },
+        withVocals: {
+          type: 'boolean',
+          default: false,
+          description: 'true = AI sings the lyrics into a full song; false = instrumental only.',
+        },
       },
       required: ['genre', 'bpm'],
     },

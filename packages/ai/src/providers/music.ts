@@ -422,6 +422,95 @@ class MubertAdapter implements MusicProviderAdapter {
   }
 }
 
+/**
+ * ACE-Step (via Replicate) — FULL SONG WITH AI VOCALS from lyrics + style tags.
+ * No reference audio needed; runs on the same Replicate key. This is what makes
+ * the AI actually sing the song. Model slug pinnable via REPLICATE_SONG_MODEL.
+ */
+class AceStepSongAdapter implements MusicProviderAdapter {
+  readonly name = 'ace_step';
+  constructor(private apiKey?: string) {}
+
+  async generate(
+    input: MusicGenerationInput
+  ): Promise<ProviderJobResult<MusicGenerationOutput>> {
+    const token = this.apiKey || replicateToken();
+    if (!token) return { status: 'failed', error: 'REPLICATE_API_TOKEN missing' };
+    const auth = { authorization: `Bearer ${token}` };
+
+    let version = process.env.REPLICATE_SONG_VERSION;
+    if (!version) {
+      const slug = process.env.REPLICATE_SONG_MODEL ?? 'lucataco/ace-step';
+      const mres = await fetch(`https://api.replicate.com/v1/models/${slug}`, { headers: auth });
+      if (!mres.ok) {
+        return { status: 'failed', error: `replicate song model lookup ${mres.status}: ${(await mres.text()).slice(0, 160)}` };
+      }
+      const mdata = (await mres.json()) as { latest_version?: { id?: string } };
+      version = mdata.latest_version?.id;
+      if (!version) return { status: 'failed', error: 'replicate: song model has no version' };
+    }
+
+    const duration = Math.min(Math.max(Math.round(input.durationS ?? 120), 30), 240);
+    const tags = [
+      input.genre ?? 'afrobeats',
+      'afro-fusion',
+      `${input.bpm} bpm`,
+      input.keySignature ? `key ${input.keySignature}` : null,
+      input.vibePrompt ?? '',
+      input.artistTone?.length ? input.artistTone.join(', ') : null,
+      'catchy, melodic vocals, punchy drums, warm bass, radio-ready',
+    ]
+      .filter(Boolean)
+      .join(', ');
+
+    const res = await fetch('https://api.replicate.com/v1/predictions', {
+      method: 'POST',
+      headers: { ...auth, 'content-type': 'application/json', prefer: 'wait' },
+      body: JSON.stringify({
+        version,
+        input: { tags, lyrics: input.lyrics ?? '', duration },
+      }),
+    });
+    if (!res.ok) return { status: 'failed', error: `ace_step ${res.status}: ${(await res.text()).slice(0, 200)}` };
+    return this.toResult((await res.json()) as ReplicatePrediction, input);
+  }
+
+  async poll(externalId: string): Promise<ProviderJobResult<MusicGenerationOutput>> {
+    const token = this.apiKey || replicateToken();
+    if (!token) return { status: 'failed', error: 'REPLICATE_API_TOKEN missing' };
+    const res = await fetch(`https://api.replicate.com/v1/predictions/${externalId}`, {
+      headers: { authorization: `Bearer ${token}` },
+    });
+    if (!res.ok) return { status: 'failed', error: `ace_step poll ${res.status}` };
+    return this.toResult((await res.json()) as ReplicatePrediction);
+  }
+
+  private toResult(
+    data: ReplicatePrediction,
+    input?: MusicGenerationInput
+  ): ProviderJobResult<MusicGenerationOutput> {
+    const url = Array.isArray(data.output) ? data.output[data.output.length - 1] : data.output;
+    if (data.status === 'succeeded' && url) {
+      return {
+        externalId: data.id,
+        status: 'succeeded',
+        output: {
+          mainAudioUrl: url,
+          format: 'wav',
+          durationS: input?.durationS ?? 0,
+          bpm: input?.bpm,
+          keySignature: input?.keySignature,
+        },
+        estimatedCostUsd: 0.1,
+      };
+    }
+    if (data.status === 'failed' || data.status === 'canceled') {
+      return { externalId: data.id, status: 'failed', error: data.error ?? 'ace_step failed' };
+    }
+    return { externalId: data.id, status: 'running', pollAfterMs: 5_000 };
+  }
+}
+
 class StubMusicAdapter implements MusicProviderAdapter {
   readonly name = 'stub';
   async generate(
@@ -451,6 +540,8 @@ class StubMusicAdapter implements MusicProviderAdapter {
 
 export function musicAdapter(override?: string, apiKey?: string): MusicProviderAdapter {
   switch (override ?? provider()) {
+    case 'ace_step':
+      return new AceStepSongAdapter(apiKey);
     case 'suno':
       return new SunoAdapter(apiKey);
     case 'replicate':

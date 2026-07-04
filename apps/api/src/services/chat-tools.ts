@@ -250,11 +250,32 @@ async function generateLyrics(ctx: Ctx, hookId: string, cleanVersion: boolean) {
   return { lyric: { id: lyric.id, title: lyric.title } };
 }
 
-async function createBeatJob(ctx: Ctx, a: { genre: string; bpm: number; keySignature?: string; durationS?: number; vibePrompt?: string; withStems?: boolean }) {
+async function createBeatJob(ctx: Ctx, a: { genre: string; bpm: number; keySignature?: string; durationS?: number; vibePrompt?: string; withStems?: boolean; withVocals?: boolean }) {
   if (!ctx.projectId) return { error: 'no_project_in_thread' };
+
+  // Full song WITH AI vocals: grab the latest lyric so the model can sing it.
+  let lyrics: string | undefined;
+  let songId: string | undefined;
+  if (a.withVocals) {
+    const song = await prisma.song.findFirst({
+      where: { projectId: ctx.projectId },
+      orderBy: { createdAt: 'desc' },
+      include: { lyric: true },
+    });
+    songId = song?.id;
+    const lyric =
+      song?.lyric ??
+      (await prisma.lyricDraft.findFirst({
+        where: { projectId: ctx.projectId },
+        orderBy: { createdAt: 'desc' },
+      }));
+    lyrics = lyric?.cleanVersion ?? lyric?.body ?? undefined;
+    if (!lyrics) return { error: 'no_lyrics — write the lyrics first, then make the full song' };
+  }
+
   const charge = await ctx.app.chargeCredits({
     workspaceId: ctx.workspaceId,
-    key: a.withStems ? 'full_song_demo' : 'beat_idea_short_30s',
+    key: a.withVocals || a.withStems ? 'full_song_demo' : 'beat_idea_short_30s',
   });
   if (!charge.ok) return { error: 'insufficient_credits', ...charge };
   const job = await prisma.providerJob.create({
@@ -262,7 +283,7 @@ async function createBeatJob(ctx: Ctx, a: { genre: string; bpm: number; keySigna
       workspaceId: ctx.workspaceId,
       projectId: ctx.projectId,
       kind: 'music',
-      provider: process.env.MUSIC_PROVIDER ?? 'stub',
+      provider: a.withVocals ? 'ace_step' : process.env.MUSIC_PROVIDER ?? 'stub',
       status: 'QUEUED',
       inputJson: a as never,
     },
@@ -270,9 +291,21 @@ async function createBeatJob(ctx: Ctx, a: { genre: string; bpm: number; keySigna
   await enqueue({
     queue: ctx.app.queues.music,
     name: 'generate-music',
-    payload: { jobId: job.id, workspaceId: ctx.workspaceId, projectId: ctx.projectId, input: { ...a, durationS: a.durationS ?? 60, withStems: a.withStems ?? true } },
+    payload: {
+      jobId: job.id,
+      workspaceId: ctx.workspaceId,
+      projectId: ctx.projectId,
+      songId,
+      input: {
+        ...a,
+        durationS: a.durationS ?? (a.withVocals ? 150 : 60),
+        withStems: a.withStems ?? !a.withVocals,
+        withVocals: a.withVocals ?? false,
+        lyrics,
+      },
+    },
   });
-  return { jobId: job.id, status: 'queued' };
+  return { jobId: job.id, status: 'queued', mode: a.withVocals ? 'full_song_with_vocals' : 'instrumental' };
 }
 
 async function renderDemoVocal(ctx: Ctx, a: { voiceProfileId: string; lyricId: string; role?: 'lead' | 'double' | 'ad-lib' | 'harmony' }) {

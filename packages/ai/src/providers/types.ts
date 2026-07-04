@@ -23,6 +23,10 @@ export interface MusicGenerationInput {
   withStems: boolean;
   artistTone?: string[];
   languages?: string[];
+  // Full song WITH AI vocals: pass the lyrics + set withVocals. Routes to a
+  // vocals-capable model (ACE-Step) instead of the instrumental beat model.
+  lyrics?: string;
+  withVocals?: boolean;
 }
 
 export interface MusicGenerationOutput {
