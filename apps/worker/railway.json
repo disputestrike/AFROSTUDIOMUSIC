@@ -1,7 +1,8 @@
 {
   "$schema": "https://railway.com/railway.schema.json",
   "build": {
-    "buildCommand": "pnpm install --frozen-lockfile --prod=false && pnpm --filter @afrohit/db generate && pnpm --filter @afrohit/shared build && pnpm --filter @afrohit/db build && pnpm --filter @afrohit/ai build && pnpm --filter @afrohit/worker build"
+    "builder": "DOCKERFILE",
+    "dockerfilePath": "apps/worker/Dockerfile"
   },
   "deploy": {
     "startCommand": "pnpm --filter @afrohit/worker start",

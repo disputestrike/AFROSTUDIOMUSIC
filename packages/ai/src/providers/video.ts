@@ -22,28 +22,17 @@ function provider(): string {
 
 class VeoAdapter implements VideoProviderAdapter {
   readonly name = 'veo';
-  async renderShot(input: VideoShotInput): Promise<ProviderJobResult<VideoRenderOutput>> {
-    const project = process.env.GCP_PROJECT_ID;
-    const location = process.env.GCP_LOCATION ?? 'us-central1';
-    const credsB64 = process.env.GCP_SERVICE_ACCOUNT_JSON_B64;
-    if (!project || !credsB64) {
-      return { status: 'failed', error: 'GCP_PROJECT_ID + GCP_SERVICE_ACCOUNT_JSON_B64 required' };
-    }
-    // Vertex AI auth uses short-lived OAuth tokens. In production, exchange
-    // the service-account JSON for an access token (jose/jsonwebtoken + STS).
-    // We model the contract here; the worker is responsible for the actual
-    // OAuth handshake to keep this file dependency-light.
+  async renderShot(_input: VideoShotInput): Promise<ProviderJobResult<VideoRenderOutput>> {
+    // Veo (Vertex AI) needs a service-account JWT → OAuth access-token exchange
+    // that can only be built and tested with real GCP credentials. Rather than
+    // silently "queue" and hang forever, fail fast and clearly. Use
+    // VIDEO_PROVIDER=sora (implemented) or =stub until GCP is wired.
     return {
-      status: 'queued',
-      externalId: `veo_${Math.random().toString(36).slice(2, 10)}`,
-      pollAfterMs: 6_000,
-      estimatedCostUsd: 0.1 * input.durationS,
-      output: undefined,
+      status: 'failed',
+      error:
+        'Veo provider not yet implemented (needs GCP service-account OAuth). ' +
+        'Set VIDEO_PROVIDER=sora or VIDEO_PROVIDER=stub.',
     };
-  }
-  async poll(_externalId: string): Promise<ProviderJobResult<VideoRenderOutput>> {
-    // In production, GET predictOperation on the Veo endpoint and parse `done`.
-    return { status: 'running', pollAfterMs: 8_000 };
   }
 }
 

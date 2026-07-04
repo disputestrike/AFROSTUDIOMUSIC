@@ -1,0 +1,19 @@
+# Keep the Docker build context lean and reproducible — never ship host
+# node_modules, build outputs, or secrets into the image.
+node_modules
+**/node_modules
+.git
+.turbo
+**/.turbo
+.next
+**/.next
+dist
+**/dist
+*.log
+.env
+.env.*
+**/.env
+**/.env.local
+**/.env.*.local
+scratchpad
+tmp
