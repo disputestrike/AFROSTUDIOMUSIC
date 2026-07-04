@@ -40,6 +40,7 @@ import reviews from './routes/reviews';
 import songs from './routes/songs';
 import uploads from './routes/uploads';
 import mixer from './routes/mixer';
+import settings from './routes/settings';
 
 initObservability('api');
 
@@ -106,6 +107,7 @@ async function bootstrap() {
       await api.register(reviews, { prefix: '/reviews' });
       await api.register(songs, { prefix: '/songs' });
       await api.register(uploads, { prefix: '/uploads' });
+      await api.register(settings, { prefix: '/settings' });
     },
     { prefix: '/api/v1' }
   );

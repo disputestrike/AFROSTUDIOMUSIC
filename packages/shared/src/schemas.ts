@@ -327,6 +327,13 @@ export const mixerAiSchema = z.object({
   goal: z.string().max(300).optional(), // e.g. "radio-ready, vocal forward"
 });
 
+// ---------- Integrations (in-app music engine key) -------------------------
+
+export const integrationsInputSchema = z.object({
+  musicProvider: z.enum(['replicate', 'suno', 'stub']).nullable().optional(),
+  musicApiKey: z.string().max(400).nullable().optional(), // '' = keep existing
+});
+
 // ---------- Chat (Studio Chat) ---------------------------------------------
 
 export const chatMessageInputSchema = z.object({

@@ -15,7 +15,13 @@ interface MusicPayload {
 export async function processMusic(p: MusicPayload) {
   await markRunning(p.jobId);
   try {
-    let adapter = musicAdapter();
+    // Provider + key are set IN-APP (Settings → Music engine), stored per
+    // workspace. Falls back to env (MUSIC_PROVIDER / *_API_KEY) then stub.
+    const ws = await prisma.workspace.findUnique({
+      where: { id: p.workspaceId },
+      select: { musicProvider: true, musicApiKey: true },
+    });
+    let adapter = musicAdapter(ws?.musicProvider ?? undefined, ws?.musicApiKey ?? undefined);
     let result = await adapter.generate(p.input);
 
     // Poll until terminal — exponential backoff, cap at 25 attempts.

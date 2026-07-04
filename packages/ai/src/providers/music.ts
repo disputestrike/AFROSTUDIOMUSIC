@@ -76,11 +76,12 @@ interface SunoRecordResp {
 class SunoAdapter implements MusicProviderAdapter {
   readonly name = 'suno';
   private base = (process.env.SUNO_API_BASE ?? 'https://api.sunoapi.org').replace(/\/+$/, '');
+  constructor(private apiKey?: string) {}
 
   async generate(
     input: MusicGenerationInput
   ): Promise<ProviderJobResult<MusicGenerationOutput>> {
-    const key = sunoKey();
+    const key = this.apiKey || sunoKey();
     if (!key) return { status: 'failed', error: 'SUNO_API_KEY missing' };
     const body = {
       customMode: true,
@@ -104,7 +105,7 @@ class SunoAdapter implements MusicProviderAdapter {
   }
 
   async poll(externalId: string): Promise<ProviderJobResult<MusicGenerationOutput>> {
-    const key = sunoKey();
+    const key = this.apiKey || sunoKey();
     if (!key) return { status: 'failed', error: 'SUNO_API_KEY missing' };
     const res = await fetch(
       `${this.base}/api/v1/generate/record-info?taskId=${encodeURIComponent(externalId)}`,
@@ -159,11 +160,12 @@ interface ReplicatePrediction {
  */
 class ReplicateMusicGenAdapter implements MusicProviderAdapter {
   readonly name = 'replicate';
+  constructor(private apiKey?: string) {}
 
   async generate(
     input: MusicGenerationInput
   ): Promise<ProviderJobResult<MusicGenerationOutput>> {
-    const token = replicateToken();
+    const token = this.apiKey || replicateToken();
     if (!token) return { status: 'failed', error: 'REPLICATE_API_TOKEN missing' };
     const duration = Math.min(Math.max(Math.round(input.durationS ?? 30), 5), 30);
     const res = await fetch('https://api.replicate.com/v1/models/meta/musicgen/predictions', {
@@ -192,7 +194,7 @@ class ReplicateMusicGenAdapter implements MusicProviderAdapter {
   }
 
   async poll(externalId: string): Promise<ProviderJobResult<MusicGenerationOutput>> {
-    const token = replicateToken();
+    const token = this.apiKey || replicateToken();
     if (!token) return { status: 'failed', error: 'REPLICATE_API_TOKEN missing' };
     const res = await fetch(`https://api.replicate.com/v1/predictions/${externalId}`, {
       headers: { authorization: `Bearer ${token}` },
@@ -433,12 +435,12 @@ class StubMusicAdapter implements MusicProviderAdapter {
   }
 }
 
-export function musicAdapter(override?: string): MusicProviderAdapter {
+export function musicAdapter(override?: string, apiKey?: string): MusicProviderAdapter {
   switch (override ?? provider()) {
     case 'suno':
-      return new SunoAdapter();
+      return new SunoAdapter(apiKey);
     case 'replicate':
-      return new ReplicateMusicGenAdapter();
+      return new ReplicateMusicGenAdapter(apiKey);
     case 'eleven':
       return new ElevenMusicAdapter();
     case 'stable_audio':

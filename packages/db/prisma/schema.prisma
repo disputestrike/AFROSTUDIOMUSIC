@@ -34,6 +34,8 @@ model Workspace {
   plan          Plan     @default(STARTER)
   creditsCents  Int      @default(0) // credit balance in 1/100 cents (precision)
   paypalSubscriptionId String? @unique // PayPal Subscription ID (BA-... / I-...) for the active plan
+  musicProvider String?  // "replicate" | "suno" | null → falls back to env/stub
+  musicApiKey   String?  // provider API key set in-app (internal tenant; keep DB private)
   createdAt     DateTime @default(now()) @db.Timestamptz(6)
   updatedAt     DateTime @updatedAt @db.Timestamptz(6)
   deletedAt     DateTime?

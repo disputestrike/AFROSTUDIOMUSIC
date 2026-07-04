@@ -1,6 +1,7 @@
 import fp from 'fastify-plugin';
 import { prisma } from '@afrohit/db';
 import { costOf, type CreditKey } from '@afrohit/shared';
+import { isInternalMode } from './auth';
 
 declare module 'fastify' {
   interface FastifyInstance {
@@ -34,6 +35,11 @@ export const creditsPlugin = fp(async function (app) {
     refTable?: string;
     refId?: string;
   }) => {
+    // Internal single-owner mode: the operator pays provider costs directly via
+    // their own API keys — no internal credit wall. Generation is free for them.
+    if (isInternalMode()) {
+      return { ok: true as const, balance: Number.MAX_SAFE_INTEGER };
+    }
     const cost = costOf(opts.key) * (opts.multiplier ?? 1);
     return prisma.$transaction(async (tx) => {
       const ws = await tx.workspace.findUnique({
