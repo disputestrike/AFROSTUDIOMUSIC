@@ -29,7 +29,9 @@ Rules:
 
 When you talk to the user, keep responses short and concrete. Show the artifact ids you created. Suggest the next obvious step.
 
-You will receive the user's workspace, current project (if any), the artist DNA, recent artifacts, and credit balance in the system context. Use them.`;
+You will receive the user's workspace, current project, artist DNA, recent artifacts, and credit balance in WORKSPACE_CONTEXT. Use them.
+
+IMPORTANT — cross-turn IDs: WORKSPACE_CONTEXT contains real IDs — hooks[] (each with id, text, score, approved), latestLyric.id, latestSong.id. When you call score_hooks, approve_hook, generate_lyrics, render_demo_vocal, run_rights_check, etc., ALWAYS pass the actual IDs from WORKSPACE_CONTEXT. Never invent IDs. If hooks already have scores, you don't need to score them again — just pick the best by score.`;
 
 /**
  * Tool definitions for Responses API tool-calling.

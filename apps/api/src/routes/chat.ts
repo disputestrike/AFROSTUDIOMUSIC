@@ -68,6 +68,37 @@ function toModelMessages(
     .map((m) => ({ role: m.role as 'user' | 'assistant', content: m.content }));
 }
 
+/**
+ * Current artifacts (with IDs) so the model can act across turns — score,
+ * approve, write lyrics from an earlier hook. Since we no longer replay tool
+ * messages, THIS is how the model knows the real IDs to pass to tools.
+ */
+async function projectStateForChat(projectId: string) {
+  const [hooks, lyric, song] = await Promise.all([
+    prisma.hookCandidate.findMany({
+      where: { projectId },
+      orderBy: [{ score: 'desc' }, { createdAt: 'desc' }],
+      take: 25,
+      select: { id: true, text: true, score: true, approved: true },
+    }),
+    prisma.lyricDraft.findFirst({
+      where: { projectId },
+      orderBy: { createdAt: 'desc' },
+      select: { id: true, title: true, approved: true },
+    }),
+    prisma.song.findFirst({
+      where: { projectId },
+      orderBy: { createdAt: 'desc' },
+      select: { id: true, title: true, status: true },
+    }),
+  ]);
+  return {
+    hooks: hooks.map((h) => ({ id: h.id, text: h.text, score: h.score, approved: h.approved })),
+    latestLyric: lyric,
+    latestSong: song,
+  };
+}
+
 export default async function chat(app: FastifyInstance) {
   /** List threads for the current workspace. */
   app.get('/threads', async (req) => {
@@ -137,6 +168,7 @@ export default async function chat(app: FastifyInstance) {
         orderBy: { createdAt: 'desc' },
         select: { id: true, kind: true, status: true, outputJson: true },
       });
+      const state = await projectStateForChat(projectId);
 
       // Build conversation history.
       const history = await prisma.chatMessage.findMany({
@@ -157,6 +189,10 @@ export default async function chat(app: FastifyInstance) {
           : null,
         currentProject: project ? { id: project.id, title: project.title, genre: project.genre, bpm: project.bpm } : null,
         currentBrief: project?.briefs[0] ?? null,
+        // Real IDs so you can score/approve/write-from earlier artifacts across turns.
+        hooks: state.hooks,
+        latestLyric: state.latestLyric,
+        latestSong: state.latestSong,
         recentArtifacts,
       });
 
@@ -298,6 +334,7 @@ export default async function chat(app: FastifyInstance) {
           orderBy: { createdAt: 'asc' },
           take: 40,
         });
+        const state = await projectStateForChat(projectId);
         const systemContext = JSON.stringify({
           workspace: { creditsCents: workspace.creditsCents, plan: workspace.plan },
           artistDna: project?.artist
@@ -312,6 +349,10 @@ export default async function chat(app: FastifyInstance) {
             ? { id: project.id, title: project.title, genre: project.genre, bpm: project.bpm }
             : null,
           currentBrief: project?.briefs[0] ?? null,
+          // Real IDs so you can score/approve/write-from earlier artifacts across turns.
+          hooks: state.hooks,
+          latestLyric: state.latestLyric,
+          latestSong: state.latestSong,
         });
         const baseMessages = [
           { role: 'system' as const, content: prompts.STUDIO_CHAT_SYSTEM },
