@@ -22,6 +22,16 @@ export function ReleaseReadiness({ projectId }: { projectId: string }) {
   const [splits, setSplits] = useState<Split[]>([]);
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState('');
+  const [perf, setPerf] = useState<{ backingTrack: string | null; note: string; bpm: number | null; key: string | null } | null>(null);
+
+  async function loadPerformance() {
+    if (!status?.song) return;
+    try {
+      setPerf(await api.get(`/projects/${projectId}/release/${status.song.id}/performance`));
+    } catch {
+      /* ignore */
+    }
+  }
 
   const load = useCallback(async () => {
     try {
@@ -121,6 +131,26 @@ export function ReleaseReadiness({ projectId }: { projectId: string }) {
           </div>
           {msg && <div className="mt-2 text-xs text-slate-400">{msg}</div>}
         </div>
+      </div>
+
+      {/* Share + stage */}
+      <div className="mt-3 flex flex-wrap items-center gap-4 text-xs">
+        <a href={`/r/${status.song.id}`} target="_blank" rel="noreferrer" className="text-afrobrand-300 hover:text-afrobrand-200">
+          🔗 Public release page ↗
+        </a>
+        <button onClick={() => void loadPerformance()} className="text-slate-400 hover:text-slate-200">
+          🎤 Performance Pack
+        </button>
+        {perf && (
+          <span className="text-slate-500">
+            {perf.backingTrack ? (
+              <a href={perf.backingTrack} download className="text-afrobrand-300 hover:text-afrobrand-200">⬇ backing track</a>
+            ) : (
+              perf.note
+            )}
+            {perf.bpm ? ` · ${perf.bpm} bpm` : ''}{perf.key ? ` · ${perf.key}` : ''}
+          </span>
+        )}
       </div>
     </section>
   );

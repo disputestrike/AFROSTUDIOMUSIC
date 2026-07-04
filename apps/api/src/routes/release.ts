@@ -65,6 +65,31 @@ export default async function release(app: FastifyInstance) {
     return statusFor(song);
   });
 
+  // Performance Pack — what you take on stage: a backing track to sing over
+  // (the instrumental beat if there is one), tempo/key, and a visual loop.
+  app.get<{ Params: { projectId: string; songId: string } }>('/:songId/performance', async (req) => {
+    const { workspaceId } = requireAuth(req);
+    const song = await prisma.song.findFirstOrThrow({ where: { id: req.params.songId, projectId: req.params.projectId, workspaceId } });
+    const [beat, master, snippet] = await Promise.all([
+      prisma.beatAsset.findFirst({ where: { songId: song.id }, orderBy: { createdAt: 'desc' } }),
+      prisma.master.findFirst({ where: { songId: song.id }, orderBy: { createdAt: 'desc' } }),
+      prisma.videoRender.findFirst({ where: { projectId: song.projectId, provider: 'snippet' }, orderBy: { createdAt: 'desc' } }),
+    ]);
+    // A clean instrumental to sing over exists only for beat+own-vocal songs.
+    const instrumental = beat && beat.provider !== 'ace_step' ? beat.url : null;
+    return {
+      title: song.title,
+      bpm: beat?.bpm ?? null,
+      key: beat?.keySignature ?? null,
+      backingTrack: instrumental,
+      fullMaster: master?.url ?? null,
+      visualizer: snippet?.url ?? null,
+      note: instrumental
+        ? 'Backing track is your instrumental — sing over it live.'
+        : 'This song has AI vocals baked in (no clean instrumental to strip). For a true backing track, make a beat-only song and sing it yourself.',
+    };
+  });
+
   app.get<{ Params: { projectId: string; songId: string } }>('/:songId', async (req) => {
     const { workspaceId } = requireAuth(req);
     const song = await prisma.song.findFirstOrThrow({ where: { id: req.params.songId, projectId: req.params.projectId, workspaceId } });

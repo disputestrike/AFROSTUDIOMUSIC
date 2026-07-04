@@ -45,6 +45,7 @@ import analyze from './routes/analyze';
 import snippet from './routes/snippet';
 import drop from './routes/drop';
 import release from './routes/release';
+import publicRoutes from './routes/public';
 
 initObservability('api');
 
@@ -116,6 +117,7 @@ async function bootstrap() {
       await api.register(songs, { prefix: '/songs' });
       await api.register(uploads, { prefix: '/uploads' });
       await api.register(settings, { prefix: '/settings' });
+      await api.register(publicRoutes, { prefix: '/public' });
     },
     { prefix: '/api/v1' }
   );
