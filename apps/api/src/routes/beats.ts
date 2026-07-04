@@ -30,9 +30,20 @@ export default async function beats(app: FastifyInstance) {
         include: { artist: true },
       });
 
+      // Full song WITH AI vocals: use provided lyrics, else pull the latest.
+      let lyrics = input.lyrics;
+      if (input.withVocals && !lyrics) {
+        const lyric = await prisma.lyricDraft.findFirst({
+          where: { projectId: project.id, ...(input.songId ? { songId: input.songId } : {}) },
+          orderBy: { createdAt: 'desc' },
+        });
+        lyrics = lyric?.cleanVersion ?? lyric?.body ?? undefined;
+        if (!lyrics) return reply.code(400).send({ error: 'no_lyrics — write lyrics first for a vocal song' });
+      }
+
       const charge = await app.chargeCredits({
         workspaceId,
-        key: input.withStems ? 'full_song_demo' : 'beat_idea_short_30s',
+        key: input.withVocals || input.withStems ? 'full_song_demo' : 'beat_idea_short_30s',
         refTable: 'Project',
         refId: project.id,
       });
@@ -43,7 +54,7 @@ export default async function beats(app: FastifyInstance) {
           workspaceId,
           projectId: project.id,
           kind: 'music',
-          provider: process.env.MUSIC_PROVIDER ?? 'stub',
+          provider: input.withVocals ? 'ace_step' : process.env.MUSIC_PROVIDER ?? 'stub',
           status: 'QUEUED',
           inputJson: input as never,
         },
@@ -57,7 +68,7 @@ export default async function beats(app: FastifyInstance) {
           workspaceId,
           projectId: project.id,
           songId: input.songId,
-          input: { ...input, artistTone: project.artist.vocalTone, languages: project.artist.languages },
+          input: { ...input, lyrics, artistTone: project.artist.vocalTone, languages: project.artist.languages },
         },
       });
 

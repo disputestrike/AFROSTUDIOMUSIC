@@ -119,6 +119,10 @@ export const generateBeatInputSchema = z.object({
   durationS: z.number().int().min(15).max(240).default(60),
   vibePrompt: z.string().max(1000).optional(),
   withStems: z.boolean().default(true),
+  // Full song WITH AI vocals: set withVocals + provide lyrics (or let the API
+  // pull the latest lyric for the song). Routes to the vocals model.
+  withVocals: z.boolean().default(false),
+  lyrics: z.string().max(6000).optional(),
 });
 
 // ---------- Voice -----------------------------------------------------------
