@@ -61,15 +61,17 @@ export function ArtifactCard({ toolName, output }: Props) {
 function HookList({ hooks }: { hooks: Array<{ id: string; text: string }> }) {
   return (
     <div>
-      <div className="mb-2 flex items-center gap-2 text-slate-300"><ListMusic className="h-4 w-4" /> {hooks.length} hooks</div>
-      <ul className="grid gap-2 sm:grid-cols-2">
-        {hooks.map((h) => (
-          <li key={h.id} className="rounded-lg border border-slate-800 bg-black/30 p-2 text-slate-200">
-            <div className="line-clamp-3 whitespace-pre-wrap text-sm">{h.text}</div>
-            <div className="mt-1 font-mono text-[10px] text-slate-500">{h.id}</div>
+      <div className="mb-2 flex items-center gap-2 font-medium text-slate-200">
+        <ListMusic className="h-4 w-4 text-afrobrand-400" /> {hooks.length} hooks
+      </div>
+      <ol className="grid gap-2 sm:grid-cols-2">
+        {hooks.map((h, i) => (
+          <li key={h.id} className="flex gap-2 rounded-lg border border-slate-800 bg-black/30 p-2.5 text-slate-100">
+            <span className="mt-0.5 select-none text-xs font-semibold text-afrobrand-400">{i + 1}.</span>
+            <span className="whitespace-pre-wrap text-sm leading-snug">{h.text}</span>
           </li>
         ))}
-      </ul>
+      </ol>
     </div>
   );
 }
@@ -80,11 +82,11 @@ function ScoresList({ scores }: { scores: Array<{ id: string; overall: number; n
     <div>
       <div className="mb-2 flex items-center gap-2 text-slate-300">A&R scores</div>
       <ul className="space-y-1.5">
-        {sorted.map((s) => (
+        {sorted.map((s, i) => (
           <li key={s.id} className="flex items-center gap-3 rounded-lg border border-slate-800 bg-black/30 p-2 text-xs">
-            <span className="w-12 text-right font-mono text-afrobrand-400">{s.overall.toFixed(1)}</span>
+            <span className="select-none text-slate-500">{i + 1}.</span>
+            <span className="w-10 text-right font-semibold text-afrobrand-400">{s.overall.toFixed(1)}</span>
             <span className="text-slate-300">{s.notes ?? '—'}</span>
-            <span className="ml-auto font-mono text-[10px] text-slate-500">{s.id.slice(-6)}</span>
           </li>
         ))}
       </ul>
@@ -97,16 +99,35 @@ function LyricSummary({ lyric }: { lyric: { id: string; title: string } }) {
     <div className="flex items-center gap-2 text-sm text-slate-200">
       <FileText className="h-4 w-4 text-afrobrand-400" />
       Lyric ready: <span className="font-medium">{lyric.title}</span>
-      <span className="font-mono text-[10px] text-slate-500">{lyric.id}</span>
     </div>
   );
 }
 
 function BriefSummary({ brief }: { brief: Record<string, unknown> }) {
+  const b = brief as {
+    mood?: string; topic?: string; language?: string[]; audience?: string;
+    bpm?: number; references?: Array<{ name: string; lane: string }>; notes?: string;
+  };
+  const row = (label: string, value?: React.ReactNode) =>
+    value ? (
+      <div className="flex gap-2">
+        <span className="w-20 shrink-0 text-slate-500">{label}</span>
+        <span className="text-slate-200">{value}</span>
+      </div>
+    ) : null;
   return (
-    <pre className="rounded-lg bg-black/40 p-3 text-xs text-slate-200">
-      {JSON.stringify(brief, null, 2)}
-    </pre>
+    <div className="space-y-1 text-sm">
+      <div className="mb-1 flex items-center gap-2 font-medium text-slate-200">
+        <FileText className="h-4 w-4 text-afrobrand-400" /> Song brief
+      </div>
+      {row('Mood', b.mood)}
+      {row('Topic', b.topic)}
+      {row('Language', b.language?.join(', '))}
+      {row('Audience', b.audience)}
+      {row('BPM', b.bpm)}
+      {row('Lane', b.references?.map((r) => `${r.name} (${r.lane})`).join(', '))}
+      {row('Notes', b.notes)}
+    </div>
   );
 }
 
@@ -119,20 +140,27 @@ function Storyboard({ concept }: { concept: { id: string; title: string; shots: 
   );
 }
 
-function JobPending({ jobId, kind }: { jobId: string; kind: string }) {
+const JOB_LABEL: Record<string, string> = {
+  create_beat_job: 'Making the beat',
+  render_demo_vocal: 'Rendering your vocal',
+  generate_cover_art: 'Painting the cover art',
+  render_video: 'Rendering the video',
+  create_release_kit: 'Bundling the release',
+};
+
+function JobPending({ jobId: _jobId, kind }: { jobId: string; kind: string }) {
   return (
-    <div className="flex items-center gap-2 text-xs text-slate-300">
-      <Clock className="h-4 w-4 text-afrobrand-400 animate-pulse" />
-      Queued <span className="text-slate-500">({kind})</span>
-      <span className="ml-auto font-mono text-[10px] text-slate-500">{jobId}</span>
+    <div className="flex items-center gap-2 text-sm text-slate-300">
+      <Clock className="h-4 w-4 animate-pulse text-afrobrand-400" />
+      {JOB_LABEL[kind] ?? 'Working'}… <span className="text-xs text-slate-500">(this runs in the background)</span>
     </div>
   );
 }
 
-function ApprovedHook({ hookId, songId }: { hookId: string; songId: string }) {
+function ApprovedHook({ songId: _songId }: { hookId: string; songId: string }) {
   return (
     <div className="flex items-center gap-2 text-sm text-emerald-300">
-      <CheckCircle2 className="h-4 w-4" /> Hook approved → song {songId.slice(-6)}
+      <CheckCircle2 className="h-4 w-4" /> Hook approved — song started
     </div>
   );
 }
@@ -141,7 +169,7 @@ function RightsResult({ o }: { o: { receiptId: string; check: { overallRisk: str
   const ok = o.check.okToExport;
   return (
     <div className={`flex items-center gap-2 text-sm ${ok ? 'text-emerald-300' : 'text-amber-300'}`}>
-      <ShieldCheck className="h-4 w-4" /> Rights: {o.check.overallRisk.toUpperCase()} · receipt {o.receiptId.slice(-6)} · {ok ? 'ok to export' : 'review needed'}
+      <ShieldCheck className="h-4 w-4" /> Rights check: {o.check.overallRisk.toUpperCase()} risk · {ok ? 'cleared to release' : 'needs review'}
     </div>
   );
 }
