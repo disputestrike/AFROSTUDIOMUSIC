@@ -33,6 +33,107 @@ export function elevenKey(): string | undefined {
   );
 }
 
+export function replicateToken(): string | undefined {
+  return process.env.REPLICATE_API_TOKEN || process.env.REPLICATE_TOKEN || undefined;
+}
+
+interface ReplicatePrediction {
+  id: string;
+  status: 'starting' | 'processing' | 'succeeded' | 'failed' | 'canceled';
+  output?: string | string[] | null;
+  error?: string | null;
+}
+
+/**
+ * Replicate — meta/musicgen. Real, original instrumental generation, pay-per-
+ * compute (~$0.05–0.20/beat), no subscription. This is the recommended Phase-1
+ * "make real sounds" engine: set MUSIC_PROVIDER=replicate + REPLICATE_API_TOKEN.
+ * MusicGen reliably renders up to ~30s per call (great for beats/loops) and
+ * does not emit separate stems.
+ */
+class ReplicateMusicGenAdapter implements MusicProviderAdapter {
+  readonly name = 'replicate';
+
+  async generate(
+    input: MusicGenerationInput
+  ): Promise<ProviderJobResult<MusicGenerationOutput>> {
+    const token = replicateToken();
+    if (!token) return { status: 'failed', error: 'REPLICATE_API_TOKEN missing' };
+    const duration = Math.min(Math.max(Math.round(input.durationS ?? 30), 5), 30);
+    const res = await fetch('https://api.replicate.com/v1/models/meta/musicgen/predictions', {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${token}`,
+        'content-type': 'application/json',
+        prefer: 'wait', // block up to ~60s; MusicGen usually finishes in-window
+      },
+      body: JSON.stringify({
+        input: {
+          prompt: this.composePrompt(input),
+          duration,
+          model_version: 'stereo-large',
+          output_format: 'mp3',
+          normalization_strategy: 'loudness',
+          temperature: 1,
+          classifier_free_guidance: 3,
+        },
+      }),
+    });
+    if (!res.ok) {
+      return { status: 'failed', error: `replicate ${res.status}: ${(await res.text()).slice(0, 200)}` };
+    }
+    return this.toResult((await res.json()) as ReplicatePrediction, input);
+  }
+
+  async poll(externalId: string): Promise<ProviderJobResult<MusicGenerationOutput>> {
+    const token = replicateToken();
+    if (!token) return { status: 'failed', error: 'REPLICATE_API_TOKEN missing' };
+    const res = await fetch(`https://api.replicate.com/v1/predictions/${externalId}`, {
+      headers: { authorization: `Bearer ${token}` },
+    });
+    if (!res.ok) return { status: 'failed', error: `replicate poll ${res.status}` };
+    return this.toResult((await res.json()) as ReplicatePrediction);
+  }
+
+  private toResult(
+    data: ReplicatePrediction,
+    input?: MusicGenerationInput
+  ): ProviderJobResult<MusicGenerationOutput> {
+    const url = Array.isArray(data.output) ? data.output[data.output.length - 1] : data.output;
+    if (data.status === 'succeeded' && url) {
+      return {
+        externalId: data.id,
+        status: 'succeeded',
+        output: {
+          mainAudioUrl: url,
+          format: 'mp3',
+          durationS: input?.durationS ?? 30,
+          bpm: input?.bpm,
+          keySignature: input?.keySignature,
+        },
+        estimatedCostUsd: 0.1,
+      };
+    }
+    if (data.status === 'failed' || data.status === 'canceled') {
+      return { externalId: data.id, status: 'failed', error: data.error ?? 'replicate failed' };
+    }
+    return { externalId: data.id, status: 'running', pollAfterMs: 5_000 };
+  }
+
+  private composePrompt(input: MusicGenerationInput): string {
+    return [
+      `${input.genre ?? 'afrobeats'} instrumental beat`,
+      `${input.bpm} bpm`,
+      input.keySignature ? `in ${input.keySignature}` : null,
+      input.vibePrompt ?? '',
+      input.artistTone?.length ? `mood: ${input.artistTone.join(', ')}` : null,
+      'catchy, modern, radio-ready, punchy drums, warm bass, melodic, no vocals, leave space for a lead vocal',
+    ]
+      .filter(Boolean)
+      .join(', ');
+  }
+}
+
 class ElevenMusicAdapter implements MusicProviderAdapter {
   readonly name = 'eleven';
   async generate(
@@ -228,6 +329,8 @@ class StubMusicAdapter implements MusicProviderAdapter {
 
 export function musicAdapter(override?: string): MusicProviderAdapter {
   switch (override ?? provider()) {
+    case 'replicate':
+      return new ReplicateMusicGenAdapter();
     case 'eleven':
       return new ElevenMusicAdapter();
     case 'stable_audio':
