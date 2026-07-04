@@ -22,12 +22,23 @@ function provider(): string {
   return (process.env.MUSIC_PROVIDER ?? 'stub').toLowerCase();
 }
 
+/** Accept common env-var spellings so a naming mismatch can't silently break it. */
+export function elevenKey(): string | undefined {
+  return (
+    process.env.ELEVEN_API_KEY ||
+    process.env.ELEVENLABS_API_KEY ||
+    process.env.ELEVEN_LABS_API_KEY ||
+    process.env.XI_API_KEY ||
+    undefined
+  );
+}
+
 class ElevenMusicAdapter implements MusicProviderAdapter {
   readonly name = 'eleven';
   async generate(
     input: MusicGenerationInput
   ): Promise<ProviderJobResult<MusicGenerationOutput>> {
-    const key = process.env.ELEVEN_API_KEY;
+    const key = elevenKey();
     if (!key) {
       return { status: 'failed', error: 'ELEVEN_API_KEY missing' };
     }
@@ -76,7 +87,7 @@ class ElevenMusicAdapter implements MusicProviderAdapter {
     };
   }
   async poll(externalId: string): Promise<ProviderJobResult<MusicGenerationOutput>> {
-    const key = process.env.ELEVEN_API_KEY!;
+    const key = elevenKey()!;
     const res = await fetch(`https://api.elevenlabs.io/v1/music/jobs/${externalId}`, {
       headers: { 'xi-api-key': key },
     });

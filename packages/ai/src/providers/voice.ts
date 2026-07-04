@@ -16,6 +16,7 @@ import type {
   VoiceRenderInput,
   VoiceRenderOutput,
 } from './types';
+import { elevenKey } from './music';
 
 function provider(): string {
   return (process.env.VOICE_PROVIDER ?? 'stub').toLowerCase();
@@ -27,7 +28,7 @@ class ElevenVoiceAdapter implements VoiceProviderAdapter {
   async createProfile(
     input: VoiceProfileSetupInput
   ): Promise<ProviderJobResult<VoiceProfileSetupOutput>> {
-    const key = process.env.ELEVEN_API_KEY;
+    const key = elevenKey();
     if (!key) return { status: 'failed', error: 'ELEVEN_API_KEY missing' };
 
     // Fetch each sample URL and forward as multipart upload.
@@ -58,7 +59,7 @@ class ElevenVoiceAdapter implements VoiceProviderAdapter {
   }
 
   async render(input: VoiceRenderInput): Promise<ProviderJobResult<VoiceRenderOutput>> {
-    const key = process.env.ELEVEN_API_KEY;
+    const key = elevenKey();
     if (!key) return { status: 'failed', error: 'ELEVEN_API_KEY missing' };
 
     // For singing, we pass styled text. Eleven supports style + use_speaker_boost.
