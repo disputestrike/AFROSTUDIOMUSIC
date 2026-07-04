@@ -4,6 +4,7 @@ import { StudioUpload } from '@/components/StudioUpload';
 import { Mixer } from '@/components/Mixer';
 import { ReferenceListen } from '@/components/ReferenceListen';
 import { SnippetMaker } from '@/components/SnippetMaker';
+import { DropMachine } from '@/components/DropMachine';
 
 interface Project {
   id: string;
@@ -60,6 +61,8 @@ export default async function ProjectPage({ params }: { params: Promise<{ id: st
       <ReferenceListen projectId={p.id} />
 
       <Mixer projectId={p.id} />
+
+      <DropMachine projectId={p.id} />
 
       <SnippetMaker projectId={p.id} />
 

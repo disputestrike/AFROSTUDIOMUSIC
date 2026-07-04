@@ -43,6 +43,7 @@ import mixer from './routes/mixer';
 import settings from './routes/settings';
 import analyze from './routes/analyze';
 import snippet from './routes/snippet';
+import drop from './routes/drop';
 
 initObservability('api');
 
@@ -97,6 +98,7 @@ async function bootstrap() {
       await api.register(mixer, { prefix: '/projects/:projectId/mixer' });
       await api.register(analyze, { prefix: '/projects/:projectId/analyze' });
       await api.register(snippet, { prefix: '/projects/:projectId/snippet' });
+      await api.register(drop, { prefix: '/projects/:projectId/drop' });
       await api.register(images, { prefix: '/images' });
       await api.register(videos, { prefix: '/videos' });
       await api.register(voices, { prefix: '/voices' });

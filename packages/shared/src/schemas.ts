@@ -340,6 +340,16 @@ export const analyzeAudioSchema = z.object({
   url: z.string().url(), // an uploaded/imported track url the artist has rights to
 });
 
+// ---------- Drop Machine (batch generate → rank → shortlist) ---------------
+
+export const dropBatchSchema = z.object({
+  theme: z.string().min(3).max(500),
+  count: z.number().int().min(1).max(6).default(3),
+  genre: z.string().max(40).default('afrobeats'),
+  bpm: z.number().int().min(60).max(180).default(103),
+  withVocals: z.boolean().default(true),
+});
+
 // ---------- Snippet (vertical shareable clip) ------------------------------
 
 export const snippetInputSchema = z.object({

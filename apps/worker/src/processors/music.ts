@@ -84,7 +84,13 @@ export async function processMusic(p: MusicPayload) {
         keySignature: result.output.keySignature ?? p.input.keySignature,
         duration: result.output.durationS,
         provider: adapter.name,
-        meta: { externalId: result.externalId, placeholder, fallbackReason } as never,
+        meta: {
+          externalId: result.externalId,
+          placeholder,
+          fallbackReason,
+          // Auto-QC sanity: a real render should have meaningful length.
+          qc: { durationS: result.output.durationS ?? null, ok: (result.output.durationS ?? 0) >= 12 },
+        } as never,
       },
     });
 
