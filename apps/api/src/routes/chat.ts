@@ -354,31 +354,37 @@ export default async function chat(app: FastifyInstance) {
           latestLyric: state.latestLyric,
           latestSong: state.latestSong,
         });
-        const baseMessages = [
-          { role: 'system' as const, content: prompts.STUDIO_CHAT_SYSTEM },
-          { role: 'system' as const, content: `WORKSPACE_CONTEXT=${systemContext}` },
+        const autopilot = body.autopilot === true;
+        const baseMessages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }> = [
+          { role: 'system', content: prompts.STUDIO_CHAT_SYSTEM },
+          ...(autopilot ? [{ role: 'system' as const, content: prompts.STUDIO_AUTOPILOT_DIRECTIVE }] : []),
+          { role: 'system', content: `WORKSPACE_CONTEXT=${systemContext}` },
           ...toModelMessages(history),
         ];
 
-        send({ type: 'stage', stage: 'thinking' });
-        const turn = await chatWithTools({
-          tools: prompts.STUDIO_CHAT_TOOLS as never,
-          messages: baseMessages,
-          temperature: 0.5,
-        });
+        // Agent loop. Manual = 1 tool round then a summary. Autopilot = keep
+        // looping (feeding each step's results back) until the model stops
+        // calling tools or we hit the safety cap.
+        const convo = [...baseMessages];
+        const maxRounds = autopilot ? 14 : 1;
+        let finalText = '';
+        for (let round = 1; round <= maxRounds; round++) {
+          send({ type: 'stage', stage: autopilot ? `producing (step ${round})` : 'thinking' });
+          const turn = await chatWithTools({
+            tools: prompts.STUDIO_CHAT_TOOLS as never,
+            messages: convo,
+            temperature: 0.5,
+          });
 
-        const toolResults: Array<{ name: string; arguments: unknown; output: unknown }> = [];
-        if (turn.toolCalls?.length) {
+          if (!turn.toolCalls?.length) {
+            finalText = turn.text ?? '';
+            break; // model answered / asked — done
+          }
+
+          const roundResults: Array<{ name: string; output: unknown }> = [];
           for (const call of turn.toolCalls) {
             send({ type: 'tool_start', name: call.name });
-            const result = await runChatTool({
-              workspaceId,
-              userId,
-              projectId,
-              app,
-              name: call.name,
-              args: call.arguments,
-            });
+            const result = await runChatTool({ workspaceId, userId, projectId, app, name: call.name, args: call.arguments });
             send({ type: 'tool_result', name: call.name, output: result });
             await prisma.chatMessage.create({
               data: {
@@ -390,29 +396,30 @@ export default async function chat(app: FastifyInstance) {
                 content: JSON.stringify({ name: call.name, result }).slice(0, 4_000),
               },
             });
-            toolResults.push({ name: call.name, arguments: call.arguments, output: result });
+            roundResults.push({ name: call.name, output: result });
           }
-          send({ type: 'stage', stage: 'summarizing' });
-          const finalTurn = await chatWithTools({
-            tools: prompts.STUDIO_CHAT_TOOLS as never,
-            messages: [
-              ...baseMessages,
-              { role: 'assistant', content: turn.text ?? '' },
-              { role: 'system', content: `TOOL_RESULTS=${JSON.stringify(toolResults).slice(0, 12_000)}` },
-              { role: 'user', content: 'Summarize and propose the next step.' },
-            ],
-            temperature: 0.5,
+
+          // Feed results back as text (valid OpenAI format — no orphan tool roles).
+          convo.push({ role: 'assistant', content: turn.text || '(working)' });
+          convo.push({
+            role: 'user',
+            content:
+              `TOOL_RESULTS=${JSON.stringify(roundResults).slice(0, 12_000)}\n\n` +
+              (autopilot
+                ? 'Continue AUTOPILOT — do the next pipeline step now without asking. Use the real IDs from these results. When the release is bundled, give one final summary and stop.'
+                : 'Summarize what you did and propose the next step.'),
           });
-          await prisma.chatMessage.create({
-            data: { threadId: thread.id, role: 'assistant', content: finalTurn.text ?? '' },
-          });
-          send({ type: 'assistant', text: finalTurn.text ?? '' });
-        } else {
-          await prisma.chatMessage.create({
-            data: { threadId: thread.id, role: 'assistant', content: turn.text ?? '' },
-          });
-          send({ type: 'assistant', text: turn.text ?? '' });
+
+          if (!autopilot || round === maxRounds) {
+            send({ type: 'stage', stage: 'summarizing' });
+            const fin = await chatWithTools({ tools: prompts.STUDIO_CHAT_TOOLS as never, messages: convo, temperature: 0.5 });
+            finalText = fin.text ?? finalText;
+            break;
+          }
         }
+
+        await prisma.chatMessage.create({ data: { threadId: thread.id, role: 'assistant', content: finalText } });
+        send({ type: 'assistant', text: finalText });
 
         await prisma.chatThread.update({ where: { id: thread.id }, data: { updatedAt: new Date() } });
         send({ type: 'done' });

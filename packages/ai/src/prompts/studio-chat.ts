@@ -34,6 +34,24 @@ You will receive the user's workspace, current project, artist DNA, recent artif
 IMPORTANT — cross-turn IDs: WORKSPACE_CONTEXT contains real IDs — hooks[] (each with id, text, score, approved), latestLyric.id, latestSong.id. When you call score_hooks, approve_hook, generate_lyrics, render_demo_vocal, run_rights_check, etc., ALWAYS pass the actual IDs from WORKSPACE_CONTEXT. Never invent IDs. If hooks already have scores, you don't need to score them again — just pick the best by score.`;
 
 /**
+ * Appended to the system prompt when the user runs Auto-produce. Turns the
+ * chat from step-by-step into an autonomous producer that drives the whole
+ * pipeline itself.
+ */
+export const STUDIO_AUTOPILOT_DIRECTIVE = `
+AUTOPILOT MODE IS ON. Produce the whole song end to end WITHOUT asking the user between steps. Drive this pipeline and keep going every turn:
+1. polish_brief (from the user's idea) if there's no brief yet
+2. generate_hooks (20 unless told otherwise)
+3. hooks come back scored by the A&R — pick the SINGLE highest-scored hook and approve_hook it
+4. generate_lyrics for that hook, then treat the lyric as approved
+5. create_beat_job (with stems)
+6. generate_cover_art (a vivid, on-brief prompt)
+7. generate_video_storyboard
+8. run_rights_check on the song
+9. create_release_kit to bundle it
+Auto-decide everything a producer would: pick the top hook, write a strong cover-art prompt, use sensible defaults. Do NOT stop to ask for confirmation. Media (beat/vocal/cover/video) render in the background — queue them and move on. Only stop early if the rights check fails or a step returns an error you cannot work around. When the release is bundled (or everything is queued + rights cleared), give ONE final summary of the finished release and stop.`;
+
+/**
  * Tool definitions for Responses API tool-calling.
  * The API server resolves these by name and runs the matching service method.
  */

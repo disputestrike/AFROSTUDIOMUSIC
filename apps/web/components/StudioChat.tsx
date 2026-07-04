@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { useApi } from '@/lib/api';
 import { ArtifactCard } from './ArtifactCard';
-import { Send, Loader2, Mic, Plus, MessageSquare, Play, RotateCcw, Trash2 } from 'lucide-react';
+import { Send, Loader2, Mic, Plus, MessageSquare, Play, RotateCcw, Trash2, Sparkles } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
 interface Message {
@@ -42,6 +42,7 @@ export default function StudioChat({ projectId }: { projectId?: string }) {
   const [draft, setDraft] = useState('');
   const [busy, setBusy] = useState(false);
   const [listening, setListening] = useState(false);
+  const [autopilot, setAutopilot] = useState(false);
   const [stage, setStage] = useState<string | null>(null);
   const bottomRef = useRef<HTMLDivElement | null>(null);
   const recRef = useRef<SR | null>(null);
@@ -108,7 +109,7 @@ export default function StudioChat({ projectId }: { projectId?: string }) {
     try {
       await api.postStream(
         '/chat/messages/stream',
-        { threadId: threadId ?? undefined, projectId, content: text },
+        { threadId: threadId ?? undefined, projectId, content: text, autopilot },
         (evt) => {
           switch (evt.type) {
             case 'thread':
@@ -244,9 +245,21 @@ export default function StudioChat({ projectId }: { projectId?: string }) {
 
         <div className="border-t border-slate-800 bg-slate-950/40 p-3">
           <div className="mx-auto max-w-3xl">
-            {messages.length > 0 && (
-              <div className="mb-2 flex gap-2">
-                {QUICK_ACTIONS.map((a) => (
+            <div className="mb-2 flex items-center gap-2">
+              <button
+                onClick={() => setAutopilot((v) => !v)}
+                title="Auto-produce: run the whole pipeline from one prompt"
+                className={cn(
+                  'flex items-center gap-1.5 rounded-full border px-3 py-1 text-xs font-medium',
+                  autopilot
+                    ? 'border-afrobrand-500 bg-afrobrand-500/20 text-afrobrand-300'
+                    : 'border-slate-700 text-slate-400 hover:text-slate-200'
+                )}
+              >
+                <Sparkles className="h-3.5 w-3.5" /> Auto-produce {autopilot ? 'ON' : 'OFF'}
+              </button>
+              {messages.length > 0 &&
+                QUICK_ACTIONS.map((a) => (
                   <button
                     key={a.label}
                     onClick={() => void sendText(a.prompt)}
@@ -256,6 +269,10 @@ export default function StudioChat({ projectId }: { projectId?: string }) {
                     {a.icon} {a.label}
                   </button>
                 ))}
+            </div>
+            {autopilot && (
+              <div className="mb-2 text-xs text-afrobrand-300/80">
+                Autopilot on — one prompt runs the full pipeline (hooks → pick best → lyrics → beat → cover → bundle) without pausing.
               </div>
             )}
             <div className="flex items-end gap-2">

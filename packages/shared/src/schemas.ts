@@ -237,6 +237,8 @@ export const chatMessageInputSchema = z.object({
   threadId: z.string().cuid().optional(), // create new if absent
   projectId: z.string().cuid().optional(),
   content: z.string().min(1).max(8000),
+  // Autopilot: loop the whole pipeline autonomously instead of one step/turn.
+  autopilot: z.boolean().optional().default(false),
 });
 
 export type ChatMessageInput = z.infer<typeof chatMessageInputSchema>;
