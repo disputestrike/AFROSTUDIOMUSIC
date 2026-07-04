@@ -21,6 +21,38 @@ import { prompts, chatWithTools } from '@afrohit/ai';
 import { requireAuth } from '../middleware/auth';
 import { runChatTool } from '../services/chat-tools';
 
+/**
+ * Every chat needs a project to operate on. If the thread doesn't have one
+ * (e.g. the user opened /studio and typed "make me a song" from scratch),
+ * lazily create a default artist + project and attach it to the thread. This
+ * makes "make me a song" work with zero setup.
+ */
+async function ensureThreadProject(
+  workspaceId: string,
+  thread: { id: string; projectId: string | null }
+): Promise<string> {
+  if (thread.projectId) return thread.projectId;
+  let artist = await prisma.artist.findFirst({ where: { workspaceId }, orderBy: { createdAt: 'asc' } });
+  if (!artist) {
+    artist = await prisma.artist.create({
+      data: {
+        workspaceId,
+        name: 'My Artist',
+        stageName: 'My Artist',
+        vocalTone: ['smooth'],
+        languages: ['pcm', 'yo', 'en'],
+        laneSummary: 'Afro-fusion, hooks lead. Edit your Artist DNA in Settings for sharper results.',
+      },
+    });
+  }
+  const project = await prisma.project.create({
+    data: { workspaceId, artistId: artist.id, title: 'Studio Session', genre: 'afro_fusion', bpm: 103 },
+  });
+  await prisma.chatThread.update({ where: { id: thread.id }, data: { projectId: project.id } });
+  thread.projectId = project.id;
+  return project.id;
+}
+
 export default async function chat(app: FastifyInstance) {
   /** List threads for the current workspace. */
   app.get('/threads', async (req) => {
@@ -65,24 +97,23 @@ export default async function chat(app: FastifyInstance) {
         data: { threadId: thread.id, role: 'user', content: body.content },
       });
 
-      const project = thread.projectId
-        ? await prisma.project.findFirst({
-            where: { id: thread.projectId, workspaceId },
-            include: { artist: true, briefs: { take: 1, orderBy: { createdAt: 'desc' } } },
-          })
-        : null;
+      // Guarantee the thread has a project so every tool has context.
+      const projectId = await ensureThreadProject(workspaceId, thread);
+
+      const project = await prisma.project.findFirst({
+        where: { id: projectId, workspaceId },
+        include: { artist: true, briefs: { take: 1, orderBy: { createdAt: 'desc' } } },
+      });
       const workspace = await prisma.workspace.findUniqueOrThrow({
         where: { id: workspaceId },
         select: { creditsCents: true, plan: true },
       });
-      const recentArtifacts = thread.projectId
-        ? await prisma.providerJob.findMany({
-            where: { projectId: thread.projectId },
-            take: 8,
-            orderBy: { createdAt: 'desc' },
-            select: { id: true, kind: true, status: true, outputJson: true },
-          })
-        : [];
+      const recentArtifacts = await prisma.providerJob.findMany({
+        where: { projectId },
+        take: 8,
+        orderBy: { createdAt: 'desc' },
+        select: { id: true, kind: true, status: true, outputJson: true },
+      });
 
       // Build conversation history.
       const history = await prisma.chatMessage.findMany({
@@ -126,7 +157,7 @@ export default async function chat(app: FastifyInstance) {
           const result = await runChatTool({
             workspaceId,
             userId,
-            projectId: thread.projectId ?? null,
+            projectId,
             app,
             name: call.name,
             args: call.arguments,
@@ -234,12 +265,13 @@ export default async function chat(app: FastifyInstance) {
           data: { threadId: thread.id, role: 'user', content: body.content },
         });
 
-        const project = thread.projectId
-          ? await prisma.project.findFirst({
-              where: { id: thread.projectId, workspaceId },
-              include: { artist: true, briefs: { take: 1, orderBy: { createdAt: 'desc' } } },
-            })
-          : null;
+        // Guarantee the thread has a project so every tool has context.
+        const projectId = await ensureThreadProject(workspaceId, thread);
+
+        const project = await prisma.project.findFirst({
+          where: { id: projectId, workspaceId },
+          include: { artist: true, briefs: { take: 1, orderBy: { createdAt: 'desc' } } },
+        });
         const workspace = await prisma.workspace.findUniqueOrThrow({
           where: { id: workspaceId },
           select: { creditsCents: true, plan: true },
@@ -287,7 +319,7 @@ export default async function chat(app: FastifyInstance) {
             const result = await runChatTool({
               workspaceId,
               userId,
-              projectId: thread.projectId ?? null,
+              projectId,
               app,
               name: call.name,
               args: call.arguments,
