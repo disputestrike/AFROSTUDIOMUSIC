@@ -2,7 +2,7 @@ import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { prisma } from '@afrohit/db';
 import { generateHooksInputSchema, langSchema } from '@afrohit/shared';
-import { prompts, responsesJson } from '@afrohit/ai';
+import { prompts, responsesJson, directorRefineHooks } from '@afrohit/ai';
 import { requireAuth } from '../middleware/auth';
 import { memoryContext, recordFeedback } from '../services/artist-memory';
 
@@ -64,29 +64,60 @@ export default async function hooks(app: FastifyInstance) {
         maxOutputTokens: 4_000,
       });
 
+      // Secret sauce — multi-model: GPT wrote the drafts (breadth); now Claude
+      // acts as A&R director (taste, cultural authenticity, refine, score, rank).
+      // Falls back to the GPT drafts if Anthropic isn't configured or errors.
+      const drafts = (result.hooks ?? []).map((h) => h.text);
+      const refined = await directorRefineHooks({
+        artist: project.artist as never,
+        brief: brief as never,
+        drafts,
+        tasteMemory,
+      });
+
+      const langFilter = (arr: string[]) =>
+        arr.filter(
+          (c): c is z.infer<typeof langSchema> =>
+            ['yo', 'ig', 'ha', 'pcm', 'en', 'fr', 'pt', 'sw', 'zu', 'xh', 'twi'].includes(c)
+        );
+
+      const rows = refined
+        ? refined.map((h) => ({
+            text: h.text,
+            language: langFilter(h.language ?? []),
+            score: typeof h.score === 'number' ? h.score : null,
+            meta: { reason: h.reason, needsNativeReview: h.needsNativeReview, director: 'claude' },
+          }))
+        : (result.hooks ?? []).map((h) => ({
+            text: h.text,
+            language: langFilter(h.language ?? []),
+            score: null as number | null,
+            meta: {
+              syllablePattern: h.syllablePattern,
+              melodyNotes: h.melodyNotes,
+              callResponse: h.callResponse,
+              director: 'none',
+            },
+          }));
+
       const created = await prisma.$transaction(
-        (result.hooks ?? []).map((h) =>
+        rows.map((r) =>
           prisma.hookCandidate.create({
             data: {
               projectId: project.id,
-              text: h.text,
-              language: (h.language ?? []).filter(
-                (c): c is z.infer<typeof langSchema> =>
-                  ['yo', 'ig', 'ha', 'pcm', 'en', 'fr', 'pt', 'sw', 'zu', 'xh', 'twi'].includes(c)
-              ),
-              bpm: h.bpm,
-              meta: {
-                syllablePattern: h.syllablePattern,
-                melodyNotes: h.melodyNotes,
-                callResponse: h.callResponse,
-              },
+              text: r.text,
+              language: r.language,
+              score: r.score,
+              meta: r.meta as never,
             },
           })
         )
       );
+      // Best-first when the A&R director scored them.
+      created.sort((a, b) => (b.score ?? 0) - (a.score ?? 0));
 
       reply.code(201);
-      return { hooks: created, charged: charge.balance };
+      return { hooks: created, charged: charge.balance, director: refined ? 'claude' : 'none' };
     }
   );
 

@@ -10,7 +10,7 @@
  */
 import type { FastifyInstance } from 'fastify';
 import { prisma } from '@afrohit/db';
-import { prompts, responsesJson, scoreItems, runRightsCheck, canonicalReceiptHash } from '@afrohit/ai';
+import { prompts, responsesJson, scoreItems, runRightsCheck, canonicalReceiptHash, directorRefineHooks } from '@afrohit/ai';
 import { enqueue } from '../lib/queue';
 import { memoryContext, recordFeedback } from './artist-memory';
 
@@ -99,20 +99,42 @@ async function generateHooks(ctx: Ctx, count: number) {
     temperature: 0.95,
     maxOutputTokens: 4_000,
   });
+
+  // Multi-model A&R: Claude refines + scores GPT's drafts (falls back to drafts).
+  const drafts = (result.hooks ?? []).map((h) => h.text);
+  const refined = await directorRefineHooks({
+    artist: project.artist as never,
+    brief: project.briefs[0] as never,
+    drafts,
+    tasteMemory,
+  });
+
+  const rows = refined
+    ? refined.map((h) => ({
+        text: h.text,
+        language: (h.language ?? []) as never,
+        score: typeof h.score === 'number' ? h.score : null,
+        meta: { reason: h.reason, needsNativeReview: h.needsNativeReview, director: 'claude' } as never,
+      }))
+    : (result.hooks ?? []).map((h) => ({
+        text: h.text,
+        language: (h.language ?? []) as never,
+        score: null as number | null,
+        meta: { syllablePattern: h.syllablePattern, director: 'none' } as never,
+      }));
+
   const created = await prisma.$transaction(
-    (result.hooks ?? []).map((h) =>
+    rows.map((r) =>
       prisma.hookCandidate.create({
-        data: {
-          projectId: project.id,
-          text: h.text,
-          language: (h.language ?? []) as never,
-          bpm: h.bpm,
-          meta: { syllablePattern: h.syllablePattern, melodyNotes: h.melodyNotes, callResponse: h.callResponse } as never,
-        },
+        data: { projectId: project.id, text: r.text, language: r.language, score: r.score, meta: r.meta },
       })
     )
   );
-  return { hooks: created.map((c) => ({ id: c.id, text: c.text })) };
+  created.sort((a, b) => (b.score ?? 0) - (a.score ?? 0));
+  return {
+    hooks: created.map((c) => ({ id: c.id, text: c.text, score: c.score })),
+    director: refined ? 'claude' : 'none',
+  };
 }
 
 async function scoreHooks(ctx: Ctx, hookIds: string[]) {
