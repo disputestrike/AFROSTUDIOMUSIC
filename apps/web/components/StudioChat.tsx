@@ -44,6 +44,7 @@ export default function StudioChat({ projectId }: { projectId?: string }) {
   const [listening, setListening] = useState(false);
   const [autopilot, setAutopilot] = useState(false);
   const [stage, setStage] = useState<string | null>(null);
+  const [micAvailable, setMicAvailable] = useState(false); // set after mount → no SSR mismatch
   const bottomRef = useRef<HTMLDivElement | null>(null);
   const recRef = useRef<SR | null>(null);
 
@@ -60,6 +61,7 @@ export default function StudioChat({ projectId }: { projectId?: string }) {
   }
   useEffect(() => {
     void loadThreads();
+    setMicAvailable(!!getSpeechRecognition());
   }, []);
 
   async function openThread(id: string) {
@@ -178,8 +180,6 @@ export default function StudioChat({ projectId }: { projectId?: string }) {
     setListening(true);
     rec.start();
   }
-
-  const micAvailable = typeof window !== 'undefined' && !!getSpeechRecognition();
 
   return (
     <div className="grid h-full grid-cols-[240px_1fr]">

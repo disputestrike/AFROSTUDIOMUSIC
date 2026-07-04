@@ -7,7 +7,7 @@ export default async function StudioPage({
 }) {
   const { project } = await searchParams;
   return (
-    <div className="h-[calc(100vh-49px)]">
+    <div className="h-full">
       <StudioChat projectId={project} />
     </div>
   );
