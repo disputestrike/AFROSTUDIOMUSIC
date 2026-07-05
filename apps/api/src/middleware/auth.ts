@@ -64,6 +64,16 @@ async function getOrCreateDefaultIdentity(): Promise<{ userId: string; workspace
 export const authPlugin = fp(async function (app: FastifyInstance) {
   app.decorateRequest('auth', undefined);
 
+  // Loud safety warning: internal mode NEVER rejects a request, so if this
+  // instance is reachable from the public internet, anyone gets the owner's
+  // workspace + spends the owner's provider budget. Keep it private until real
+  // auth (Phase 2) exists. (Warn, don't crash — the operator runs this on purpose.)
+  if (isInternalMode() && process.env.NODE_ENV === 'production') {
+    app.log.warn(
+      '⚠️  AUTH_MODE=internal in production — the API does NOT authenticate. Do not expose it publicly without a proxy/network gate in front. See PATH-TO-MILLIONS roadmap.'
+    );
+  }
+
   app.addHook('preValidation', async (req, reply) => {
     const url = req.routeOptions?.url ?? req.url ?? '';
     if (url.startsWith('/health')) return;

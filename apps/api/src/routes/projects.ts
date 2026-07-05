@@ -87,13 +87,16 @@ export default async function projects(app: FastifyInstance) {
 
   app.post<{ Params: { id: string }; Body: { gate: string; decision: string; notes?: string } }>(
     '/:id/approve',
-    async (req) => {
+    async (req, reply) => {
       const { userId, workspaceId } = requireAuth(req);
       const { gate, decision, notes } = req.body;
+      // Scope: only approve gates on a project in this workspace.
+      const project = await prisma.project.findFirst({ where: { id: req.params.id, workspaceId }, select: { id: true } });
+      if (!project) return reply.code(404).send({ error: 'project_not_found' });
       return prisma.approval.create({
         data: {
           workspaceId,
-          projectId: req.params.id,
+          projectId: project.id,
           userId,
           gate,
           decision,

@@ -21,10 +21,12 @@ export async function processMaster(p: MasterPayload) {
     if (!(await ffmpegAvailable())) {
       throw new Error('ffmpeg binary not found on worker host — install ffmpeg (Railway nixpacks includes it)');
     }
+    // Re-scope by the payload workspace — treat the job payload as untrusted
+    // (defense-in-depth; never master a mix from another workspace).
     const mix = p.mixId
-      ? await prisma.mix.findUniqueOrThrow({ where: { id: p.mixId } })
+      ? await prisma.mix.findFirstOrThrow({ where: { id: p.mixId, project: { workspaceId: p.workspaceId } } })
       : await prisma.mix.findFirstOrThrow({
-          where: { songId: p.songId },
+          where: { songId: p.songId, project: { workspaceId: p.workspaceId } },
           orderBy: { createdAt: 'desc' },
         });
 

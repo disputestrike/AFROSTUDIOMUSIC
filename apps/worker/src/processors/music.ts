@@ -41,18 +41,19 @@ export async function processMusic(p: MusicPayload) {
       result = await adapter.poll(result.externalId);
     }
 
-    // Graceful fallback — if the real provider is unavailable (e.g. ElevenLabs
-    // Music needs a paid plan → 402), fall back to a clearly-marked placeholder
-    // so the song still bundles. Auto-upgrades to real audio once the provider
-    // works. The failure reason is preserved in the asset meta.
-    let placeholder = false;
-    let fallbackReason: string | undefined;
+    // NO FAKE AUDIO. If a real provider fails, FAIL the job with the real reason
+    // — never substitute an off-genre placeholder (a SoundHelix rock mp3) and
+    // call it the artist's song. The stub is only acceptable when it's the
+    // explicitly-configured provider (local dev / STUB_AI), never as a silent
+    // fallback for a failed real render.
+    const placeholder = false;
+    const fallbackReason: string | undefined = undefined;
     if ((result.status !== 'succeeded' || !result.output) && adapter.name !== 'stub') {
-      fallbackReason = result.error ?? 'provider_failed';
-      const stub = musicAdapter('stub');
-      result = await stub.generate(p.input);
-      adapter = stub;
-      placeholder = true;
+      await markFailed(
+        p.jobId,
+        `music_generation_failed: ${result.error ?? 'provider_failed'} — no placeholder emitted; retry or switch engine in Settings.`
+      );
+      return;
     }
 
     if (result.status !== 'succeeded' || !result.output) {

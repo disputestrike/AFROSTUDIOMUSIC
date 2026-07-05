@@ -4,7 +4,7 @@ import { renderVocalInputSchema, attachVocalUploadSchema } from '@afrohit/shared
 import { prompts, responsesJson } from '@afrohit/ai';
 import { requireAuth } from '../middleware/auth';
 import { enqueue } from '../lib/queue';
-import { publicUrlFor } from '../lib/storage';
+import { publicUrlFor, assertOwnedKey } from '../lib/storage';
 
 export default async function vocals(app: FastifyInstance) {
   app.post<{ Params: { projectId: string } }>(
@@ -130,7 +130,7 @@ export default async function vocals(app: FastifyInstance) {
           projectId: project.id,
           songId,
           role: input.role,
-          url: publicUrlFor(input.key),
+          url: publicUrlFor(assertOwnedKey(workspaceId, input.key)),
           duration: input.durationS ?? null,
           language: input.language ?? null,
           approved: true, // the artist's own performance is authentic — auto-approved

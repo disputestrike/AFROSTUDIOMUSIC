@@ -43,6 +43,20 @@ export async function presignDownload(key: string, expiresInSec = 3600) {
   });
 }
 
+/**
+ * Guard a caller-supplied storage key: it MUST live under the caller's
+ * workspace prefix and contain no traversal. Presign writes keys as
+ * `${workspaceId}/...`, so an attach/import that accepts a client key must
+ * reject anything outside that namespace (cross-tenant read/exfil otherwise).
+ * Throws on violation. Returns the key when safe.
+ */
+export function assertOwnedKey(workspaceId: string, key: string): string {
+  if (typeof key !== 'string' || !key.startsWith(`${workspaceId}/`) || key.includes('..') || key.includes('//')) {
+    throw Object.assign(new Error('forbidden_key'), { statusCode: 403 });
+  }
+  return key;
+}
+
 export function publicUrlFor(key: string): string {
   if (publicBase) return `${publicBase.replace(/\/+$/, '')}/${key}`;
   if (endpoint) return `${endpoint.replace(/\/+$/, '')}/${bucket}/${key}`;

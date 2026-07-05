@@ -51,6 +51,9 @@ export default async function voices(app: FastifyInstance) {
       const consent = await prisma.voiceConsent.findFirstOrThrow({
         where: { id: input.consentId, workspaceId, revokedAt: null },
       });
+      // Verify the artist is in THIS workspace too — never attach a voice profile
+      // (and its future renders) to another workspace's Artist id.
+      await prisma.artist.findFirstOrThrow({ where: { id: input.artistId, workspaceId } });
 
       const charge = await app.chargeCredits({
         workspaceId,

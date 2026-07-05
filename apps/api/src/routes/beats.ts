@@ -4,7 +4,7 @@ import { generateBeatInputSchema, attachBeatUploadSchema } from '@afrohit/shared
 import { enrichLyricsForVocals, soundBrief } from '@afrohit/ai';
 import { requireAuth } from '../middleware/auth';
 import { enqueue, QUEUES } from '../lib/queue';
-import { publicUrlFor } from '../lib/storage';
+import { publicUrlFor, assertOwnedKey } from '../lib/storage';
 
 export default async function beats(app: FastifyInstance) {
   app.get<{ Params: { projectId: string } }>(
@@ -154,7 +154,7 @@ export default async function beats(app: FastifyInstance) {
         data: {
           projectId: project.id,
           songId,
-          url: publicUrlFor(input.key),
+          url: publicUrlFor(assertOwnedKey(workspaceId, input.key)),
           format: input.format,
           bpm: input.bpm ?? null,
           keySignature: input.keySignature ?? null,

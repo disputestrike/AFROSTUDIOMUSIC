@@ -3,7 +3,7 @@ import { prisma } from '@afrohit/db';
 import { createMasterInputSchema, createMixInputSchema, attachSongUploadSchema } from '@afrohit/shared';
 import { requireAuth } from '../middleware/auth';
 import { enqueue } from '../lib/queue';
-import { publicUrlFor } from '../lib/storage';
+import { publicUrlFor, assertOwnedKey } from '../lib/storage';
 
 export default async function mixes(app: FastifyInstance) {
   app.post<{ Params: { projectId: string } }>(
@@ -15,6 +15,8 @@ export default async function mixes(app: FastifyInstance) {
       const project = await prisma.project.findFirstOrThrow({
         where: { id: req.params.projectId, workspaceId },
       });
+      // The song must belong to this workspace — never mix another tenant's song.
+      await prisma.song.findFirstOrThrow({ where: { id: input.songId, workspaceId } });
 
       const charge = await app.chargeCredits({
         workspaceId,
@@ -58,6 +60,9 @@ export default async function mixes(app: FastifyInstance) {
     async (req, reply) => {
       const { workspaceId } = requireAuth(req);
       const input = createMasterInputSchema.omit({ projectId: true }).parse(req.body);
+      // Verify both the project and the song are in this workspace before charging.
+      await prisma.project.findFirstOrThrow({ where: { id: req.params.projectId, workspaceId } });
+      await prisma.song.findFirstOrThrow({ where: { id: input.songId, workspaceId } });
 
       const charge = await app.chargeCredits({
         workspaceId,
@@ -127,7 +132,7 @@ export default async function mixes(app: FastifyInstance) {
           projectId: project.id,
           songId,
           preset: 'uploaded',
-          url: publicUrlFor(input.key),
+          url: publicUrlFor(assertOwnedKey(workspaceId, input.key)),
           notes: `Uploaded finished song${input.title ? ` — ${input.title}` : ''} (artist master source)`,
         },
       });

@@ -112,12 +112,15 @@ export default async function lyrics(app: FastifyInstance) {
 
   app.post<{ Params: { projectId: string; lyricId: string } }>(
     '/:lyricId/approve',
-    async (req) => {
+    async (req, reply) => {
       const { userId, workspaceId } = requireAuth(req);
-      const lyric = await prisma.lyricDraft.update({
-        where: { id: req.params.lyricId },
+      // Scope by workspace — never approve another workspace's lyric by id.
+      const updated = await prisma.lyricDraft.updateMany({
+        where: { id: req.params.lyricId, project: { workspaceId } },
         data: { approved: true },
       });
+      if (updated.count === 0) return reply.code(404).send({ error: 'lyric_not_found' });
+      const lyric = await prisma.lyricDraft.findUniqueOrThrow({ where: { id: req.params.lyricId } });
       await prisma.approval.create({
         data: {
           workspaceId,

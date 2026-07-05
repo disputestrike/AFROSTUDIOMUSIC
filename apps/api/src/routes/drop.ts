@@ -55,7 +55,27 @@ export default async function drop(app: FastifyInstance) {
             const m = new Map((sc?.scores ?? []).map((s) => [s.id, s.overall]));
             hooks = hooks.map((h) => ({ ...h, score: m.get(h.id) ?? h.score }));
           }
-          const best = hooks.slice().sort((a, b) => (b.score ?? 0) - (a.score ?? 0))[0]!;
+          let best = hooks.slice().sort((a, b) => (b.score ?? 0) - (a.score ?? 0))[0]!;
+
+          // Quality floor: if the best hook is below the bar, regenerate ONCE more
+          // and keep the best across both rounds. Raises the floor without ever
+          // hard-failing the drop (a strong hook is what carries an Afrobeats record).
+          const MIN_HOOK_SCORE = Number(process.env.MIN_HOOK_SCORE ?? 6.5);
+          if ((best.score ?? 0) < MIN_HOOK_SCORE) {
+            const hk2 = (await runChatTool({ ...ctx, name: 'generate_hooks', args: { count: 10 } })) as {
+              hooks?: Array<{ id: string; text: string; score: number | null }>;
+            };
+            let hooks2 = hk2?.hooks ?? [];
+            if (hooks2.length && hooks2.every((h) => h.score == null)) {
+              const sc2 = (await runChatTool({ ...ctx, name: 'score_hooks', args: { hookIds: hooks2.map((h) => h.id) } })) as {
+                scores?: Array<{ id: string; overall: number }>;
+              };
+              const m2 = new Map((sc2?.scores ?? []).map((s) => [s.id, s.overall]));
+              hooks2 = hooks2.map((h) => ({ ...h, score: m2.get(h.id) ?? h.score }));
+            }
+            const combined = [...hooks, ...hooks2].sort((a, b) => (b.score ?? 0) - (a.score ?? 0));
+            if (combined[0]) best = combined[0];
+          }
 
           const ap = (await runChatTool({ ...ctx, name: 'approve_hook', args: { hookId: best.id } })) as {
             songId?: string;
