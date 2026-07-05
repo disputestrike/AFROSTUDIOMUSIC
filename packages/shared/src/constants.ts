@@ -4,6 +4,7 @@
  */
 
 export const GENRES = [
+  // Afro / diaspora core
   'afrobeats',
   'afro_fusion',
   'amapiano',
@@ -15,6 +16,18 @@ export const GENRES = [
   'hip_hop',
   'highlife',
   'reggae',
+  // Global — all-genre, each with full Sound DNA (packages/ai/src/sound-dna/global-genres.ts)
+  'pop',
+  'rnb',
+  'dancehall',
+  'drill',
+  'trap',
+  'house',
+  'edm',
+  'reggaeton',
+  'country',
+  'rock',
+  'soul',
 ] as const;
 export type Genre = (typeof GENRES)[number];
 

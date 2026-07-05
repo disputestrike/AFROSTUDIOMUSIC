@@ -15,16 +15,31 @@
  * audio, lyrics, or verbatim third-party prose is ever involved.
  */
 import { SOUND_DNA, type SoundDNA } from './recipes';
-import { getEnrichment } from './enrichment';
+import { GLOBAL_SOUND_DNA, GLOBAL_ENRICHMENT } from './global-genres';
+import { GENRE_ENRICHMENT, type GenreEnrichment } from './enrichment';
 
 export { SOUND_DNA };
 export type { SoundDNA } from './recipes';
-export { GENRE_ENRICHMENT, getEnrichment, type GenreEnrichment } from './enrichment';
+export type { GenreEnrichment } from './enrichment';
+export { GENRE_ENRICHMENT } from './enrichment';
 
-/** Look up the recipe for a genre. Returns undefined for unknown genres. */
+// The full library = Afro seed DNA + global genres (pop/rnb/dancehall/drill/…),
+// and likewise for the current-trends enrichment. All lookups go through these.
+const ALL_DNA: Record<string, SoundDNA> = { ...SOUND_DNA, ...GLOBAL_SOUND_DNA };
+const ALL_ENRICHMENT: Record<string, GenreEnrichment> = { ...GENRE_ENRICHMENT, ...GLOBAL_ENRICHMENT };
+/** Every enrichment record (Afro + global), keyed by genre. */
+export const GENRE_ENRICHMENT_ALL = ALL_ENRICHMENT;
+
+/** Look up the recipe for a genre (Afro OR global). Returns undefined if unknown. */
 export function getSoundDNA(genre?: string | null): SoundDNA | undefined {
   if (!genre) return undefined;
-  return SOUND_DNA[genre as keyof typeof SOUND_DNA];
+  return ALL_DNA[genre];
+}
+
+/** Current-trends enrichment for a genre (Afro OR global). */
+export function getEnrichment(genre?: string | null): GenreEnrichment | undefined {
+  if (!genre) return undefined;
+  return ALL_ENRICHMENT[genre];
 }
 
 function dedupe(items: Array<string | undefined | null>): string[] {

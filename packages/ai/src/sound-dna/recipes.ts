@@ -12,8 +12,6 @@
  *
  * Generated seed (Phase 1). Edit freely — Benjamin's ear is the final gate.
  */
-import type { Genre } from '@afrohit/shared';
-
 export interface ChordMove { roman: string; description: string; whereUsed?: string }
 export interface ArrangementMove { section: string; bars: string; whatHappens: string }
 export interface Instrumentation { core: string[]; signature: string[]; percussion: string[]; bass: string; keys?: string; guitar?: string }
@@ -41,7 +39,9 @@ export interface SoundDNA {
   sources: string[];
 }
 
-export const SOUND_DNA: Record<Genre, SoundDNA> = {
+// Keyed by genre string (Afro seed genres). Global genres live in global-genres.ts
+// and are merged in index.ts, so this stays Record<string> not Record<Genre>.
+export const SOUND_DNA: Record<string, SoundDNA> = {
   "afrobeats": {
     "genre": "afrobeats",
     "displayName": "Afrobeats",
