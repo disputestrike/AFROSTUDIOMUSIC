@@ -3,7 +3,7 @@
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { useApi } from '@/lib/api';
-import { Trash2, Download, Wand2, FileText, Copy, Recycle, Pencil, Sliders, X, Loader2 } from 'lucide-react';
+import { Trash2, Download, Wand2, FileText, Copy, Recycle, Pencil, Sliders, X, Loader2, Music2, Layers } from 'lucide-react';
 
 export interface SongRow {
   id: string;
@@ -73,6 +73,15 @@ export default function CatalogGrid({ initial }: { initial: SongRow[] }) {
     setBusy(`${s.id}:dup`);
     try { await api.post(`/songs/${s.id}/duplicate`, {}); flash('Duplicated. Refresh to see the copy.'); }
     catch (e) { flash((e as Error).message || 'Duplicate failed'); }
+    finally { setBusy(''); }
+  }
+
+  async function separate(s: SongRow, mode: 'instrumental' | 'full') {
+    setBusy(`${s.id}:${mode}`);
+    try {
+      await api.post(`/songs/${s.id}/stems`, { mode });
+      flash(mode === 'instrumental' ? 'Making the instrumental — it’ll appear in Download in ~1 min.' : 'Separating stems — they’ll appear in Download in ~1 min.');
+    } catch (e) { flash((e as Error).message || 'Separation failed'); }
     finally { setBusy(''); }
   }
 
@@ -161,6 +170,8 @@ export default function CatalogGrid({ initial }: { initial: SongRow[] }) {
               </div>
               {openId === s.id && (
                 <div className="mt-2 flex flex-wrap gap-1.5 border-t border-white/5 pt-2">
+                  <Action label="Instrumental" icon={<Music2 className="h-3.5 w-3.5" />} busy={isBusy(s.id, 'instrumental')} onClick={() => void separate(s, 'instrumental')} />
+                  <Action label="Stems" icon={<Layers className="h-3.5 w-3.5" />} busy={isBusy(s.id, 'full')} onClick={() => void separate(s, 'full')} />
                   <Action label="Reuse beat" icon={<Recycle className="h-3.5 w-3.5" />} busy={isBusy(s.id, 'reuse')} onClick={() => void reuseBeat(s)} />
                   <Action label="Duplicate" icon={<Copy className="h-3.5 w-3.5" />} busy={isBusy(s.id, 'dup')} onClick={() => void duplicate(s)} />
                   <Action label="Rename" icon={<Pencil className="h-3.5 w-3.5" />} onClick={() => void rename(s)} />

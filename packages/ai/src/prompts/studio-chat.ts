@@ -306,6 +306,16 @@ export const STUDIO_CHAT_TOOLS = [
   },
   {
     type: 'function' as const,
+    name: 'separate_stems',
+    description:
+      'Split a rendered song into a downloadable INSTRUMENTAL (mode=instrumental) or full stems — vocals/drums/bass/other (mode=full) for remixing. Use when the user wants the instrumental or stems.',
+    parameters: {
+      type: 'object',
+      properties: { songId: { type: 'string' }, mode: { type: 'string', enum: ['instrumental', 'full'], default: 'instrumental' } },
+    },
+  },
+  {
+    type: 'function' as const,
     name: 'set_release_rights',
     description:
       'Set the split-sheet + rights on a song and (if splits sum to 100) auto-assign ISRC/UPC and recompute the release green-light.',

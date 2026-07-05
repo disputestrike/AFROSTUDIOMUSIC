@@ -68,6 +68,8 @@ export async function runChatTool(args: Ctx & { name: string; args: Record<strin
       return listCatalogTool(ctx);
     case 'set_release_rights':
       return setReleaseRightsTool(ctx, a as never);
+    case 'separate_stems':
+      return separateStemsTool(ctx, a.songId ? String(a.songId) : undefined, a.mode === 'full' ? 'full' : 'instrumental');
     default:
       return { error: `unknown_tool:${name}` };
   }
@@ -626,6 +628,22 @@ async function listCatalogTool(ctx: Ctx) {
     count: songs.length,
     songs: songs.map((s) => ({ id: s.id, title: s.lyric?.title || s.title, status: s.status, releaseReady: s.releaseReady, audioUrl: s.masters[0]?.url ?? s.mixes[0]?.url ?? s.beats[0]?.url ?? null })),
   };
+}
+
+async function separateStemsTool(ctx: Ctx, songId: string | undefined, mode: 'instrumental' | 'full') {
+  const song = songId
+    ? await prisma.song.findFirst({ where: { id: songId, workspaceId: ctx.workspaceId }, include: { beats: { orderBy: { createdAt: 'desc' }, take: 1 } } })
+    : ctx.projectId
+    ? await prisma.song.findFirst({ where: { projectId: ctx.projectId }, orderBy: { createdAt: 'desc' }, include: { beats: { orderBy: { createdAt: 'desc' }, take: 1 } } })
+    : null;
+  if (!song) return { error: 'no_song' };
+  const beat = song.beats[0];
+  if (!beat) return { error: 'no_audio_to_separate' };
+  const charge = await ctx.app.chargeCredits({ workspaceId: ctx.workspaceId, key: 'beat_idea_short_30s' });
+  if (!charge.ok) return { error: 'insufficient_credits', ...charge };
+  const job = await prisma.providerJob.create({ data: { workspaceId: ctx.workspaceId, projectId: song.projectId, kind: 'stems', provider: 'replicate', status: 'QUEUED', inputJson: { songId: song.id, beatId: beat.id, mode } as never } });
+  await enqueue({ queue: ctx.app.queues.music, name: 'stems', payload: { jobId: job.id, workspaceId: ctx.workspaceId, projectId: song.projectId, songId: song.id, beatId: beat.id, mode } });
+  return { jobId: job.id, status: 'queued', mode, note: mode === 'instrumental' ? 'Instrumental will appear in the song download shortly.' : 'Stems (vocals/drums/bass/other) will appear in the song download shortly.' };
 }
 
 async function setReleaseRightsTool(ctx: Ctx, a: { songId: string; splitSheet?: Array<{ name: string; role: string; share: number }>; nativeReviewOk?: boolean }) {

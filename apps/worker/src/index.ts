@@ -9,6 +9,7 @@ import * as Sentry from '@sentry/node';
 import { processMusic } from './processors/music';
 import { processAnalyze } from './processors/analyze';
 import { processSnippet } from './processors/snippet';
+import { processStems } from './processors/stems';
 import { processVoice } from './processors/voice';
 import { processVoiceProfile } from './processors/voice-profile';
 import { processImage } from './processors/image';
@@ -56,6 +57,7 @@ const workers = [
   makeWorker('music', async (job: { data: never; name: string }) => {
     if (job.name === 'analyze-audio') await processAnalyze(job.data as never);
     else if (job.name === 'snippet') await processSnippet(job.data as never);
+    else if (job.name === 'stems') await processStems(job.data as never);
     else await processMusic(job.data as never);
   }),
   makeWorker('voice', async (job: { data: never; name: string }) => {

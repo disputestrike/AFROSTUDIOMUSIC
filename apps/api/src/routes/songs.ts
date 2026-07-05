@@ -274,6 +274,29 @@ export default async function songs(app: FastifyInstance) {
     return { songId: copy.id, projectId: project.id };
   });
 
+  // ---- Instrumental + stems (Demucs stem separation) ----
+  app.post<{ Params: { id: string }; Body: { mode?: 'instrumental' | 'full' } }>('/:id/stems', async (req, reply) => {
+    const { workspaceId } = requireAuth(req);
+    const mode = req.body?.mode === 'full' ? 'full' : 'instrumental';
+    const song = await prisma.song.findFirst({
+      where: { id: req.params.id, workspaceId },
+      include: { beats: { orderBy: { createdAt: 'desc' }, take: 1 } },
+    });
+    if (!song) return reply.code(404).send({ error: 'song_not_found' });
+    const beat = song.beats[0];
+    if (!beat) return reply.code(400).send({ error: 'no_audio_to_separate' });
+
+    const charge = await app.chargeCredits({ workspaceId, key: 'beat_idea_short_30s', refTable: 'Song', refId: song.id });
+    if (!charge.ok) return reply.code(402).send({ error: 'insufficient_credits', ...charge });
+
+    const job = await prisma.providerJob.create({
+      data: { workspaceId, projectId: song.projectId, kind: 'stems', provider: 'replicate', status: 'QUEUED', inputJson: { songId: song.id, beatId: beat.id, mode } as never },
+    });
+    await enqueue({ queue: app.queues.music, name: 'stems', payload: { jobId: job.id, workspaceId, projectId: song.projectId, songId: song.id, beatId: beat.id, mode } });
+    reply.code(202);
+    return { jobId: job.id, status: 'queued', mode };
+  });
+
   app.delete<{ Params: { id: string } }>('/:id', async (req, reply) => {
     const { workspaceId } = requireAuth(req);
     await prisma.song.deleteMany({ where: { id: req.params.id, workspaceId } });
