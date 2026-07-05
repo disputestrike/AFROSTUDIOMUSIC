@@ -15,11 +15,14 @@ export function tavilyKey(): string | undefined {
 export function braveKey(): string | undefined {
   return process.env.BRAVE_API_KEY || process.env.BRAVE_SEARCH_API_KEY || undefined;
 }
+export function youtubeKey(): string | undefined {
+  return process.env.YOUTUBE_API_KEY || process.env.YT_API_KEY || undefined;
+}
 
 export interface TrendResult {
   digest: string;
   sources: Array<{ title: string; url: string }>;
-  source: 'tavily' | 'brave' | 'news_rss' | 'stub';
+  source: 'youtube' | 'tavily' | 'brave' | 'news_rss' | 'stub';
 }
 
 /** Diagnostic: raw Tavily call surfacing the real status/error. */
@@ -74,6 +77,44 @@ async function tryBrave(query: string): Promise<TrendResult | null> {
       .map((r) => `• ${r.title}${r.description ? ` — ${r.description}` : ''}`)
       .join('\n');
     return digest ? { digest, sources, source: 'brave' } : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * LEGAL "pull from YouTube": the official YouTube Data API returns METADATA only
+ * (titles, artists/channels, view counts) — never audio. We use it to learn WHAT
+ * is charting in the genre right now (this year + last), so new songs ride the
+ * current wave. This is NOT ripping: no stream, no audio, no download — just the
+ * public facts of what's hot, which are not copyrightable. Set YOUTUBE_API_KEY.
+ */
+async function tryYouTube(genre: string, region: string): Promise<TrendResult | null> {
+  const key = youtubeKey();
+  if (!key) return null;
+  try {
+    // Top by views, published in the last ~18 months = this year + last year's hits.
+    const since = new Date();
+    since.setMonth(since.getMonth() - 18);
+    const q = encodeURIComponent(`${genre} ${region} hit song`);
+    const url =
+      `https://www.googleapis.com/youtube/v3/search?part=snippet&type=video&videoCategoryId=10` +
+      `&order=viewCount&maxResults=12&regionCode=NG&relevanceLanguage=en&publishedAfter=${since.toISOString()}&q=${q}&key=${key}`;
+    const res = await fetch(url);
+    if (!res.ok) return null; // quota/key issue → fall through to the next source
+    const data = (await res.json()) as {
+      items?: Array<{ id?: { videoId?: string }; snippet?: { title?: string; channelTitle?: string } }>;
+    };
+    const items = (data.items ?? []).filter((i) => i.snippet?.title);
+    if (!items.length) return null;
+    const sources = items.slice(0, 8).map((i) => ({
+      title: decodeEntities(i.snippet!.title!) + (i.snippet!.channelTitle ? ` — ${i.snippet!.channelTitle}` : ''),
+      url: i.id?.videoId ? `https://youtu.be/${i.id.videoId}` : 'https://youtube.com',
+    }));
+    const digest =
+      `Top ${genre} charting on YouTube right now (${region}) — the current wave to ride (titles/artists as reference, NEVER to copy):\n` +
+      sources.map((s) => `• ${s.title}`).join('\n');
+    return { digest, sources: sources.slice(0, 6), source: 'youtube' };
   } catch {
     return null;
   }
@@ -140,5 +181,12 @@ export async function researchTrends(opts: {
     };
   }
 
-  return (await tryTavily(query)) ?? (await tryBrave(query)) ?? (await tryNewsRss(genre, region));
+  // YouTube first (most genre-specific + current: the actual charting tracks),
+  // then web digests, then the free always-on news fallback.
+  return (
+    (await tryYouTube(genre, region)) ??
+    (await tryTavily(query)) ??
+    (await tryBrave(query)) ??
+    (await tryNewsRss(genre, region))
+  );
 }
