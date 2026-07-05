@@ -10,7 +10,7 @@
  */
 import type { FastifyInstance } from 'fastify';
 import { prisma } from '@afrohit/db';
-import { prompts, generateJson, scoreItems, runRightsCheck, canonicalReceiptHash, directorRefineHooks, researchTrends, enrichLyricsForVocals, soundBrief } from '@afrohit/ai';
+import { prompts, generateJson, scoreItems, runRightsCheck, canonicalReceiptHash, directorRefineHooks, researchTrends, enrichLyricsForVocals, soundBrief, predictHit } from '@afrohit/ai';
 import { enqueue } from '../lib/queue';
 import { assertSafeUrl } from '../lib/url-guard';
 import { memoryContext, recordFeedback } from './artist-memory';
@@ -69,6 +69,8 @@ export async function runChatTool(args: Ctx & { name: string; args: Record<strin
       return listCatalogTool(ctx);
     case 'set_release_rights':
       return setReleaseRightsTool(ctx, a as never);
+    case 'predict_hit':
+      return predictHitTool(ctx, a.songId ? String(a.songId) : undefined);
     case 'separate_stems':
       return separateStemsTool(ctx, a.songId ? String(a.songId) : undefined, a.mode === 'full' ? 'full' : 'instrumental');
     default:
@@ -646,6 +648,32 @@ async function listCatalogTool(ctx: Ctx) {
     count: songs.length,
     songs: songs.map((s) => ({ id: s.id, title: s.lyric?.title || s.title, status: s.status, releaseReady: s.releaseReady, audioUrl: s.masters[0]?.url ?? s.mixes[0]?.url ?? s.beats[0]?.url ?? null })),
   };
+}
+
+async function predictHitTool(ctx: Ctx, songId: string | undefined) {
+  const song = songId
+    ? await prisma.song.findFirst({ where: { id: songId, workspaceId: ctx.workspaceId }, include: { project: { select: { genre: true, bpm: true, artist: { select: { languages: true } } } }, lyric: true, masters: { orderBy: { createdAt: 'desc' }, take: 1 }, hooks: { where: { approved: true }, orderBy: { createdAt: 'desc' }, take: 1 } } })
+    : ctx.projectId
+    ? await prisma.song.findFirst({ where: { projectId: ctx.projectId }, orderBy: { createdAt: 'desc' }, include: { project: { select: { genre: true, bpm: true, artist: { select: { languages: true } } } }, lyric: true, masters: { orderBy: { createdAt: 'desc' }, take: 1 }, hooks: { where: { approved: true }, orderBy: { createdAt: 'desc' }, take: 1 } } })
+    : null;
+  if (!song) return { error: 'no_song' };
+  const charge = await ctx.app.chargeCredits({ workspaceId: ctx.workspaceId, key: 'hit_predict' });
+  if (!charge.ok) return { error: 'insufficient_credits', ...charge };
+  const genre = song.project.genre;
+  const trends = (await researchTrends({ genre }).catch(() => null))?.digest;
+  const prediction = await predictHit({
+    title: song.lyric?.title || song.title,
+    genre,
+    bpm: song.project.bpm ?? undefined,
+    hook: song.hooks[0]?.text ?? undefined,
+    lyrics: song.lyric?.body ?? undefined,
+    soundDna: soundBrief(genre).brief,
+    trends,
+    hasMaster: song.masters.length > 0,
+    languages: song.project.artist.languages,
+  });
+  if (!prediction) return { error: 'a&r_unavailable — add ANTHROPIC_API_KEY for the hit scout' };
+  return { songId: song.id, ...prediction };
 }
 
 async function separateStemsTool(ctx: Ctx, songId: string | undefined, mode: 'instrumental' | 'full') {

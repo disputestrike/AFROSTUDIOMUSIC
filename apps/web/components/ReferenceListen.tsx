@@ -36,9 +36,22 @@ interface Profile {
   mood: string | null;
   energy: string | null;
   instruments: string[];
+  vocalGender: string | null;
+  vocalStyle: string | null;
+  language: string | null;
   vibe: string;
   suggestedVibePrompt: string;
   raw: string;
+}
+
+/** Describe the heard voice so the created song matches it, not just the tempo. */
+function voiceLine(p: Profile): string {
+  const bits = [
+    p.vocalGender && p.vocalGender !== 'instrumental' ? `${p.vocalGender} lead vocal` : null,
+    p.vocalStyle || null,
+    p.language ? `sung in ${p.language}` : null,
+  ].filter(Boolean);
+  return bits.length ? ` Vocal: ${bits.join(', ')}.` : '';
 }
 
 export function ReferenceListen({ projectId }: { projectId: string }) {
@@ -156,7 +169,7 @@ export function ReferenceListen({ projectId }: { projectId: string }) {
         genre: matchGenre(profile.genre),
         bpm,
         ...(profile.key ? { keySignature: profile.key } : {}),
-        vibePrompt: `${profile.genre ? profile.genre + ' — ' : ''}${profile.suggestedVibePrompt}`,
+        vibePrompt: `${profile.genre ? profile.genre + ' — ' : ''}${profile.suggestedVibePrompt}${voiceLine(profile)}`,
         withStems: false,
       });
       setStatus('✅ A fresh beat is generating in this vibe. Opening the studio…');
@@ -175,7 +188,7 @@ export function ReferenceListen({ projectId }: { projectId: string }) {
     try {
       const bpm = Math.min(Math.max(profile.bpm ?? 103, 60), 180);
       const genre = matchGenre(profile.genre);
-      const theme = `A fresh ${genre.replace(/_/g, ' ')} song in the vibe of: ${profile.suggestedVibePrompt || profile.vibe}. Catchy, original, never a copy.`;
+      const theme = `A fresh ${genre.replace(/_/g, ' ')} song in the vibe of: ${profile.suggestedVibePrompt || profile.vibe}.${voiceLine(profile)} Catchy, original, never a copy.`;
       await api.post(`/projects/${projectId}/drop`, { theme, count: 1, genre, bpm, withVocals: true });
       setStatus('✅ Full song is being produced (hook → lyrics → sung song). Opening the studio…');
       setTimeout(() => router.push(`/projects/${projectId}`), 1200);
@@ -247,6 +260,7 @@ export function ReferenceListen({ projectId }: { projectId: string }) {
               <Stat label="Genre" value={profile.genre ?? '—'} />
               <Stat label="Mood" value={profile.mood ?? '—'} />
               <Stat label="Energy" value={profile.energy ?? '—'} />
+              <Stat label="Vocal" value={[profile.vocalGender, profile.language].filter(Boolean).join(' · ') || '—'} />
               <Stat label="Instruments" value={profile.instruments?.join(', ') || '—'} />
             </div>
             {profile.vibe && <div className="rounded-lg border border-white/10 bg-black/20 p-3 text-sm text-slate-300">“{profile.vibe}”</div>}

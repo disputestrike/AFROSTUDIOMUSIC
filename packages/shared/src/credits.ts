@@ -20,6 +20,8 @@ export const CREDIT_COSTS = {
   stems_export: 50_000, // $5.00
   // Listen / Shazam — audio understanding on Replicate (paid inference)
   analyze_audio: 5_000, // $0.50
+  // A&R hit/viral prediction — one Claude judgment pass
+  hit_predict: 3_000, // $0.30
   // Voice
   voice_render_30s: 30_000, // $3.00
   voice_render_full: 80_000, // $8.00

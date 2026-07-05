@@ -15,6 +15,10 @@ export interface AudioProfile {
   mood: string | null;
   energy: string | null;
   instruments: string[];
+  // VOICE — so a created song matches the vocal it heard, not just the tempo.
+  vocalGender: string | null; // "male" | "female" | "group" | "instrumental" | null
+  vocalStyle: string | null; // tone/delivery, e.g. "smooth melodic tenor, laid-back"
+  language: string | null; // language(s) heard, e.g. "pidgin/yoruba"
   vibe: string; // one-line summary of what it sounds like
   suggestedVibePrompt: string; // vivid prompt to make a FRESH original in this style
   raw: string; // the model's raw description
@@ -53,7 +57,7 @@ export async function analyzeAudio(url: string, apiKey?: string): Promise<AudioP
   }
 
   const question =
-    'Listen to this music and describe it precisely for a producer: tempo in BPM, musical key, genre/subgenre, mood, energy level (low/medium/high), and the main instruments you hear. Be concise and specific.';
+    'Listen to this music and describe it precisely for a producer: tempo in BPM, musical key, genre/subgenre, mood, energy level (low/medium/high), and the main instruments you hear. ALSO describe the VOCAL: is the lead voice male, female, a group, or is it instrumental? Describe the vocal tone and delivery (e.g. smooth melodic tenor, raspy, chant, auto-tuned), and what language(s) are sung. Be concise and specific.';
   const create = await fetch('https://api.replicate.com/v1/predictions', {
     method: 'POST',
     headers: { ...auth, 'content-type': 'application/json', prefer: 'wait' },
@@ -76,7 +80,7 @@ export async function analyzeAudio(url: string, apiKey?: string): Promise<AudioP
   try {
     const structured = await responsesJson<Omit<AudioProfile, 'raw'>>({
       system:
-        'Turn a music description into strict JSON. Fields: bpm (number or null), key (string or null), genre (string or null), mood (string or null), energy (string or null), instruments (string[]), vibe (one-line summary), suggestedVibePrompt (a vivid prompt to generate a FRESH, ORIGINAL beat in this style — capture the energy, never copy or name the source track). Return only JSON.',
+        'Turn a music description into strict JSON. Fields: bpm (number or null), key (string or null), genre (string or null), mood (string or null), energy (string or null), instruments (string[]), vocalGender ("male"|"female"|"group"|"instrumental"|null), vocalStyle (tone/delivery string or null), language (language(s) sung, string or null), vibe (one-line summary), suggestedVibePrompt (a vivid prompt to generate a FRESH, ORIGINAL song in this style that MATCHES the vocal character described — same voice type/tone/energy/language — but never copies or names the source track). Return only JSON.',
       user: `Music description: ${raw}`,
       temperature: 0.3,
       maxOutputTokens: 800,
@@ -90,8 +94,11 @@ export async function analyzeAudio(url: string, apiKey?: string): Promise<AudioP
       mood: null,
       energy: null,
       instruments: [],
+      vocalGender: null,
+      vocalStyle: null,
+      language: null,
       vibe: raw.slice(0, 200),
-      suggestedVibePrompt: `Fresh original beat in the style of: ${raw.slice(0, 300)}`,
+      suggestedVibePrompt: `Fresh original song in the style of: ${raw.slice(0, 300)}`,
       raw,
     };
   }

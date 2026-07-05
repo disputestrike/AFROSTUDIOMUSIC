@@ -3,7 +3,18 @@
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { useApi } from '@/lib/api';
-import { Trash2, Download, Wand2, FileText, Copy, Recycle, Pencil, Sliders, X, Loader2, Music2, Layers } from 'lucide-react';
+import { Trash2, Download, Wand2, FileText, Copy, Recycle, Pencil, Sliders, X, Loader2, Music2, Layers, TrendingUp } from 'lucide-react';
+
+interface HitPrediction {
+  hitScore: number;
+  viralScore: number;
+  verdict: string;
+  strengths: string[];
+  risks: string[];
+  toMakeItBigger: string[];
+  comparableLane: string;
+  tiktokMoment: string | null;
+}
 
 export interface SongRow {
   id: string;
@@ -42,6 +53,7 @@ export default function CatalogGrid({ initial }: { initial: SongRow[] }) {
   const [toast, setToast] = useState<string>('');
   const [editing, setEditing] = useState<{ id: string; lyricId?: string; title: string; body: string } | null>(null);
   const [downloads, setDownloads] = useState<{ id: string; files: DownloadFile[] } | null>(null);
+  const [hit, setHit] = useState<{ title: string; p: HitPrediction } | null>(null);
 
   const flash = (m: string) => { setToast(m); setTimeout(() => setToast(''), 3500); };
   const isBusy = (id: string, a: string) => busy === `${id}:${a}`;
@@ -73,6 +85,15 @@ export default function CatalogGrid({ initial }: { initial: SongRow[] }) {
     setBusy(`${s.id}:dup`);
     try { await api.post(`/songs/${s.id}/duplicate`, {}); flash('Duplicated. Refresh to see the copy.'); }
     catch (e) { flash((e as Error).message || 'Duplicate failed'); }
+    finally { setBusy(''); }
+  }
+
+  async function willItHit(s: SongRow) {
+    setBusy(`${s.id}:hit`);
+    try {
+      const p = await api.post<HitPrediction>(`/songs/${s.id}/hit-score`, {});
+      setHit({ title: s.title, p });
+    } catch (e) { flash((e as Error).message || 'A&R scout unavailable'); }
     finally { setBusy(''); }
   }
 
@@ -163,6 +184,7 @@ export default function CatalogGrid({ initial }: { initial: SongRow[] }) {
               <div className="mt-3 flex flex-wrap gap-1.5">
                 <Action label="Download" icon={<Download className="h-3.5 w-3.5" />} busy={isBusy(s.id, 'dl')} onClick={() => void openDownloads(s)} />
                 <Action label="Lyrics" icon={<FileText className="h-3.5 w-3.5" />} busy={isBusy(s.id, 'lyrics')} onClick={() => void openLyrics(s)} />
+                <Action label="Will it hit?" icon={<TrendingUp className="h-3.5 w-3.5" />} busy={isBusy(s.id, 'hit')} onClick={() => void willItHit(s)} />
                 <Action label="Re-master" icon={<Wand2 className="h-3.5 w-3.5" />} busy={isBusy(s.id, 'master')} onClick={() => void remaster(s)} />
                 <button onClick={() => setOpenId(openId === s.id ? null : s.id)} className="rounded-full border border-white/10 bg-white/5 px-2.5 py-1 text-xs text-slate-300 hover:bg-white/10">
                   {openId === s.id ? 'Less' : 'More'}
@@ -211,6 +233,28 @@ export default function CatalogGrid({ initial }: { initial: SongRow[] }) {
         </Modal>
       )}
 
+      {/* A&R hit prediction */}
+      {hit && (
+        <Modal onClose={() => setHit(null)} title={`A&R read — ${hit.title}`}>
+          <div className="flex gap-4">
+            <ScorePill label="HIT" value={hit.p.hitScore} />
+            <ScorePill label="VIRAL" value={hit.p.viralScore} />
+          </div>
+          <p className="mt-3 text-sm text-slate-200">{hit.p.verdict}</p>
+          {hit.p.comparableLane && <p className="mt-1 text-xs text-slate-400">Lane: {hit.p.comparableLane}</p>}
+          {hit.p.tiktokMoment && <p className="mt-1 text-xs text-afrobrand-300">📱 TikTok moment: {hit.p.tiktokMoment}</p>}
+          {hit.p.strengths?.length > 0 && (
+            <div className="mt-3"><div className="text-xs font-medium text-emerald-300">Strengths</div><ul className="mt-1 list-disc pl-4 text-xs text-slate-300">{hit.p.strengths.map((x, i) => <li key={i}>{x}</li>)}</ul></div>
+          )}
+          {hit.p.risks?.length > 0 && (
+            <div className="mt-2"><div className="text-xs font-medium text-amber-300">Risks</div><ul className="mt-1 list-disc pl-4 text-xs text-slate-300">{hit.p.risks.map((x, i) => <li key={i}>{x}</li>)}</ul></div>
+          )}
+          {hit.p.toMakeItBigger?.length > 0 && (
+            <div className="mt-2"><div className="text-xs font-medium text-afrobrand-300">To make it bigger</div><ul className="mt-1 list-disc pl-4 text-xs text-slate-300">{hit.p.toMakeItBigger.map((x, i) => <li key={i}>{x}</li>)}</ul></div>
+          )}
+        </Modal>
+      )}
+
       {/* Download list */}
       {downloads && (
         <Modal onClose={() => setDownloads(null)} title="Download">
@@ -230,6 +274,17 @@ export default function CatalogGrid({ initial }: { initial: SongRow[] }) {
           )}
         </Modal>
       )}
+    </div>
+  );
+}
+
+function ScorePill({ label, value }: { label: string; value: number }) {
+  const color = value >= 80 ? 'text-emerald-300' : value >= 60 ? 'text-afrobrand-300' : value >= 40 ? 'text-amber-300' : 'text-slate-400';
+  return (
+    <div className="flex-1 rounded-xl border border-white/10 bg-black/30 p-3 text-center">
+      <div className="text-[10px] uppercase tracking-widest text-slate-500">{label}</div>
+      <div className={`font-display text-3xl ${color}`}>{value}</div>
+      <div className="text-[10px] text-slate-600">/ 100</div>
     </div>
   );
 }

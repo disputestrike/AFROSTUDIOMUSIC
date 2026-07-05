@@ -6,3 +6,4 @@ export * from './brief';
 export * from './rights';
 export * from './storyboard';
 export * from './melody';
+export * from './hit-predictor';

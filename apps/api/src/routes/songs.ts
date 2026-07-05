@@ -1,8 +1,10 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { prisma } from '@afrohit/db';
+import { predictHit, soundBrief, researchTrends } from '@afrohit/ai';
 import { requireAuth } from '../middleware/auth';
 import { enqueue } from '../lib/queue';
+import { recordFeedback } from '../services/artist-memory';
 
 /**
  * Catalog — the artist's songs as a real WORKSTATION, not a read-only shelf.
@@ -305,6 +307,47 @@ export default async function songs(app: FastifyInstance) {
     await enqueue({ queue: app.queues.music, name: 'stems', payload: { jobId: job.id, workspaceId, projectId: song.projectId, songId: song.id, beatId: beat.id, mode } });
     reply.code(202);
     return { jobId: job.id, status: 'queued', mode };
+  });
+
+  // ---- A&R hit predictor: will it hit / go viral, and how to make it bigger ----
+  app.post<{ Params: { id: string } }>('/:id/hit-score', async (req, reply) => {
+    const { workspaceId } = requireAuth(req);
+    const song = await prisma.song.findFirst({
+      where: { id: req.params.id, workspaceId },
+      include: {
+        project: { select: { genre: true, bpm: true, artistId: true, artist: { select: { languages: true } } } },
+        lyric: true,
+        masters: { orderBy: { createdAt: 'desc' }, take: 1 },
+        hooks: { where: { approved: true }, orderBy: { createdAt: 'desc' }, take: 1 },
+      },
+    });
+    if (!song) return reply.code(404).send({ error: 'song_not_found' });
+
+    const charge = await app.chargeCredits({ workspaceId, key: 'hit_predict', refTable: 'Song', refId: song.id });
+    if (!charge.ok) return reply.code(402).send({ error: 'insufficient_credits', ...charge });
+
+    const genre = song.project.genre;
+    const trends = (await researchTrends({ genre }).catch(() => null))?.digest;
+    const hook = song.hooks[0]?.text ?? undefined;
+    const prediction = await predictHit({
+      title: song.lyric?.title || song.title,
+      genre,
+      bpm: song.project.bpm ?? undefined,
+      hook,
+      lyrics: song.lyric?.body ?? undefined,
+      soundDna: soundBrief(genre).brief,
+      trends,
+      hasMaster: song.masters.length > 0,
+      languages: song.project.artist.languages,
+    });
+    if (!prediction) return reply.code(503).send({ error: 'a&r_unavailable', message: 'Hit scout needs a Claude/OpenAI key. Add ANTHROPIC_API_KEY.' });
+
+    // Compounding library: a genuine hit signal teaches the artist's taste graph,
+    // so future hooks/lyrics pull toward what actually scores. Real feedback loop.
+    if (prediction.hitScore >= 75 && song.hooks[0]) {
+      await recordFeedback({ workspaceId, artistId: song.project.artistId, kind: 'approved', content: song.hooks[0].text, sourceKind: 'hook', sourceId: song.hooks[0].id }).catch(() => {});
+    }
+    return { songId: song.id, ...prediction };
   });
 
   app.delete<{ Params: { id: string } }>('/:id', async (req, reply) => {

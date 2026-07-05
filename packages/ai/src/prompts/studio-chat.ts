@@ -310,6 +310,16 @@ export const STUDIO_CHAT_TOOLS = [
   },
   {
     type: 'function' as const,
+    name: 'predict_hit',
+    description:
+      "A&R hit scout: predict a song's HIT and VIRAL potential (0-100) with honest strengths, risks, the TikTok moment, and concrete moves to make it bigger. Use when the user asks 'will this hit / go viral / is it good'.",
+    parameters: {
+      type: 'object',
+      properties: { songId: { type: 'string', description: 'defaults to the latest song in the project' } },
+    },
+  },
+  {
+    type: 'function' as const,
     name: 'separate_stems',
     description:
       'Split a rendered song into a downloadable INSTRUMENTAL (mode=instrumental) or full stems — vocals/drums/bass/other (mode=full) for remixing. Use when the user wants the instrumental or stems.',
