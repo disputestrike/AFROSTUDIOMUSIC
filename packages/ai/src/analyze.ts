@@ -78,7 +78,7 @@ export async function analyzeAudio(url: string, apiKey?: string): Promise<AudioP
     'Be concrete and detailed — a producer must be able to rebuild the sound from your description.';
   // Run the model, retrying transient Replicate failures (CUDA OOM / capacity on
   // the shared GPU) so a blip doesn't kill the listen. Up to 3 attempts.
-  const isTransient = (e: string) => /out of memory|cuda|capacity|timeout|503|429|unavailable|please try again/i.test(e);
+  const isTransient = (e: string) => /out of memory|cuda|capacity|timeout|503|429|unavailable|please try again|processing|starting/i.test(e);
   let pred: ReplicatePred | null = null;
   let lastErr = '';
   for (let attempt = 0; attempt < 3; attempt++) {
@@ -94,7 +94,8 @@ export async function analyzeAudio(url: string, apiKey?: string): Promise<AudioP
       throw new Error(`audio analyze ${lastErr}`);
     }
     let p = (await create.json()) as ReplicatePred;
-    for (let i = 0; i < 20 && (p.status === 'starting' || p.status === 'processing'); i++) {
+    // Poll up to ~180s per attempt — Qwen cold-starts run 90-120s.
+    for (let i = 0; i < 45 && (p.status === 'starting' || p.status === 'processing'); i++) {
       await new Promise((r) => setTimeout(r, 4000));
       p = (await (await fetch(`https://api.replicate.com/v1/predictions/${p.id}`, { headers: auth })).json()) as ReplicatePred;
     }
