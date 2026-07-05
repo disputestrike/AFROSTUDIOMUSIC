@@ -175,14 +175,24 @@ export default async function songs(app: FastifyInstance) {
     });
     if (!song) return reply.code(404).send({ error: 'song_not_found' });
 
-    // The mastering chain masters a Mix. A generated full song has only a beat
-    // (baked audio) — wrap it in a Mix row so it can be mastered like anything else.
-    let mixId = song.mixes[0]?.id;
-    if (!mixId) {
-      const sourceUrl = song.mixes[0]?.url ?? song.masters[0]?.url ?? song.beats[0]?.url;
+    // Master the FRESHEST audio. A real console/uploaded mix is used only if it's
+    // at least as new as the latest rendered beat; otherwise (or after a
+    // regenerate) we (re)wrap the current beat in a fresh 'source' mix — so a
+    // re-master never silently masters stale audio.
+    const latestMix = song.mixes[0];
+    const latestBeat = song.beats[0];
+    const realMix =
+      latestMix && latestMix.preset !== 'source' && (!latestBeat || latestMix.createdAt >= latestBeat.createdAt)
+        ? latestMix
+        : null;
+    let mixId: string;
+    if (realMix) {
+      mixId = realMix.id;
+    } else {
+      const sourceUrl = latestBeat?.url ?? latestMix?.url ?? song.masters[0]?.url;
       if (!sourceUrl) return reply.code(400).send({ error: 'nothing_to_master — no audio on this song yet' });
       const mix = await prisma.mix.create({
-        data: { projectId: song.projectId, songId: song.id, preset: 'source', url: sourceUrl, notes: 'Master source (from rendered song audio)', approved: true },
+        data: { projectId: song.projectId, songId: song.id, preset: 'source', url: sourceUrl, notes: 'Master source (current rendered audio)', approved: true },
       });
       mixId = mix.id;
     }
@@ -220,7 +230,7 @@ export default async function songs(app: FastifyInstance) {
       data: {
         projectId: project.id, songId: newSong.id, url: beat.url, format: beat.format,
         bpm: beat.bpm, keySignature: beat.keySignature, duration: beat.duration,
-        provider: beat.provider, meta: { ...(beat.meta as object), reusedFromBeat: beat.id } as never, approved: true,
+        provider: beat.provider, meta: { ...(beat.meta as object), reusedFromBeat: beat.id } as never, approved: beat.approved,
       },
     });
     if (beat.stems.length) {
@@ -256,7 +266,7 @@ export default async function songs(app: FastifyInstance) {
         data: {
           projectId: project.id, songId: copy.id, title: song.lyric.title, body: song.lyric.body,
           structure: song.lyric.structure as never, cleanVersion: song.lyric.cleanVersion, explicit: song.lyric.explicit,
-          languageMix: song.lyric.languageMix as never, melody: song.lyric.melody as never, approved: song.lyric.approved,
+          languageMix: song.lyric.languageMix as never, melody: song.lyric.melody as never, approved: false,
         },
       });
       await prisma.song.update({ where: { id: copy.id }, data: { lyricId: newLyric.id } });
@@ -264,7 +274,7 @@ export default async function songs(app: FastifyInstance) {
     const beat = song.beats[0];
     if (beat) {
       const newBeat = await prisma.beatAsset.create({
-        data: { projectId: project.id, songId: copy.id, url: beat.url, format: beat.format, bpm: beat.bpm, keySignature: beat.keySignature, duration: beat.duration, provider: beat.provider, meta: beat.meta as never, approved: beat.approved },
+        data: { projectId: project.id, songId: copy.id, url: beat.url, format: beat.format, bpm: beat.bpm, keySignature: beat.keySignature, duration: beat.duration, provider: beat.provider, meta: beat.meta as never, approved: false },
       });
       if (beat.stems.length) {
         await prisma.$transaction(beat.stems.map((st) => prisma.stem.create({ data: { beatId: newBeat.id, role: st.role, url: st.url, format: st.format, duration: st.duration } })));

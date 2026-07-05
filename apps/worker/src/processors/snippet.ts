@@ -58,8 +58,11 @@ export async function processSnippet(p: SnippetPayload) {
 
     const master = await prisma.master.findFirst({ where: { songId: song.id }, orderBy: { createdAt: 'desc' } });
     const mix = await prisma.mix.findFirst({ where: { songId: song.id }, orderBy: { createdAt: 'desc' } });
-    const audioUrl = master?.url ?? mix?.url;
-    if (!audioUrl) throw new Error('no mastered/mixed track yet — finish the song first');
+    // Fall back to the beat so snippets work for the default Create/Drop/autopilot
+    // flow (those produce only a BeatAsset — no master/mix until the user masters).
+    const beat = await prisma.beatAsset.findFirst({ where: { songId: song.id }, orderBy: { createdAt: 'desc' } });
+    const audioUrl = master?.url ?? mix?.url ?? beat?.url;
+    if (!audioUrl) throw new Error('no audio on this song yet — make the song first');
 
     const cover = await prisma.imageAsset.findFirst({
       where: { projectId: song.projectId, kind: 'cover' },

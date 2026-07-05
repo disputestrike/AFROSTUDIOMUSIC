@@ -55,11 +55,19 @@ export async function separateStems(opts: {
 
   let data = (await res.json()) as DemucsPrediction;
   let attempts = 0;
+  let pollFails = 0;
   while ((data.status === 'starting' || data.status === 'processing') && attempts < 48) {
     await new Promise((r) => setTimeout(r, 5_000));
     attempts += 1;
     const pres = await fetch(`https://api.replicate.com/v1/predictions/${data.id}`, { headers: auth });
-    if (!pres.ok) break;
+    if (!pres.ok) {
+      // Transient poll blip (429/5xx) — retry rather than losing a render that
+      // would have succeeded on the next poll. Only give up after several in a row.
+      pollFails += 1;
+      if (pollFails > 5) throw new Error(`demucs poll failed ${pres.status}`);
+      continue;
+    }
+    pollFails = 0;
     data = (await pres.json()) as DemucsPrediction;
   }
   if (data.status !== 'succeeded' || !data.output) {

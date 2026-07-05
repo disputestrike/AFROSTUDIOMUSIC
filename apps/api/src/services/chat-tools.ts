@@ -12,6 +12,7 @@ import type { FastifyInstance } from 'fastify';
 import { prisma } from '@afrohit/db';
 import { prompts, generateJson, scoreItems, runRightsCheck, canonicalReceiptHash, directorRefineHooks, researchTrends, enrichLyricsForVocals, soundBrief } from '@afrohit/ai';
 import { enqueue } from '../lib/queue';
+import { assertSafeUrl } from '../lib/url-guard';
 import { memoryContext, recordFeedback } from './artist-memory';
 
 type Ctx = {
@@ -540,7 +541,12 @@ async function requestApproval(ctx: Ctx, gate: string, note: string) {
 
 async function analyzeAudioTool(ctx: Ctx, url: string) {
   if (!ctx.projectId) return { error: 'no_project_in_thread' };
-  if (!/^https?:\/\//i.test(url)) return { error: 'analyze needs a public audio URL you have rights to' };
+  // Bright-line + SSRF guard (no streaming catalog, no private/metadata hosts).
+  const chk = await assertSafeUrl(url);
+  if (!chk.ok) return { error: chk.error, message: chk.message };
+  // Paid inference → daily cap like every other generation path.
+  const charge = await ctx.app.chargeCredits({ workspaceId: ctx.workspaceId, key: 'analyze_audio' });
+  if (!charge.ok) return { error: 'insufficient_credits', ...charge };
   const job = await prisma.providerJob.create({
     data: { workspaceId: ctx.workspaceId, projectId: ctx.projectId, kind: 'analyze', provider: 'replicate', status: 'QUEUED', inputJson: { url } as never },
   });
@@ -581,11 +587,17 @@ async function masterSongTool(ctx: Ctx, songId: string, preset?: string) {
     include: { mixes: { orderBy: { createdAt: 'desc' }, take: 1 }, masters: { orderBy: { createdAt: 'desc' }, take: 1 }, beats: { orderBy: { createdAt: 'desc' }, take: 1 } },
   });
   if (!song) return { error: 'song_not_found' };
-  let mixId = song.mixes[0]?.id;
-  if (!mixId) {
-    const src = song.mixes[0]?.url ?? song.masters[0]?.url ?? song.beats[0]?.url;
+  // Master the freshest audio (see songs.ts /:id/master for the rationale).
+  const latestMix = song.mixes[0];
+  const latestBeat = song.beats[0];
+  const realMix = latestMix && latestMix.preset !== 'source' && (!latestBeat || latestMix.createdAt >= latestBeat.createdAt) ? latestMix : null;
+  let mixId: string;
+  if (realMix) {
+    mixId = realMix.id;
+  } else {
+    const src = latestBeat?.url ?? latestMix?.url ?? song.masters[0]?.url;
     if (!src) return { error: 'nothing_to_master — no audio on this song yet' };
-    const mix = await prisma.mix.create({ data: { projectId: song.projectId, songId: song.id, preset: 'source', url: src, notes: 'Master source (from rendered audio)', approved: true } });
+    const mix = await prisma.mix.create({ data: { projectId: song.projectId, songId: song.id, preset: 'source', url: src, notes: 'Master source (current rendered audio)', approved: true } });
     mixId = mix.id;
   }
   const charge = await ctx.app.chargeCredits({ workspaceId: ctx.workspaceId, key: 'master_preset' });

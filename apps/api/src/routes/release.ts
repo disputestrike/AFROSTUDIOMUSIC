@@ -97,8 +97,12 @@ export default async function release(app: FastifyInstance) {
       prisma.master.findFirst({ where: { songId: song.id }, orderBy: { createdAt: 'desc' } }),
       prisma.videoRender.findFirst({ where: { projectId: song.projectId, provider: 'snippet' }, orderBy: { createdAt: 'desc' } }),
     ]);
-    // A clean instrumental to sing over exists only for beat+own-vocal songs.
-    const instrumental = beat && beat.provider !== 'ace_step' ? beat.url : null;
+    // A clean instrumental to sing over exists only for instrumental-beat songs.
+    // Vocal engines (ACE-Step, MiniMax) bake the lead vocal INTO the single
+    // asset — never expose that as a "backing track" or the performer sings over
+    // AI vocals. Gate on the known vocal engines, not one hardcoded name.
+    const VOCAL_ENGINES = new Set(['ace_step', 'minimax']);
+    const instrumental = beat && !VOCAL_ENGINES.has(beat.provider) ? beat.url : null;
     return {
       title: song.title,
       bpm: beat?.bpm ?? null,

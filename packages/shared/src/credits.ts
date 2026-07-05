@@ -18,6 +18,8 @@ export const CREDIT_COSTS = {
   beat_idea_short_30s: 25_000, // $2.50
   full_song_demo: 75_000, // $7.50
   stems_export: 50_000, // $5.00
+  // Listen / Shazam — audio understanding on Replicate (paid inference)
+  analyze_audio: 5_000, // $0.50
   // Voice
   voice_render_30s: 30_000, // $3.00
   voice_render_full: 80_000, // $8.00

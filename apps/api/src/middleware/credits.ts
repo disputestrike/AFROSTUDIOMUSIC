@@ -44,13 +44,26 @@ export const creditsPlugin = fp(async function (app) {
       if (cap > 0) {
         const since = new Date();
         since.setUTCHours(0, 0, 0, 0);
-        const usedToday = await prisma.providerJob.count({
-          where: { workspaceId: opts.workspaceId, createdAt: { gte: since } },
+        // Count EVERY charged action today (debit ledger rows), not just
+        // ProviderJob rows — so text-only chat loops are capped too, and paid
+        // paths like analyze count once (not via an inflating side effect).
+        const usedToday = await prisma.creditLedger.count({
+          where: { workspaceId: opts.workspaceId, createdAt: { gte: since }, delta: { lt: 0 } },
         });
         if (usedToday >= cap) {
           return { ok: false as const, needed: cap, balance: usedToday, reason: 'daily_cap' };
         }
       }
+      // Ledger the charge so the cap has a uniform unit across all generation types.
+      await prisma.creditLedger.create({
+        data: {
+          workspaceId: opts.workspaceId,
+          delta: -(costOf(opts.key) * (opts.multiplier ?? 1)),
+          reason: opts.key,
+          refTable: opts.refTable,
+          refId: opts.refId,
+        },
+      });
       return { ok: true as const, balance: Number.MAX_SAFE_INTEGER };
     }
     const cost = costOf(opts.key) * (opts.multiplier ?? 1);

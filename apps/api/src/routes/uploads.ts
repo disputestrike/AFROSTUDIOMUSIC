@@ -4,6 +4,7 @@ import { presignUploadSchema, importUrlSchema, audioUploadSchema } from '@afrohi
 import { nanoid } from 'nanoid';
 import { requireAuth } from '../middleware/auth';
 import { presignUpload, putBytes } from '../lib/storage';
+import { assertSafeUrl, safeFetch } from '../lib/url-guard';
 
 /**
  * Bring-your-own-audio uploads + legal URL import.
@@ -17,34 +18,8 @@ import { presignUpload, putBytes } from '../lib/storage';
  * re-using their catalog is uncleared copyright infringement.
  */
 
-// Hosts whose audio is DRM'd / copyrighted catalog — refuse with a clear reason.
-const BLOCKED_HOSTS = [
-  'youtube.com', 'youtu.be', 'youtube-nocookie.com',
-  'spotify.com', 'scdn.co',
-  'soundcloud.com', 'sndcdn.com',
-  'tidal.com', 'deezer.com', 'audiomack.com',
-  'music.apple.com', 'itunes.apple.com',
-  'tiktok.com', 'instagram.com', 'facebook.com', 'fbcdn.net',
-];
-
 const MAX_IMPORT_BYTES = 80 * 1024 * 1024; // 80 MB
 const IMPORT_TIMEOUT_MS = 30_000;
-
-function hostIsBlocked(host: string): boolean {
-  const h = host.toLowerCase();
-  return BLOCKED_HOSTS.some((b) => h === b || h.endsWith(`.${b}`));
-}
-
-// Basic SSRF guard: only http/https, no localhost / private / link-local hosts.
-// (Full protection would resolve DNS + block private IPs — hardening follow-up.)
-function isPrivateHost(host: string): boolean {
-  const h = host.toLowerCase();
-  if (h === 'localhost' || h.endsWith('.local') || h.endsWith('.internal')) return true;
-  if (h === '::1' || h.startsWith('127.') || h.startsWith('10.') || h.startsWith('192.168.') || h.startsWith('169.254.')) return true;
-  const m = /^172\.(\d+)\./.exec(h);
-  if (m && Number(m[1]) >= 16 && Number(m[1]) <= 31) return true;
-  return false;
-}
 
 function extFromContentType(ct: string, url: string): string {
   const map: Record<string, string> = {
@@ -105,25 +80,10 @@ export default async function uploads(app: FastifyInstance) {
     const { workspaceId } = requireAuth(req);
     const input = importUrlSchema.parse(req.body);
 
-    let parsed: URL;
-    try {
-      parsed = new URL(input.url);
-    } catch {
-      return reply.code(400).send({ error: 'invalid_url' });
-    }
-    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
-      return reply.code(400).send({ error: 'only http(s) urls are allowed' });
-    }
-    if (isPrivateHost(parsed.hostname)) {
-      return reply.code(400).send({ error: 'that host is not allowed' });
-    }
-    if (hostIsBlocked(parsed.hostname)) {
-      return reply.code(422).send({
-        error: 'copyrighted_source',
-        message:
-          "Can't pull from streaming platforms (YouTube/Spotify/SoundCloud/etc.) — that's copyrighted catalog and would get your release taken down. Import your own files, direct audio links, or royalty-free / Creative-Commons sources instead.",
-      });
-    }
+    // SSRF + copyright guard: resolves DNS, blocks private/metadata targets and
+    // streaming hosts, and re-validates every redirect hop (see lib/url-guard).
+    const chk = await assertSafeUrl(input.url);
+    if (!chk.ok) return reply.code(chk.code).send({ error: chk.error, message: chk.message });
 
     const project = await prisma.project.findFirstOrThrow({
       where: { id: input.projectId, workspaceId },
@@ -135,7 +95,7 @@ export default async function uploads(app: FastifyInstance) {
     let bytes: Buffer;
     let contentType: string;
     try {
-      const res = await fetch(input.url, { signal: controller.signal, redirect: 'follow' });
+      const res = await safeFetch(input.url, { signal: controller.signal });
       if (!res.ok) return reply.code(502).send({ error: `source responded ${res.status}` });
       contentType = res.headers.get('content-type') ?? 'application/octet-stream';
       const declared = Number(res.headers.get('content-length') ?? '0');
@@ -148,6 +108,9 @@ export default async function uploads(app: FastifyInstance) {
       }
       bytes = Buffer.from(ab);
     } catch (err) {
+      // A redirect that pointed at a blocked/private host is rejected mid-fetch.
+      const uc = (err as { urlCheck?: { code: number; error: string; message?: string } }).urlCheck;
+      if (uc) return reply.code(uc.code).send({ error: uc.error, message: uc.message });
       return reply
         .code(502)
         .send({ error: 'fetch_failed', message: (err as Error).message.slice(0, 200) });
@@ -155,7 +118,9 @@ export default async function uploads(app: FastifyInstance) {
       clearTimeout(t);
     }
 
-    if (!/^audio\//.test(contentType) && input.kind !== 'reference') {
+    // Always require audio — no exemption. (The old reference-kind bypass turned
+    // /import into a fetch-any-content proxy that stored + read back non-audio.)
+    if (!/^audio\//.test(contentType)) {
       return reply.code(415).send({
         error: 'not_audio',
         message: `Expected audio, got "${contentType}". Use a direct audio file link.`,

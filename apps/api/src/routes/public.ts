@@ -22,6 +22,10 @@ export default async function publicRoutes(app: FastifyInstance) {
       prisma.videoRender.findFirst({ where: { projectId: song.projectId, provider: 'snippet' }, orderBy: { createdAt: 'desc' } }),
     ]);
 
+    // Master/mix R2 URLs are PERMANENT + unsigned. Only expose the streamable
+    // audio once the song is green-lit for release — otherwise a leaked/guessed
+    // song id would let anyone stream a finished-but-unreleased master pre-drop.
+    // Cover + snippet are promo assets, safe to show on the "dropping soon" page.
     reply.header('cache-control', 'public, max-age=60');
     return {
       id: song.id,
@@ -29,7 +33,7 @@ export default async function publicRoutes(app: FastifyInstance) {
       artist: song.project.artist.stageName,
       genre: song.project.genre,
       coverUrl: cover?.url ?? null,
-      streamUrl: master?.url ?? mix?.url ?? null,
+      streamUrl: song.releaseReady ? master?.url ?? mix?.url ?? null : null,
       snippetUrl: snippet?.url ?? null,
       isrc: song.isrc ?? null,
       releaseReady: song.releaseReady,

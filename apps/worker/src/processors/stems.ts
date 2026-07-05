@@ -35,8 +35,12 @@ export async function processStems(p: StemsPayload) {
         url: await ingestRemoteFile({ workspaceId: p.workspaceId, url: s.url, kind: 'stems', ext: 'mp3', contentType: 'audio/mpeg' }),
       }))
     );
-    // Replace any prior separated stems of the same roles so re-runs don't pile up.
+    // If the user asked for an instrumental, don't silently "succeed" without one.
     const roles = ingested.map((s) => s.role);
+    if ((p.mode ?? 'instrumental') === 'instrumental' && !roles.includes('instrumental')) {
+      throw new Error(`stem separation did not return an instrumental (got: ${roles.join(', ') || 'nothing'})`);
+    }
+    // Replace any prior separated stems of the same roles so re-runs don't pile up.
     await prisma.stem.deleteMany({ where: { beatId: beat.id, role: { in: roles } } });
     await prisma.$transaction(ingested.map((s) => prisma.stem.create({ data: { beatId: beat.id, role: s.role, url: s.url, format: 'mp3' } })));
 
