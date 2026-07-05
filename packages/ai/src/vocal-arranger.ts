@@ -8,7 +8,7 @@
  * call-and-response — plus vocal-production style tags. One aligned generation,
  * far more life.
  */
-import { responsesJson } from './providers/text';
+import { generateJson } from './generate';
 
 export interface EnrichedVocal {
   enrichedLyrics: string;
@@ -36,7 +36,7 @@ export async function enrichLyricsForVocals(opts: {
   soundDna?: string;
 }): Promise<EnrichedVocal | null> {
   try {
-    const out = await responsesJson<EnrichedVocal>({
+    const out = await generateJson<EnrichedVocal>({
       system: ARRANGER_SYSTEM,
       user: [
         `LANGUAGES: ${opts.languages?.join(', ') || 'english, pidgin'}`,
@@ -48,7 +48,7 @@ export async function enrichLyricsForVocals(opts: {
         .filter(Boolean)
         .join('\n'),
       temperature: 0.7,
-      maxOutputTokens: 3_000,
+      maxTokens: 3_000,
     });
     if (!out?.enrichedLyrics) return null;
     return { enrichedLyrics: out.enrichedLyrics, styleTags: out.styleTags ?? [] };

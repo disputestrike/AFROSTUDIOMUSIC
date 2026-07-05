@@ -10,7 +10,7 @@
  */
 import type { FastifyInstance } from 'fastify';
 import { prisma } from '@afrohit/db';
-import { prompts, responsesJson, scoreItems, runRightsCheck, canonicalReceiptHash, directorRefineHooks, researchTrends, enrichLyricsForVocals, soundBrief } from '@afrohit/ai';
+import { prompts, generateJson, scoreItems, runRightsCheck, canonicalReceiptHash, directorRefineHooks, researchTrends, enrichLyricsForVocals, soundBrief } from '@afrohit/ai';
 import { enqueue } from '../lib/queue';
 import { memoryContext, recordFeedback } from './artist-memory';
 
@@ -78,7 +78,7 @@ async function polishBrief(ctx: Ctx, rawIdea: string) {
   if (!ctx.projectId) return { error: 'no_project_in_thread' };
   const charge = await ctx.app.chargeCredits({ workspaceId: ctx.workspaceId, key: 'brief_polish' });
   if (!charge.ok) return { error: 'insufficient_credits', ...charge };
-  const polished = await responsesJson<{
+  const polished = await generateJson<{
     mood: string; topic: string; language: string[]; audience: string;
     bpm: number; references: Array<{ name: string; lane: string }>; notes: string;
   }>({
@@ -113,11 +113,11 @@ async function generateHooks(ctx: Ctx, count: number) {
   const trendData = await researchTrends({ genre: project.genre }).catch(() => null);
   const trends = trendData?.digest;
   const soundDna = soundBrief(project.genre).brief;
-  const result = await responsesJson<{ hooks: Array<{ text: string; language?: string[]; bpm?: number; syllablePattern?: string; melodyNotes?: string; callResponse?: boolean }> }>({
+  const result = await generateJson<{ hooks: Array<{ text: string; language?: string[]; bpm?: number; syllablePattern?: string; melodyNotes?: string; callResponse?: boolean }> }>({
     system: prompts.HOOK_SYSTEM,
     user: prompts.hookUserPrompt({ artist: project.artist as never, brief: project.briefs[0] as never, count, tasteMemory, trends, soundDna }),
     temperature: 0.95,
-    maxOutputTokens: 4_000,
+    maxTokens: 4_000,
   });
 
   // Multi-model A&R: Claude refines + scores GPT's drafts (falls back to drafts).
@@ -223,7 +223,7 @@ async function generateLyrics(ctx: Ctx, hookId: string, cleanVersion: boolean) {
   const charge = await ctx.app.chargeCredits({ workspaceId: ctx.workspaceId, key: 'lyrics_full' });
   if (!charge.ok) return { error: 'insufficient_credits', ...charge };
 
-  const output = await responsesJson<{ title: string; body: string; cleanVersion?: string; explicit?: boolean; structure?: unknown; languageMix?: Record<string, number>; needsNativeReview?: string[] }>({
+  const output = await generateJson<{ title: string; body: string; cleanVersion?: string; explicit?: boolean; structure?: unknown; languageMix?: Record<string, number>; needsNativeReview?: string[] }>({
     system: prompts.LYRIC_SYSTEM,
     user: prompts.lyricUserPrompt({
       artist: hook.project.artist as never,
@@ -233,7 +233,7 @@ async function generateLyrics(ctx: Ctx, hookId: string, cleanVersion: boolean) {
       soundDna: soundBrief(hook.project.genre).brief,
     }),
     temperature: 0.8,
-    maxOutputTokens: 4_000,
+    maxTokens: 4_000,
   });
   const lyric = await prisma.lyricDraft.create({
     data: {
@@ -395,7 +395,7 @@ async function generateStoryboard(ctx: Ctx, a: { durationS?: number; format?: 'v
     where: { id: ctx.projectId, workspaceId: ctx.workspaceId },
     include: { artist: true, briefs: { take: 1, orderBy: { createdAt: 'desc' } } },
   });
-  const result = await responsesJson<{ title: string; shots: Array<{ index: number; prompt: string; duration_s: number; motion?: string; lighting?: string }> }>({
+  const result = await generateJson<{ title: string; shots: Array<{ index: number; prompt: string; duration_s: number; motion?: string; lighting?: string }> }>({
     system: prompts.STORYBOARD_SYSTEM,
     user: JSON.stringify({
       artist: { stageName: project.artist.stageName, lane: project.artist.laneSummary },

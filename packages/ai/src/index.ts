@@ -10,3 +10,4 @@ export * from './tavily';
 export * from './analyze';
 export * from './vocal-arranger';
 export * from './sound-dna';
+export * from './generate';

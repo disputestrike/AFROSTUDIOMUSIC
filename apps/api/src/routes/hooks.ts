@@ -2,7 +2,7 @@ import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { prisma } from '@afrohit/db';
 import { generateHooksInputSchema, langSchema } from '@afrohit/shared';
-import { prompts, responsesJson, directorRefineHooks, researchTrends, anthropicEnabled, soundBrief } from '@afrohit/ai';
+import { prompts, generateJson, directorRefineHooks, researchTrends, anthropicEnabled, soundBrief } from '@afrohit/ai';
 import { requireAuth } from '../middleware/auth';
 import { memoryContext, recordFeedback } from '../services/artist-memory';
 
@@ -48,7 +48,7 @@ export default async function hooks(app: FastifyInstance) {
       // Genre Sound DNA so hooks sit in the lane's pocket/arrangement.
       const soundDna = soundBrief(project.genre).brief;
 
-      const result = await responsesJson<{
+      const result = await generateJson<{
         hooks: Array<{
           text: string;
           language?: string[];
@@ -68,7 +68,7 @@ export default async function hooks(app: FastifyInstance) {
           soundDna,
         }),
         temperature: 0.95,
-        maxOutputTokens: 4_000,
+        maxTokens: 4_000,
       });
 
       // Secret sauce — multi-model: GPT wrote the drafts (breadth); now Claude
