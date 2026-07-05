@@ -77,6 +77,9 @@ export async function processMix(p: MixPayload) {
         preset: p.preset,
         url,
         notes: `FFmpeg mixdown — beat ${beat.id.slice(-6)}, vocal ${vocal.id.slice(-6)}. Song: ${song.title}`,
+        // Rendered by an explicit user action → usable immediately (master +
+        // export gate on approved). Same rule as uploaded content.
+        approved: true,
       },
     });
     await prisma.song.update({ where: { id: p.songId }, data: { status: 'MIXED' } });
@@ -129,6 +132,7 @@ async function processConsoleMix(p: MixPayload, songTitle: string) {
         url,
         notes: `Console mix — ${settings.length} tracks. Song: ${songTitle}`,
         settings: settings as never,
+        approved: true,
       },
     });
     await prisma.song.update({ where: { id: p.songId }, data: { status: 'MIXED' } });

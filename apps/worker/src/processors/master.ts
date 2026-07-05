@@ -45,6 +45,9 @@ export async function processMaster(p: MasterPayload) {
         preset: p.preset,
         url: wavUrl,
         loudness: target.lufs,
+        // Rendered by an explicit user action → usable immediately (same rule as
+        // uploads). Without this the export bundle + catalog download see null.
+        approved: true,
       },
     });
     await prisma.song.update({ where: { id: p.songId }, data: { status: 'MASTERED' } });
