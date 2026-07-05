@@ -2,11 +2,15 @@
 
 /**
  * Play a track → the AI listens → understands it → you create from it.
- * Upload a song you have the rights to; the AI hears its BPM/key/genre/mood/
- * energy/instruments, then one tap makes a FRESH original in that vibe.
+ *
+ * Two ways in, like a real Shazam:
+ *  1. LISTEN NOW — record from the mic whatever is playing in the room (off a
+ *     phone, a speaker, in the air). The AI hears it and creates a fresh original.
+ *  2. Choose a file — drop in audio you have the rights to.
+ * Either way we only extract BPM/key/genre/mood and make an ORIGINAL — never a copy.
  */
 
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { useApi } from '@/lib/api';
 import { GENRES } from '@afrohit/shared';
@@ -45,6 +49,24 @@ export function ReferenceListen({ projectId }: { projectId: string }) {
   const [busy, setBusy] = useState(false);
   const [profile, setProfile] = useState<Profile | null>(null);
 
+  // Mic capture (the Shazam "listen to the room" path).
+  const mediaRef = useRef<MediaRecorder | null>(null);
+  const chunksRef = useRef<Blob[]>([]);
+  const streamRef = useRef<MediaStream | null>(null);
+  const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const [recording, setRecording] = useState(false);
+  const [elapsed, setElapsed] = useState(0);
+  const [micAvailable, setMicAvailable] = useState(false);
+  const MAX_SECS = 20;
+
+  useEffect(() => {
+    setMicAvailable(typeof navigator !== 'undefined' && !!navigator.mediaDevices?.getUserMedia && typeof MediaRecorder !== 'undefined');
+    return () => {
+      if (timerRef.current) clearInterval(timerRef.current);
+      streamRef.current?.getTracks().forEach((t) => t.stop());
+    };
+  }, []);
+
   async function poll(jobId: string): Promise<Profile> {
     for (let i = 0; i < 30; i++) {
       await new Promise((r) => setTimeout(r, 4000));
@@ -55,12 +77,12 @@ export function ReferenceListen({ projectId }: { projectId: string }) {
     throw new Error('Timed out listening to the track.');
   }
 
-  async function onFile(file: File) {
+  async function analyzeSource(src: Blob) {
     setBusy(true);
     setProfile(null);
-    setStatus('Uploading…');
+    setStatus('Uploading what I heard…');
     try {
-      const { publicUrl } = await api.uploadToStorage(file, 'reference', (f) =>
+      const { publicUrl } = await api.uploadToStorage(src, 'reference', (f) =>
         setStatus(`Uploading… ${Math.round(f * 100)}%`)
       );
       setStatus('🎧 The AI is listening…');
@@ -73,6 +95,52 @@ export function ReferenceListen({ projectId }: { projectId: string }) {
     } finally {
       setBusy(false);
     }
+  }
+
+  function onFile(file: File) {
+    void analyzeSource(file);
+  }
+
+  // Record ambient audio from the mic (music playing off any device / in the air).
+  async function startListening() {
+    if (recording || busy) return;
+    setProfile(null);
+    setStatus('');
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      streamRef.current = stream;
+      const mr = new MediaRecorder(stream);
+      chunksRef.current = [];
+      mr.ondataavailable = (e) => { if (e.data.size) chunksRef.current.push(e.data); };
+      mr.onstop = () => {
+        if (timerRef.current) clearInterval(timerRef.current);
+        streamRef.current?.getTracks().forEach((t) => t.stop());
+        setRecording(false);
+        const mt = mr.mimeType || 'audio/webm';
+        const ext = mt.includes('ogg') ? 'ogg' : mt.includes('mp4') ? 'mp4' : 'webm';
+        const file = new File(chunksRef.current, `listen.${ext}`, { type: `audio/${ext}` });
+        if (file.size < 2000) { setStatus('Didn’t catch enough audio — try again with the song playing.'); return; }
+        void analyzeSource(file);
+      };
+      mediaRef.current = mr;
+      mr.start();
+      setRecording(true);
+      setElapsed(0);
+      setStatus('🎙️ Listening to the room — play the song now…');
+      timerRef.current = setInterval(() => {
+        setElapsed((s) => {
+          const n = s + 1;
+          if (n >= MAX_SECS) stopListening();
+          return n;
+        });
+      }, 1000);
+    } catch (e) {
+      setStatus(`I need mic access to listen to the room: ${(e as Error).message}`);
+    }
+  }
+
+  function stopListening() {
+    if (mediaRef.current && mediaRef.current.state !== 'inactive') mediaRef.current.stop();
   }
 
   async function makeBeat() {
@@ -119,8 +187,8 @@ export function ReferenceListen({ projectId }: { projectId: string }) {
     <section className="mt-8">
       <h2 className="font-display text-2xl">🎧 Play a track — the AI listens</h2>
       <p className="mt-1 text-sm text-slate-400">
-        Drop in a song you have the rights to. The AI actually listens, tells you what it hears, then makes a
-        <span className="text-slate-200"> fresh original</span> in that vibe — never a copy.
+        Tap <span className="text-slate-200">Listen now</span> and play the song out loud from any device — the AI hears it through your mic (like Shazam),
+        tells you what it hears, then makes a <span className="text-slate-200">fresh original</span> in that vibe — never a copy. Or choose a file.
       </p>
 
       <div className="mt-4 rounded-2xl glass p-4">
@@ -131,13 +199,41 @@ export function ReferenceListen({ projectId }: { projectId: string }) {
           className="hidden"
           onChange={(e) => e.target.files?.[0] && onFile(e.target.files[0])}
         />
-        <button
-          onClick={() => fileRef.current?.click()}
-          disabled={busy}
-          className="rounded-full bg-brand-gradient px-4 py-2 text-sm font-medium text-ink shadow-glow disabled:opacity-50"
-        >
-          {busy ? 'Working…' : 'Choose a track to analyze'}
-        </button>
+
+        {/* PRIMARY: listen to whatever is playing in the room / on another device */}
+        {recording ? (
+          <div className="flex flex-wrap items-center gap-3">
+            <span className="flex items-center gap-2 text-sm text-afrobrand-300">
+              <span className="h-2.5 w-2.5 animate-pulse rounded-full bg-red-500" />
+              Listening… {elapsed}s / {MAX_SECS}s
+            </span>
+            <button onClick={stopListening} className="rounded-full bg-brand-gradient px-4 py-2 text-sm font-medium text-ink shadow-glow">
+              Stop &amp; analyze
+            </button>
+          </div>
+        ) : (
+          <div className="flex flex-wrap items-center gap-3">
+            {micAvailable && (
+              <button
+                onClick={() => void startListening()}
+                disabled={busy}
+                className="flex items-center gap-2 rounded-full bg-brand-gradient px-5 py-2.5 text-sm font-medium text-ink shadow-glow disabled:opacity-50"
+              >
+                🎙️ {busy ? 'Working…' : 'Listen now'}
+              </button>
+            )}
+            <button
+              onClick={() => fileRef.current?.click()}
+              disabled={busy}
+              className="rounded-full border border-white/15 bg-white/5 px-4 py-2 text-sm font-medium hover:bg-white/10 disabled:opacity-50"
+            >
+              or choose a file
+            </button>
+          </div>
+        )}
+        <p className="mt-2 text-xs text-slate-500">
+          Play the song out loud from any phone, speaker, or device — hold your mic near it. The AI listens to the air (like Shazam), then builds a fresh original in that vibe.
+        </p>
         {status && <div className="mt-3 text-xs text-slate-400">{status}</div>}
 
         {profile && (

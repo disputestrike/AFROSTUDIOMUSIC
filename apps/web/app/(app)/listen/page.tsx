@@ -34,9 +34,9 @@ export default function ListenPage() {
         Play a track — <span className="text-gradient">the AI listens</span>
       </h1>
       <p className="mt-2 max-w-xl text-sm text-slate-400">
-        Like Shazam, but it creates. Drop a song you have the rights to (your own, licensed, or royalty-free);
-        the AI hears its BPM, key, genre, mood and instruments, then builds a <span className="text-slate-200">fresh original</span> in that
-        vibe — never a copy.
+        Like Shazam, but it creates. Play a song out loud from any phone, speaker or device and tap <span className="text-slate-200">Listen now</span> —
+        the AI hears it through your mic (or drop a file), reads its BPM, key, genre, mood and instruments, then builds a
+        <span className="text-slate-200"> fresh original</span> in that vibe — never a copy.
       </p>
 
       {err && <div className="mt-6 rounded-xl border border-red-500/30 bg-red-500/10 p-4 text-sm text-red-300">Couldn’t start a session: {err}</div>}
