@@ -545,13 +545,19 @@ class MiniMaxSongAdapter implements MusicProviderAdapter {
       .filter(Boolean)
       .join(', ');
 
+    // music-2.6 contract: `prompt` = style/mood description (required),
+    // `lyrics` = the words (required for vocals unless lyrics_optimizer),
+    // `is_instrumental`/`lyrics_optimizer` default false. Unknown fields 422, so
+    // send only valid keys. We sing our lyrics; if none, let the model write them.
+    const hasLyrics = !!input.lyrics?.trim();
+    const modelInput: Record<string, unknown> = { prompt: style };
+    if (hasLyrics) modelInput.lyrics = input.lyrics;
+    else modelInput.lyrics_optimizer = true;
+
     const res = await fetch('https://api.replicate.com/v1/predictions', {
       method: 'POST',
       headers: { ...auth, 'content-type': 'application/json', prefer: 'wait' },
-      body: JSON.stringify({
-        version,
-        input: { lyrics: input.lyrics ?? '', prompt: style, song_description: style },
-      }),
+      body: JSON.stringify({ version, input: modelInput }),
     });
     if (!res.ok) return { status: 'failed', error: `minimax ${res.status}: ${(await res.text()).slice(0, 200)}` };
     return this.toResult((await res.json()) as ReplicatePrediction, input);
