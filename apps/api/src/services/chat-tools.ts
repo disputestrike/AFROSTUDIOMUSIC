@@ -52,6 +52,22 @@ export async function runChatTool(args: Ctx & { name: string; args: Record<strin
       return createReleaseKit(ctx, String(a.songId));
     case 'request_approval':
       return requestApproval(ctx, String(a.gate), String(a.note ?? ''));
+    case 'analyze_audio':
+      return analyzeAudioTool(ctx, String(a.url));
+    case 'run_drop':
+      return runDropTool(ctx, a as never);
+    case 'master_song':
+      return masterSongTool(ctx, String(a.songId), a.preset ? String(a.preset) : undefined);
+    case 'make_snippet':
+      return makeSnippetTool(ctx, a.songId ? String(a.songId) : undefined, Number(a.startS ?? 0));
+    case 'reject_hook':
+      return rejectHookTool(ctx, String(a.hookId));
+    case 'list_beats':
+      return listBeatsTool(ctx);
+    case 'list_catalog':
+      return listCatalogTool(ctx);
+    case 'set_release_rights':
+      return setReleaseRightsTool(ctx, a as never);
     default:
       return { error: `unknown_tool:${name}` };
   }
@@ -506,4 +522,118 @@ async function requestApproval(ctx: Ctx, gate: string, note: string) {
     },
   });
   return { ok: true, gate, note };
+}
+
+// ===========================================================================
+// "Connected to everything" — listen, batch, master, snippet, taste, catalog.
+// ===========================================================================
+
+async function analyzeAudioTool(ctx: Ctx, url: string) {
+  if (!ctx.projectId) return { error: 'no_project_in_thread' };
+  if (!/^https?:\/\//i.test(url)) return { error: 'analyze needs a public audio URL you have rights to' };
+  const job = await prisma.providerJob.create({
+    data: { workspaceId: ctx.workspaceId, projectId: ctx.projectId, kind: 'analyze', provider: 'replicate', status: 'QUEUED', inputJson: { url } as never },
+  });
+  await enqueue({ queue: ctx.app.queues.music, name: 'analyze-audio', payload: { jobId: job.id, workspaceId: ctx.workspaceId, projectId: ctx.projectId, url } });
+  return { jobId: job.id, status: 'queued', note: 'Listening — poll the job; outputJson.profile has BPM/key/genre/mood/instruments + a fresh-vibe prompt to create an original from.' };
+}
+
+async function runDropTool(ctx: Ctx, a: { theme: string; count?: number; genre?: string; bpm?: number; withVocals?: boolean; songEngine?: 'ace_step' | 'minimax' }) {
+  if (!ctx.projectId) return { error: 'no_project_in_thread' };
+  const count = Math.min(Math.max(Number(a.count ?? 3), 1), 6);
+  const genre = a.genre ?? 'afrobeats';
+  const bpm = Number(a.bpm ?? 103);
+  await polishBrief(ctx, a.theme);
+  const drops: Array<{ songId?: string; hookText?: string; score: number | null; jobId?: string; error?: string }> = [];
+  for (let i = 0; i < count; i++) {
+    const hk = (await generateHooks(ctx, 10)) as { hooks?: Array<{ id: string; text: string; score: number | null }> };
+    let hooks = hk?.hooks ?? [];
+    if (!hooks.length) continue;
+    if (hooks.every((h) => h.score == null)) {
+      const sc = (await scoreHooks(ctx, hooks.map((h) => h.id))) as { scores?: Array<{ id: string; overall: number }> };
+      const m = new Map((sc?.scores ?? []).map((s) => [s.id, s.overall]));
+      hooks = hooks.map((h) => ({ ...h, score: m.get(h.id) ?? h.score }));
+    }
+    const best = hooks.slice().sort((x, y) => (y.score ?? 0) - (x.score ?? 0))[0]!;
+    const ap = (await approveHook(ctx, best.id)) as { songId?: string };
+    await generateLyrics(ctx, best.id, true);
+    const beat = (await createBeatJob(ctx, { genre, bpm, withVocals: a.withVocals ?? true, songEngine: a.songEngine })) as { jobId?: string; songId?: string; error?: string };
+    drops.push({ songId: ap?.songId ?? beat?.songId, hookText: best.text, score: best.score ?? null, jobId: beat?.jobId, error: beat?.error });
+    if (beat?.error === 'insufficient_credits') break;
+  }
+  drops.sort((x, y) => (y.score ?? 0) - (x.score ?? 0));
+  return { produced: drops.length, drop: drops };
+}
+
+async function masterSongTool(ctx: Ctx, songId: string, preset?: string) {
+  const song = await prisma.song.findFirst({
+    where: { id: songId, workspaceId: ctx.workspaceId },
+    include: { mixes: { orderBy: { createdAt: 'desc' }, take: 1 }, masters: { orderBy: { createdAt: 'desc' }, take: 1 }, beats: { orderBy: { createdAt: 'desc' }, take: 1 } },
+  });
+  if (!song) return { error: 'song_not_found' };
+  let mixId = song.mixes[0]?.id;
+  if (!mixId) {
+    const src = song.mixes[0]?.url ?? song.masters[0]?.url ?? song.beats[0]?.url;
+    if (!src) return { error: 'nothing_to_master — no audio on this song yet' };
+    const mix = await prisma.mix.create({ data: { projectId: song.projectId, songId: song.id, preset: 'source', url: src, notes: 'Master source (from rendered audio)', approved: true } });
+    mixId = mix.id;
+  }
+  const charge = await ctx.app.chargeCredits({ workspaceId: ctx.workspaceId, key: 'master_preset' });
+  if (!charge.ok) return { error: 'insufficient_credits', ...charge };
+  const p = preset ?? 'streaming_lufs_-14';
+  const job = await prisma.providerJob.create({ data: { workspaceId: ctx.workspaceId, projectId: song.projectId, kind: 'master', provider: 'internal', status: 'QUEUED', inputJson: { songId, mixId, preset: p } as never } });
+  await enqueue({ queue: ctx.app.queues.master, name: 'create-master', payload: { jobId: job.id, workspaceId: ctx.workspaceId, projectId: song.projectId, songId, mixId, preset: p } });
+  return { jobId: job.id, status: 'queued', preset: p };
+}
+
+async function makeSnippetTool(ctx: Ctx, songId: string | undefined, startS: number) {
+  if (!ctx.projectId) return { error: 'no_project_in_thread' };
+  const song = songId
+    ? await prisma.song.findFirst({ where: { id: songId, workspaceId: ctx.workspaceId }, select: { id: true } })
+    : await prisma.song.findFirst({ where: { projectId: ctx.projectId }, orderBy: { createdAt: 'desc' }, select: { id: true } });
+  if (!song) return { error: 'no_song_to_clip' };
+  const charge = await ctx.app.chargeCredits({ workspaceId: ctx.workspaceId, key: 'beat_idea_short_30s' });
+  if (!charge.ok) return { error: 'insufficient_credits', ...charge };
+  const job = await prisma.providerJob.create({ data: { workspaceId: ctx.workspaceId, projectId: ctx.projectId, kind: 'video', provider: 'snippet', status: 'QUEUED', inputJson: { songId: song.id, startS } as never } });
+  await enqueue({ queue: ctx.app.queues.music, name: 'snippet', payload: { jobId: job.id, workspaceId: ctx.workspaceId, projectId: ctx.projectId, songId: song.id, startS: startS || 0 } });
+  return { jobId: job.id, status: 'queued' };
+}
+
+async function rejectHookTool(ctx: Ctx, hookId: string) {
+  const hook = await prisma.hookCandidate.findFirst({ where: { id: hookId, project: { workspaceId: ctx.workspaceId } }, include: { project: { select: { artistId: true } } } });
+  if (!hook) return { error: 'hook_not_found' };
+  await prisma.hookCandidate.update({ where: { id: hookId }, data: { approved: false, score: 0 } });
+  await recordFeedback({ workspaceId: ctx.workspaceId, artistId: hook.project.artistId, kind: 'rejected', content: hook.text, sourceKind: 'hook', sourceId: hook.id });
+  return { ok: true, hookId, note: 'Rejected — the taste engine will avoid this pattern.' };
+}
+
+async function listBeatsTool(ctx: Ctx) {
+  if (!ctx.projectId) return { error: 'no_project_in_thread' };
+  const beats = await prisma.beatAsset.findMany({ where: { projectId: ctx.projectId }, orderBy: { createdAt: 'desc' }, take: 20, include: { stems: { select: { role: true } } } });
+  return { beats: beats.map((b) => ({ id: b.id, provider: b.provider, bpm: b.bpm, key: b.keySignature, durationS: b.duration, stems: b.stems.map((s) => s.role), url: b.url })) };
+}
+
+async function listCatalogTool(ctx: Ctx) {
+  const songs = await prisma.song.findMany({
+    where: { workspaceId: ctx.workspaceId },
+    orderBy: { createdAt: 'desc' },
+    take: 30,
+    include: { masters: { orderBy: { createdAt: 'desc' }, take: 1 }, mixes: { orderBy: { createdAt: 'desc' }, take: 1 }, beats: { orderBy: { createdAt: 'desc' }, take: 1 }, lyric: { select: { title: true } } },
+  });
+  return {
+    count: songs.length,
+    songs: songs.map((s) => ({ id: s.id, title: s.lyric?.title || s.title, status: s.status, releaseReady: s.releaseReady, audioUrl: s.masters[0]?.url ?? s.mixes[0]?.url ?? s.beats[0]?.url ?? null })),
+  };
+}
+
+async function setReleaseRightsTool(ctx: Ctx, a: { songId: string; splitSheet?: Array<{ name: string; role: string; share: number }>; nativeReviewOk?: boolean }) {
+  const song = await prisma.song.findFirst({ where: { id: a.songId, workspaceId: ctx.workspaceId }, select: { id: true } });
+  if (!song) return { error: 'song_not_found' };
+  const data: Record<string, unknown> = {};
+  if (a.splitSheet) data.splitSheet = a.splitSheet as never;
+  if (typeof a.nativeReviewOk === 'boolean') data.nativeReviewOk = a.nativeReviewOk;
+  if (!Object.keys(data).length) return { error: 'nothing_to_set' };
+  await prisma.song.update({ where: { id: song.id }, data });
+  const sum = (a.splitSheet ?? []).reduce((t, s) => t + (Number(s.share) || 0), 0);
+  return { ok: true, songId: song.id, splitsSumTo: sum, note: 'Saved. Finalize ISRC/UPC + green-light on the Release page (rights assignment stays on the canonical release step).' };
 }

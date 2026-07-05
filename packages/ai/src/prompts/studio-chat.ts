@@ -151,6 +151,11 @@ export const STUDIO_CHAT_TOOLS = [
           default: false,
           description: 'true = AI sings the lyrics into a full song; false = instrumental only.',
         },
+        songEngine: {
+          type: 'string',
+          enum: ['ace_step', 'minimax'],
+          description: 'Vocal/song engine when withVocals=true. minimax = higher vocal realism; ace_step = default.',
+        },
       },
       required: ['genre', 'bpm'],
     },
@@ -227,6 +232,90 @@ export const STUDIO_CHAT_TOOLS = [
     parameters: {
       type: 'object',
       properties: { songId: { type: 'string' } },
+      required: ['songId'],
+    },
+  },
+  {
+    type: 'function' as const,
+    name: 'analyze_audio',
+    description:
+      "LISTEN to a track (Shazam-style): the AI hears a song at a URL and returns its BPM/key/genre/mood/instruments + a suggested vibe to create a FRESH original from. Use when the user shares a reference track or asks 'what does this sound like'.",
+    parameters: {
+      type: 'object',
+      properties: { url: { type: 'string', description: 'Public URL of an audio file the user has rights to.' } },
+      required: ['url'],
+    },
+  },
+  {
+    type: 'function' as const,
+    name: 'run_drop',
+    description:
+      "Batch producer: from one theme, make N full songs (hooks → A&R picks best → lyrics → sung song) and return a shortlist ranked by score. Use for 'make me 5 songs about…'.",
+    parameters: {
+      type: 'object',
+      properties: {
+        theme: { type: 'string' },
+        count: { type: 'integer', minimum: 1, maximum: 6, default: 3 },
+        genre: { type: 'string' },
+        bpm: { type: 'integer' },
+        withVocals: { type: 'boolean', default: true },
+        songEngine: { type: 'string', enum: ['ace_step', 'minimax'] },
+      },
+      required: ['theme'],
+    },
+  },
+  {
+    type: 'function' as const,
+    name: 'master_song',
+    description: 'Master or RE-MASTER a song to a loudness target. Works on any rendered song (wraps baked audio in a mix).',
+    parameters: {
+      type: 'object',
+      properties: {
+        songId: { type: 'string' },
+        preset: { type: 'string', enum: ['streaming_lufs_-14', 'club_-9', 'reels_-16'], default: 'streaming_lufs_-14' },
+      },
+      required: ['songId'],
+    },
+  },
+  {
+    type: 'function' as const,
+    name: 'make_snippet',
+    description: 'Make a 9:16 vertical snippet (cover + waveform + burned hook captions) for TikTok/Reels/Shorts.',
+    parameters: {
+      type: 'object',
+      properties: { songId: { type: 'string' }, startS: { type: 'integer', default: 0 } },
+    },
+  },
+  {
+    type: 'function' as const,
+    name: 'reject_hook',
+    description: 'Reject/down-weight a bad hook so the taste engine learns. Mirror of approve_hook.',
+    parameters: { type: 'object', properties: { hookId: { type: 'string' } }, required: ['hookId'] },
+  },
+  {
+    type: 'function' as const,
+    name: 'list_beats',
+    description: 'List the current project\'s beats/instrumentals (with ids) so you can reference or reuse one instead of generating a new one.',
+    parameters: { type: 'object', properties: {} },
+  },
+  {
+    type: 'function' as const,
+    name: 'list_catalog',
+    description: 'List the artist\'s finished songs across the whole catalog (ids, titles, status) so you can reference, master, or bundle them.',
+    parameters: { type: 'object', properties: {} },
+  },
+  {
+    type: 'function' as const,
+    name: 'set_release_rights',
+    description:
+      'Set the split-sheet + rights on a song and (if splits sum to 100) auto-assign ISRC/UPC and recompute the release green-light.',
+    parameters: {
+      type: 'object',
+      properties: {
+        songId: { type: 'string' },
+        splitSheet: { type: 'array', items: { type: 'object', properties: { name: { type: 'string' }, role: { type: 'string' }, share: { type: 'number' } } } },
+        nativeReviewOk: { type: 'boolean' },
+      },
       required: ['songId'],
     },
   },
