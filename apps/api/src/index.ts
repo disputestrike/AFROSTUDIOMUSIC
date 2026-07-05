@@ -46,6 +46,7 @@ import snippet from './routes/snippet';
 import drop from './routes/drop';
 import release from './routes/release';
 import publicRoutes from './routes/public';
+import debug from './routes/debug';
 
 initObservability('api');
 
@@ -118,6 +119,7 @@ async function bootstrap() {
       await api.register(uploads, { prefix: '/uploads' });
       await api.register(settings, { prefix: '/settings' });
       await api.register(publicRoutes, { prefix: '/public' });
+      await api.register(debug, { prefix: '/debug' });
     },
     { prefix: '/api/v1' }
   );

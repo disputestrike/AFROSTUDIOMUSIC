@@ -19,6 +19,18 @@ export function anthropicEnabled(): boolean {
 export const ANTHROPIC_MODEL = (): string =>
   process.env.ANTHROPIC_MODEL ?? 'claude-sonnet-5';
 
+/** Diagnostic: make a tiny real call and surface the exact error (model, auth…). */
+export async function anthropicPing(): Promise<{ ok: boolean; model: string; error?: string }> {
+  const model = ANTHROPIC_MODEL();
+  if (!anthropicEnabled()) return { ok: false, model, error: 'no ANTHROPIC_API_KEY' };
+  try {
+    await claudeJson<{ ok: boolean }>({ system: 'Reply with JSON {"ok":true} only.', user: 'ping', maxTokens: 20, temperature: 0 });
+    return { ok: true, model };
+  } catch (e) {
+    return { ok: false, model, error: (e as Error).message.slice(0, 300) };
+  }
+}
+
 function extractJson(text: string): string {
   // Strip ```json ... ``` fences if present, else take the outermost {...}.
   const fence = /```(?:json)?\s*([\s\S]*?)```/i.exec(text);
