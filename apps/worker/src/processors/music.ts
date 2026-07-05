@@ -1,5 +1,5 @@
 import { prisma } from '@afrohit/db';
-import { musicAdapter } from '@afrohit/ai';
+import { musicAdapter, sunoKey } from '@afrohit/ai';
 import type { MusicGenerationInput } from '@afrohit/ai';
 import { markFailed, markRunning, markSucceeded } from '../lib/jobs';
 import { ingestRemoteFile } from '../lib/storage';
@@ -25,8 +25,15 @@ export async function processMusic(p: MusicPayload) {
     // Full song WITH AI vocals → vocals-capable model (ACE-Step on the same
     // Replicate key). Otherwise the configured instrumental beat engine.
     const wantsVocals = !!(p.input.withVocals && p.input.lyrics);
+    // FULL-SONG ENGINE: prefer Suno V5 (the strongest full-production model) when a
+    // Suno key is configured — this is the single biggest quality lever. Falls back
+    // to ACE-Step gracefully when Suno isn't available, so nothing breaks without it.
+    let engine = p.input.songEngine ?? (sunoKey() ? 'suno' : 'ace_step');
+    if (engine === 'suno' && !sunoKey()) engine = 'ace_step';
+    // Suno uses its OWN key (SUNO_API_KEY), never the workspace's Replicate key.
+    const engineKey = engine === 'suno' ? undefined : ws?.musicApiKey ?? undefined;
     let adapter = wantsVocals
-      ? musicAdapter(p.input.songEngine ?? 'ace_step', ws?.musicApiKey ?? undefined)
+      ? musicAdapter(engine, engineKey)
       : musicAdapter(ws?.musicProvider ?? undefined, ws?.musicApiKey ?? undefined);
     let result = await adapter.generate(p.input);
 

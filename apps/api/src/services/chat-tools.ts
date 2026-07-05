@@ -290,7 +290,7 @@ async function generateLyrics(ctx: Ctx, hookId: string, cleanVersion: boolean) {
   return { lyric: { id: lyric.id, title: lyric.title } };
 }
 
-async function createBeatJob(ctx: Ctx, a: { genre: string; bpm: number; keySignature?: string; durationS?: number; vibePrompt?: string; withStems?: boolean; withVocals?: boolean; songEngine?: 'ace_step' | 'minimax'; influence?: string }) {
+async function createBeatJob(ctx: Ctx, a: { genre: string; bpm: number; keySignature?: string; durationS?: number; vibePrompt?: string; withStems?: boolean; withVocals?: boolean; songEngine?: 'suno' | 'ace_step' | 'minimax'; influence?: string }) {
   if (!ctx.projectId) return { error: 'no_project_in_thread' };
 
   // Honor the requested genre for the whole session — the chat's scratch project
@@ -569,7 +569,7 @@ async function analyzeAudioTool(ctx: Ctx, url: string) {
   return { jobId: job.id, status: 'queued', note: 'Listening — poll the job; outputJson.profile has BPM/key/genre/mood/instruments + a fresh-vibe prompt to create an original from.' };
 }
 
-async function runDropTool(ctx: Ctx, a: { theme: string; count?: number; genre?: string; bpm?: number; withVocals?: boolean; songEngine?: 'ace_step' | 'minimax' }) {
+async function runDropTool(ctx: Ctx, a: { theme: string; count?: number; genre?: string; bpm?: number; withVocals?: boolean; songEngine?: 'suno' | 'ace_step' | 'minimax' }) {
   if (!ctx.projectId) return { error: 'no_project_in_thread' };
   const count = Math.min(Math.max(Number(a.count ?? 3), 1), 6);
   const genre = a.genre ?? 'afrobeats';

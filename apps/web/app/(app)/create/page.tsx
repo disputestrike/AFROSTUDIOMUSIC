@@ -35,7 +35,7 @@ export default function CreatePage() {
   const [langs, setLangs] = useState<string[]>(['pcm', 'en']);
   const [vibe, setVibe] = useState('');
   const [influence, setInfluence] = useState('');
-  const [engine, setEngine] = useState<'ace_step' | 'minimax'>('ace_step');
+  const [engine, setEngine] = useState<'suno' | 'ace_step' | 'minimax'>('suno');
 
   const [phase, setPhase] = useState<'form' | 'producing' | 'done' | 'error'>('form');
   const [stepIdx, setStepIdx] = useState(0);
@@ -193,8 +193,9 @@ export default function CreatePage() {
       <div className="mt-6"><div className="mb-2 text-sm text-slate-400">Vocal engine</div>
         <div className="flex flex-wrap gap-2">
           {([
-            { value: 'ace_step', label: 'ACE-Step', hint: 'Fast, flexible' },
-            { value: 'minimax', label: 'MiniMax', hint: 'Higher vocal realism' },
+            { value: 'suno', label: 'Suno V5', hint: 'Best quality (needs Suno key)' },
+            { value: 'minimax', label: 'MiniMax', hint: 'High vocal realism' },
+            { value: 'ace_step', label: 'ACE-Step', hint: 'Fast fallback' },
           ] as const).map((e) => (
             <button key={e.value} onClick={() => setEngine(e.value)} className={`rounded-full px-4 py-2 text-sm ${engine === e.value ? 'bg-brand-gradient text-ink shadow-glow' : 'border border-white/10 bg-white/5 text-slate-300 hover:bg-white/10'}`}>
               {e.label} <span className="opacity-60">· {e.hint}</span>

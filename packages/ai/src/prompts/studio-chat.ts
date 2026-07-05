@@ -159,8 +159,8 @@ export const STUDIO_CHAT_TOOLS = [
         },
         songEngine: {
           type: 'string',
-          enum: ['ace_step', 'minimax'],
-          description: 'Vocal/song engine when withVocals=true. minimax = higher vocal realism; ace_step = default.',
+          enum: ['suno', 'ace_step', 'minimax'],
+          description: 'Vocal/song engine when withVocals=true. suno = best full-production quality (default when available); minimax = high vocal realism; ace_step = fast fallback. Omit to auto-pick the best.',
         },
       },
       required: ['genre', 'bpm'],

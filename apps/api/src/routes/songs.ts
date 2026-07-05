@@ -383,7 +383,7 @@ export default async function songs(app: FastifyInstance) {
   // ---- Re-sing the song with the CURRENT (edited) lyrics — the surgical edit ----
   // Edit lyrics → save → re-sing: renders a fresh vocal over the same lane, and
   // because the new beat is the freshest audio it becomes the song's current take.
-  app.post<{ Params: { id: string }; Body: { songEngine?: 'ace_step' | 'minimax' } }>('/:id/regenerate-beat', async (req, reply) => {
+  app.post<{ Params: { id: string }; Body: { songEngine?: 'suno' | 'ace_step' | 'minimax' } }>('/:id/regenerate-beat', async (req, reply) => {
     const { workspaceId } = requireAuth(req);
     const song = await prisma.song.findFirst({
       where: { id: req.params.id, workspaceId },
@@ -410,12 +410,17 @@ export default async function songs(app: FastifyInstance) {
       styleHints = enriched.styleTags.join(', ');
     }
 
-    const songEngine = (req.body?.songEngine as 'ace_step' | 'minimax') || (song.beats[0]?.provider === 'minimax' ? 'minimax' : 'ace_step');
+    // Keep the previous engine if it was a vocal engine; else let the worker
+    // auto-pick the best (Suno V5 when a Suno key is set, ACE-Step otherwise).
+    const prev = song.beats[0]?.provider ?? '';
+    const songEngine =
+      (req.body?.songEngine as 'suno' | 'ace_step' | 'minimax' | undefined) ??
+      (['suno', 'minimax', 'ace_step'].includes(prev) ? (prev as 'suno' | 'ace_step' | 'minimax') : undefined);
     const charge = await app.chargeCredits({ workspaceId, key: 'full_song_demo', refTable: 'Song', refId: song.id });
     if (!charge.ok) return reply.code(402).send({ error: 'insufficient_credits', ...charge });
 
     const job = await prisma.providerJob.create({
-      data: { workspaceId, projectId: song.projectId, kind: 'music', provider: songEngine, status: 'QUEUED', inputJson: { regenerate: true, songId: song.id } as never },
+      data: { workspaceId, projectId: song.projectId, kind: 'music', provider: songEngine ?? 'suno', status: 'QUEUED', inputJson: { regenerate: true, songId: song.id } as never },
     });
     await enqueue({
       queue: app.queues.music,
