@@ -8,10 +8,10 @@ export default function Landing() {
         <nav className="flex items-center gap-6 text-sm text-slate-300">
           <Link href="/projects">Projects</Link>
           <Link
-            href="/studio"
+            href="/create"
             className="rounded-full bg-afrobrand-500 px-4 py-2 font-medium text-ink hover:bg-afrobrand-400"
           >
-            Open Studio
+            Make a song
           </Link>
         </nav>
       </div>
@@ -22,15 +22,15 @@ export default function Landing() {
             From Lagos to <span className="text-afrobrand-400">global</span> — your AI production house.
           </h1>
           <p className="mt-6 text-lg text-slate-300">
-            AfroHit Studio is a chat-driven studio for Afrobeats, Afro-fusion, amapiano, dancehall and gospel artists.
-            Hooks, lyrics, beats, vocals (your own consented voice), cover art, video, and a release kit with a rights receipt — in one place.
+            Pick your sound — Afrobeats, amapiano, dancehall, R&B, gospel and more. Bring your beat or your voice,
+            or start from scratch. The studio produces, mixes, masters, makes a clip, and hands you a rights-clean release.
           </p>
           <div className="mt-8 flex gap-4">
             <Link
-              href="/studio"
+              href="/create"
               className="rounded-full bg-afrobrand-500 px-6 py-3 font-medium text-ink hover:bg-afrobrand-400"
             >
-              Open Studio Chat
+              Make a song
             </Link>
             <Link href="/billing" className="rounded-full border border-slate-700 px-6 py-3 hover:border-slate-500">
               See pricing

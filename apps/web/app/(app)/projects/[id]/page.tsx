@@ -27,8 +27,15 @@ interface Project {
 
 const GATES = ['brief', 'hook', 'lyrics', 'beat', 'voice', 'mix', 'rights', 'release'];
 
-export default async function ProjectPage({ params }: { params: Promise<{ id: string }> }) {
+export default async function ProjectPage({
+  params,
+  searchParams,
+}: {
+  params: Promise<{ id: string }>;
+  searchParams: Promise<{ produce?: string }>;
+}) {
   const { id } = await params;
+  const { produce } = await searchParams;
   const p = await apiServer<Project>(`/projects/${id}`);
 
   const gateState = Object.fromEntries(
@@ -63,7 +70,7 @@ export default async function ProjectPage({ params }: { params: Promise<{ id: st
 
       <Mixer projectId={p.id} />
 
-      <DropMachine projectId={p.id} />
+      <DropMachine projectId={p.id} initialTheme={produce ?? ''} />
 
       <SnippetMaker projectId={p.id} />
 

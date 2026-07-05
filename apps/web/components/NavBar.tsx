@@ -4,6 +4,7 @@ import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 
 const LINKS = [
+  { href: '/create', label: 'Create' },
   { href: '/studio', label: 'Chat' },
   { href: '/projects', label: 'Projects' },
   { href: '/catalog', label: 'Catalog' },
@@ -18,7 +19,7 @@ export function NavBar() {
   return (
     <header className="sticky top-0 z-40 glass-strong border-b border-white/5">
       <div className="mx-auto flex max-w-7xl items-center justify-between px-6 py-3">
-        <Link href="/studio" className="group flex items-center gap-2.5">
+        <Link href="/create" className="group flex items-center gap-2.5">
           <span className="inline-flex h-8 w-8 items-center justify-center rounded-xl bg-brand-gradient text-ink shadow-glow transition-transform group-hover:scale-105">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden>
               <path d="M9 18V5l10-2v13" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" />

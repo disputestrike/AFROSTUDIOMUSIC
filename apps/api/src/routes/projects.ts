@@ -5,7 +5,7 @@ import { genreSchema } from '@afrohit/shared';
 import { requireAuth } from '../middleware/auth';
 
 const createProjectSchema = z.object({
-  artistId: z.string().cuid(),
+  artistId: z.string().cuid().optional(), // resolved to the default artist if omitted
   title: z.string().min(1).max(160),
   genre: genreSchema,
   bpm: z.number().int().min(40).max(220).optional(),
@@ -24,9 +24,29 @@ export default async function projects(app: FastifyInstance) {
 
   app.post('/', { schema: { body: createProjectSchema } }, async (req, reply) => {
     const { workspaceId } = requireAuth(req);
-    const data = createProjectSchema.parse(req.body);
+    const { artistId: providedArtistId, ...data } = createProjectSchema.parse(req.body);
+
+    // Resolve the artist (default to the first, create one if none) so the
+    // Create panel can start a project without the user managing artists.
+    let artistId = providedArtistId;
+    if (!artistId) {
+      const artist =
+        (await prisma.artist.findFirst({ where: { workspaceId }, orderBy: { createdAt: 'asc' } })) ??
+        (await prisma.artist.create({
+          data: {
+            workspaceId,
+            name: 'My Artist',
+            stageName: 'My Artist',
+            vocalTone: ['smooth'],
+            languages: ['pcm', 'yo', 'en'],
+            laneSummary: 'Edit your Artist DNA in Settings for sharper results.',
+          },
+        }));
+      artistId = artist.id;
+    }
+
     const project = await prisma.project.create({
-      data: { workspaceId, ...data },
+      data: { workspaceId, artistId, ...data },
     });
     reply.code(201);
     return project;

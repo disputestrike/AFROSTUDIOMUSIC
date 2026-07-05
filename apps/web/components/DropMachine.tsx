@@ -17,10 +17,10 @@ interface DropItem {
   error?: string;
 }
 
-export function DropMachine({ projectId }: { projectId: string }) {
+export function DropMachine({ projectId, initialTheme = '' }: { projectId: string; initialTheme?: string }) {
   const api = useApi();
   const router = useRouter();
-  const [theme, setTheme] = useState('');
+  const [theme, setTheme] = useState(initialTheme);
   const [count, setCount] = useState(3);
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState('');
