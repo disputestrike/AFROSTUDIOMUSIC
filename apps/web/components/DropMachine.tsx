@@ -5,7 +5,7 @@
  * You become the curator: pick the winners, bin the rest.
  */
 
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { useApi } from '@/lib/api';
 
@@ -21,20 +21,35 @@ export function DropMachine({ projectId, initialTheme = '' }: { projectId: strin
   const api = useApi();
   const router = useRouter();
   const [theme, setTheme] = useState(initialTheme);
-  const [count, setCount] = useState(3);
+  const [count, setCount] = useState(initialTheme ? 1 : 3);
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState('');
   const [items, setItems] = useState<DropItem[]>([]);
+  const sectionRef = useRef<HTMLElement | null>(null);
+  const autoRan = useRef(false);
 
-  async function run() {
+  // "Auto-produce this" from the Create screen (?produce=…): actually start
+  // producing on arrival, scroll it into view, and strip the param so a
+  // refresh doesn't re-run (and re-charge).
+  useEffect(() => {
+    if (!initialTheme || autoRan.current) return;
+    autoRan.current = true;
+    sectionRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    void run(1);
+    router.replace(`/projects/${projectId}`);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  async function run(overrideCount?: number) {
+    const n = overrideCount ?? count;
     if (!theme.trim()) return;
     setBusy(true);
     setItems([]);
-    setStatus(`Producing ${count} songs on “${theme.trim()}” — hooks, A&R pick, lyrics, sung songs…`);
+    setStatus(`Producing ${n} song${n > 1 ? 's' : ''} on “${theme.trim()}” — hooks, A&R pick, lyrics, sung song…`);
     try {
       const r = await api.post<{ drop: DropItem[]; produced: number }>(`/projects/${projectId}/drop`, {
         theme: theme.trim(),
-        count,
+        count: n,
       });
       setItems(r.drop ?? []);
       setStatus(`${r.produced} songs queued & ranked. Audio renders in the background — refresh Catalog to hear them.`);
@@ -47,7 +62,7 @@ export function DropMachine({ projectId, initialTheme = '' }: { projectId: strin
   }
 
   return (
-    <section className="mt-8">
+    <section ref={sectionRef} className="mt-8">
       <h2 className="font-display text-2xl">⚡ Drop Machine</h2>
       <p className="mt-1 text-sm text-slate-400">
         One theme → a batch of full sung songs, ranked by the A&R. You curate the winners. (Daily cost cap always applies.)
