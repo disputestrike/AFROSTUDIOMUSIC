@@ -110,9 +110,11 @@ async function generateHooks(ctx: Ctx, count: number) {
   if (!charge.ok) return { error: 'insufficient_credits', ...charge };
 
   const tasteMemory = await memoryContext(project.artistId);
+  const trendData = await researchTrends({ genre: project.genre }).catch(() => null);
+  const trends = trendData?.digest;
   const result = await responsesJson<{ hooks: Array<{ text: string; language?: string[]; bpm?: number; syllablePattern?: string; melodyNotes?: string; callResponse?: boolean }> }>({
     system: prompts.HOOK_SYSTEM,
-    user: prompts.hookUserPrompt({ artist: project.artist as never, brief: project.briefs[0] as never, count, tasteMemory }),
+    user: prompts.hookUserPrompt({ artist: project.artist as never, brief: project.briefs[0] as never, count, tasteMemory, trends }),
     temperature: 0.95,
     maxOutputTokens: 4_000,
   });
@@ -124,6 +126,7 @@ async function generateHooks(ctx: Ctx, count: number) {
     brief: project.briefs[0] as never,
     drafts,
     tasteMemory,
+    trends,
   });
 
   const rows = refined

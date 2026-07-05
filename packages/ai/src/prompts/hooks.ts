@@ -24,6 +24,13 @@ You reference *style lanes* (e.g. "smooth/pocket like Wizkid lane") but you NEVE
 You never use cliché Western pop shorthand ("baby girl", "shawty", "lit fr") unless explicitly approved.
 You never fake a language you do not know — if uncertain in Yoruba/Igbo/Hausa, you mark the line "needs native review" rather than guess.
 
+FRESHNESS IS NON-NEGOTIABLE (this is what separates a hit from generic AI filler):
+- Every hook must be DISTINCT — a different image, angle, or story. Never write many variations of the same idea.
+- BAN these overused Afrobeats fillers (unless the artist explicitly asks): "we dey shine", "no be lie", "I dey glow", "shine like a star", "shine bright", "no dulling", "we dey rise", "party don start", "make we jam", "hustle hard", "to the moon", "we dey vibe", and bare "vibe / vibes / energy" as a payoff.
+- Prefer concrete, sensory, specific images and real Nigerian street detail (places, food, slang, moments) over generic affirmations.
+- Write like a top-tier songwriter, not a caption generator. Surprise, specificity, and a real emotional turn beat repetition.
+- If TRENDING_NOW context is provided, make the hooks feel current to it (the sounds, slang, and themes popping right now) — capture the wave WITHOUT copying anyone's lyrics.
+
 You output ONLY valid JSON in this shape:
 {
   "hooks": [
@@ -46,8 +53,10 @@ export function hookUserPrompt(opts: {
   exclude?: string[];
   /** Taste-memory feedback loop: real examples the artist approved/rejected. */
   tasteMemory?: { approvedExamples: string[]; rejectedExamples: string[] };
+  /** Live trend digest (Tavily) so hooks feel current to what's popping now. */
+  trends?: string;
 }): string {
-  const { artist, brief, count, exclude, tasteMemory } = opts;
+  const { artist, brief, count, exclude, tasteMemory, trends } = opts;
   const refs = artist.references?.map((r) => `${r.name} lane (${r.lane})`).join(', ') ?? 'none';
   const banned = [...(artist.cornyBanned ?? []), ...(artist.forbiddenStyles ?? [])];
   return JSON.stringify({
@@ -63,6 +72,12 @@ export function hookUserPrompt(opts: {
     },
     brief: brief ?? {},
     exclude_text_starting_with: exclude ?? [],
+    TRENDING_NOW: trends || undefined,
+    banned_overused_cliches: [
+      'we dey shine', 'no be lie', 'I dey glow', 'shine like a star', 'shine bright',
+      'no dulling', 'we dey rise', 'party don start', 'make we jam', 'hustle hard',
+      'to the moon', 'we dey vibe', 'my vibe', 'like a star',
+    ],
     taste_memory: tasteMemory
       ? {
           hooks_the_artist_APPROVED_write_more_like_these: tasteMemory.approvedExamples,
@@ -76,6 +91,9 @@ export function hookUserPrompt(opts: {
       'Mark uncertain Yoruba/Igbo/Hausa with "needs_native_review": true.',
       'Each hook must be 1-4 lines max.',
       'Learn from taste_memory: converge on approved patterns, avoid rejected ones.',
+      'EVERY hook must be DISTINCT — different image/angle/story. No near-duplicates.',
+      'Do NOT use any phrase in banned_overused_cliches. Write fresh, specific, sensory lines.',
+      'If TRENDING_NOW is present, reflect the current wave (sound/slang/themes) without copying anyone.',
     ],
   });
 }
