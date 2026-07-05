@@ -57,10 +57,11 @@ export async function claudeJson<T>(opts: {
       'anthropic-version': '2023-06-01',
       'content-type': 'application/json',
     },
+    // NB: Claude 5-family models deprecated `temperature` (sending it → 400).
+    // Omit it; the model's default sampling is fine for A&R judgment.
     body: JSON.stringify({
       model: opts.model ?? ANTHROPIC_MODEL(),
       max_tokens: opts.maxTokens ?? 4_000,
-      temperature: opts.temperature ?? 0.4,
       system: opts.system,
       messages: [{ role: 'user', content: opts.user }],
     }),

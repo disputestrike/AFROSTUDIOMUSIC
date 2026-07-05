@@ -46,14 +46,15 @@ export async function researchTrends(opts: {
   try {
     const res = await fetch('https://api.tavily.com/search', {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      // Current Tavily API authenticates via Bearer header (api_key-in-body is
+      // legacy). Send both so either contract works.
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${key}` },
       body: JSON.stringify({
         api_key: key,
         query,
         search_depth: 'basic',
         max_results: 6,
         include_answer: true,
-        topic: 'news',
       }),
     });
     if (!res.ok) return null;
