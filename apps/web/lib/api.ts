@@ -24,6 +24,10 @@ async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
 
 export function useApi() {
   return {
+    /** Absolute URL for a same-API path (e.g. a proxied file download link). */
+    fileHref(path: string): string {
+      return `${API_URL}/api/v1${path}`;
+    },
     get<T>(path: string): Promise<T> {
       return apiFetch<T>(path);
     },

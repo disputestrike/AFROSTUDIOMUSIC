@@ -42,7 +42,7 @@ const STATUS_LABEL: Record<string, string> = {
   SKETCH: 'Sketch', DEMO: 'Demo', FULL: 'Full', MIXED: 'Mixed', MASTERED: 'Mastered', RELEASED: 'Released',
 };
 
-type DownloadFile = { label: string; url: string; kind: string };
+type DownloadFile = { label: string; url: string; kind: string; dl?: string };
 
 export default function CatalogGrid({ initial }: { initial: SongRow[] }) {
   const api = useApi();
@@ -74,9 +74,9 @@ export default function CatalogGrid({ initial }: { initial: SongRow[] }) {
   async function reuseBeat(s: SongRow) {
     setBusy(`${s.id}:reuse`);
     try {
-      const r = await api.post<{ projectId: string }>(`/songs/${s.id}/reuse-beat`, {});
-      flash('Beat reused in a new song. Opening the studio…');
-      router.push(`/projects/${r.projectId}`);
+      const r = await api.post<{ projectId: string; message?: string }>(`/songs/${s.id}/reuse-beat`, {});
+      flash(r.message || 'Beat reused in a new song. Opening the studio…');
+      setTimeout(() => router.push(`/projects/${r.projectId}`), 1400);
     } catch (e) { flash((e as Error).message || 'Reuse failed'); }
     finally { setBusy(''); }
   }
@@ -264,7 +264,7 @@ export default function CatalogGrid({ initial }: { initial: SongRow[] }) {
             <ul className="space-y-2">
               {downloads.files.map((f, i) => (
                 <li key={i}>
-                  <a href={f.url} download target="_blank" rel="noreferrer" className="flex items-center justify-between rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-sm hover:bg-white/10">
+                  <a href={f.dl ? api.fileHref(f.dl) : f.url} download target="_blank" rel="noreferrer" className="flex items-center justify-between rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-sm hover:bg-white/10">
                     <span>{f.label}</span>
                     <Download className="h-4 w-4 text-slate-400" />
                   </a>

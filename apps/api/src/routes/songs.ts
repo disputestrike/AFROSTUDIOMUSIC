@@ -151,16 +151,52 @@ export default async function songs(app: FastifyInstance) {
     });
     if (!song) return reply.code(404).send({ error: 'song_not_found' });
     const beat = song.beats[0];
+    // `dl` is the proxied download path — forces a real download with a unique,
+    // readable filename (the raw R2 url opens in-tab with a cryptic key name).
     return {
       title: song.lyric?.title || song.title,
       files: [
-        song.masters[0] && { label: 'Master (WAV)', url: song.masters[0].url, kind: 'master' },
-        song.mixes[0] && { label: 'Mix (WAV)', url: song.mixes[0].url, kind: 'mix' },
-        beat && { label: `Audio (${beat.format?.toUpperCase() ?? 'MP3'})`, url: beat.url, kind: 'audio' },
-        ...(beat?.stems ?? []).map((st) => ({ label: `Stem — ${st.role}`, url: st.url, kind: 'stem' })),
+        song.masters[0] && { label: 'Master (WAV)', url: song.masters[0].url, kind: 'master', dl: `/songs/${song.id}/file?type=master` },
+        song.mixes[0] && { label: 'Mix (WAV)', url: song.mixes[0].url, kind: 'mix', dl: `/songs/${song.id}/file?type=mix` },
+        beat && { label: `Audio (${beat.format?.toUpperCase() ?? 'MP3'})`, url: beat.url, kind: 'audio', dl: `/songs/${song.id}/file?type=audio` },
+        ...(beat?.stems ?? []).map((st) => ({ label: `Stem — ${st.role}`, url: st.url, kind: 'stem', dl: `/songs/${song.id}/file?type=stem&stem=${encodeURIComponent(st.role)}` })),
       ].filter(Boolean),
       lyrics: song.lyric ? { body: song.lyric.body, cleanVersion: song.lyric.cleanVersion } : null,
     };
+  });
+
+  // ---- Proxied file download — streams with a real, unique filename ----
+  app.get<{ Params: { id: string }; Querystring: { type?: string; stem?: string } }>('/:id/file', async (req, reply) => {
+    const { workspaceId } = requireAuth(req);
+    const type = req.query.type ?? 'audio';
+    const song = await prisma.song.findFirst({
+      where: { id: req.params.id, workspaceId },
+      include: {
+        masters: { orderBy: { createdAt: 'desc' }, take: 1 },
+        mixes: { orderBy: { createdAt: 'desc' }, take: 1 },
+        beats: { orderBy: { createdAt: 'desc' }, take: 1, include: { stems: true } },
+        lyric: { select: { title: true } },
+      },
+    });
+    if (!song) return reply.code(404).send({ error: 'song_not_found' });
+    const beat = song.beats[0];
+    let url: string | undefined;
+    let ext = 'mp3';
+    if (type === 'master' && song.masters[0]) { url = song.masters[0].url; ext = 'wav'; }
+    else if (type === 'mix' && song.mixes[0]) { url = song.mixes[0].url; ext = 'wav'; }
+    else if (type === 'stem' && req.query.stem) { url = beat?.stems.find((s) => s.role === req.query.stem)?.url; ext = 'mp3'; }
+    else if (beat) { url = beat.url; ext = beat.format ?? 'mp3'; }
+    if (!url) return reply.code(404).send({ error: 'no_such_asset' });
+
+    const res = await fetch(url);
+    if (!res.ok || !res.body) return reply.code(502).send({ error: 'source_unavailable' });
+    const buf = Buffer.from(await res.arrayBuffer());
+    const safeTitle = (song.lyric?.title || song.title || 'afrohit').replace(/[^a-z0-9 _-]/gi, '').trim().slice(0, 60) || 'afrohit';
+    const name = type === 'stem' ? `${safeTitle} - stem-${req.query.stem}` : `${safeTitle} - ${type}`;
+    reply.header('content-disposition', `attachment; filename="${name}.${ext}"`);
+    reply.header('content-type', res.headers.get('content-type') ?? 'application/octet-stream');
+    reply.header('content-length', String(buf.length));
+    return buf;
   });
 
   // ---- Master / re-master on demand (song-first) ----
@@ -219,27 +255,44 @@ export default async function songs(app: FastifyInstance) {
     });
     if (!song) return reply.code(404).send({ error: 'song_not_found' });
     const beat = song.beats[0];
-    if (!beat) return reply.code(400).send({ error: 'no_beat_to_reuse' });
+    if (!beat) return reply.code(400).send({ error: 'no_beat_to_reuse', message: 'This song has no beat yet.' });
 
     const targetProjectId = (req.body?.targetProjectId as string) || song.projectId;
     const project = await prisma.project.findFirst({ where: { id: targetProjectId, workspaceId }, select: { id: true } });
     if (!project) return reply.code(404).send({ error: 'target_project_not_found' });
+
+    // "Reuse the BEAT" should reuse a clean INSTRUMENTAL when we have one (from a
+    // prior stem separation) — not the full song with baked-in vocals. Fall back
+    // to the beat audio otherwise (and tell the user so they can run stems first).
+    const instrumental = beat.stems.find((s) => s.role === 'instrumental');
+    const reuseUrl = instrumental?.url ?? beat.url;
+    const cleanInstrumental = !!instrumental;
 
     const newSong = await prisma.song.create({
       data: { workspaceId, projectId: project.id, title: (req.body?.title as string) || `${song.title} (reuse beat)`, status: 'SKETCH' },
     });
     const newBeat = await prisma.beatAsset.create({
       data: {
-        projectId: project.id, songId: newSong.id, url: beat.url, format: beat.format,
+        projectId: project.id, songId: newSong.id, url: reuseUrl, format: cleanInstrumental ? 'mp3' : beat.format,
         bpm: beat.bpm, keySignature: beat.keySignature, duration: beat.duration,
-        provider: beat.provider, meta: { ...(beat.meta as object), reusedFromBeat: beat.id } as never, approved: beat.approved,
+        provider: beat.provider, meta: { reusedFromBeat: beat.id, cleanInstrumental } as never, approved: true,
       },
     });
-    if (beat.stems.length) {
-      await prisma.$transaction(beat.stems.map((st) => prisma.stem.create({ data: { beatId: newBeat.id, role: st.role, url: st.url, format: st.format, duration: st.duration } })));
+    // Carry over the non-vocal stems so the reused beat is remixable.
+    const carry = beat.stems.filter((s) => s.role !== 'vocals' && s.role !== 'instrumental');
+    if (carry.length) {
+      await prisma.$transaction(carry.map((st) => prisma.stem.create({ data: { beatId: newBeat.id, role: st.role, url: st.url, format: st.format, duration: st.duration } })));
     }
     reply.code(201);
-    return { songId: newSong.id, projectId: project.id, beatId: newBeat.id };
+    return {
+      songId: newSong.id,
+      projectId: project.id,
+      beatId: newBeat.id,
+      cleanInstrumental,
+      message: cleanInstrumental
+        ? 'Clean instrumental reused in a new song — write a fresh topline over it.'
+        : 'Beat reused (full track — run "Instrumental" on the original first for a vocals-free version).',
+    };
   });
 
   // ---- Duplicate a song (deep copy: song + lyric + latest beat + stems) ----
