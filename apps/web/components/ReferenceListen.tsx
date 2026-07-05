@@ -68,13 +68,17 @@ export function ReferenceListen({ projectId }: { projectId: string }) {
   }, []);
 
   async function poll(jobId: string): Promise<Profile> {
-    for (let i = 0; i < 30; i++) {
-      await new Promise((r) => setTimeout(r, 4000));
+    // Replicate can cold-start (first call after idle) for 2-3 min — poll up to
+    // ~6 min and keep the user informed instead of giving up at 2 min.
+    const MAX = 72; // 72 × 5s = 360s
+    for (let i = 0; i < MAX; i++) {
+      await new Promise((r) => setTimeout(r, 5000));
       const job = await api.get<{ status: string; outputJson?: { profile?: Profile }; errorJson?: unknown }>(`/jobs/${jobId}`);
       if (job.status === 'SUCCEEDED' && job.outputJson?.profile) return job.outputJson.profile;
-      if (job.status === 'FAILED') throw new Error(JSON.stringify(job.errorJson ?? 'analyze failed'));
+      if (job.status === 'FAILED') throw new Error(typeof job.errorJson === 'string' ? job.errorJson : JSON.stringify(job.errorJson ?? 'analyze failed'));
+      setStatus(`🎧 The AI is listening… (${(i + 1) * 5}s — first run can take a couple minutes)`);
     }
-    throw new Error('Timed out listening to the track.');
+    throw new Error('Still listening — the model is warming up. Give it a moment and try again.');
   }
 
   async function analyzeSource(src: Blob) {
