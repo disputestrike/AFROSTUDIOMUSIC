@@ -60,19 +60,25 @@ export default async function lyrics(app: FastifyInstance) {
         maxOutputTokens: 4_000,
       });
 
-      const lyric = await prisma.lyricDraft.create({
-        data: {
-          projectId: project.id,
-          songId: hook.songId,
-          title: output.title,
-          body: output.body,
-          cleanVersion: output.cleanVersion,
-          explicit: output.explicit ?? false,
-          structure: output.structure as never,
-          languageMix: output.languageMix as never,
-          approved: false,
-        },
-      });
+      // songId is @unique on LyricDraft — upsert so re-generating a song's lyric
+      // updates it instead of hitting the unique constraint.
+      const lyricData = {
+        projectId: project.id,
+        title: output.title,
+        body: output.body,
+        cleanVersion: output.cleanVersion,
+        explicit: output.explicit ?? false,
+        structure: output.structure as never,
+        languageMix: output.languageMix as never,
+        approved: false,
+      };
+      const lyric = hook.songId
+        ? await prisma.lyricDraft.upsert({
+            where: { songId: hook.songId },
+            create: { ...lyricData, songId: hook.songId },
+            update: lyricData,
+          })
+        : await prisma.lyricDraft.create({ data: lyricData });
 
       if (hook.songId) {
         await prisma.song.update({

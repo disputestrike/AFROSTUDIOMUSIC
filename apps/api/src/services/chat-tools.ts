@@ -253,18 +253,24 @@ async function generateLyrics(ctx: Ctx, hookId: string, cleanVersion: boolean) {
     temperature: 0.8,
     maxTokens: 4_000,
   });
-  const lyric = await prisma.lyricDraft.create({
-    data: {
-      projectId: hook.projectId,
-      songId: hook.songId,
-      title: output.title,
-      body: output.body,
-      cleanVersion: output.cleanVersion,
-      explicit: output.explicit ?? false,
-      structure: output.structure as never,
-      languageMix: output.languageMix as never,
-    },
-  });
+  // LyricDraft.songId is @unique — a song can have ONE lyric. Re-running lyrics
+  // (Continue/Regenerate) must UPDATE it, not crash on the unique constraint.
+  const lyricData = {
+    projectId: hook.projectId,
+    title: output.title,
+    body: output.body,
+    cleanVersion: output.cleanVersion,
+    explicit: output.explicit ?? false,
+    structure: output.structure as never,
+    languageMix: output.languageMix as never,
+  };
+  const lyric = hook.songId
+    ? await prisma.lyricDraft.upsert({
+        where: { songId: hook.songId },
+        create: { ...lyricData, songId: hook.songId },
+        update: lyricData,
+      })
+    : await prisma.lyricDraft.create({ data: lyricData });
   if (hook.songId) {
     await prisma.song.update({
       where: { id: hook.songId },

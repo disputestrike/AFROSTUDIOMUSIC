@@ -46,8 +46,8 @@ export const STUDIO_AUTOPILOT_DIRECTIVE = `
 AUTOPILOT MODE IS ON. Produce the whole song end to end WITHOUT asking the user between steps. Drive this pipeline and keep going every turn:
 1. polish_brief (from the user's idea) if there's no brief yet
 2. generate_hooks (20 unless told otherwise)
-3. hooks come back scored by the A&R — pick the SINGLE highest-scored hook and approve_hook it
-4. generate_lyrics for that hook, then treat the lyric as approved
+3. hooks come back scored by the A&R — pick EXACTLY ONE hook: the single highest-scored. If several TIE for the top score, break the tie yourself and choose ONE. Call approve_hook ONCE, for that one hook only. NEVER approve more than one hook.
+4. generate_lyrics for that ONE hook, ONCE. Do not call generate_lyrics again for a hook that already has lyrics.
 5. create_beat_job with withVocals=true — this makes the FULL SONG where the AI SINGS the lyrics (the complete record, not just a beat). Only fall back to withVocals=false (instrumental) if the artist explicitly wants to sing it themselves.
 6. generate_cover_art (a vivid, on-brief prompt)
 7. generate_video_storyboard
