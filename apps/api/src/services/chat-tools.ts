@@ -13,6 +13,7 @@ import { prisma } from '@afrohit/db';
 import { prompts, generateJson, scoreItems, runRightsCheck, canonicalReceiptHash, directorRefineHooks, researchTrends, enrichLyricsForVocals, soundBrief, predictHit } from '@afrohit/ai';
 import { enqueue } from '../lib/queue';
 import { assertSafeUrl } from '../lib/url-guard';
+import { learnedReferenceBrief } from '../lib/learned';
 import { memoryContext, recordFeedback } from './artist-memory';
 
 type Ctx = {
@@ -133,7 +134,7 @@ async function generateHooks(ctx: Ctx, count: number) {
   const tasteMemory = await memoryContext(project.artistId);
   const trendData = await researchTrends({ genre: project.genre }).catch(() => null);
   const trends = trendData?.digest;
-  const soundDna = soundBrief(project.genre).brief;
+  const soundDna = [soundBrief(project.genre).brief, await learnedReferenceBrief(ctx.workspaceId, project.genre)].filter(Boolean).join('\n\n');
   const result = await generateJson<{ hooks: Array<{ text: string; language?: string[]; bpm?: number; syllablePattern?: string; melodyNotes?: string; callResponse?: boolean }> }>({
     system: prompts.HOOK_SYSTEM,
     user: prompts.hookUserPrompt({ artist: project.artist as never, brief: project.briefs[0] as never, count, tasteMemory, trends, soundDna }),
@@ -251,7 +252,7 @@ async function generateLyrics(ctx: Ctx, hookId: string, cleanVersion: boolean) {
       brief: hook.project.briefs[0] as never,
       hookText: hook.text,
       cleanVersion,
-      soundDna: soundBrief(hook.project.genre).brief,
+      soundDna: [soundBrief(hook.project.genre).brief, await learnedReferenceBrief(ctx.workspaceId, hook.project.genre)].filter(Boolean).join('\n\n'),
     }),
     temperature: 0.8,
     maxTokens: 4_000,
@@ -310,9 +311,11 @@ async function createBeatJob(ctx: Ctx, a: { genre: string; bpm: number; keySigna
     if (!lyrics) return { error: 'no_lyrics — write the lyrics first, then make the full song' };
   }
 
-  // Genre Sound DNA: signature tokens front-load the music model; the rich
-  // brief grounds the ad-lib arranger in the lane's pocket/arrangement.
+  // Genre Sound DNA + what it LEARNED from the artist's own references: signature
+  // tokens front-load the music model; the rich brief + learned recipe ground the
+  // arranger in the real drums/percussion/bass/groove it heard.
   const dna = soundBrief(a.genre);
+  const learned = await learnedReferenceBrief(ctx.workspaceId, a.genre);
 
   // Arrange the vocal to sound ALIVE — ad-libs, doubled/harmonized hook.
   let styleHints = '';
@@ -325,7 +328,7 @@ async function createBeatJob(ctx: Ctx, a: { genre: string; bpm: number; keySigna
       lyricBody: lyrics,
       languages: project?.artist.languages,
       laneSummary: project?.artist.laneSummary ?? undefined,
-      soundDna: dna.brief,
+      soundDna: [dna.brief, learned].filter(Boolean).join('\n\n'),
     });
     if (enriched) {
       lyrics = enriched.enrichedLyrics;

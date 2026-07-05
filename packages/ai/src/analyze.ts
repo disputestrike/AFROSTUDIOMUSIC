@@ -19,8 +19,17 @@ export interface AudioProfile {
   vocalGender: string | null; // "male" | "female" | "group" | "instrumental" | null
   vocalStyle: string | null; // tone/delivery, e.g. "smooth melodic tenor, laid-back"
   language: string | null; // language(s) heard, e.g. "pidgin/yoruba"
+  // DEEP PRODUCTION — the "learn the beats/drums/flow" fields (the actual craft).
+  drums: string | null; // kick/snare/hats pattern + feel
+  percussion: string | null; // shakers/congas/log-drum/talking-drum + fills
+  bass: string | null; // bass character + movement
+  groove: string | null; // pocket/swing/timing feel
+  arrangement: string | null; // how it builds — intro/verse/hook dynamics, drops, fills
+  flow: string | null; // vocal cadence/rhythm/ad-lib style
+  complexity: string | null; // how layered/produced it is
   vibe: string; // one-line summary of what it sounds like
   suggestedVibePrompt: string; // vivid prompt to make a FRESH original in this style
+  learnedRecipe: string; // full production recipe text, ready to inject into generation
   raw: string; // the model's raw description
 }
 
@@ -57,7 +66,16 @@ export async function analyzeAudio(url: string, apiKey?: string): Promise<AudioP
   }
 
   const question =
-    'Listen to this music and describe it precisely for a producer: tempo in BPM, musical key, genre/subgenre, mood, energy level (low/medium/high), and the main instruments you hear. ALSO describe the VOCAL: is the lead voice male, female, a group, or is it instrumental? Describe the vocal tone and delivery (e.g. smooth melodic tenor, raspy, chant, auto-tuned), and what language(s) are sung. Be concise and specific.';
+    'You are a top Afrobeats producer analyzing this record so it can be recreated in the same STYLE (not copied). Describe precisely and specifically: ' +
+    '1) tempo BPM, musical key, genre/subgenre, mood, energy. ' +
+    '2) DRUMS — the kick/snare/clap/hi-hat pattern and feel (four-on-floor? off-beat? backbeat?). ' +
+    '3) PERCUSSION — shakers, congas, log drum, talking drum, and any rolls/fills before the hook or sections. ' +
+    '4) BASS — its character and how it moves. ' +
+    '5) GROOVE — the pocket/swing/timing feel. ' +
+    '6) ARRANGEMENT — how it builds (intro, verse, pre-hook, hook, bridge), where it strips back or drops, the dynamics. ' +
+    '7) INSTRUMENTS — the melodic instruments and textures. ' +
+    '8) VOCAL — male/female/group/instrumental, the tone & delivery, the flow/cadence & ad-lib style, and language(s). ' +
+    'Be concrete and detailed — a producer must be able to rebuild the sound from your description.';
   const create = await fetch('https://api.replicate.com/v1/predictions', {
     method: 'POST',
     headers: { ...auth, 'content-type': 'application/json', prefer: 'wait' },
@@ -80,25 +98,20 @@ export async function analyzeAudio(url: string, apiKey?: string): Promise<AudioP
   try {
     const structured = await responsesJson<Omit<AudioProfile, 'raw'>>({
       system:
-        'Turn a music description into strict JSON. Fields: bpm (number or null), key (string or null), genre (string or null), mood (string or null), energy (string or null), instruments (string[]), vocalGender ("male"|"female"|"group"|"instrumental"|null), vocalStyle (tone/delivery string or null), language (language(s) sung, string or null), vibe (one-line summary), suggestedVibePrompt (a vivid prompt to generate a FRESH, ORIGINAL song in this style that MATCHES the vocal character described — same voice type/tone/energy/language — but never copies or names the source track). Return only JSON.',
-      user: `Music description: ${raw}`,
+        'Turn a producer\'s music analysis into strict JSON. Fields: bpm (number|null), key (string|null), genre (string|null), mood (string|null), energy (string|null), instruments (string[]), vocalGender ("male"|"female"|"group"|"instrumental"|null), vocalStyle (string|null), language (string|null), drums (string|null: the kick/snare/hat pattern & feel), percussion (string|null: shakers/congas/log-drum/talking-drum + fills), bass (string|null), groove (string|null: pocket/swing), arrangement (string|null: how it builds/drops), flow (string|null: vocal cadence & ad-lib style), complexity (string|null: how layered/produced), vibe (one-line), suggestedVibePrompt (vivid prompt to make a FRESH ORIGINAL in this style, matching the vocal + groove, never copying/naming the source), learnedRecipe (a detailed multi-line production recipe combining the drums/percussion/bass/groove/arrangement/flow so a generator can rebuild this SOUND). Return only JSON.',
+      user: `Producer analysis: ${raw}`,
       temperature: 0.3,
-      maxOutputTokens: 800,
+      maxOutputTokens: 1400,
     });
     return { ...structured, raw };
   } catch {
     return {
-      bpm: null,
-      key: null,
-      genre: null,
-      mood: null,
-      energy: null,
-      instruments: [],
-      vocalGender: null,
-      vocalStyle: null,
-      language: null,
+      bpm: null, key: null, genre: null, mood: null, energy: null, instruments: [],
+      vocalGender: null, vocalStyle: null, language: null,
+      drums: null, percussion: null, bass: null, groove: null, arrangement: null, flow: null, complexity: null,
       vibe: raw.slice(0, 200),
       suggestedVibePrompt: `Fresh original song in the style of: ${raw.slice(0, 300)}`,
+      learnedRecipe: raw.slice(0, 1200),
       raw,
     };
   }

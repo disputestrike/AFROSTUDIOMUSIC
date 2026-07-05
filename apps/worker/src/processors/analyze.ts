@@ -22,6 +22,25 @@ export async function processAnalyze(p: AnalyzePayload) {
       select: { musicApiKey: true },
     });
     const profile = await analyzeAudio(p.url, ws?.musicApiKey ?? undefined);
+
+    // LEARN: store the deep production recipe as a reusable reference so future
+    // songs in this genre/workspace can be built from what it heard. This is the
+    // compounding "listen & learn" library — it grows with every reference.
+    const project = await prisma.project.findUnique({ where: { id: p.projectId }, select: { artistId: true } });
+    await prisma.soundReference
+      .create({
+        data: {
+          workspaceId: p.workspaceId,
+          artistId: project?.artistId ?? null,
+          genre: profile.genre ?? null,
+          sourceUrl: p.url,
+          title: profile.vibe?.slice(0, 120) ?? null,
+          recipe: profile as never,
+          summary: profile.learnedRecipe || profile.suggestedVibePrompt || null,
+        },
+      })
+      .catch(() => {});
+
     // Taste graph — what the artist chose to listen to / build from. Compounds.
     await prisma.analyticsEvent
       .create({

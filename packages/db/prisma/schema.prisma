@@ -481,6 +481,29 @@ model Master {
 }
 
 // ===========================================================================
+// Learned sound references — the "listen & learn" library
+// ===========================================================================
+
+// A song the artist OWNS/licensed, deeply analyzed into a production recipe
+// (drums, percussion, groove, bass, arrangement, flow). Accumulates per
+// workspace/genre and is blended into generation so output learns the real
+// sound. Scalar-only (no FK) to keep it decoupled. Legal: own/licensed audio.
+model SoundReference {
+  id          String   @id @default(cuid())
+  workspaceId String
+  artistId    String?
+  genre       String?
+  sourceUrl   String
+  title       String?
+  recipe      Json     // structured deep-analysis profile
+  summary     String?  @db.Text // one text block ready for prompt injection
+  createdAt   DateTime @default(now()) @db.Timestamptz(6)
+
+  @@index([workspaceId, genre])
+  @@index([artistId])
+}
+
+// ===========================================================================
 // Visuals (cover art + video)
 // ===========================================================================
 

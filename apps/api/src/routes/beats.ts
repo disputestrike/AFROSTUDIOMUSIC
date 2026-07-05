@@ -2,6 +2,7 @@ import type { FastifyInstance } from 'fastify';
 import { prisma } from '@afrohit/db';
 import { generateBeatInputSchema, attachBeatUploadSchema } from '@afrohit/shared';
 import { enrichLyricsForVocals, soundBrief } from '@afrohit/ai';
+import { learnedReferenceBrief } from '../lib/learned';
 import { requireAuth } from '../middleware/auth';
 import { enqueue, QUEUES } from '../lib/queue';
 import { publicUrlFor, assertOwnedKey } from '../lib/storage';
@@ -42,9 +43,10 @@ export default async function beats(app: FastifyInstance) {
         lyrics = lyric?.cleanVersion ?? lyric?.body ?? undefined;
         if (!lyrics) return reply.code(400).send({ error: 'no_lyrics — write lyrics first for a vocal song' });
       }
-      // Genre Sound DNA: front-load signature tokens for the music model + a
-      // rich brief for the ad-lib arranger, so the beat sits in the lane.
+      // Genre Sound DNA + learned references (what it heard in the artist's own
+      // songs) so the beat sits in the lane and rebuilds the real sound.
       const dna = soundBrief(project.genre);
+      const learned = await learnedReferenceBrief(workspaceId, project.genre);
 
       // Arrange the vocal to sound ALIVE (ad-libs, doubled/harmonized hook).
       if (input.withVocals && lyrics && input.richVocals) {
@@ -52,7 +54,7 @@ export default async function beats(app: FastifyInstance) {
           lyricBody: lyrics,
           languages: project.artist.languages,
           laneSummary: project.artist.laneSummary ?? undefined,
-          soundDna: dna.brief,
+          soundDna: [dna.brief, learned].filter(Boolean).join('\n\n'),
         });
         if (enriched) {
           lyrics = enriched.enrichedLyrics;
