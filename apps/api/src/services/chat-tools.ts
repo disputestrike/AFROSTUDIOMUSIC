@@ -31,7 +31,7 @@ export async function runChatTool(args: Ctx & { name: string; args: Record<strin
     case 'polish_brief':
       return polishBrief(ctx, String(a.rawIdea ?? ''));
     case 'generate_hooks':
-      return generateHooks(ctx, Number(a.count ?? 20));
+      return generateHooks(ctx, Number(a.count ?? 8));
     case 'score_hooks':
       return scoreHooks(ctx, (a.hookIds as string[]) ?? []);
     case 'approve_hook':

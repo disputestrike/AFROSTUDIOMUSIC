@@ -152,8 +152,13 @@ export async function measureAudioQuality(input: string): Promise<AudioQuality> 
     // channel (else a hard-panned / low-crest channel false-flags a fine mix).
     const overallIdx = out.lastIndexOf('Overall');
     const astatsOverall = overallIdx >= 0 ? out.slice(overallIdx) : out;
-    const crestFactorLin = numAfter(astatsOverall, /Crest factor:\s*(-?\d+(?:\.\d+)?)/);
-    const crestFactorDb = crestFactorLin && crestFactorLin > 0 ? Math.round(20 * Math.log10(crestFactorLin) * 10) / 10 : null;
+    // Crest factor (dB) = Peak - RMS. Derive it from the Overall block's "Peak
+    // level dB" / "RMS level dB" (both ALWAYS present there) instead of astats'
+    // own "Crest factor:" line — that line is per-channel-only in some ffmpeg
+    // builds and prints "inf" on silence, so live QC read it back as null.
+    const peakLevelDb = numAfter(astatsOverall, /Peak level dB:\s*(-?\d+(?:\.\d+)?)/);
+    const rmsLevelDb = numAfter(astatsOverall, /RMS level dB:\s*(-?\d+(?:\.\d+)?)/);
+    const crestFactorDb = peakLevelDb !== null && rmsLevelDb !== null ? Math.round((peakLevelDb - rmsLevelDb) * 10) / 10 : null;
     const flatFactor = numAfter(astatsOverall, /Flat factor:\s*(-?\d+(?:\.\d+)?)/);
 
     const flags: string[] = [];

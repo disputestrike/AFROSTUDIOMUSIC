@@ -22,6 +22,39 @@ import { requireAuth } from '../middleware/auth';
 import { runChatTool } from '../services/chat-tools';
 
 /**
+ * Per-request generation guard. The model can emit several tool calls in one turn
+ * (and autopilot loops many rounds); with no cap, "make me a song" fans out into
+ * many render jobs — the "1 song → 20 songs" bug. One user message =
+ * at most ONE new song, one hook batch, one cover, one storyboard, one drop, etc.
+ * run_drop is the explicit batch path and is already capped internally.
+ */
+const GEN_LIMIT_PER_REQUEST: Record<string, number> = {
+  create_beat_job: 1,
+  generate_hooks: 1,
+  run_drop: 1,
+  generate_cover_art: 1,
+  generate_video_storyboard: 1,
+  render_video: 1,
+  render_demo_vocal: 1,
+  create_release_kit: 1,
+};
+function makeGenGuard() {
+  const used: Record<string, number> = {};
+  return (name: string): { allowed: true } | { allowed: false; reason: string } => {
+    const cap = GEN_LIMIT_PER_REQUEST[name];
+    if (cap == null) return { allowed: true };
+    used[name] = (used[name] ?? 0) + 1;
+    if (used[name] > cap) {
+      return {
+        allowed: false,
+        reason: `skipped_duplicate: "${name}" already ran once this request (limit ${cap} — one song per request). Do NOT call it again; tell the user it's queued, or ask what they want to change.`,
+      };
+    }
+    return { allowed: true };
+  };
+}
+
+/**
  * Every chat needs a project to operate on. If the thread doesn't have one
  * (e.g. the user opened /studio and typed "make me a song" from scratch),
  * lazily create a default artist + project and attach it to the thread. This
@@ -209,15 +242,19 @@ export default async function chat(app: FastifyInstance) {
       const toolResults: Array<{ name: string; arguments: unknown; output: unknown }> = [];
 
       if (turn.toolCalls?.length) {
+        const guard = makeGenGuard();
         for (const call of turn.toolCalls) {
-          const result = await runChatTool({
-            workspaceId,
-            userId,
-            projectId,
-            app,
-            name: call.name,
-            args: call.arguments,
-          });
+          const gate = guard(call.name);
+          const result = gate.allowed
+            ? await runChatTool({
+                workspaceId,
+                userId,
+                projectId,
+                app,
+                name: call.name,
+                args: call.arguments,
+              })
+            : { skipped: true, reason: gate.reason };
           await prisma.chatMessage.create({
             data: {
               threadId: thread.id,
@@ -367,6 +404,9 @@ export default async function chat(app: FastifyInstance) {
         // calling tools or we hit the safety cap.
         const convo = [...baseMessages];
         const maxRounds = autopilot ? 14 : 1;
+        // One guard for the WHOLE request so autopilot's 14 rounds still produce
+        // exactly one song/cover/storyboard — not one per round.
+        const guard = makeGenGuard();
         let finalText = '';
         for (let round = 1; round <= maxRounds; round++) {
           send({ type: 'stage', stage: autopilot ? `producing (step ${round})` : 'thinking' });
@@ -384,7 +424,10 @@ export default async function chat(app: FastifyInstance) {
           const roundResults: Array<{ name: string; output: unknown }> = [];
           for (const call of turn.toolCalls) {
             send({ type: 'tool_start', name: call.name });
-            const result = await runChatTool({ workspaceId, userId, projectId, app, name: call.name, args: call.arguments });
+            const gate = guard(call.name);
+            const result = gate.allowed
+              ? await runChatTool({ workspaceId, userId, projectId, app, name: call.name, args: call.arguments })
+              : { skipped: true, reason: gate.reason };
             send({ type: 'tool_result', name: call.name, output: result });
             await prisma.chatMessage.create({
               data: {

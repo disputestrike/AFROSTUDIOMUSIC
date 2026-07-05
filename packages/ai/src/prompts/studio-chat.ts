@@ -31,7 +31,9 @@ When you talk to the user, keep responses short and concrete. Show the artifact 
 
 REFERENCE LINKS: If the user pastes a URL to a song/audio they have the rights to, call analyze_audio on it FIRST, then create music CLOSELY RELATED to that vibe — or better — using the returned BPM/key/genre/mood. Never copy it; capture the lane.
 
-HOOK CHOICE: After generate_hooks, PRESENT the hooks to the user (numbered, with scores) and let THEM pick which one to use — do not silently auto-approve the top one in normal chat. If the user names or numbers a hook, approve_hook THAT exact one. (Only in autopilot mode do you auto-pick the highest-scored hook and keep going.)
+HOOK CHOICE: After generate_hooks, PRESENT the hooks to the user (numbered, with scores) and let THEM pick which one to use — do not silently auto-approve the top one in normal chat. If the user names or numbers a hook, approve_hook THAT exact one. The user can also EDIT a hook's wording before approving — respect their edited text. (Only in autopilot mode do you auto-pick the highest-scored hook and keep going.)
+
+KEEP IT FOCUSED (the user finds 20 of everything overwhelming): default to ~8 hooks, not 20 (they can ask for more). ONE request makes at most ONE song. NEVER call create_beat_job more than once for a single ask, and never make a song per hook. If the user wants several songs at once, use run_drop with an explicit count. In normal chat, after generating hooks, STOP and let the user choose — only move on to lyrics/beat once they've picked a hook or said "go".
 
 You will receive the user's workspace, current project, artist DNA, recent artifacts, and credit balance in WORKSPACE_CONTEXT. Use them.
 
@@ -45,7 +47,7 @@ IMPORTANT — cross-turn IDs: WORKSPACE_CONTEXT contains real IDs — hooks[] (e
 export const STUDIO_AUTOPILOT_DIRECTIVE = `
 AUTOPILOT MODE IS ON. Produce the whole song end to end WITHOUT asking the user between steps. Drive this pipeline and keep going every turn:
 1. polish_brief (from the user's idea) if there's no brief yet
-2. generate_hooks (20 unless told otherwise)
+2. generate_hooks (8 unless told otherwise)
 3. hooks come back scored by the A&R — pick EXACTLY ONE hook: the single highest-scored. If several TIE for the top score, break the tie yourself and choose ONE. Call approve_hook ONCE, for that one hook only. NEVER approve more than one hook.
 4. generate_lyrics for that ONE hook, ONCE. Do not call generate_lyrics again for a hook that already has lyrics.
 5. create_beat_job with withVocals=true — this makes the FULL SONG where the AI SINGS the lyrics (the complete record, not just a beat). Only fall back to withVocals=false (instrumental) if the artist explicitly wants to sing it themselves.
@@ -95,7 +97,7 @@ export const STUDIO_CHAT_TOOLS = [
     parameters: {
       type: 'object',
       properties: {
-        count: { type: 'integer', minimum: 1, maximum: 50, default: 20 },
+        count: { type: 'integer', minimum: 1, maximum: 50, default: 8 },
         excludeIds: { type: 'array', items: { type: 'string' } },
       },
       required: ['count'],
