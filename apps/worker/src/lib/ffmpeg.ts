@@ -133,31 +133,43 @@ export async function measureAudioQuality(input: string): Promise<AudioQuality> 
     // ebur128 prints a Summary block at the end with "I:", "LRA:", "Peak:".
     // CRITICAL: ebur128 prints PER-FRAME "I:"/"LRA:" lines throughout playback —
     // and those start near -70 LUFS / 0 LU before they accumulate. The REAL values
-    // are in the final "Summary:" block. Parse only the summary, or we'd read the
-    // meaningless first frame and flag every real song as too_quiet + flat.
+    // are in the final "Summary:" block. Parse ONLY the summary; if there is NO
+    // summary (partial/errored decode — ffmpegCapture doesn't check exit code),
+    // treat ebur128 metrics as unavailable rather than reading a bogus first frame.
     const summaryIdx = out.lastIndexOf('Summary:');
-    const summary = summaryIdx >= 0 ? out.slice(summaryIdx) : out;
-    const integratedLufs = numAfter(summary, /I:\s*(-?\d+(?:\.\d+)?)\s*LUFS/);
-    const loudnessRangeLra = numAfter(summary, /LRA:\s*(-?\d+(?:\.\d+)?)\s*LU/);
+    const hasSummary = summaryIdx >= 0;
+    const summary = hasSummary ? out.slice(summaryIdx) : '';
+    const integratedLufs = hasSummary ? numAfter(summary, /I:\s*(-?\d+(?:\.\d+)?)\s*LUFS/) : null;
+    const loudnessRangeLra = hasSummary ? numAfter(summary, /LRA:\s*(-?\d+(?:\.\d+)?)\s*LU/) : null;
     // ebur128's summary prints both "Sample peak" and "True peak" as "Peak: X dBFS"
     // — take the highest so clipping detection uses the true (inter-sample) peak.
-    const peaks = [...summary.matchAll(/Peak:\s*(-?\d+(?:\.\d+)?)\s*dBFS/g)]
-      .map((m) => parseFloat(m[1]!))
-      .filter((n) => Number.isFinite(n));
+    const peaks = hasSummary
+      ? [...summary.matchAll(/Peak:\s*(-?\d+(?:\.\d+)?)\s*dBFS/g)].map((m) => parseFloat(m[1]!)).filter((n) => Number.isFinite(n))
+      : [];
     const truePeakDb = peaks.length ? Math.max(...peaks) : null;
-    const crestFactorLin = numAfter(out, /Crest factor:\s*(-?\d+(?:\.\d+)?)/);
+    // astats prints per-channel blocks first, then the pooled "Overall" block LAST.
+    // Read crest/flat from the Overall slice so a STEREO master isn't judged by one
+    // channel (else a hard-panned / low-crest channel false-flags a fine mix).
+    const overallIdx = out.lastIndexOf('Overall');
+    const astatsOverall = overallIdx >= 0 ? out.slice(overallIdx) : out;
+    const crestFactorLin = numAfter(astatsOverall, /Crest factor:\s*(-?\d+(?:\.\d+)?)/);
     const crestFactorDb = crestFactorLin && crestFactorLin > 0 ? Math.round(20 * Math.log10(crestFactorLin) * 10) / 10 : null;
-    const flatFactor = numAfter(out, /Flat factor:\s*(-?\d+(?:\.\d+)?)/);
+    const flatFactor = numAfter(astatsOverall, /Flat factor:\s*(-?\d+(?:\.\d+)?)/);
 
     const flags: string[] = [];
     if (integratedLufs !== null && integratedLufs < -23) flags.push('too_quiet');
     if (truePeakDb !== null && truePeakDb > 0.5) flags.push('clipping');
     // Low dynamic movement = the "flat / no depth / same-y" complaint, measured.
-    if (loudnessRangeLra !== null && loudnessRangeLra < 3) flags.push('flat');
+    // BUT a loud, heavily-limited master (e.g. -9 LUFS club/cd) legitimately has a
+    // low LRA — only flag "flat" when the track isn't simply loud-mastered.
+    const loudMaster = integratedLufs !== null && integratedLufs > -11;
+    if (loudnessRangeLra !== null && loudnessRangeLra < 3 && !loudMaster) flags.push('flat');
     if (crestFactorDb !== null && crestFactorDb < 6) flags.push('squashed');
     if (durationS > 0 && durationS < 20) flags.push('short');
 
-    const hard = flags.some((f) => f === 'too_quiet' || f === 'clipping') || durationS < 8;
+    // durationS === 0 means UNKNOWN (poll-streamed providers ffprobe can't read up
+    // front), NOT "too short" — don't hard-fail a clean render on unknown duration.
+    const hard = flags.some((f) => f === 'too_quiet' || f === 'clipping') || (durationS > 0 && durationS < 8);
     const soft = flags.some((f) => f === 'flat' || f === 'squashed');
     const verdict: AudioQuality['verdict'] = hard ? 'fail' : soft ? 'weak' : 'pass';
     // If we couldn't read a single metric, don't pretend — fall back to duration.

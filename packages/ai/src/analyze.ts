@@ -66,12 +66,37 @@ interface ReplicatePred {
 
 function extractText(output: unknown): string {
   if (typeof output === 'string') return output;
-  if (Array.isArray(output)) return output.map((o) => (typeof o === 'string' ? o : '')).join(' ').trim();
-  if (output && typeof output === 'object') {
-    const o = output as { text?: string; transcription?: string };
-    return o.transcription ?? o.text ?? JSON.stringify(output);
+  if (Array.isArray(output)) {
+    return output
+      .map((o) => (typeof o === 'string' ? o : o && typeof o === 'object' && typeof (o as { text?: string }).text === 'string' ? (o as { text: string }).text : ''))
+      .join(' ')
+      .trim();
   }
-  return String(output ?? '');
+  if (output && typeof output === 'object') {
+    const o = output as { text?: string; transcription?: string; segments?: Array<{ text?: string }> };
+    if (typeof o.transcription === 'string') return o.transcription;
+    if (typeof o.text === 'string') return o.text;
+    if (Array.isArray(o.segments)) return o.segments.map((s) => s?.text ?? '').join(' ').trim();
+    // Unknown shape → honest empty. NEVER JSON.stringify a metadata blob and let it
+    // be treated as "lyrics heard" (that mis-flags instrumentals as vocal songs).
+    return '';
+  }
+  return '';
+}
+
+/**
+ * Strip Whisper's well-known hallucinations on non-speech/instrumental audio
+ * (bracketed markers like [BLANK_AUDIO]/[Applause], and filler phrases like
+ * "Thank you for watching" / "Please subscribe") so an instrumental beat isn't
+ * mis-read as having vocals and fed to the model as bogus "lyrics".
+ */
+function cleanTranscript(t: string): string {
+  return t
+    .replace(/\[[^\]]*\]/g, ' ') // [BLANK_AUDIO], [Applause], [Music]
+    .replace(/\((?:music|applause|inaudible|foreign|silence|instrumental)[^)]*\)/gi, ' ')
+    .replace(/\b(?:thanks?(?: you)?(?: (?:for|so much))?(?: watching| subscribing)?|please subscribe|subscribe to my channel|music playing|instrumental)\b[.!]?/gi, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
 }
 
 /** Resolve a community model's latest version id at runtime (no hardcoded hash). */
@@ -99,7 +124,18 @@ async function runPrediction(
   let p = (await create.json()) as ReplicatePred;
   for (let i = 0; i < maxPolls && (p.status === 'starting' || p.status === 'processing'); i++) {
     await new Promise((r) => setTimeout(r, 4000));
-    p = (await (await fetch(`https://api.replicate.com/v1/predictions/${p.id}`, { headers: auth })).json()) as ReplicatePred;
+    if (!p.id) break;
+    // Resilient poll: a single transient 429/5xx or non-JSON body must NOT kill the
+    // whole prediction (the prediction is still running server-side). Keep the last
+    // good `p` and retry next tick; only overwrite with a valid prediction body.
+    try {
+      const res = await fetch(`https://api.replicate.com/v1/predictions/${p.id}`, { headers: auth });
+      if (!res.ok) continue;
+      const next = (await res.json()) as ReplicatePred;
+      if (next && typeof next.status === 'string') p = next;
+    } catch {
+      continue;
+    }
   }
   if (p.status !== 'succeeded') throw new Error(`${p.status}: ${String(p.error ?? 'no output')}`);
   return p.output;
@@ -162,7 +198,11 @@ export async function analyzeAudio(url: string, apiKey?: string, ctx?: AnalyzeCo
   const [transcript, richText] = await Promise.all([transcribe(url, auth), richDescribe(url, auth)]);
 
   const m = ctx?.metrics ?? {};
-  const hasVocal = !!(transcript && transcript.text && transcript.text.replace(/\s/g, '').length > 8);
+  // Clean Whisper's hallucinated filler before deciding a vocal is present, and
+  // require a real amount of text (short hallucinations like "Thank you." survive
+  // an 8-char check — 12 + de-filler is much harder to false-trigger).
+  const transcriptText = transcript?.text ? cleanTranscript(transcript.text) : '';
+  const hasVocal = transcriptText.replace(/\s/g, '').length > 12;
 
   // Assemble every objective signal we actually observed — this is the honest
   // evidence Claude reasons from (it never invents what it couldn't hear).
@@ -173,8 +213,8 @@ export async function analyzeAudio(url: string, apiKey?: string, ctx?: AnalyzeCo
   if (m.loudnessRangeLra != null) signals.push(`Loudness range (dynamics): ${m.loudnessRangeLra} LU (low = flat/steady, high = dynamic arrangement)`);
   if (m.crestFactorDb != null) signals.push(`Crest factor: ${m.crestFactorDb} dB (low = squashed, high = punchy/dynamic)`);
   signals.push(`Vocal present: ${hasVocal ? 'yes' : 'no (likely instrumental)'}`);
-  if (transcript?.language) signals.push(`Detected language: ${transcript.language}`);
-  if (transcript?.text) signals.push(`Transcript (lyrics heard):\n${transcript.text.slice(0, 1500)}`);
+  if (hasVocal && transcript?.language) signals.push(`Detected language: ${transcript.language}`);
+  if (hasVocal) signals.push(`Transcript (lyrics heard):\n${transcriptText.slice(0, 1500)}`);
   if (richText) signals.push(`Producer's ear (audio model description):\n${richText.slice(0, 2000)}`);
 
   const raw = signals.join('\n');
@@ -215,10 +255,10 @@ export async function analyzeAudio(url: string, apiKey?: string, ctx?: AnalyzeCo
     } catch {
       return {
         bpm: null, key: null, genre: ctx?.genreHint ?? null, mood: null, energy: null, instruments: [],
-        vocalGender: hasVocal ? null : 'instrumental', vocalStyle: null, language: transcript?.language ?? null,
+        vocalGender: hasVocal ? null : 'instrumental', vocalStyle: null, language: hasVocal ? transcript?.language ?? null : null,
         drums: null, percussion: null, bass: null, groove: null, arrangement: null, flow: null, complexity: null,
-        vibe: (richText ?? transcript?.text ?? ctx?.genreHint ?? 'analyzed reference').slice(0, 200),
-        suggestedVibePrompt: `Fresh original ${ctx?.genreHint ?? ''} song in the style heard: ${(richText ?? transcript?.text ?? '').slice(0, 280)}`.trim(),
+        vibe: (richText || transcriptText || ctx?.genreHint || 'analyzed reference').slice(0, 200),
+        suggestedVibePrompt: `Fresh original ${ctx?.genreHint ?? ''} song in the style heard: ${(richText || transcriptText || '').slice(0, 280)}`.trim(),
         learnedRecipe: raw.slice(0, 1500),
         raw,
       };

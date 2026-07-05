@@ -43,10 +43,12 @@ export async function processAnalyze(p: AnalyzePayload) {
     }
 
     // Objective ffmpeg metrics (loudness/dynamics/duration) — a free, always-there
-    // signal so the analysis works even when the audio model is unavailable.
+    // signal so the analysis works even when the audio model is unavailable. Measure
+    // the ORIGINAL full-quality stereo file (not the mono 22k preview clip) so the
+    // loudness/LRA/crest handed to the analyzer describe the real record.
     let metrics: Awaited<ReturnType<typeof measureAudioQuality>> | null = null;
     try {
-      metrics = await measureAudioQuality(analyzeUrl);
+      metrics = await measureAudioQuality(p.url);
     } catch {
       metrics = null;
     }
