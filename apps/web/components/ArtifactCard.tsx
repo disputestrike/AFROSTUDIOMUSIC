@@ -5,6 +5,8 @@ import { CheckCircle2, ListMusic, FileText, Image as ImageIcon, Film, ShieldChec
 interface Props {
   toolName: string;
   output: unknown;
+  /** Send a follow-up message to the chat (e.g. "use hook 3"). */
+  onAction?: (prompt: string) => void;
 }
 
 /**
@@ -12,7 +14,7 @@ interface Props {
  * keep this minimal in MVP — every artifact has an obvious next-action button
  * the user can hit.
  */
-export function ArtifactCard({ toolName, output }: Props) {
+export function ArtifactCard({ toolName, output, onAction }: Props) {
   const o = output as Record<string, unknown>;
   if (!o) return null;
   if ((o as { pending?: boolean }).pending) {
@@ -28,7 +30,7 @@ export function ArtifactCard({ toolName, output }: Props) {
 
   switch (toolName) {
     case 'generate_hooks':
-      return <HookList hooks={(o as { hooks: Array<{ id: string; text: string }> }).hooks ?? []} />;
+      return <HookList hooks={(o as { hooks: Array<{ id: string; text: string; score?: number | null }> }).hooks ?? []} onAction={onAction} />;
     case 'score_hooks':
       return <ScoresList scores={(o as { scores: Array<{ id: string; overall: number; notes?: string }> }).scores ?? []} />;
     case 'generate_lyrics':
@@ -60,17 +62,30 @@ export function ArtifactCard({ toolName, output }: Props) {
   }
 }
 
-function HookList({ hooks }: { hooks: Array<{ id: string; text: string }> }) {
+function HookList({ hooks, onAction }: { hooks: Array<{ id: string; text: string; score?: number | null }>; onAction?: (prompt: string) => void }) {
   return (
     <div>
       <div className="mb-2 flex items-center gap-2 font-medium text-slate-200">
-        <ListMusic className="h-4 w-4 text-afrobrand-400" /> {hooks.length} hooks
+        <ListMusic className="h-4 w-4 text-afrobrand-400" /> {hooks.length} hooks — pick the one you want
       </div>
       <ol className="grid gap-2 sm:grid-cols-2">
         {hooks.map((h, i) => (
-          <li key={h.id} className="flex gap-2 rounded-lg border border-slate-800 bg-black/30 p-2.5 text-slate-100">
-            <span className="mt-0.5 select-none text-xs font-semibold text-afrobrand-400">{i + 1}.</span>
-            <span className="whitespace-pre-wrap text-sm leading-snug">{h.text}</span>
+          <li key={h.id} className="flex flex-col gap-1.5 rounded-lg border border-slate-800 bg-black/30 p-2.5 text-slate-100">
+            <div className="flex gap-2">
+              <span className="mt-0.5 select-none text-xs font-semibold text-afrobrand-400">{i + 1}.</span>
+              <span className="whitespace-pre-wrap text-sm leading-snug">{h.text}</span>
+              {typeof h.score === 'number' && (
+                <span className="ml-auto shrink-0 self-start rounded-full bg-slate-800 px-1.5 py-0.5 text-[10px] text-afrobrand-300">{h.score.toFixed(1)}</span>
+              )}
+            </div>
+            {onAction && (
+              <button
+                onClick={() => onAction(`Use hook #${i + 1} (id ${h.id}): "${h.text.replace(/\n/g, ' ').slice(0, 60)}". Approve that exact hook and write the full lyrics for it.`)}
+                className="w-fit rounded-full border border-afrobrand-500/40 bg-afrobrand-500/10 px-2.5 py-0.5 text-xs text-afrobrand-300 hover:bg-afrobrand-500/20"
+              >
+                Use this hook →
+              </button>
+            )}
           </li>
         ))}
       </ol>

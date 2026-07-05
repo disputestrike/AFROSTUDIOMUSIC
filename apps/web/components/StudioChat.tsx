@@ -3,7 +3,9 @@
 import { useEffect, useRef, useState } from 'react';
 import { useApi } from '@/lib/api';
 import { ArtifactCard } from './ArtifactCard';
-import { Send, Loader2, Mic, Plus, MessageSquare, Play, RotateCcw, Trash2, Sparkles } from 'lucide-react';
+import { Send, Loader2, Mic, Plus, MessageSquare, Play, RotateCcw, Trash2, Sparkles, Headphones } from 'lucide-react';
+
+const ACTIVE_THREAD_KEY = 'afrohit.activeThread';
 import { cn } from '@/lib/utils';
 
 interface Message {
@@ -45,8 +47,10 @@ export default function StudioChat({ projectId }: { projectId?: string }) {
   const [autopilot, setAutopilot] = useState(false);
   const [stage, setStage] = useState<string | null>(null);
   const [micAvailable, setMicAvailable] = useState(false); // set after mount → no SSR mismatch
+  const [uploading, setUploading] = useState(false);
   const bottomRef = useRef<HTMLDivElement | null>(null);
   const recRef = useRef<SR | null>(null);
+  const listenRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -62,7 +66,18 @@ export default function StudioChat({ projectId }: { projectId?: string }) {
   useEffect(() => {
     void loadThreads();
     setMicAvailable(!!getSpeechRecognition());
+    // Persistent chat: resume the last session on return so leaving and coming
+    // back never restarts the conversation — the context stays safe.
+    const saved = typeof window !== 'undefined' ? localStorage.getItem(ACTIVE_THREAD_KEY) : null;
+    if (saved) void openThread(saved);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Remember the active thread so navigation away/back continues it.
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    if (threadId) localStorage.setItem(ACTIVE_THREAD_KEY, threadId);
+  }, [threadId]);
 
   async function openThread(id: string) {
     setBusy(true);
@@ -78,6 +93,10 @@ export default function StudioChat({ projectId }: { projectId?: string }) {
           toolOutput: m.toolOutput ?? undefined,
         }))
       );
+    } catch {
+      // Saved thread is gone (deleted) — drop the stale pointer, start fresh.
+      if (typeof window !== 'undefined') localStorage.removeItem(ACTIVE_THREAD_KEY);
+      setThreadId(null);
     } finally {
       setBusy(false);
     }
@@ -87,6 +106,21 @@ export default function StudioChat({ projectId }: { projectId?: string }) {
     setThreadId(null);
     setMessages([]);
     setDraft('');
+    if (typeof window !== 'undefined') localStorage.removeItem(ACTIVE_THREAD_KEY);
+  }
+
+  // 🎧 Listen: upload a track → the chat brain analyzes it and creates in that vibe.
+  async function onListenFile(file: File) {
+    if (uploading || busy) return;
+    setUploading(true);
+    try {
+      const { publicUrl } = await api.uploadToStorage(file, 'reference');
+      await sendText(`Listen to this track and make a fresh original in that vibe — or make it better. Never copy it. Reference: ${publicUrl}`);
+    } catch (e) {
+      setMessages((m) => [...m, { id: `e-${Date.now()}`, role: 'assistant', content: `Couldn't upload that track: ${(e as Error).message}` }]);
+    } finally {
+      setUploading(false);
+    }
   }
 
   async function deleteThread(id: string, e: React.MouseEvent) {
@@ -233,7 +267,7 @@ export default function StudioChat({ projectId }: { projectId?: string }) {
           )}
           <div className="mx-auto max-w-3xl space-y-4">
             {messages.map((m) => (
-              <MessageBubble key={m.id} m={m} />
+              <MessageBubble key={m.id} m={m} onAction={(p) => void sendText(p)} />
             ))}
             {busy && (
               <div className="flex items-center gap-2 text-sm text-slate-400">
@@ -277,6 +311,24 @@ export default function StudioChat({ projectId }: { projectId?: string }) {
               </div>
             )}
             <div className="flex items-end gap-2">
+              <input
+                ref={listenRef}
+                type="file"
+                accept="audio/*,.wav,.mp3,.m4a,.ogg,.flac"
+                className="hidden"
+                onChange={(e) => e.target.files?.[0] && onListenFile(e.target.files[0])}
+              />
+              <button
+                onClick={() => listenRef.current?.click()}
+                disabled={uploading || busy}
+                title="Play a track — the AI listens and makes it (or a better version) in that vibe"
+                className={cn(
+                  'flex h-12 w-12 items-center justify-center rounded-2xl border',
+                  uploading ? 'animate-pulse border-afrobrand-500 bg-afrobrand-500/20 text-afrobrand-300' : 'border-slate-800 text-slate-400 hover:border-slate-600'
+                )}
+              >
+                {uploading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Headphones className="h-4 w-4" />}
+              </button>
               {micAvailable && (
                 <button
                   onClick={toggleMic}
@@ -320,11 +372,11 @@ export default function StudioChat({ projectId }: { projectId?: string }) {
   );
 }
 
-function MessageBubble({ m }: { m: Message }) {
+function MessageBubble({ m, onAction }: { m: Message; onAction?: (prompt: string) => void }) {
   if (m.role === 'tool') {
     return (
       <div className="rounded-2xl border border-slate-800 bg-slate-900/60 p-4">
-        <ArtifactCard toolName={m.toolName!} output={m.toolOutput} />
+        <ArtifactCard toolName={m.toolName!} output={m.toolOutput} onAction={onAction} />
       </div>
     );
   }

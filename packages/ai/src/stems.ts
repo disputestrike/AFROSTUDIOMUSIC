@@ -65,35 +65,41 @@ export async function separateStems(opts: {
   if (data.status !== 'succeeded' || !data.output) {
     throw new Error(`demucs ${data.status}: ${data.error ?? 'no output'}`);
   }
-  return mapOutput(data.output);
+  return mapOutput(data.output, opts.mode ?? 'instrumental');
 }
 
 /** Demucs output shape varies by model build — handle object OR array. */
-function mapOutput(output: unknown): StemSeparationResult {
-  const stems: Array<{ role: string; url: string }> = [];
-  let instrumentalUrl: string | undefined;
+function mapOutput(output: unknown, mode: 'instrumental' | 'full'): StemSeparationResult {
+  let stems: Array<{ role: string; url: string }> = [];
 
   const classify = (key: string): string => {
     const k = key.toLowerCase();
-    if (k.includes('no_vocal') || k.includes('novocal') || k === 'instrumental' || k === 'other_novocals') return 'instrumental';
+    if (k.includes('no_vocal') || k.includes('novocal') || k === 'instrumental') return 'instrumental';
     if (k.includes('vocal')) return 'vocals';
     if (k.includes('drum')) return 'drums';
     if (k.includes('bass')) return 'bass';
-    if (k.includes('other') || k.includes('melod') || k.includes('accompan')) return 'other';
+    if (k.includes('other') || k.includes('accompan') || k.includes('melod')) return 'other';
     return k;
   };
 
   if (output && typeof output === 'object' && !Array.isArray(output)) {
     for (const [key, val] of Object.entries(output as Record<string, unknown>)) {
       if (typeof val !== 'string' || !/^https?:\/\//.test(val)) continue;
-      const role = classify(key);
-      if (role === 'instrumental') instrumentalUrl = val;
-      stems.push({ role, url: val });
+      stems.push({ role: classify(key), url: val });
     }
   } else if (Array.isArray(output)) {
     (output as unknown[]).forEach((u, i) => {
       if (typeof u === 'string' && /^https?:\/\//.test(u)) stems.push({ role: `stem_${i + 1}`, url: u });
     });
   }
+
+  // Two-stem mode (stem=vocals) returns `vocals` + `other`, where `other` is the
+  // full no-vocals mix = the instrumental. Relabel it so it downloads correctly.
+  if (mode === 'instrumental') {
+    const nonVocal = stems.filter((s) => s.role !== 'vocals');
+    if (nonVocal.length === 1) nonVocal[0]!.role = 'instrumental';
+  }
+
+  const instrumentalUrl = stems.find((s) => s.role === 'instrumental')?.url;
   return { instrumentalUrl, stems, raw: output };
 }

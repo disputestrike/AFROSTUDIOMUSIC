@@ -152,8 +152,19 @@ export default function CreatePage() {
   // ---- Form ----
   return (
     <div className="mx-auto max-w-3xl px-6 py-10">
-      <h1 className="font-display text-5xl">Make a song</h1>
-      <p className="mt-2 text-sm text-slate-400">Pick your sound and hit create — it makes the whole song right here.</p>
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <h1 className="font-display text-5xl">Make a song</h1>
+          <p className="mt-2 text-sm text-slate-400">Pick your sound and hit create — it makes the whole song right here.</p>
+        </div>
+        <button
+          onClick={() => router.push('/listen')}
+          title="Play a track — the AI listens and makes it (or a better version) in that vibe"
+          className="mt-1 flex shrink-0 items-center gap-2 rounded-full border border-white/15 bg-white/5 px-3.5 py-2 text-sm hover:bg-white/10"
+        >
+          🎧 <span className="hidden sm:inline">Listen &amp; recreate</span>
+        </button>
+      </div>
 
       <Picker label="Genre" items={GENRES} value={genre} onPick={setGenre} />
       <div className="mt-6"><div className="mb-2 text-sm text-slate-400">Mood</div>
