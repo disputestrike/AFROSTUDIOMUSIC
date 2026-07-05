@@ -253,7 +253,7 @@ async function generateLyrics(ctx: Ctx, hookId: string, cleanVersion: boolean) {
   return { lyric: { id: lyric.id, title: lyric.title } };
 }
 
-async function createBeatJob(ctx: Ctx, a: { genre: string; bpm: number; keySignature?: string; durationS?: number; vibePrompt?: string; withStems?: boolean; withVocals?: boolean }) {
+async function createBeatJob(ctx: Ctx, a: { genre: string; bpm: number; keySignature?: string; durationS?: number; vibePrompt?: string; withStems?: boolean; withVocals?: boolean; songEngine?: 'ace_step' | 'minimax' }) {
   if (!ctx.projectId) return { error: 'no_project_in_thread' };
 
   // Full song WITH AI vocals: grab the latest lyric so the model can sing it.
@@ -304,7 +304,7 @@ async function createBeatJob(ctx: Ctx, a: { genre: string; bpm: number; keySigna
       workspaceId: ctx.workspaceId,
       projectId: ctx.projectId,
       kind: 'music',
-      provider: a.withVocals ? 'ace_step' : process.env.MUSIC_PROVIDER ?? 'stub',
+      provider: a.withVocals ? a.songEngine ?? 'ace_step' : process.env.MUSIC_PROVIDER ?? 'stub',
       status: 'QUEUED',
       inputJson: a as never,
     },
@@ -323,6 +323,7 @@ async function createBeatJob(ctx: Ctx, a: { genre: string; bpm: number; keySigna
         durationS: a.durationS ?? (a.withVocals ? 150 : 60),
         withStems: a.withStems ?? !a.withVocals,
         withVocals: a.withVocals ?? false,
+        songEngine: a.songEngine,
         lyrics,
       },
     },

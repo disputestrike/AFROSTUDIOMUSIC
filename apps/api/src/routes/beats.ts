@@ -68,7 +68,7 @@ export default async function beats(app: FastifyInstance) {
           workspaceId,
           projectId: project.id,
           kind: 'music',
-          provider: input.withVocals ? 'ace_step' : process.env.MUSIC_PROVIDER ?? 'stub',
+          provider: input.withVocals ? input.songEngine ?? 'ace_step' : process.env.MUSIC_PROVIDER ?? 'stub',
           status: 'QUEUED',
           inputJson: input as never,
         },

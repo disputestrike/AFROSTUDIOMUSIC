@@ -34,6 +34,7 @@ export default function CreatePage() {
   const [bpm, setBpm] = useState(103);
   const [langs, setLangs] = useState<string[]>(['pcm', 'en']);
   const [vibe, setVibe] = useState('');
+  const [engine, setEngine] = useState<'ace_step' | 'minimax'>('ace_step');
 
   const [phase, setPhase] = useState<'form' | 'producing' | 'done' | 'error'>('form');
   const [stepIdx, setStepIdx] = useState(0);
@@ -56,7 +57,7 @@ export default function CreatePage() {
       // This one call runs hooks → A&R pick → lyrics → queues the sung song.
       const drop = await api.post<{ drop: Array<{ jobId?: string; hookText?: string; score: number | null; error?: string }> }>(
         `/projects/${project.id}/drop`,
-        { theme, count: 1, genre, bpm, withVocals: true }
+        { theme, count: 1, genre, bpm, withVocals: true, songEngine: engine }
       );
       const item = drop.drop?.[0];
       if (!item?.jobId) throw new Error(item?.error === 'insufficient_credits' ? 'Daily limit reached — try again tomorrow.' : item?.error || 'Could not start production.');
@@ -167,6 +168,19 @@ export default function CreatePage() {
       </div>
       <div className="mt-6"><div className="mb-2 text-sm text-slate-400">Vibe / what it’s about (optional)</div>
         <input value={vibe} onChange={(e) => setVibe(e.target.value)} placeholder="e.g. rainy-day love, smooth Wizkid lane, chant-along hook" className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2.5 text-sm" />
+      </div>
+
+      <div className="mt-6"><div className="mb-2 text-sm text-slate-400">Vocal engine</div>
+        <div className="flex flex-wrap gap-2">
+          {([
+            { value: 'ace_step', label: 'ACE-Step', hint: 'Fast, flexible' },
+            { value: 'minimax', label: 'MiniMax', hint: 'Higher vocal realism' },
+          ] as const).map((e) => (
+            <button key={e.value} onClick={() => setEngine(e.value)} className={`rounded-full px-4 py-2 text-sm ${engine === e.value ? 'bg-brand-gradient text-ink shadow-glow' : 'border border-white/10 bg-white/5 text-slate-300 hover:bg-white/10'}`}>
+              {e.label} <span className="opacity-60">· {e.hint}</span>
+            </button>
+          ))}
+        </div>
       </div>
 
       <div className="mt-8 flex flex-wrap gap-3">

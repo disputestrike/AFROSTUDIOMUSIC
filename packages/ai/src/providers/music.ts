@@ -511,6 +511,75 @@ class AceStepSongAdapter implements MusicProviderAdapter {
   }
 }
 
+/**
+ * MiniMax Music (via Replicate) — full song WITH vocals from lyrics, no
+ * reference track needed. Higher vocal realism than ACE-Step for many styles.
+ * Selectable per request (songEngine: 'minimax'); same Replicate key.
+ */
+class MiniMaxSongAdapter implements MusicProviderAdapter {
+  readonly name = 'minimax';
+  constructor(private apiKey?: string) {}
+
+  async generate(input: MusicGenerationInput): Promise<ProviderJobResult<MusicGenerationOutput>> {
+    const token = this.apiKey || replicateToken();
+    if (!token) return { status: 'failed', error: 'REPLICATE_API_TOKEN missing' };
+    const auth = { authorization: `Bearer ${token}` };
+
+    let version = process.env.REPLICATE_MINIMAX_VERSION;
+    if (!version) {
+      const slug = process.env.REPLICATE_MINIMAX_MODEL ?? 'minimax/music-2.6';
+      const mres = await fetch(`https://api.replicate.com/v1/models/${slug}`, { headers: auth });
+      if (!mres.ok) return { status: 'failed', error: `minimax model lookup ${mres.status}: ${(await mres.text()).slice(0, 160)}` };
+      version = ((await mres.json()) as { latest_version?: { id?: string } }).latest_version?.id;
+      if (!version) return { status: 'failed', error: 'minimax: model has no version' };
+    }
+
+    const style = [
+      input.genre ?? 'afrobeats',
+      `${input.bpm} bpm`,
+      input.keySignature ? `key ${input.keySignature}` : null,
+      input.vibePrompt ?? '',
+      input.artistTone?.length ? input.artistTone.join(', ') : null,
+      'catchy, melodic vocals, radio-ready',
+    ]
+      .filter(Boolean)
+      .join(', ');
+
+    const res = await fetch('https://api.replicate.com/v1/predictions', {
+      method: 'POST',
+      headers: { ...auth, 'content-type': 'application/json', prefer: 'wait' },
+      body: JSON.stringify({
+        version,
+        input: { lyrics: input.lyrics ?? '', prompt: style, song_description: style },
+      }),
+    });
+    if (!res.ok) return { status: 'failed', error: `minimax ${res.status}: ${(await res.text()).slice(0, 200)}` };
+    return this.toResult((await res.json()) as ReplicatePrediction, input);
+  }
+
+  async poll(externalId: string): Promise<ProviderJobResult<MusicGenerationOutput>> {
+    const token = this.apiKey || replicateToken();
+    if (!token) return { status: 'failed', error: 'REPLICATE_API_TOKEN missing' };
+    const res = await fetch(`https://api.replicate.com/v1/predictions/${externalId}`, { headers: { authorization: `Bearer ${token}` } });
+    if (!res.ok) return { status: 'failed', error: `minimax poll ${res.status}` };
+    return this.toResult((await res.json()) as ReplicatePrediction);
+  }
+
+  private toResult(data: ReplicatePrediction, input?: MusicGenerationInput): ProviderJobResult<MusicGenerationOutput> {
+    const url = Array.isArray(data.output) ? data.output[data.output.length - 1] : data.output;
+    if (data.status === 'succeeded' && url) {
+      return {
+        externalId: data.id,
+        status: 'succeeded',
+        output: { mainAudioUrl: url, format: 'mp3', durationS: input?.durationS ?? 0, bpm: input?.bpm, keySignature: input?.keySignature },
+        estimatedCostUsd: 0.12,
+      };
+    }
+    if (data.status === 'failed' || data.status === 'canceled') return { externalId: data.id, status: 'failed', error: data.error ?? 'minimax failed' };
+    return { externalId: data.id, status: 'running', pollAfterMs: 5_000 };
+  }
+}
+
 class StubMusicAdapter implements MusicProviderAdapter {
   readonly name = 'stub';
   async generate(
@@ -540,6 +609,8 @@ class StubMusicAdapter implements MusicProviderAdapter {
 
 export function musicAdapter(override?: string, apiKey?: string): MusicProviderAdapter {
   switch (override ?? provider()) {
+    case 'minimax':
+      return new MiniMaxSongAdapter(apiKey);
     case 'ace_step':
       return new AceStepSongAdapter(apiKey);
     case 'suno':

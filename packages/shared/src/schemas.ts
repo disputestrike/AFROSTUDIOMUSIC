@@ -126,6 +126,8 @@ export const generateBeatInputSchema = z.object({
   // Arrange the vocal to sound alive — ad-libs, doubled/harmonized hook,
   // call-and-response — before generation. On by default for vocal songs.
   richVocals: z.boolean().default(true),
+  // Which vocal/song model: 'ace_step' (default) or 'minimax' (higher realism).
+  songEngine: z.enum(['ace_step', 'minimax']).optional(),
 });
 
 // ---------- Voice -----------------------------------------------------------
@@ -363,6 +365,7 @@ export const dropBatchSchema = z.object({
   genre: z.string().max(40).default('afrobeats'),
   bpm: z.number().int().min(60).max(180).default(103),
   withVocals: z.boolean().default(true),
+  songEngine: z.enum(['ace_step', 'minimax']).optional(),
 });
 
 // ---------- Snippet (vertical shareable clip) ------------------------------
