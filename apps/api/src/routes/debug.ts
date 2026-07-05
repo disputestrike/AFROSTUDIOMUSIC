@@ -1,5 +1,5 @@
 import type { FastifyInstance } from 'fastify';
-import { anthropicPing, tavilyKey, researchTrends } from '@afrohit/ai';
+import { anthropicPing, tavilyKey, tavilyPing } from '@afrohit/ai';
 
 /**
  * AI wiring diagnostics — which providers the API service can actually reach.
@@ -7,23 +7,11 @@ import { anthropicPing, tavilyKey, researchTrends } from '@afrohit/ai';
  */
 export default async function debug(app: FastifyInstance) {
   app.get('/ai', async () => {
-    const anthropic = await anthropicPing();
-    let tavily: { configured: boolean; ok: boolean; error?: string } = {
-      configured: !!tavilyKey(),
-      ok: false,
-    };
-    if (tavilyKey()) {
-      try {
-        const t = await researchTrends({ genre: 'afrobeats' });
-        tavily = { configured: true, ok: !!t?.digest };
-      } catch (e) {
-        tavily = { configured: true, ok: false, error: (e as Error).message.slice(0, 200) };
-      }
-    }
+    const [anthropic, tavily] = await Promise.all([anthropicPing(), tavilyPing()]);
     return {
       openaiKey: !!process.env.OPENAI_API_KEY,
       anthropic,
-      tavily,
+      tavily: { configured: !!tavilyKey(), ...tavily },
       musicProvider: process.env.MUSIC_PROVIDER ?? '(unset)',
     };
   });

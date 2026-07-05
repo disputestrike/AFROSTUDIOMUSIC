@@ -15,6 +15,23 @@ export interface TrendResult {
   sources: Array<{ title: string; url: string }>;
 }
 
+/** Diagnostic: raw Tavily call surfacing the real status/error. */
+export async function tavilyPing(): Promise<{ ok: boolean; status?: number; error?: string }> {
+  const key = tavilyKey();
+  if (!key) return { ok: false, error: 'no TAVILY_API_KEY' };
+  try {
+    const res = await fetch('https://api.tavily.com/search', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${key}` },
+      body: JSON.stringify({ query: 'afrobeats trending now', max_results: 3, include_answer: true }),
+    });
+    if (!res.ok) return { ok: false, status: res.status, error: (await res.text()).slice(0, 250) };
+    return { ok: true, status: 200 };
+  } catch (e) {
+    return { ok: false, error: (e as Error).message.slice(0, 200) };
+  }
+}
+
 /**
  * Research what's currently trending for a genre/region. Returns a short digest
  * plus sources, or null if unavailable (caller proceeds without trends).
