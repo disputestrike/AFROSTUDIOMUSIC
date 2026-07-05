@@ -52,6 +52,24 @@ export async function probeDurationS(input: string): Promise<number> {
   });
 }
 
+/**
+ * Extract a short mono, low-bitrate clip — used before audio analysis so a 7B
+ * audio model doesn't OOM on a full 3-minute track (it only needs ~60s to read
+ * the production). Returns an mp3 Buffer. Fast-seek (-ss before -i).
+ */
+export async function extractClip(input: Buffer, startS: number, durS: number): Promise<Buffer> {
+  const dir = await mkdtemp(join(tmpdir(), 'clip-'));
+  const inPath = join(dir, 'in');
+  const outPath = join(dir, 'clip.mp3');
+  try {
+    await writeFile(inPath, input);
+    await runFfmpeg(['-ss', String(startS), '-t', String(durS), '-i', inPath, '-ac', '1', '-ar', '22050', '-b:a', '96k', outPath]);
+    return await readFile(outPath);
+  } finally {
+    await rm(dir, { recursive: true, force: true }).catch(() => {});
+  }
+}
+
 export interface MixPreset {
   /** filter applied to the vocal before mixing */
   vocalChain: string;
