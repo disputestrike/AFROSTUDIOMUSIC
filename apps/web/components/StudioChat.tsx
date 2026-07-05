@@ -114,7 +114,7 @@ export default function StudioChat({ projectId }: { projectId?: string }) {
     if (uploading || busy) return;
     setUploading(true);
     try {
-      const { publicUrl } = await api.uploadToStorage(file, 'reference');
+      const { publicUrl } = await api.uploadAudioDirect(file, 'reference');
       await sendText(`Listen to this track and make a fresh original in that vibe — or make it better. Never copy it. Reference: ${publicUrl}`);
     } catch (e) {
       setMessages((m) => [...m, { id: `e-${Date.now()}`, role: 'assistant', content: `Couldn't upload that track: ${(e as Error).message}` }]);

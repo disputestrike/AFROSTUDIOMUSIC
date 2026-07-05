@@ -78,6 +78,37 @@ export function useApi() {
       return { key, publicUrl };
     },
     /**
+     * Upload small audio (e.g. a mic capture) THROUGH the API to storage.
+     * Avoids the browser→R2 cross-origin PUT (which needs R2 CORS) — the browser
+     * only talks to our API, whose CORS is already configured.
+     */
+    async uploadAudioDirect(
+      file: Blob,
+      kind: 'reference' | 'vocal' | 'beat' = 'reference'
+    ): Promise<{ key: string; publicUrl: string }> {
+      const buf = new Uint8Array(await file.arrayBuffer());
+      let binary = '';
+      const CHUNK = 0x8000;
+      for (let i = 0; i < buf.length; i += CHUNK) {
+        binary += String.fromCharCode(...buf.subarray(i, i + CHUNK));
+      }
+      const dataBase64 = btoa(binary);
+      const type = file.type || 'audio/webm';
+      const ext = type.includes('ogg')
+        ? 'ogg'
+        : type.includes('mp4') || type.includes('m4a')
+        ? 'mp4'
+        : type.includes('mpeg') || type.includes('mp3')
+        ? 'mp3'
+        : type.includes('wav')
+        ? 'wav'
+        : 'webm';
+      return apiFetch<{ key: string; publicUrl: string }>('/uploads/audio', {
+        method: 'POST',
+        body: JSON.stringify({ kind, contentType: type, ext, dataBase64 }),
+      });
+    },
+    /**
      * POST that consumes a Server-Sent-Events response. Calls onEvent for
      * every `data:` JSON object. Resolves when the stream ends.
      */

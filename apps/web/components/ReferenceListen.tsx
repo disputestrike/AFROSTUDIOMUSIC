@@ -57,7 +57,7 @@ export function ReferenceListen({ projectId }: { projectId: string }) {
   const [recording, setRecording] = useState(false);
   const [elapsed, setElapsed] = useState(0);
   const [micAvailable, setMicAvailable] = useState(false);
-  const MAX_SECS = 20;
+  const MAX_SECS = 40; // long enough to catch a verse + the chorus
 
   useEffect(() => {
     setMicAvailable(typeof navigator !== 'undefined' && !!navigator.mediaDevices?.getUserMedia && typeof MediaRecorder !== 'undefined');
@@ -82,9 +82,8 @@ export function ReferenceListen({ projectId }: { projectId: string }) {
     setProfile(null);
     setStatus('Uploading what I heard…');
     try {
-      const { publicUrl } = await api.uploadToStorage(src, 'reference', (f) =>
-        setStatus(`Uploading… ${Math.round(f * 100)}%`)
-      );
+      // Proxy through our API (no R2 CORS needed) for the recording/reference.
+      const { publicUrl } = await api.uploadAudioDirect(src, 'reference');
       setStatus('🎧 The AI is listening…');
       const { jobId } = await api.post<{ jobId: string }>(`/projects/${projectId}/analyze`, { url: publicUrl });
       const p = await poll(jobId);

@@ -371,6 +371,15 @@ export const dropBatchSchema = z.object({
   influence: z.string().max(200).optional(),
 });
 
+// ---------- Proxied audio upload (browser → API → R2, no R2 CORS) ----------
+
+export const audioUploadSchema = z.object({
+  kind: z.string().max(20).default('reference'),
+  contentType: z.string().max(60).default('audio/webm'),
+  ext: z.string().max(8).default('webm'),
+  dataBase64: z.string().min(16), // raw base64 or a data: URL
+});
+
 // ---------- Snippet (vertical shareable clip) ------------------------------
 
 export const snippetInputSchema = z.object({

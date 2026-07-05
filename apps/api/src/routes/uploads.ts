@@ -1,6 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import { prisma } from '@afrohit/db';
-import { presignUploadSchema, importUrlSchema } from '@afrohit/shared';
+import { presignUploadSchema, importUrlSchema, audioUploadSchema } from '@afrohit/shared';
 import { nanoid } from 'nanoid';
 import { requireAuth } from '../middleware/auth';
 import { presignUpload, putBytes } from '../lib/storage';
@@ -79,6 +79,27 @@ export default async function uploads(app: FastifyInstance) {
     const { kind, contentType, ext } = presignUploadSchema.parse(req.body);
     return presignUpload({ workspaceId, kind: `uploads/${kind}`, contentType, ext });
   });
+
+  // Proxied upload: browser → our API → R2 (server-side S3 creds). Avoids the
+  // browser→R2 cross-origin PUT entirely, so it works even when the R2 bucket
+  // has no CORS policy. Used for small audio like the Shazam mic capture.
+  app.post(
+    '/audio',
+    { bodyLimit: 30 * 1024 * 1024, schema: { body: audioUploadSchema } },
+    async (req, reply) => {
+      const { workspaceId } = requireAuth(req);
+      const { kind, contentType, ext, dataBase64 } = audioUploadSchema.parse(req.body);
+      const b64 = dataBase64.includes(',') ? dataBase64.slice(dataBase64.indexOf(',') + 1) : dataBase64;
+      const bytes = Buffer.from(b64, 'base64');
+      if (bytes.length < 1000) return reply.code(400).send({ error: 'audio_too_small' });
+      if (bytes.length > 30 * 1024 * 1024) return reply.code(413).send({ error: 'audio_too_large' });
+      const safeKind = /^[a-z0-9_-]{1,20}$/.test(kind) ? kind : 'reference';
+      const safeExt = /^[a-z0-9]{1,8}$/.test(ext) ? ext : 'webm';
+      const key = `${workspaceId}/uploads/${safeKind}/${nanoid()}.${safeExt}`;
+      const url = await putBytes(key, bytes, contentType || 'audio/webm');
+      return { key, publicUrl: url };
+    }
+  );
 
   app.post('/import', { schema: { body: importUrlSchema } }, async (req, reply) => {
     const { workspaceId } = requireAuth(req);
