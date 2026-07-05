@@ -2,7 +2,7 @@ import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { prisma } from '@afrohit/db';
 import { generateHooksInputSchema, langSchema } from '@afrohit/shared';
-import { prompts, responsesJson, directorRefineHooks, researchTrends } from '@afrohit/ai';
+import { prompts, responsesJson, directorRefineHooks, researchTrends, anthropicEnabled } from '@afrohit/ai';
 import { requireAuth } from '../middleware/auth';
 import { memoryContext, recordFeedback } from '../services/artist-memory';
 
@@ -122,7 +122,14 @@ export default async function hooks(app: FastifyInstance) {
       created.sort((a, b) => (b.score ?? 0) - (a.score ?? 0));
 
       reply.code(201);
-      return { hooks: created, charged: charge.balance, director: refined ? 'claude' : 'none' };
+      return {
+        hooks: created,
+        charged: charge.balance,
+        director: refined ? 'claude' : 'none',
+        // Diagnostics: does the API actually see the keys?
+        anthropicKeyOnApi: anthropicEnabled(),
+        trendsPulled: !!trends,
+      };
     }
   );
 

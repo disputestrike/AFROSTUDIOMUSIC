@@ -17,7 +17,7 @@ export function anthropicEnabled(): boolean {
 }
 
 export const ANTHROPIC_MODEL = (): string =>
-  process.env.ANTHROPIC_MODEL ?? 'claude-3-5-sonnet-20241022';
+  process.env.ANTHROPIC_MODEL ?? 'claude-sonnet-5';
 
 function extractJson(text: string): string {
   // Strip ```json ... ``` fences if present, else take the outermost {...}.
