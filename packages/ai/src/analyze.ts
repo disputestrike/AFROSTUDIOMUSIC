@@ -76,19 +76,33 @@ export async function analyzeAudio(url: string, apiKey?: string): Promise<AudioP
     '7) INSTRUMENTS — the melodic instruments and textures. ' +
     '8) VOCAL — male/female/group/instrumental, the tone & delivery, the flow/cadence & ad-lib style, and language(s). ' +
     'Be concrete and detailed — a producer must be able to rebuild the sound from your description.';
-  const create = await fetch('https://api.replicate.com/v1/predictions', {
-    method: 'POST',
-    headers: { ...auth, 'content-type': 'application/json', prefer: 'wait' },
-    body: JSON.stringify({ version, input: { prompt: question, audio: url } }),
-  });
-  if (!create.ok) throw new Error(`audio analyze ${create.status}: ${(await create.text()).slice(0, 200)}`);
-
-  let pred = (await create.json()) as ReplicatePred;
-  for (let i = 0; i < 15 && (pred.status === 'starting' || pred.status === 'processing'); i++) {
-    await new Promise((r) => setTimeout(r, 4000));
-    pred = (await (await fetch(`https://api.replicate.com/v1/predictions/${pred.id}`, { headers: auth })).json()) as ReplicatePred;
+  // Run the model, retrying transient Replicate failures (CUDA OOM / capacity on
+  // the shared GPU) so a blip doesn't kill the listen. Up to 3 attempts.
+  const isTransient = (e: string) => /out of memory|cuda|capacity|timeout|503|429|unavailable|please try again/i.test(e);
+  let pred: ReplicatePred | null = null;
+  let lastErr = '';
+  for (let attempt = 0; attempt < 3; attempt++) {
+    if (attempt > 0) await new Promise((r) => setTimeout(r, 5000));
+    const create = await fetch('https://api.replicate.com/v1/predictions', {
+      method: 'POST',
+      headers: { ...auth, 'content-type': 'application/json', prefer: 'wait' },
+      body: JSON.stringify({ version, input: { prompt: question, audio: url } }),
+    });
+    if (!create.ok) {
+      lastErr = `create ${create.status}: ${(await create.text()).slice(0, 160)}`;
+      if (isTransient(lastErr)) continue;
+      throw new Error(`audio analyze ${lastErr}`);
+    }
+    let p = (await create.json()) as ReplicatePred;
+    for (let i = 0; i < 20 && (p.status === 'starting' || p.status === 'processing'); i++) {
+      await new Promise((r) => setTimeout(r, 4000));
+      p = (await (await fetch(`https://api.replicate.com/v1/predictions/${p.id}`, { headers: auth })).json()) as ReplicatePred;
+    }
+    if (p.status === 'succeeded') { pred = p; break; }
+    lastErr = String(p.error ?? p.status);
+    if (!isTransient(lastErr)) throw new Error(`audio analyze ${p.status}: ${lastErr}`);
   }
-  if (pred.status !== 'succeeded') throw new Error(`audio analyze ${pred.status}: ${pred.error ?? ''}`);
+  if (!pred) throw new Error(`audio analyze failed after retries: ${lastErr}`);
 
   const raw = extractText(pred.output);
 
