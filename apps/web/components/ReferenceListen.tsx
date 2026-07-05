@@ -9,6 +9,21 @@
 import { useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { useApi } from '@/lib/api';
+import { GENRES } from '@afrohit/shared';
+
+/** Map a free-text detected genre to one of our supported lanes. */
+function matchGenre(detected?: string | null): string {
+  const d = (detected ?? '').toLowerCase().replace(/[^a-z]/g, '');
+  if (!d) return 'afrobeats';
+  const hit = GENRES.find((g) => d.includes(g.replace(/_/g, '')) || g.replace(/_/g, '').includes(d));
+  if (hit) return hit;
+  if (d.includes('piano')) return 'amapiano';
+  if (d.includes('dancehall') || d.includes('reggae')) return 'afro_dancehall';
+  if (d.includes('rnb') || d.includes('soul')) return 'afro_rnb';
+  if (d.includes('gospel')) return 'gospel';
+  if (d.includes('hiphop') || d.includes('rap') || d.includes('trap')) return 'hip_hop';
+  return 'afrobeats';
+}
 
 interface Profile {
   bpm: number | null;
@@ -60,21 +75,39 @@ export function ReferenceListen({ projectId }: { projectId: string }) {
     }
   }
 
-  async function makeFromVibe() {
+  async function makeBeat() {
     if (!profile) return;
     setBusy(true);
-    setStatus('Making a fresh original in this vibe…');
+    setStatus('Making a fresh beat in this vibe…');
     try {
       const bpm = Math.min(Math.max(profile.bpm ?? 103, 60), 180);
       await api.post(`/projects/${projectId}/beats/generate`, {
-        genre: 'afrobeats',
+        genre: matchGenre(profile.genre),
         bpm,
         ...(profile.key ? { keySignature: profile.key } : {}),
         vibePrompt: `${profile.genre ? profile.genre + ' — ' : ''}${profile.suggestedVibePrompt}`,
         withStems: false,
       });
-      setStatus('✅ A fresh beat is generating in this vibe — check the Beats section shortly.');
-      router.refresh();
+      setStatus('✅ A fresh beat is generating in this vibe. Opening the studio…');
+      setTimeout(() => router.push(`/projects/${projectId}`), 1200);
+    } catch (e) {
+      setStatus(`Couldn’t generate: ${(e as Error).message}`);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function makeFullSong() {
+    if (!profile) return;
+    setBusy(true);
+    setStatus('Writing + producing a full original song in this vibe…');
+    try {
+      const bpm = Math.min(Math.max(profile.bpm ?? 103, 60), 180);
+      const genre = matchGenre(profile.genre);
+      const theme = `A fresh ${genre.replace(/_/g, ' ')} song in the vibe of: ${profile.suggestedVibePrompt || profile.vibe}. Catchy, original, never a copy.`;
+      await api.post(`/projects/${projectId}/drop`, { theme, count: 1, genre, bpm, withVocals: true });
+      setStatus('✅ Full song is being produced (hook → lyrics → sung song). Opening the studio…');
+      setTimeout(() => router.push(`/projects/${projectId}`), 1200);
     } catch (e) {
       setStatus(`Couldn’t generate: ${(e as Error).message}`);
     } finally {
@@ -118,13 +151,22 @@ export function ReferenceListen({ projectId }: { projectId: string }) {
               <Stat label="Instruments" value={profile.instruments?.join(', ') || '—'} />
             </div>
             {profile.vibe && <div className="rounded-lg border border-white/10 bg-black/20 p-3 text-sm text-slate-300">“{profile.vibe}”</div>}
-            <button
-              onClick={makeFromVibe}
-              disabled={busy}
-              className="w-fit rounded-full border border-afrobrand-500/40 bg-afrobrand-500/10 px-4 py-2 text-sm font-medium text-afrobrand-300 hover:bg-afrobrand-500/20 disabled:opacity-50"
-            >
-              🎼 Make a fresh song in this vibe
-            </button>
+            <div className="flex flex-wrap gap-2">
+              <button
+                onClick={makeFullSong}
+                disabled={busy}
+                className="w-fit rounded-full bg-brand-gradient px-4 py-2 text-sm font-medium text-ink shadow-glow disabled:opacity-50"
+              >
+                🎤 Make the full sung song in this vibe
+              </button>
+              <button
+                onClick={makeBeat}
+                disabled={busy}
+                className="w-fit rounded-full border border-afrobrand-500/40 bg-afrobrand-500/10 px-4 py-2 text-sm font-medium text-afrobrand-300 hover:bg-afrobrand-500/20 disabled:opacity-50"
+              >
+                🎼 Just the beat
+              </button>
+            </div>
           </div>
         )}
       </div>

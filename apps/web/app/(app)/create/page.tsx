@@ -190,8 +190,11 @@ export default function CreatePage() {
         <button onClick={() => void openStudio()} className="rounded-full border border-white/15 bg-white/5 px-6 py-3 font-medium hover:bg-white/10">
           🎤 I’ll bring my own beat / voice
         </button>
+        <button onClick={() => router.push('/listen')} className="rounded-full border border-white/15 bg-white/5 px-6 py-3 font-medium hover:bg-white/10">
+          🎧 Play a track &amp; make it mine
+        </button>
       </div>
-      <p className="mt-3 text-xs text-slate-500">“Create the song” makes it here, start to finish. “Bring my own” opens the studio to upload a beat, play a reference, or record.</p>
+      <p className="mt-3 text-xs text-slate-500">“Create the song” makes it here, start to finish. “Bring my own” opens the studio to upload a beat or record. “Play a track” lets the AI listen to a reference and build a fresh original in that vibe.</p>
     </div>
   );
 }
