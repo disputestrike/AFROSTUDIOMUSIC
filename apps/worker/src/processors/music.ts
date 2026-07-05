@@ -3,7 +3,7 @@ import { musicAdapter } from '@afrohit/ai';
 import type { MusicGenerationInput } from '@afrohit/ai';
 import { markFailed, markRunning, markSucceeded } from '../lib/jobs';
 import { ingestRemoteFile } from '../lib/storage';
-import { probeDurationS } from '../lib/ffmpeg';
+import { probeDurationS, measureAudioQuality, type AudioQuality } from '../lib/ffmpeg';
 
 interface MusicPayload {
   jobId: string;
@@ -76,12 +76,20 @@ export async function processMusic(p: MusicPayload) {
           : 'audio/wav',
     });
 
-    // Duration: providers that stream via a poll (MiniMax, Suno) can't report
-    // it up front, so probe the rendered file when it's missing. Never fatal.
+    // Real QC — measure the rendered track (loudness, dynamic range, crest factor)
+    // so we catch flat / quiet / clipping output instead of only checking that a
+    // file exists. Fast, free, local ffmpeg pass that reads the R2 URL directly.
+    // Also yields the true duration for poll-streamed providers (MiniMax, Suno).
+    // Never fatal — falls back to a duration probe.
     let durationS = result.output.durationS ?? 0;
-    if (!placeholder && durationS < 12) {
-      const probed = await probeDurationS(ingestedMain);
-      if (probed > 0) durationS = probed;
+    let quality: AudioQuality | null = null;
+    if (!placeholder) {
+      quality = await measureAudioQuality(ingestedMain);
+      if (quality.durationS > 0) durationS = quality.durationS;
+      else if (durationS < 12) {
+        const probed = await probeDurationS(ingestedMain);
+        if (probed > 0) durationS = probed;
+      }
     }
 
     const beat = await prisma.beatAsset.create({
@@ -101,8 +109,11 @@ export async function processMusic(p: MusicPayload) {
           externalId: result.externalId,
           placeholder,
           fallbackReason,
-          // Auto-QC sanity: a real render should have meaningful length.
-          qc: { durationS: durationS || null, ok: durationS >= 12 },
+          // Real QC — measured loudness/dynamics/clipping + honest verdict, not
+          // just "does a file exist". Consumed by the UI and the eval harness.
+          qc: quality
+            ? { ...quality, durationS: durationS || quality.durationS }
+            : { durationS: durationS || null, verdict: durationS >= 12 ? 'pass' : 'fail', ok: durationS >= 12, flags: [] },
         } as never,
       },
     });

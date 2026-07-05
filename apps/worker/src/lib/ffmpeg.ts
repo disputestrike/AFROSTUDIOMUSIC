@@ -70,6 +70,98 @@ export async function extractClip(input: Buffer, startS: number, durS: number): 
   }
 }
 
+export interface AudioQuality {
+  durationS: number;
+  integratedLufs: number | null; // overall loudness (I) — too low = dead/quiet
+  loudnessRangeLra: number | null; // LRA — LOW = flat, no dynamics ("straight line")
+  truePeakDb: number | null; // dBTP — > 0 means it clips on export
+  crestFactorDb: number | null; // peak-to-RMS — LOW = squashed/lifeless
+  flatFactor: number | null; // astats flatness — HIGH = digital silence/clipping runs
+  flags: string[]; // e.g. ["flat","too_quiet","clipping"]
+  verdict: 'pass' | 'weak' | 'fail';
+  ok: boolean; // back-compat: verdict !== 'fail'
+}
+
+/** Run ffmpeg capturing stderr (where filter summaries print). Never throws. */
+function ffmpegCapture(args: string[]): Promise<string> {
+  return new Promise((resolve) => {
+    const p = spawn('ffmpeg', ['-hide_banner', '-nostats', ...args]);
+    let err = '';
+    p.stderr.on('data', (d) => (err += d.toString()));
+    p.on('error', () => resolve(err));
+    p.on('exit', () => resolve(err));
+  });
+}
+
+const numAfter = (s: string, re: RegExp): number | null => {
+  const m = s.match(re);
+  if (!m) return null;
+  const n = parseFloat(m[1]!);
+  return Number.isFinite(n) ? n : null;
+};
+
+/**
+ * Measure the ACTUAL quality of a rendered track — fast, free, deterministic
+ * (one ffmpeg pass, reads http URLs directly, no re-download). This is the first
+ * gate of the quality loop: it catches the "shallow / same-y / straight line"
+ * defect objectively instead of only checking that a file exists.
+ *
+ *   - loudnessRangeLra: how much the track moves dynamically. LOW LRA = a flat,
+ *     going-nowhere loop with no arrangement — literally the "straight line".
+ *   - crestFactorDb: peak vs RMS. LOW = squashed to death, lifeless.
+ *   - integratedLufs / truePeak: too quiet, or clipping on export.
+ *
+ * Heuristic and conservative (AI renders arrive pre-loudness-processed, so we
+ * only flag clear failures). Returns a verdict the UI/eval harness can act on.
+ * Falls back to a duration-only verdict if ffmpeg/parse is unavailable.
+ */
+export async function measureAudioQuality(input: string): Promise<AudioQuality> {
+  const durationS = await probeDurationS(input);
+  const fallback = (): AudioQuality => ({
+    durationS,
+    integratedLufs: null, loudnessRangeLra: null, truePeakDb: null, crestFactorDb: null, flatFactor: null,
+    flags: [], verdict: durationS >= 12 ? 'pass' : 'fail', ok: durationS >= 12,
+  });
+  try {
+    if (!(await ffmpegAvailable())) return fallback();
+    // ebur128 → loudness/LRA/true-peak summary; astats → crest/flat factor. One pass.
+    const out = await ffmpegCapture([
+      '-i', input,
+      '-af', 'ebur128=peak=true,astats=metadata=0',
+      '-f', 'null', '-',
+    ]);
+    // ebur128 prints a Summary block at the end with "I:", "LRA:", "Peak:".
+    const integratedLufs = numAfter(out, /I:\s*(-?\d+(?:\.\d+)?)\s*LUFS/);
+    const loudnessRangeLra = numAfter(out, /LRA:\s*(-?\d+(?:\.\d+)?)\s*LU/);
+    // ebur128 prints both "Sample peak" and "True peak" as "Peak: X dBFS" — take
+    // the highest so clipping detection uses the true (inter-sample) peak.
+    const peaks = [...out.matchAll(/Peak:\s*(-?\d+(?:\.\d+)?)\s*dBFS/g)]
+      .map((m) => parseFloat(m[1]!))
+      .filter((n) => Number.isFinite(n));
+    const truePeakDb = peaks.length ? Math.max(...peaks) : null;
+    const crestFactorLin = numAfter(out, /Crest factor:\s*(-?\d+(?:\.\d+)?)/);
+    const crestFactorDb = crestFactorLin && crestFactorLin > 0 ? Math.round(20 * Math.log10(crestFactorLin) * 10) / 10 : null;
+    const flatFactor = numAfter(out, /Flat factor:\s*(-?\d+(?:\.\d+)?)/);
+
+    const flags: string[] = [];
+    if (integratedLufs !== null && integratedLufs < -23) flags.push('too_quiet');
+    if (truePeakDb !== null && truePeakDb > 0.5) flags.push('clipping');
+    // Low dynamic movement = the "flat / no depth / same-y" complaint, measured.
+    if (loudnessRangeLra !== null && loudnessRangeLra < 3) flags.push('flat');
+    if (crestFactorDb !== null && crestFactorDb < 6) flags.push('squashed');
+    if (durationS > 0 && durationS < 20) flags.push('short');
+
+    const hard = flags.some((f) => f === 'too_quiet' || f === 'clipping') || durationS < 8;
+    const soft = flags.some((f) => f === 'flat' || f === 'squashed');
+    const verdict: AudioQuality['verdict'] = hard ? 'fail' : soft ? 'weak' : 'pass';
+    // If we couldn't read a single metric, don't pretend — fall back to duration.
+    if (integratedLufs === null && loudnessRangeLra === null && crestFactorDb === null) return fallback();
+    return { durationS, integratedLufs, loudnessRangeLra, truePeakDb, crestFactorDb, flatFactor, flags, verdict, ok: verdict !== 'fail' };
+  } catch {
+    return fallback();
+  }
+}
+
 export interface MixPreset {
   /** filter applied to the vocal before mixing */
   vocalChain: string;
