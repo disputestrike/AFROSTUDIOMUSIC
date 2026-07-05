@@ -1,6 +1,8 @@
 'use client';
 
-import { CheckCircle2, ListMusic, FileText, Image as ImageIcon, Film, ShieldCheck, Clock } from 'lucide-react';
+import { useState } from 'react';
+import { useApi } from '@/lib/api';
+import { CheckCircle2, ListMusic, FileText, Image as ImageIcon, Film, ShieldCheck, Clock, Pencil, Check } from 'lucide-react';
 
 interface Props {
   toolName: string;
@@ -30,7 +32,13 @@ export function ArtifactCard({ toolName, output, onAction }: Props) {
 
   switch (toolName) {
     case 'generate_hooks':
-      return <HookList hooks={(o as { hooks: Array<{ id: string; text: string; score?: number | null }> }).hooks ?? []} onAction={onAction} />;
+      return (
+        <HookList
+          hooks={(o as { hooks: Array<{ id: string; text: string; score?: number | null; viralScore?: number | null; tiktokMoment?: string | null }> }).hooks ?? []}
+          projectId={(o as { projectId?: string }).projectId}
+          onAction={onAction}
+        />
+      );
     case 'score_hooks':
       return <ScoresList scores={(o as { scores: Array<{ id: string; overall: number; notes?: string }> }).scores ?? []} />;
     case 'generate_lyrics':
@@ -62,29 +70,92 @@ export function ArtifactCard({ toolName, output, onAction }: Props) {
   }
 }
 
-function HookList({ hooks, onAction }: { hooks: Array<{ id: string; text: string; score?: number | null }>; onAction?: (prompt: string) => void }) {
+type HookItem = { id: string; text: string; score?: number | null; viralScore?: number | null; tiktokMoment?: string | null };
+
+function HookList({ hooks, projectId, onAction }: { hooks: HookItem[]; projectId?: string; onAction?: (prompt: string) => void }) {
+  const api = useApi();
+  const [items, setItems] = useState<HookItem[]>(hooks);
+  const [editId, setEditId] = useState<string | null>(null);
+  const [draft, setDraft] = useState('');
+  const [busy, setBusy] = useState<string>('');
+  const [usedId, setUsedId] = useState<string | null>(null);
+
+  async function saveEdit(id: string) {
+    const text = draft.trim();
+    if (!text || !projectId) { setEditId(null); return; }
+    setBusy(`${id}:edit`);
+    try {
+      const r = await api.patch<{ text: string }>(`/projects/${projectId}/hooks/${id}`, { text });
+      setItems((arr) => arr.map((h) => (h.id === id ? { ...h, text: r.text } : h)));
+    } catch { /* keep the old text */ } finally { setEditId(null); setBusy(''); }
+  }
+
+  async function useHook(h: HookItem) {
+    setBusy(`${h.id}:use`);
+    try {
+      if (projectId) await api.post(`/projects/${projectId}/hooks/${h.id}/approve`, {});
+      setUsedId(h.id);
+      // Deterministic selection done server-side; ask the model to continue.
+      onAction?.(`I approved this hook: "${h.text.replace(/\n/g, ' ').slice(0, 90)}". Write the full lyrics for it, then produce the song.`);
+    } catch {
+      onAction?.(`Approve the hook "${h.text.replace(/\n/g, ' ').slice(0, 60)}" and write its lyrics.`);
+    } finally {
+      setBusy('');
+    }
+  }
+
   return (
     <div>
       <div className="mb-2 flex items-center gap-2 font-medium text-slate-200">
-        <ListMusic className="h-4 w-4 text-afrobrand-400" /> {hooks.length} hooks — pick the one you want
+        <ListMusic className="h-4 w-4 text-afrobrand-400" /> {items.length} hooks — edit any, then pick one
       </div>
       <ol className="grid gap-2 sm:grid-cols-2">
-        {hooks.map((h, i) => (
-          <li key={h.id} className="flex flex-col gap-1.5 rounded-lg border border-slate-800 bg-black/30 p-2.5 text-slate-100">
-            <div className="flex gap-2">
-              <span className="mt-0.5 select-none text-xs font-semibold text-afrobrand-400">{i + 1}.</span>
-              <span className="whitespace-pre-wrap text-sm leading-snug">{h.text}</span>
-              {typeof h.score === 'number' && (
-                <span className="ml-auto shrink-0 self-start rounded-full bg-slate-800 px-1.5 py-0.5 text-[10px] text-afrobrand-300">{h.score.toFixed(1)}</span>
-              )}
-            </div>
-            {onAction && (
-              <button
-                onClick={() => onAction(`Use hook #${i + 1} (id ${h.id}): "${h.text.replace(/\n/g, ' ').slice(0, 60)}". Approve that exact hook and write the full lyrics for it.`)}
-                className="w-fit rounded-full border border-afrobrand-500/40 bg-afrobrand-500/10 px-2.5 py-0.5 text-xs text-afrobrand-300 hover:bg-afrobrand-500/20"
-              >
-                Use this hook →
-              </button>
+        {items.map((h, i) => (
+          <li key={h.id} className={`flex flex-col gap-1.5 rounded-lg border p-2.5 text-slate-100 ${usedId === h.id ? 'border-emerald-500/50 bg-emerald-500/5' : 'border-slate-800 bg-black/30'}`}>
+            {editId === h.id ? (
+              <div className="flex flex-col gap-1.5">
+                <textarea
+                  value={draft}
+                  onChange={(e) => setDraft(e.target.value)}
+                  rows={3}
+                  className="w-full rounded border border-slate-700 bg-slate-950 px-2 py-1 text-sm"
+                  autoFocus
+                />
+                <div className="flex gap-1.5">
+                  <button onClick={() => void saveEdit(h.id)} disabled={busy === `${h.id}:edit`} className="rounded-full border border-afrobrand-500/40 bg-afrobrand-500/10 px-2.5 py-0.5 text-xs text-afrobrand-300 hover:bg-afrobrand-500/20">
+                    <Check className="mr-0.5 inline h-3 w-3" />Save
+                  </button>
+                  <button onClick={() => setEditId(null)} className="rounded-full border border-white/10 px-2.5 py-0.5 text-xs text-slate-400 hover:bg-white/5">Cancel</button>
+                </div>
+              </div>
+            ) : (
+              <>
+                <div className="flex gap-2">
+                  <span className="mt-0.5 select-none text-xs font-semibold text-afrobrand-400">{i + 1}.</span>
+                  <span className="whitespace-pre-wrap text-sm leading-snug">{h.text}</span>
+                  {typeof h.score === 'number' && (
+                    <span className="ml-auto shrink-0 self-start rounded-full bg-slate-800 px-1.5 py-0.5 text-[10px] text-afrobrand-300" title="A&R overall score">{h.score.toFixed(1)}</span>
+                  )}
+                </div>
+                {typeof h.viralScore === 'number' && (
+                  <div className="pl-5 text-[10px] text-pink-300">🔥 viral {h.viralScore.toFixed(1)}/10{h.tiktokMoment ? ` · ${h.tiktokMoment}` : ''}</div>
+                )}
+                <div className="flex gap-1.5 pl-5">
+                  <button
+                    onClick={() => { setEditId(h.id); setDraft(h.text); }}
+                    className="rounded-full border border-white/10 bg-white/5 px-2.5 py-0.5 text-xs text-slate-300 hover:bg-white/10"
+                  >
+                    <Pencil className="mr-0.5 inline h-3 w-3" />Edit
+                  </button>
+                  <button
+                    onClick={() => void useHook(h)}
+                    disabled={busy === `${h.id}:use` || usedId === h.id}
+                    className="rounded-full border border-afrobrand-500/40 bg-afrobrand-500/10 px-2.5 py-0.5 text-xs text-afrobrand-300 hover:bg-afrobrand-500/20 disabled:opacity-50"
+                  >
+                    {usedId === h.id ? 'Using ✓' : 'Use this hook →'}
+                  </button>
+                </div>
+              </>
             )}
           </li>
         ))}

@@ -3,7 +3,7 @@
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { useApi } from '@/lib/api';
-import { Trash2, Download, Wand2, FileText, Copy, Recycle, Pencil, Sliders, X, Loader2, Music2, Layers, TrendingUp } from 'lucide-react';
+import { Trash2, Download, Wand2, FileText, Copy, Recycle, Pencil, Sliders, X, Loader2, Music2, Layers, TrendingUp, RefreshCw, Mic } from 'lucide-react';
 
 interface HitPrediction {
   hitScore: number;
@@ -81,6 +81,38 @@ export default function CatalogGrid({ initial }: { initial: SongRow[] }) {
     finally { setBusy(''); }
   }
 
+  // Reuse ONLY the lyrics into a fresh song (write a new beat under them).
+  async function reuseLyrics(s: SongRow) {
+    setBusy(`${s.id}:reuselyrics`);
+    try {
+      const r = await api.post<{ projectId: string; message?: string }>(`/songs/${s.id}/reuse-lyrics`, {});
+      flash(r.message || 'Lyrics reused in a new song. Opening the studio…');
+      setTimeout(() => router.push(`/projects/${r.projectId}`), 1400);
+    } catch (e) { flash((e as Error).message || 'Reuse lyrics failed'); }
+    finally { setBusy(''); }
+  }
+
+  // Reuse ONLY the clean instrumental (requires stems separated first).
+  async function reuseInstrumental(s: SongRow) {
+    setBusy(`${s.id}:reuseinst`);
+    try {
+      const r = await api.post<{ projectId: string; message?: string }>(`/songs/${s.id}/reuse-instrumental`, {});
+      flash(r.message || 'Instrumental reused in a new song. Opening the studio…');
+      setTimeout(() => router.push(`/projects/${r.projectId}`), 1400);
+    } catch (e) { flash((e as Error).message || 'No clean instrumental yet — run “Instrumental” first.'); }
+    finally { setBusy(''); }
+  }
+
+  // Re-sing the song with its CURRENT (edited) lyrics — surgical edit → new take.
+  async function resing(s: SongRow) {
+    setBusy(`${s.id}:resing`);
+    try {
+      await api.post(`/songs/${s.id}/regenerate-beat`, {});
+      flash('Re-singing with the current lyrics — refresh in ~1–2 min for the new version.');
+    } catch (e) { flash((e as Error).message || 'Re-sing failed'); }
+    finally { setBusy(''); }
+  }
+
   async function duplicate(s: SongRow) {
     setBusy(`${s.id}:dup`);
     try { await api.post(`/songs/${s.id}/duplicate`, {}); flash('Duplicated. Refresh to see the copy.'); }
@@ -122,11 +154,21 @@ export default function CatalogGrid({ initial }: { initial: SongRow[] }) {
     finally { setBusy(''); }
   }
 
-  async function saveLyrics() {
+  async function saveLyrics(andResing = false) {
     if (!editing) return;
-    setBusy(`${editing.id}:savelyrics`);
-    try { await api.patch(`/songs/${editing.id}/lyrics`, { title: editing.title, body: editing.body }); flash('Lyrics saved.'); setEditing(null); }
-    catch (e) { flash((e as Error).message || 'Save failed'); }
+    const id = editing.id;
+    setBusy(`${id}:savelyrics`);
+    try {
+      const r = await api.patch<{ needsRegeneration?: boolean }>(`/songs/${id}/lyrics`, { title: editing.title, body: editing.body });
+      setEditing(null);
+      if (andResing) {
+        flash('Lyrics saved — re-singing the song now…');
+        await api.post(`/songs/${id}/regenerate-beat`, {});
+        flash('Re-singing with your edits — refresh in ~1–2 min for the new version.');
+      } else {
+        flash(r.needsRegeneration ? 'Lyrics saved. Use “Re-sing” to hear the new version.' : 'Lyrics saved.');
+      }
+    } catch (e) { flash((e as Error).message || 'Save failed'); }
     finally { setBusy(''); }
   }
 
@@ -192,9 +234,12 @@ export default function CatalogGrid({ initial }: { initial: SongRow[] }) {
               </div>
               {openId === s.id && (
                 <div className="mt-2 flex flex-wrap gap-1.5 border-t border-white/5 pt-2">
+                  <Action label="Re-sing (apply lyric edits)" icon={<RefreshCw className="h-3.5 w-3.5" />} busy={isBusy(s.id, 'resing')} onClick={() => void resing(s)} />
                   <Action label="Instrumental" icon={<Music2 className="h-3.5 w-3.5" />} busy={isBusy(s.id, 'instrumental')} onClick={() => void separate(s, 'instrumental')} />
                   <Action label="Stems" icon={<Layers className="h-3.5 w-3.5" />} busy={isBusy(s.id, 'full')} onClick={() => void separate(s, 'full')} />
                   <Action label="Reuse beat" icon={<Recycle className="h-3.5 w-3.5" />} busy={isBusy(s.id, 'reuse')} onClick={() => void reuseBeat(s)} />
+                  <Action label="Reuse lyrics" icon={<FileText className="h-3.5 w-3.5" />} busy={isBusy(s.id, 'reuselyrics')} onClick={() => void reuseLyrics(s)} />
+                  <Action label="Reuse instrumental" icon={<Mic className="h-3.5 w-3.5" />} busy={isBusy(s.id, 'reuseinst')} onClick={() => void reuseInstrumental(s)} />
                   <Action label="Duplicate" icon={<Copy className="h-3.5 w-3.5" />} busy={isBusy(s.id, 'dup')} onClick={() => void duplicate(s)} />
                   <Action label="Rename" icon={<Pencil className="h-3.5 w-3.5" />} onClick={() => void rename(s)} />
                   <Action label="Studio" icon={<Sliders className="h-3.5 w-3.5" />} onClick={() => router.push(`/projects/${s.projectId}`)} />
@@ -224,10 +269,14 @@ export default function CatalogGrid({ initial }: { initial: SongRow[] }) {
             className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 font-mono text-xs leading-relaxed"
             placeholder="[Hook]…"
           />
-          <div className="mt-3 flex justify-end gap-2">
+          <p className="mt-3 text-[11px] text-slate-500">Editing the words? “Save &amp; re-sing” re-records the vocal with your new lyrics and makes it the current version. “Save only” keeps the text edit without re-rendering.</p>
+          <div className="mt-2 flex flex-wrap justify-end gap-2">
             <button onClick={() => setEditing(null)} className="rounded-full border border-white/15 px-4 py-2 text-sm">Cancel</button>
-            <button onClick={() => void saveLyrics()} disabled={isBusy(editing.id, 'savelyrics')} className="rounded-full bg-brand-gradient px-4 py-2 text-sm font-medium text-ink">
-              {isBusy(editing.id, 'savelyrics') ? 'Saving…' : 'Save lyrics'}
+            <button onClick={() => void saveLyrics(false)} disabled={isBusy(editing.id, 'savelyrics')} className="rounded-full border border-white/15 px-4 py-2 text-sm">
+              {isBusy(editing.id, 'savelyrics') ? 'Saving…' : 'Save only'}
+            </button>
+            <button onClick={() => void saveLyrics(true)} disabled={isBusy(editing.id, 'savelyrics')} className="inline-flex items-center gap-1 rounded-full bg-brand-gradient px-4 py-2 text-sm font-medium text-ink">
+              <RefreshCw className="h-3.5 w-3.5" /> {isBusy(editing.id, 'savelyrics') ? 'Working…' : 'Save & re-sing'}
             </button>
           </div>
         </Modal>

@@ -176,7 +176,13 @@ async function generateHooks(ctx: Ctx, count: number) {
   );
   created.sort((a, b) => (b.score ?? 0) - (a.score ?? 0));
   return {
-    hooks: created.map((c) => ({ id: c.id, text: c.text, score: c.score })),
+    // projectId lets the UI approve/edit a hook DIRECTLY (deterministic), instead
+    // of relying on the model to parse "use hook 3" from a chat message.
+    projectId: project.id,
+    hooks: created.map((c) => {
+      const m = (c.meta as { viralScore?: number; tiktokMoment?: string } | null) ?? null;
+      return { id: c.id, text: c.text, score: c.score, viralScore: m?.viralScore ?? null, tiktokMoment: m?.tiktokMoment ?? null };
+    }),
     director: refined ? 'claude' : 'none',
   };
 }
