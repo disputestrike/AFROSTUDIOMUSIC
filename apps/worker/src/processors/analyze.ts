@@ -1,7 +1,7 @@
 import { prisma } from '@afrohit/db';
 import { analyzeAudio } from '@afrohit/ai';
 import { markFailed, markRunning, markSucceeded } from '../lib/jobs';
-import { ffmpegAvailable, extractClip } from '../lib/ffmpeg';
+import { ffmpegAvailable, extractClip, measureAudioQuality } from '../lib/ffmpeg';
 import { downloadToBuffer, uploadBytes } from '../lib/storage';
 
 interface AnalyzePayload {
@@ -23,9 +23,12 @@ export async function processAnalyze(p: AnalyzePayload) {
       where: { id: p.workspaceId },
       select: { musicApiKey: true },
     });
-    // Trim to a ~60s representative clip (past the intro) before analysis — a 7B
-    // audio model OOMs on a full 3-min track. Less GPU, faster, still enough to
-    // read the production. Falls back to the full URL if trimming isn't possible.
+    // Genre the uploader says this is — anchors the analysis (their own song).
+    const project = await prisma.project.findUnique({ where: { id: p.projectId }, select: { artistId: true, genre: true } });
+
+    // Trim to a ~60s representative clip (past the intro) before analysis — keeps
+    // the transcription fast/cheap and the optional audio model light. Falls back
+    // to the full URL if trimming isn't possible.
     let analyzeUrl = p.url;
     try {
       if (await ffmpegAvailable()) {
@@ -38,18 +41,30 @@ export async function processAnalyze(p: AnalyzePayload) {
     } catch {
       analyzeUrl = p.url; // any trim failure → analyze the original
     }
-    const profile = await analyzeAudio(analyzeUrl, ws?.musicApiKey ?? undefined);
+
+    // Objective ffmpeg metrics (loudness/dynamics/duration) — a free, always-there
+    // signal so the analysis works even when the audio model is unavailable.
+    let metrics: Awaited<ReturnType<typeof measureAudioQuality>> | null = null;
+    try {
+      metrics = await measureAudioQuality(analyzeUrl);
+    } catch {
+      metrics = null;
+    }
+
+    const profile = await analyzeAudio(analyzeUrl, ws?.musicApiKey ?? undefined, {
+      genreHint: project?.genre ?? null,
+      metrics,
+    });
 
     // LEARN: store the deep production recipe as a reusable reference so future
     // songs in this genre/workspace can be built from what it heard. This is the
     // compounding "listen & learn" library — it grows with every reference.
-    const project = await prisma.project.findUnique({ where: { id: p.projectId }, select: { artistId: true } });
     await prisma.soundReference
       .create({
         data: {
           workspaceId: p.workspaceId,
           artistId: project?.artistId ?? null,
-          genre: profile.genre ?? null,
+          genre: profile.genre ?? project?.genre ?? null,
           sourceUrl: p.url,
           title: profile.vibe?.slice(0, 120) ?? null,
           recipe: profile as never,
