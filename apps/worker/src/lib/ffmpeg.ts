@@ -194,14 +194,22 @@ export async function mixdownConsole(tracks: ConsoleTrack[]): Promise<Buffer> {
       active.length === 1
         ? `${chains[0]!.replace(/\[c0\]$/, '[out]')}`
         : `${chains.join(';')};${labels.join('')}amix=inputs=${active.length}:duration=longest:normalize=0[out]`;
-    await runFfmpeg([
-      ...inputs,
-      '-filter_complex', filter,
-      '-map', '[out]',
-      '-ar', '44100',
-      '-ac', '2',
-      outPath,
-    ]);
+    try {
+      await runFfmpeg([
+        ...inputs,
+        '-filter_complex', filter,
+        '-map', '[out]',
+        '-ar', '44100',
+        '-ac', '2',
+        outPath,
+      ]);
+    } catch (e) {
+      const msg = (e as Error).message;
+      if (/Invalid data|does not contain any stream|could not find codec/i.test(msg)) {
+        throw new Error('A track is not valid audio (corrupt or empty upload). Remove/re-upload it, then render again.');
+      }
+      throw e;
+    }
     return await readFile(outPath);
   } finally {
     await rm(dir, { recursive: true, force: true });
