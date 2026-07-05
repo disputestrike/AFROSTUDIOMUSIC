@@ -3,6 +3,7 @@ import { musicAdapter } from '@afrohit/ai';
 import type { MusicGenerationInput } from '@afrohit/ai';
 import { markFailed, markRunning, markSucceeded } from '../lib/jobs';
 import { ingestRemoteFile } from '../lib/storage';
+import { probeDurationS } from '../lib/ffmpeg';
 
 interface MusicPayload {
   jobId: string;
@@ -74,6 +75,14 @@ export async function processMusic(p: MusicPayload) {
           : 'audio/wav',
     });
 
+    // Duration: providers that stream via a poll (MiniMax, Suno) can't report
+    // it up front, so probe the rendered file when it's missing. Never fatal.
+    let durationS = result.output.durationS ?? 0;
+    if (!placeholder && durationS < 12) {
+      const probed = await probeDurationS(ingestedMain);
+      if (probed > 0) durationS = probed;
+    }
+
     const beat = await prisma.beatAsset.create({
       data: {
         projectId: p.projectId,
@@ -82,14 +91,14 @@ export async function processMusic(p: MusicPayload) {
         format: result.output.format,
         bpm: result.output.bpm ?? p.input.bpm,
         keySignature: result.output.keySignature ?? p.input.keySignature,
-        duration: result.output.durationS,
+        duration: durationS,
         provider: adapter.name,
         meta: {
           externalId: result.externalId,
           placeholder,
           fallbackReason,
           // Auto-QC sanity: a real render should have meaningful length.
-          qc: { durationS: result.output.durationS ?? null, ok: (result.output.durationS ?? 0) >= 12 },
+          qc: { durationS: durationS || null, ok: durationS >= 12 },
         } as never,
       },
     });

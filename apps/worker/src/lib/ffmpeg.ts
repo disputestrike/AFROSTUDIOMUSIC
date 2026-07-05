@@ -28,6 +28,30 @@ function runFfmpeg(args: string[]): Promise<void> {
   });
 }
 
+/**
+ * Read the real duration (seconds) of an audio file or URL via ffprobe.
+ * Providers that stream results back through a poll (MiniMax, Suno) can't
+ * report duration up front, so we probe the rendered file. Returns 0 on any
+ * failure — callers treat 0 as "unknown", never crash on it.
+ */
+export async function probeDurationS(input: string): Promise<number> {
+  return new Promise((resolve) => {
+    const p = spawn('ffprobe', [
+      '-v', 'error',
+      '-show_entries', 'format=duration',
+      '-of', 'default=noprint_wrappers=1:nokey=1',
+      input,
+    ]);
+    let out = '';
+    p.stdout.on('data', (d) => (out += d.toString()));
+    p.on('error', () => resolve(0));
+    p.on('exit', () => {
+      const s = Math.round(parseFloat(out.trim()));
+      resolve(Number.isFinite(s) && s > 0 ? s : 0);
+    });
+  });
+}
+
 export interface MixPreset {
   /** filter applied to the vocal before mixing */
   vocalChain: string;
