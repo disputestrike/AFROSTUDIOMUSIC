@@ -22,6 +22,8 @@ Rules:
 - Drop SHORT ad-libs and interjections in the gaps and after phrases, authentic to the song's languages. Pidgin/Yoruba/Naija flavor: "ehen!", "oya", "omoo", "as e dey hot", "gbedu", "jeje", "yeee", "ah ah", "chai", "baby oh". English: "yeah", "uh", "let's go", "come on". Use them tastefully — spice, not clutter.
 - On the HOOK: double it and add backing vocals/harmonies — repeat the key phrase, add responses like "(ooh)", "(eh eh)", "(shout it!)". Mark backing/ad-lib lines in parentheses so the model layers them.
 - Add call-and-response where it lifts energy.
+- ONE consistent LEAD voice throughout the whole song — same singer, same tone. Doubles, harmonies and ad-libs SUPPORT that single lead; never switch to a different-sounding lead mid-song.
+- Cue Afro DRUM ROLLS / percussion fills right BEFORE the hook, each verse and the chorus — mark them inline (e.g. "(drum roll)", "(perc fill — build up)") so the record lifts into each section.
 - Keep it singable and on-theme. Do NOT invent a different song or add whole new verses.
 - Respect any languages given; if unsure of a native phrase, prefer Pidgin/English rather than risk wrong tone.
 

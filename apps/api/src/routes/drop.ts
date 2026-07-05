@@ -64,7 +64,7 @@ export default async function drop(app: FastifyInstance) {
           const beat = (await runChatTool({
             ...ctx,
             name: 'create_beat_job',
-            args: { genre: input.genre, bpm: input.bpm, withVocals: input.withVocals, songEngine: input.songEngine },
+            args: { genre: input.genre, bpm: input.bpm, withVocals: input.withVocals, songEngine: input.songEngine, influence: input.influence },
           })) as { jobId?: string; songId?: string; error?: string };
 
           drops.push({

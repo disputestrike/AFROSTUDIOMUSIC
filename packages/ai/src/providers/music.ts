@@ -44,6 +44,9 @@ function composeStyleTags(
     input.keySignature ? `${opts.keyPrefix ?? 'key '}${input.keySignature}` : null,
     input.vibePrompt ?? '',
     input.artistTone?.length ? `${opts.tonePrefix ?? ''}${input.artistTone.join(', ')}` : null,
+    // Always-on Afro production feel: percussion fills/drum rolls announcing the
+    // hook, verses and chorus — the transitions that make Afro records lift.
+    'Afro drum rolls and percussion fills leading into the hook, verses and chorus',
     hasDna ? null : opts.fallbackLiteral,
   ].filter(Boolean) as string[];
 }

@@ -272,7 +272,7 @@ async function generateLyrics(ctx: Ctx, hookId: string, cleanVersion: boolean) {
   return { lyric: { id: lyric.id, title: lyric.title } };
 }
 
-async function createBeatJob(ctx: Ctx, a: { genre: string; bpm: number; keySignature?: string; durationS?: number; vibePrompt?: string; withStems?: boolean; withVocals?: boolean; songEngine?: 'ace_step' | 'minimax' }) {
+async function createBeatJob(ctx: Ctx, a: { genre: string; bpm: number; keySignature?: string; durationS?: number; vibePrompt?: string; withStems?: boolean; withVocals?: boolean; songEngine?: 'ace_step' | 'minimax'; influence?: string }) {
   if (!ctx.projectId) return { error: 'no_project_in_thread' };
 
   // Full song WITH AI vocals: grab the latest lyric so the model can sing it.
@@ -343,7 +343,9 @@ async function createBeatJob(ctx: Ctx, a: { genre: string; bpm: number; keySigna
       songId,
       input: {
         ...a,
-        vibePrompt: [a.vibePrompt, styleHints].filter(Boolean).join(', ') || undefined,
+        // Influence = steer the SOUND toward an artist's lane (vibe/energy),
+        // never a clone and never named. Goes to the music model as a style cue.
+        vibePrompt: [a.vibePrompt, a.influence ? `in the vibe/lane of ${a.influence} (capture the feel, not a copy)` : null, styleHints].filter(Boolean).join(', ') || undefined,
         durationS: a.durationS ?? (a.withVocals ? 150 : 60),
         withStems: a.withStems ?? !a.withVocals,
         withVocals: a.withVocals ?? false,

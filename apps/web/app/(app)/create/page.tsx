@@ -22,7 +22,7 @@ const LANGS = [
   { value: 'ig', label: 'Igbo' }, { value: 'ha', label: 'Hausa' }, { value: 'fr', label: 'French' },
   { value: 'pt', label: 'Portuguese' }, { value: 'sw', label: 'Swahili' }, { value: 'zu', label: 'Zulu' }, { value: 'twi', label: 'Twi' },
 ];
-const MOODS = ['confident', 'love', 'heartbreak', 'party', 'vibey', 'spiritual', 'hustle', 'nostalgic', 'sexy', 'triumphant'];
+const MOODS = ['confident', 'love', 'heartbreak', 'party', 'vibey', 'spiritual', 'hustle', 'nostalgic', 'sexy', 'triumphant', 'luxury', 'lifestyle', 'family'];
 const STEPS = ['Setting up your session', 'Writing hooks + A&R picking the best', 'Writing the lyrics', 'Singing & producing your song'];
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -34,6 +34,7 @@ export default function CreatePage() {
   const [bpm, setBpm] = useState(103);
   const [langs, setLangs] = useState<string[]>(['pcm', 'en']);
   const [vibe, setVibe] = useState('');
+  const [influence, setInfluence] = useState('');
   const [engine, setEngine] = useState<'ace_step' | 'minimax'>('ace_step');
 
   const [phase, setPhase] = useState<'form' | 'producing' | 'done' | 'error'>('form');
@@ -53,11 +54,14 @@ export default function CreatePage() {
       const project = await api.post<{ id: string }>('/projects', { title, genre, bpm });
       setStepIdx(1);
       const langNames = langs.map((l) => LANGS.find((x) => x.value === l)?.label ?? l).join('/');
-      const theme = `${genreLabel} ${mood} song, ${bpm}bpm, ${langNames}${vibe ? `, ${vibe.trim()}` : ''}. Make it catchy and current.`;
+      const influenceLine = influence.trim()
+        ? ` In the VIBE/LANE of ${influence.trim()} (capture that energy, tempo and production feel — never copy their melodies/lyrics and never name them in the song).`
+        : '';
+      const theme = `${genreLabel} ${mood} song, ${bpm}bpm, ${langNames}${vibe ? `, ${vibe.trim()}` : ''}. Make it catchy and current.${influenceLine}`;
       // This one call runs hooks → A&R pick → lyrics → queues the sung song.
       const drop = await api.post<{ drop: Array<{ jobId?: string; hookText?: string; score: number | null; error?: string }> }>(
         `/projects/${project.id}/drop`,
-        { theme, count: 1, genre, bpm, withVocals: true, songEngine: engine }
+        { theme, count: 1, genre, bpm, withVocals: true, songEngine: engine, influence: influence.trim() || undefined }
       );
       const item = drop.drop?.[0];
       if (!item?.jobId) throw new Error(item?.error === 'insufficient_credits' ? 'Daily limit reached — try again tomorrow.' : item?.error || 'Could not start production.');
@@ -167,7 +171,12 @@ export default function CreatePage() {
         ))}</div>
       </div>
       <div className="mt-6"><div className="mb-2 text-sm text-slate-400">Vibe / what it’s about (optional)</div>
-        <input value={vibe} onChange={(e) => setVibe(e.target.value)} placeholder="e.g. rainy-day love, smooth Wizkid lane, chant-along hook" className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2.5 text-sm" />
+        <input value={vibe} onChange={(e) => setVibe(e.target.value)} placeholder="e.g. rainy-day love, chant-along hook, drive-through-Lekki energy" className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2.5 text-sm" />
+      </div>
+
+      <div className="mt-6"><div className="mb-2 text-sm text-slate-400">Influence — artist lane (optional)</div>
+        <input value={influence} onChange={(e) => setInfluence(e.target.value)} placeholder="e.g. Davido, Wizkid, Asake" className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2.5 text-sm" />
+        <p className="mt-1.5 text-xs text-slate-500">Steers the <span className="text-slate-300">vibe/energy/production feel</span> toward artists you love — the kind of record they’d make. It never copies their songs and never names them.</p>
       </div>
 
       <div className="mt-6"><div className="mb-2 text-sm text-slate-400">Vocal engine</div>
