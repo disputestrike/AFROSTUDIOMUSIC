@@ -286,6 +286,10 @@ async function generateLyrics(ctx: Ctx, hookId: string, cleanVersion: boolean) {
 async function createBeatJob(ctx: Ctx, a: { genre: string; bpm: number; keySignature?: string; durationS?: number; vibePrompt?: string; withStems?: boolean; withVocals?: boolean; songEngine?: 'ace_step' | 'minimax'; influence?: string }) {
   if (!ctx.projectId) return { error: 'no_project_in_thread' };
 
+  // Honor the requested genre for the whole session — the chat's scratch project
+  // defaults to afro_fusion, so sync it to what was actually asked for.
+  if (a.genre) await prisma.project.update({ where: { id: ctx.projectId }, data: { genre: a.genre } }).catch(() => {});
+
   // Full song WITH AI vocals: grab the latest lyric so the model can sing it.
   let lyrics: string | undefined;
   let songId: string | undefined;

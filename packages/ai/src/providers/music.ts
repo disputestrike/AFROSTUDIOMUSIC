@@ -36,9 +36,11 @@ function composeStyleTags(
   opts: { fallbackLiteral: string; genreLabel?: string; genreSuffix?: string; keyPrefix?: string; tonePrefix?: string }
 ): string[] {
   const hasDna = !!input.dnaTags?.length;
+  // Humanize the genre enum so the model reads "afro dancehall", not "afro_dancehall".
+  const genreLabel = opts.genreLabel ?? (input.genre ?? 'afrobeats').replace(/_/g, ' ');
   return [
     ...(input.dnaTags ?? []),
-    opts.genreLabel ?? input.genre ?? 'afrobeats',
+    genreLabel,
     opts.genreSuffix ?? null,
     `${input.bpm} bpm`,
     input.keySignature ? `${opts.keyPrefix ?? 'key '}${input.keySignature}` : null,
@@ -159,8 +161,8 @@ class SunoAdapter implements MusicProviderAdapter {
   }
 
   private composeStyle(input: MusicGenerationInput): string {
+    // No hardcoded genre — honor the SELECTED genre + its Sound DNA.
     return composeStyleTags(input, {
-      genreSuffix: 'afro-fusion',
       fallbackLiteral:
         'catchy, modern, punchy drums, warm bass, melodic, instrumental, radio-ready, leave space for a lead vocal',
     }).join(', ');
@@ -471,8 +473,8 @@ class AceStepSongAdapter implements MusicProviderAdapter {
     }
 
     const duration = Math.min(Math.max(Math.round(input.durationS ?? 120), 30), 240);
+    // No hardcoded genre — honor the SELECTED genre + its Sound DNA.
     const tags = composeStyleTags(input, {
-      genreSuffix: 'afro-fusion',
       fallbackLiteral: 'catchy, melodic vocals, punchy drums, warm bass, radio-ready',
     }).join(', ');
 
