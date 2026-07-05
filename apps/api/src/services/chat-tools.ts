@@ -158,7 +158,7 @@ async function generateHooks(ctx: Ctx, count: number) {
         text: h.text,
         language: (h.language ?? []) as never,
         score: typeof h.score === 'number' ? h.score : null,
-        meta: { reason: h.reason, needsNativeReview: h.needsNativeReview, director: 'claude' } as never,
+        meta: { reason: h.reason, needsNativeReview: h.needsNativeReview, director: 'claude', viralScore: h.viralScore, dimensions: h.dimensions, tiktokMoment: h.tiktokMoment } as never,
       }))
     : (result.hooks ?? []).map((h) => ({
         text: h.text,

@@ -1,10 +1,25 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { prisma } from '@afrohit/db';
-import { predictHit, soundBrief, researchTrends } from '@afrohit/ai';
+import { predictHit, soundBrief, researchTrends, enrichLyricsForVocals } from '@afrohit/ai';
 import { requireAuth } from '../middleware/auth';
 import { enqueue } from '../lib/queue';
+import { learnedReferenceBrief } from '../lib/learned';
 import { recordFeedback } from '../services/artist-memory';
+
+/** Freshest playable audio for a song: the most RECENT of master/mix/beat by
+ *  createdAt — so a re-sing (new beat) or a re-master (new master) both become
+ *  the song's current audio. Edits propagate; the newest render always wins. */
+function freshestAudioUrl(s: {
+  masters?: Array<{ url: string; createdAt: Date }>;
+  mixes?: Array<{ url: string; createdAt: Date }>;
+  beats?: Array<{ url: string; createdAt: Date }>;
+}): string | null {
+  const cands = [s.masters?.[0], s.mixes?.[0], s.beats?.[0]].filter(Boolean) as Array<{ url: string; createdAt: Date }>;
+  if (!cands.length) return null;
+  cands.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+  return cands[0]!.url;
+}
 
 /**
  * Catalog — the artist's songs as a real WORKSTATION, not a read-only shelf.
@@ -49,7 +64,7 @@ export default async function songs(app: FastifyInstance) {
       projectTitle: s.project.title,
       genre: s.project.genre,
       bpm: s.project.bpm,
-      audioUrl: s.masters[0]?.url ?? s.mixes[0]?.url ?? s.beats[0]?.url ?? null,
+      audioUrl: freshestAudioUrl(s),
       masterUrl: s.masters[0]?.url ?? null,
       mixUrl: s.mixes[0]?.url ?? null,
       beatUrl: s.beats[0]?.url ?? null,
@@ -126,15 +141,20 @@ export default async function songs(app: FastifyInstance) {
       const latest = await prisma.lyricDraft.findFirst({ where: { projectId: song.projectId }, orderBy: { createdAt: 'desc' } });
       lyricId = latest?.id;
     }
+    // If the song already has an AI-sung vocal, the edit won't be audible until a
+    // re-sing — tell the UI so it can offer "Save & re-sing" (surgical edit).
+    const needsRegeneration =
+      (await prisma.beatAsset.count({ where: { songId: song.id, provider: { not: 'upload' } } })) > 0;
     if (!lyricId) {
       // No lyric yet — create one bound to this song so edits have a home.
       const created = await prisma.lyricDraft.create({
         data: { projectId: song.projectId, songId: song.id, body: body.body ?? '', title: body.title, cleanVersion: body.cleanVersion ?? undefined, explicit: body.explicit ?? false },
       });
       await prisma.song.update({ where: { id: song.id }, data: { lyricId: created.id } });
-      return created;
+      return { lyric: created, needsRegeneration };
     }
-    return prisma.lyricDraft.update({ where: { id: lyricId }, data: body });
+    const updated = await prisma.lyricDraft.update({ where: { id: lyricId }, data: body });
+    return { lyric: updated, needsRegeneration };
   });
 
   // ---- Download manifest (audio + stems + cover + lyrics) ----
@@ -293,6 +313,124 @@ export default async function songs(app: FastifyInstance) {
         ? 'Clean instrumental reused in a new song — write a fresh topline over it.'
         : 'Beat reused (full track — run "Instrumental" on the original first for a vocals-free version).',
     };
+  });
+
+  // ---- Reuse ONLY the lyrics in a NEW song (write a fresh beat under them) ----
+  app.post<{ Params: { id: string }; Body: { targetProjectId?: string; title?: string } }>('/:id/reuse-lyrics', async (req, reply) => {
+    const { workspaceId } = requireAuth(req);
+    const song = await prisma.song.findFirst({
+      where: { id: req.params.id, workspaceId },
+      include: { lyric: true },
+    });
+    if (!song) return reply.code(404).send({ error: 'song_not_found' });
+    const lyric =
+      song.lyric ?? (await prisma.lyricDraft.findFirst({ where: { projectId: song.projectId }, orderBy: { createdAt: 'desc' } }));
+    if (!lyric) return reply.code(400).send({ error: 'no_lyrics_to_reuse', message: 'This song has no lyrics yet — write or generate lyrics first.' });
+
+    const targetProjectId = (req.body?.targetProjectId as string) || song.projectId;
+    const project = await prisma.project.findFirst({ where: { id: targetProjectId, workspaceId }, select: { id: true } });
+    if (!project) return reply.code(404).send({ error: 'target_project_not_found' });
+
+    const newSong = await prisma.song.create({
+      data: { workspaceId, projectId: project.id, title: (req.body?.title as string) || `${song.title} (reuse lyrics)`, status: 'SKETCH' },
+    });
+    // LyricDraft.songId is @unique → the reused lyrics must be a NEW row. No melody
+    // is copied, so a fresh beat/melody is written for the new song.
+    const newLyric = await prisma.lyricDraft.create({
+      data: {
+        projectId: project.id, songId: newSong.id, title: lyric.title, body: lyric.body,
+        structure: lyric.structure as never, cleanVersion: lyric.cleanVersion, explicit: lyric.explicit,
+        languageMix: lyric.languageMix as never, approved: false,
+      },
+    });
+    await prisma.song.update({ where: { id: newSong.id }, data: { lyricId: newLyric.id } });
+    reply.code(201);
+    return { songId: newSong.id, projectId: project.id, lyricId: newLyric.id, message: 'Lyrics reused in a new song — make a fresh beat under them (still fully editable).' };
+  });
+
+  // ---- Reuse ONLY the clean instrumental (needs stems separated first) ----
+  app.post<{ Params: { id: string }; Body: { targetProjectId?: string; title?: string } }>('/:id/reuse-instrumental', async (req, reply) => {
+    const { workspaceId } = requireAuth(req);
+    const song = await prisma.song.findFirst({
+      where: { id: req.params.id, workspaceId },
+      include: { beats: { orderBy: { createdAt: 'desc' }, take: 1, include: { stems: true } } },
+    });
+    if (!song) return reply.code(404).send({ error: 'song_not_found' });
+    const beat = song.beats[0];
+    const instrumental = beat?.stems.find((s) => s.role === 'instrumental');
+    if (!instrumental) {
+      return reply.code(400).send({ error: 'no_instrumental_stem', message: 'Run "Instrumental" on this song first to extract the clean instrumental, then reuse it.' });
+    }
+
+    const targetProjectId = (req.body?.targetProjectId as string) || song.projectId;
+    const project = await prisma.project.findFirst({ where: { id: targetProjectId, workspaceId }, select: { id: true } });
+    if (!project) return reply.code(404).send({ error: 'target_project_not_found' });
+
+    const newSong = await prisma.song.create({
+      data: { workspaceId, projectId: project.id, title: (req.body?.title as string) || `${song.title} (instrumental)`, status: 'SKETCH' },
+    });
+    const newBeat = await prisma.beatAsset.create({
+      data: {
+        projectId: project.id, songId: newSong.id, url: instrumental.url, format: instrumental.format ?? 'mp3',
+        bpm: beat!.bpm, keySignature: beat!.keySignature, duration: instrumental.duration ?? beat!.duration,
+        provider: beat!.provider, meta: { reusedInstrumentalFromBeat: beat!.id, instrumental: true } as never, approved: true,
+      },
+    });
+    reply.code(201);
+    return { songId: newSong.id, projectId: project.id, beatId: newBeat.id, message: 'Clean instrumental reused in a new song — write fresh lyrics/vocals over it.' };
+  });
+
+  // ---- Re-sing the song with the CURRENT (edited) lyrics — the surgical edit ----
+  // Edit lyrics → save → re-sing: renders a fresh vocal over the same lane, and
+  // because the new beat is the freshest audio it becomes the song's current take.
+  app.post<{ Params: { id: string }; Body: { songEngine?: 'ace_step' | 'minimax' } }>('/:id/regenerate-beat', async (req, reply) => {
+    const { workspaceId } = requireAuth(req);
+    const song = await prisma.song.findFirst({
+      where: { id: req.params.id, workspaceId },
+      include: { project: { include: { artist: true } }, lyric: true, beats: { orderBy: { createdAt: 'desc' }, take: 1 } },
+    });
+    if (!song) return reply.code(404).send({ error: 'song_not_found' });
+    const lyric = song.lyric ?? (await prisma.lyricDraft.findFirst({ where: { projectId: song.projectId }, orderBy: { createdAt: 'desc' } }));
+    const lyrics = lyric?.cleanVersion ?? lyric?.body ?? undefined;
+    if (!lyrics) return reply.code(400).send({ error: 'no_lyrics', message: 'Write or edit lyrics first, then re-sing.' });
+
+    const genre = song.project.genre;
+    const dna = soundBrief(genre);
+    const learned = await learnedReferenceBrief(workspaceId, genre);
+    let lyricsForSong = lyrics;
+    let styleHints = '';
+    const enriched = await enrichLyricsForVocals({
+      lyricBody: lyrics,
+      languages: song.project.artist.languages,
+      laneSummary: song.project.artist.laneSummary ?? undefined,
+      soundDna: [dna.brief, learned].filter(Boolean).join('\n\n'),
+    });
+    if (enriched) {
+      lyricsForSong = enriched.enrichedLyrics;
+      styleHints = enriched.styleTags.join(', ');
+    }
+
+    const songEngine = (req.body?.songEngine as 'ace_step' | 'minimax') || (song.beats[0]?.provider === 'minimax' ? 'minimax' : 'ace_step');
+    const charge = await app.chargeCredits({ workspaceId, key: 'full_song_demo', refTable: 'Song', refId: song.id });
+    if (!charge.ok) return reply.code(402).send({ error: 'insufficient_credits', ...charge });
+
+    const job = await prisma.providerJob.create({
+      data: { workspaceId, projectId: song.projectId, kind: 'music', provider: songEngine, status: 'QUEUED', inputJson: { regenerate: true, songId: song.id } as never },
+    });
+    await enqueue({
+      queue: app.queues.music,
+      name: 'generate-music',
+      payload: {
+        jobId: job.id, workspaceId, projectId: song.projectId, songId: song.id,
+        input: {
+          genre, bpm: song.project.bpm ?? 103, withVocals: true, withStems: false, songEngine,
+          lyrics: lyricsForSong, vibePrompt: styleHints || undefined,
+          artistTone: song.project.artist.vocalTone, languages: song.project.artist.languages, dnaTags: dna.tags,
+        },
+      },
+    });
+    reply.code(202);
+    return { jobId: job.id, status: 'queued', message: "Re-singing with your edited lyrics — it becomes the song's current audio when it finishes." };
   });
 
   // ---- Duplicate a song (deep copy: song + lyric + latest beat + stems) ----

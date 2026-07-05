@@ -95,7 +95,7 @@ export default async function hooks(app: FastifyInstance) {
             text: h.text,
             language: langFilter(h.language ?? []),
             score: typeof h.score === 'number' ? h.score : null,
-            meta: { reason: h.reason, needsNativeReview: h.needsNativeReview, director: 'claude' },
+            meta: { reason: h.reason, needsNativeReview: h.needsNativeReview, director: 'claude', viralScore: h.viralScore, dimensions: h.dimensions, tiktokMoment: h.tiktokMoment },
           }))
         : (result.hooks ?? []).map((h) => ({
             text: h.text,
@@ -145,6 +145,11 @@ export default async function hooks(app: FastifyInstance) {
         where: { id: req.params.hookId, project: { workspaceId } },
         include: { project: { select: { artistId: true } } },
       });
+      // Idempotent: re-approving an already-approved hook returns its song instead
+      // of spawning a duplicate (matters now that the UI has a direct Approve button).
+      if (hook.approved && hook.songId) {
+        return { hookId: hook.id, songId: hook.songId, alreadyApproved: true };
+      }
       const song = await prisma.song.create({
         data: {
           workspaceId,
@@ -191,6 +196,28 @@ export default async function hooks(app: FastifyInstance) {
         sourceId: hook.id,
       });
       return { hookId: hook.id, rejected: true };
+    }
+  );
+
+  // Edit a hook's wording before (or after) approving it — surgical control.
+  app.patch<{ Params: { projectId: string; hookId: string }; Body: { text?: string } }>(
+    '/:hookId',
+    async (req, reply) => {
+      const { workspaceId } = requireAuth(req);
+      const text = typeof req.body?.text === 'string' ? req.body.text.trim() : '';
+      if (!text) return reply.code(400).send({ error: 'empty_text', message: 'Hook text cannot be empty.' });
+      if (text.length > 500) return reply.code(400).send({ error: 'too_long', message: 'Keep the hook under 500 characters.' });
+      const hook = await prisma.hookCandidate.findFirst({ where: { id: req.params.hookId, project: { workspaceId } } });
+      if (!hook) return reply.code(404).send({ error: 'hook_not_found' });
+      const updated = await prisma.hookCandidate.update({
+        where: { id: hook.id },
+        data: { text, meta: { ...((hook.meta as Record<string, unknown>) ?? {}), edited: true } as never },
+      });
+      // If this hook is already bound to a song, keep the song title in sync.
+      if (hook.songId) {
+        await prisma.song.updateMany({ where: { id: hook.songId, workspaceId, title: hook.text.split('\n')[0]!.slice(0, 80) }, data: { title: text.split('\n')[0]!.slice(0, 80) } }).catch(() => {});
+      }
+      return { hookId: updated.id, text: updated.text };
     }
   );
 }

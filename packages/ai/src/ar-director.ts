@@ -17,6 +17,12 @@ export interface ARHook {
   text: string;
   language: string[];
   score: number;
+  /** Short-form / TikTok breakout potential (0-10) — the virality signal. */
+  viralScore?: number;
+  /** Per-dimension A&R breakdown (hookStrength, firstEightSeconds, tiktokLoop, …). */
+  dimensions?: Record<string, number>;
+  /** The named short-form moment, if any. */
+  tiktokMoment?: string;
   reason?: string;
   needsNativeReview?: boolean;
 }
