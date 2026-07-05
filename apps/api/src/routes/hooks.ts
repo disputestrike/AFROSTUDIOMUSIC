@@ -2,7 +2,7 @@ import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { prisma } from '@afrohit/db';
 import { generateHooksInputSchema, langSchema } from '@afrohit/shared';
-import { prompts, responsesJson, directorRefineHooks, researchTrends, anthropicEnabled } from '@afrohit/ai';
+import { prompts, responsesJson, directorRefineHooks, researchTrends, anthropicEnabled, soundBrief } from '@afrohit/ai';
 import { requireAuth } from '../middleware/auth';
 import { memoryContext, recordFeedback } from '../services/artist-memory';
 
@@ -45,6 +45,8 @@ export default async function hooks(app: FastifyInstance) {
       // Live trends (Tavily) so hooks reflect what's popping right now.
       const trendData = await researchTrends({ genre: project.genre }).catch(() => null);
       const trends = trendData?.digest;
+      // Genre Sound DNA so hooks sit in the lane's pocket/arrangement.
+      const soundDna = soundBrief(project.genre).brief;
 
       const result = await responsesJson<{
         hooks: Array<{
@@ -63,6 +65,7 @@ export default async function hooks(app: FastifyInstance) {
           count: input.count,
           tasteMemory,
           trends,
+          soundDna,
         }),
         temperature: 0.95,
         maxOutputTokens: 4_000,
@@ -78,6 +81,7 @@ export default async function hooks(app: FastifyInstance) {
         drafts,
         tasteMemory,
         trends,
+        soundDna,
       });
 
       const langFilter = (arr: string[]) =>

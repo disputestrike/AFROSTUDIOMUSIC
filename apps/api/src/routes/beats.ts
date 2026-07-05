@@ -1,7 +1,7 @@
 import type { FastifyInstance } from 'fastify';
 import { prisma } from '@afrohit/db';
 import { generateBeatInputSchema, attachBeatUploadSchema } from '@afrohit/shared';
-import { enrichLyricsForVocals } from '@afrohit/ai';
+import { enrichLyricsForVocals, soundBrief } from '@afrohit/ai';
 import { requireAuth } from '../middleware/auth';
 import { enqueue, QUEUES } from '../lib/queue';
 import { publicUrlFor } from '../lib/storage';
@@ -42,12 +42,17 @@ export default async function beats(app: FastifyInstance) {
         lyrics = lyric?.cleanVersion ?? lyric?.body ?? undefined;
         if (!lyrics) return reply.code(400).send({ error: 'no_lyrics — write lyrics first for a vocal song' });
       }
+      // Genre Sound DNA: front-load signature tokens for the music model + a
+      // rich brief for the ad-lib arranger, so the beat sits in the lane.
+      const dna = soundBrief(project.genre);
+
       // Arrange the vocal to sound ALIVE (ad-libs, doubled/harmonized hook).
       if (input.withVocals && lyrics && input.richVocals) {
         const enriched = await enrichLyricsForVocals({
           lyricBody: lyrics,
           languages: project.artist.languages,
           laneSummary: project.artist.laneSummary ?? undefined,
+          soundDna: dna.brief,
         });
         if (enriched) {
           lyrics = enriched.enrichedLyrics;
@@ -88,6 +93,7 @@ export default async function beats(app: FastifyInstance) {
             vibePrompt: [input.vibePrompt, styleHints].filter(Boolean).join(', ') || undefined,
             artistTone: project.artist.vocalTone,
             languages: project.artist.languages,
+            dnaTags: dna.tags,
           },
         },
       });

@@ -55,8 +55,10 @@ export function hookUserPrompt(opts: {
   tasteMemory?: { approvedExamples: string[]; rejectedExamples: string[] };
   /** Live trend digest (Tavily) so hooks feel current to what's popping now. */
   trends?: string;
+  /** Genre Sound-DNA brief so hooks fit the lane's pocket/arrangement. */
+  soundDna?: string;
 }): string {
-  const { artist, brief, count, exclude, tasteMemory, trends } = opts;
+  const { artist, brief, count, exclude, tasteMemory, trends, soundDna } = opts;
   const refs = artist.references?.map((r) => `${r.name} lane (${r.lane})`).join(', ') ?? 'none';
   const banned = [...(artist.cornyBanned ?? []), ...(artist.forbiddenStyles ?? [])];
   return JSON.stringify({
@@ -72,6 +74,7 @@ export function hookUserPrompt(opts: {
     },
     brief: brief ?? {},
     exclude_text_starting_with: exclude ?? [],
+    GENRE_SOUND_DNA: soundDna || undefined,
     TRENDING_NOW: trends || undefined,
     banned_overused_cliches: [
       'we dey shine', 'no be lie', 'I dey glow', 'shine like a star', 'shine bright',
@@ -94,6 +97,7 @@ export function hookUserPrompt(opts: {
       'EVERY hook must be DISTINCT — different image/angle/story. No near-duplicates.',
       'Do NOT use any phrase in banned_overused_cliches. Write fresh, specific, sensory lines.',
       'If TRENDING_NOW is present, reflect the current wave (sound/slang/themes) without copying anyone.',
+      'If GENRE_SOUND_DNA is present, make hooks that sit in that pocket/arrangement and cadence — phrasing, rhythm, and imagery must fit the lane, not generic pop.',
     ],
   });
 }

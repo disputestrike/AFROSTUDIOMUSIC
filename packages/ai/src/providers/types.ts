@@ -29,6 +29,13 @@ export interface MusicGenerationInput {
   lyrics?: string;
   withVocals?: boolean;
   songEngine?: string; // 'ace_step' (default) | 'minimax'
+  /**
+   * Sound-DNA signature tokens for THIS genre, ordered most-distinctive first.
+   * Adapters front-load these ahead of genre/bpm and drop the generic
+   * "radio-ready" filler when present — so the genre's identity leads the
+   * style prompt instead of homogenizing filler. See packages/ai/sound-dna.
+   */
+  dnaTags?: string[];
 }
 
 export interface MusicGenerationOutput {

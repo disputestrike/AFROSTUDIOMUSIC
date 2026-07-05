@@ -22,6 +22,32 @@ function provider(): string {
   return (process.env.MUSIC_PROVIDER ?? 'stub').toLowerCase();
 }
 
+/**
+ * Build the style/prompt token list for a music model.
+ *
+ * Sound-DNA signature tokens (input.dnaTags) are FRONT-LOADED — models weight
+ * by position and truncate, so the genre's identity must lead. The generic
+ * "radio-ready" fallback literal is only appended when NO DNA is present; when
+ * DNA is present that filler is exactly the homogenizing phrase we drop. This is
+ * the core fix for "same-y sound".
+ */
+function composeStyleTags(
+  input: MusicGenerationInput,
+  opts: { fallbackLiteral: string; genreLabel?: string; genreSuffix?: string; keyPrefix?: string; tonePrefix?: string }
+): string[] {
+  const hasDna = !!input.dnaTags?.length;
+  return [
+    ...(input.dnaTags ?? []),
+    opts.genreLabel ?? input.genre ?? 'afrobeats',
+    opts.genreSuffix ?? null,
+    `${input.bpm} bpm`,
+    input.keySignature ? `${opts.keyPrefix ?? 'key '}${input.keySignature}` : null,
+    input.vibePrompt ?? '',
+    input.artistTone?.length ? `${opts.tonePrefix ?? ''}${input.artistTone.join(', ')}` : null,
+    hasDna ? null : opts.fallbackLiteral,
+  ].filter(Boolean) as string[];
+}
+
 /** Accept common env-var spellings so a naming mismatch can't silently break it. */
 export function elevenKey(): string | undefined {
   return (
@@ -130,17 +156,11 @@ class SunoAdapter implements MusicProviderAdapter {
   }
 
   private composeStyle(input: MusicGenerationInput): string {
-    return [
-      input.genre ?? 'afrobeats',
-      'afro-fusion',
-      `${input.bpm} bpm`,
-      input.keySignature ? `key ${input.keySignature}` : null,
-      input.vibePrompt ?? '',
-      input.artistTone?.length ? input.artistTone.join(', ') : null,
-      'catchy, modern, punchy drums, warm bass, melodic, instrumental, radio-ready, leave space for a lead vocal',
-    ]
-      .filter(Boolean)
-      .join(', ');
+    return composeStyleTags(input, {
+      genreSuffix: 'afro-fusion',
+      fallbackLiteral:
+        'catchy, modern, punchy drums, warm bass, melodic, instrumental, radio-ready, leave space for a lead vocal',
+    }).join(', ');
   }
 }
 
@@ -243,16 +263,13 @@ class ReplicateMusicGenAdapter implements MusicProviderAdapter {
   }
 
   private composePrompt(input: MusicGenerationInput): string {
-    return [
-      `${input.genre ?? 'afrobeats'} instrumental beat`,
-      `${input.bpm} bpm`,
-      input.keySignature ? `in ${input.keySignature}` : null,
-      input.vibePrompt ?? '',
-      input.artistTone?.length ? `mood: ${input.artistTone.join(', ')}` : null,
-      'catchy, modern, radio-ready, punchy drums, warm bass, melodic, no vocals, leave space for a lead vocal',
-    ]
-      .filter(Boolean)
-      .join(', ');
+    return composeStyleTags(input, {
+      genreLabel: `${input.genre ?? 'afrobeats'} instrumental beat`,
+      keyPrefix: 'in ',
+      tonePrefix: 'mood: ',
+      fallbackLiteral:
+        'catchy, modern, radio-ready, punchy drums, warm bass, melodic, no vocals, leave space for a lead vocal',
+    }).join(', ');
   }
 }
 
@@ -451,17 +468,10 @@ class AceStepSongAdapter implements MusicProviderAdapter {
     }
 
     const duration = Math.min(Math.max(Math.round(input.durationS ?? 120), 30), 240);
-    const tags = [
-      input.genre ?? 'afrobeats',
-      'afro-fusion',
-      `${input.bpm} bpm`,
-      input.keySignature ? `key ${input.keySignature}` : null,
-      input.vibePrompt ?? '',
-      input.artistTone?.length ? input.artistTone.join(', ') : null,
-      'catchy, melodic vocals, punchy drums, warm bass, radio-ready',
-    ]
-      .filter(Boolean)
-      .join(', ');
+    const tags = composeStyleTags(input, {
+      genreSuffix: 'afro-fusion',
+      fallbackLiteral: 'catchy, melodic vocals, punchy drums, warm bass, radio-ready',
+    }).join(', ');
 
     const res = await fetch('https://api.replicate.com/v1/predictions', {
       method: 'POST',
@@ -534,16 +544,9 @@ class MiniMaxSongAdapter implements MusicProviderAdapter {
       if (!version) return { status: 'failed', error: 'minimax: model has no version' };
     }
 
-    const style = [
-      input.genre ?? 'afrobeats',
-      `${input.bpm} bpm`,
-      input.keySignature ? `key ${input.keySignature}` : null,
-      input.vibePrompt ?? '',
-      input.artistTone?.length ? input.artistTone.join(', ') : null,
-      'catchy, melodic vocals, radio-ready',
-    ]
-      .filter(Boolean)
-      .join(', ');
+    const style = composeStyleTags(input, {
+      fallbackLiteral: 'catchy, melodic vocals, radio-ready',
+    }).join(', ');
 
     // music-2.6 contract: `prompt` = style/mood description (required),
     // `lyrics` = the words (required for vocals unless lyrics_optimizer),

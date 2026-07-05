@@ -32,6 +32,8 @@ export async function enrichLyricsForVocals(opts: {
   languages?: string[];
   slang?: string;
   laneSummary?: string;
+  /** Genre Sound-DNA brief so ad-libs/doubles/harmony match the lane's culture. */
+  soundDna?: string;
 }): Promise<EnrichedVocal | null> {
   try {
     const out = await responsesJson<EnrichedVocal>({
@@ -40,6 +42,7 @@ export async function enrichLyricsForVocals(opts: {
         `LANGUAGES: ${opts.languages?.join(', ') || 'english, pidgin'}`,
         opts.laneSummary ? `ARTIST LANE: ${opts.laneSummary}` : null,
         opts.slang ? `SLANG TO USE: ${opts.slang}` : null,
+        opts.soundDna ? `\nGENRE SOUND DNA (match these ad-libs, pocket, and arrangement):\n${opts.soundDna}` : null,
         `\nLYRIC:\n${opts.lyricBody}`,
       ]
         .filter(Boolean)

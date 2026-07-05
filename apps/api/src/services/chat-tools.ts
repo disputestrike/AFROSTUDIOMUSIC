@@ -10,7 +10,7 @@
  */
 import type { FastifyInstance } from 'fastify';
 import { prisma } from '@afrohit/db';
-import { prompts, responsesJson, scoreItems, runRightsCheck, canonicalReceiptHash, directorRefineHooks, researchTrends, enrichLyricsForVocals } from '@afrohit/ai';
+import { prompts, responsesJson, scoreItems, runRightsCheck, canonicalReceiptHash, directorRefineHooks, researchTrends, enrichLyricsForVocals, soundBrief } from '@afrohit/ai';
 import { enqueue } from '../lib/queue';
 import { memoryContext, recordFeedback } from './artist-memory';
 
@@ -112,9 +112,10 @@ async function generateHooks(ctx: Ctx, count: number) {
   const tasteMemory = await memoryContext(project.artistId);
   const trendData = await researchTrends({ genre: project.genre }).catch(() => null);
   const trends = trendData?.digest;
+  const soundDna = soundBrief(project.genre).brief;
   const result = await responsesJson<{ hooks: Array<{ text: string; language?: string[]; bpm?: number; syllablePattern?: string; melodyNotes?: string; callResponse?: boolean }> }>({
     system: prompts.HOOK_SYSTEM,
-    user: prompts.hookUserPrompt({ artist: project.artist as never, brief: project.briefs[0] as never, count, tasteMemory, trends }),
+    user: prompts.hookUserPrompt({ artist: project.artist as never, brief: project.briefs[0] as never, count, tasteMemory, trends, soundDna }),
     temperature: 0.95,
     maxOutputTokens: 4_000,
   });
@@ -127,6 +128,7 @@ async function generateHooks(ctx: Ctx, count: number) {
     drafts,
     tasteMemory,
     trends,
+    soundDna,
   });
 
   const rows = refined
@@ -228,6 +230,7 @@ async function generateLyrics(ctx: Ctx, hookId: string, cleanVersion: boolean) {
       brief: hook.project.briefs[0] as never,
       hookText: hook.text,
       cleanVersion,
+      soundDna: soundBrief(hook.project.genre).brief,
     }),
     temperature: 0.8,
     maxOutputTokens: 4_000,
@@ -276,6 +279,10 @@ async function createBeatJob(ctx: Ctx, a: { genre: string; bpm: number; keySigna
     if (!lyrics) return { error: 'no_lyrics — write the lyrics first, then make the full song' };
   }
 
+  // Genre Sound DNA: signature tokens front-load the music model; the rich
+  // brief grounds the ad-lib arranger in the lane's pocket/arrangement.
+  const dna = soundBrief(a.genre);
+
   // Arrange the vocal to sound ALIVE — ad-libs, doubled/harmonized hook.
   let styleHints = '';
   if (a.withVocals && lyrics) {
@@ -287,6 +294,7 @@ async function createBeatJob(ctx: Ctx, a: { genre: string; bpm: number; keySigna
       lyricBody: lyrics,
       languages: project?.artist.languages,
       laneSummary: project?.artist.laneSummary ?? undefined,
+      soundDna: dna.brief,
     });
     if (enriched) {
       lyrics = enriched.enrichedLyrics;
@@ -324,6 +332,7 @@ async function createBeatJob(ctx: Ctx, a: { genre: string; bpm: number; keySigna
         withStems: a.withStems ?? !a.withVocals,
         withVocals: a.withVocals ?? false,
         songEngine: a.songEngine,
+        dnaTags: dna.tags,
         lyrics,
       },
     },

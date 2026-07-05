@@ -31,9 +31,12 @@ export function arDirectorUserPrompt(opts: {
   drafts: string[];
   tasteMemory?: { approvedExamples: string[]; rejectedExamples: string[] };
   trends?: string;
+  /** Genre Sound-DNA brief — judge hooks for lane/pocket accuracy, not just catchiness. */
+  soundDna?: string;
 }): string {
   return JSON.stringify({
     task: 'critique, refine, score and rank these draft hooks as the A&R director',
+    GENRE_SOUND_DNA: opts.soundDna || undefined,
     TRENDING_NOW: opts.trends || undefined,
     artist: {
       stageName: opts.artist.stageName,

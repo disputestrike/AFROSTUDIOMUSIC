@@ -9,3 +9,4 @@ export * from './ar-director';
 export * from './tavily';
 export * from './analyze';
 export * from './vocal-arranger';
+export * from './sound-dna';

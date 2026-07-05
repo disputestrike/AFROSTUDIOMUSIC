@@ -31,6 +31,7 @@ export async function directorRefineHooks(opts: {
   drafts: string[];
   tasteMemory?: { approvedExamples: string[]; rejectedExamples: string[] };
   trends?: string;
+  soundDna?: string;
 }): Promise<ARHook[] | null> {
   if (opts.drafts.length === 0) return null;
   // STUB_AI: deterministic A&R pass (no Anthropic call) so tests can exercise

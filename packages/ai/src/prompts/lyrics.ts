@@ -31,9 +31,12 @@ export function lyricUserPrompt(opts: {
   hookText: string;
   cleanVersion: boolean;
   languageMix?: Record<string, number>;
+  /** Genre Sound-DNA brief — arrangement map, pocket, ad-libs to write toward. */
+  soundDna?: string;
 }): string {
   return JSON.stringify({
     task: 'write the full song around the approved hook',
+    GENRE_SOUND_DNA_follow_this_arrangement_and_pocket: opts.soundDna || undefined,
     artist: {
       stageName: opts.artist.stageName,
       tone: opts.artist.vocalTone,
