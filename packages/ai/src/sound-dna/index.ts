@@ -15,9 +15,11 @@
  * audio, lyrics, or verbatim third-party prose is ever involved.
  */
 import { SOUND_DNA, type SoundDNA } from './recipes';
+import { getEnrichment } from './enrichment';
 
 export { SOUND_DNA };
 export type { SoundDNA } from './recipes';
+export { GENRE_ENRICHMENT, getEnrichment, type GenreEnrichment } from './enrichment';
 
 /** Look up the recipe for a genre. Returns undefined for unknown genres. */
 export function getSoundDNA(genre?: string | null): SoundDNA | undefined {
@@ -55,9 +57,12 @@ function shorten(s: string, max = 48): string {
 export function musicTags(dna: SoundDNA, mood?: string): string[] {
   // Every token must be TERSE — models weight the first tokens and truncate, so
   // signature sounds beat verbose descriptions. Shorten everything to a phrase.
+  const enr = getEnrichment(dna.genre);
   const tags = dedupe([
     dna.displayName,
     ...dna.signatureElements.slice(0, 2).map((x) => shorten(x, 40)),
+    // Current trending sound tokens (2026) so the model reflects what's charting.
+    ...(enr?.freshTokens ?? []).slice(0, 2).map((x) => shorten(x, 40)),
     ...dna.instrumentation.signature.slice(0, 3).map((x) => shorten(x, 36)),
     ...dna.instrumentation.percussion.slice(0, 2).map((x) => shorten(x, 28)),
     shorten(dna.instrumentation.bass, 32),
@@ -85,6 +90,21 @@ export function llmBrief(dna: SoundDNA): string {
   const arrangement = dna.arrangement
     .map((a) => `${a.section} [${a.bars}]: ${a.whatHappens}`)
     .join('\n  ');
+  // "What's working NOW" — web-researched current trends (facts only). Reflect
+  // what's charting; never chase or clone. Empty for genres not yet researched.
+  const enr = getEnrichment(dna.genre);
+  const trending = enr
+    ? [
+        `TRENDING NOW (researched ${enr.researchedAt}, ${enr.confidence} confidence) — reflect what's charting, don't chase or clone:`,
+        enr.trendingProductionMoves.length ? `  Current production moves: ${enr.trendingProductionMoves.slice(0, 6).join('; ')}` : '',
+        enr.whatMakesItHitNow.length ? `  What's hitting / short-form: ${enr.whatMakesItHitNow.slice(0, 5).join('; ')}` : '',
+        enr.currentSubgenres.length ? `  Live subgenres: ${enr.currentSubgenres.slice(0, 6).join(', ')}` : '',
+        enr.currentReferenceLanes.length ? `  Reference LANES (capture the feel, never clone/name): ${enr.currentReferenceLanes.slice(0, 5).join('; ')}` : '',
+        enr.bpmDriftNote ? `  Tempo drift: ${enr.bpmDriftNote}` : '',
+      ]
+        .filter(Boolean)
+        .join('\n')
+    : '';
   return [
     `AFRO SOUND DNA — ${dna.displayName} (stay in this LANE; never copy a specific song):`,
     dna.productionPromptSnippet,
@@ -94,6 +114,7 @@ export function llmBrief(dna: SoundDNA): string {
     `Signature sounds: ${dna.signatureElements.slice(0, 4).join('; ')}`,
     `Arrangement map:\n  ${arrangement}`,
     `Vocal delivery: ${dna.vocalStyle.delivery}. Ad-libs to weave in naturally: ${dna.vocalStyle.adLibs.slice(0, 8).join(', ')}.`,
+    trending,
     `Freshness guardrail: ${dna.freshnessGuardrails}`,
   ]
     .filter(Boolean)
