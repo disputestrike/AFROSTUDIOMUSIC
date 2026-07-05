@@ -131,11 +131,17 @@ export async function measureAudioQuality(input: string): Promise<AudioQuality> 
       '-f', 'null', '-',
     ]);
     // ebur128 prints a Summary block at the end with "I:", "LRA:", "Peak:".
-    const integratedLufs = numAfter(out, /I:\s*(-?\d+(?:\.\d+)?)\s*LUFS/);
-    const loudnessRangeLra = numAfter(out, /LRA:\s*(-?\d+(?:\.\d+)?)\s*LU/);
-    // ebur128 prints both "Sample peak" and "True peak" as "Peak: X dBFS" — take
-    // the highest so clipping detection uses the true (inter-sample) peak.
-    const peaks = [...out.matchAll(/Peak:\s*(-?\d+(?:\.\d+)?)\s*dBFS/g)]
+    // CRITICAL: ebur128 prints PER-FRAME "I:"/"LRA:" lines throughout playback —
+    // and those start near -70 LUFS / 0 LU before they accumulate. The REAL values
+    // are in the final "Summary:" block. Parse only the summary, or we'd read the
+    // meaningless first frame and flag every real song as too_quiet + flat.
+    const summaryIdx = out.lastIndexOf('Summary:');
+    const summary = summaryIdx >= 0 ? out.slice(summaryIdx) : out;
+    const integratedLufs = numAfter(summary, /I:\s*(-?\d+(?:\.\d+)?)\s*LUFS/);
+    const loudnessRangeLra = numAfter(summary, /LRA:\s*(-?\d+(?:\.\d+)?)\s*LU/);
+    // ebur128's summary prints both "Sample peak" and "True peak" as "Peak: X dBFS"
+    // — take the highest so clipping detection uses the true (inter-sample) peak.
+    const peaks = [...summary.matchAll(/Peak:\s*(-?\d+(?:\.\d+)?)\s*dBFS/g)]
       .map((m) => parseFloat(m[1]!))
       .filter((n) => Number.isFinite(n));
     const truePeakDb = peaks.length ? Math.max(...peaks) : null;

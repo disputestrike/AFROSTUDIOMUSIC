@@ -113,7 +113,9 @@ async function transcribe(url: string, auth: Record<string, string>): Promise<{ 
   try {
     const slug = process.env.REPLICATE_TRANSCRIBE_MODEL ?? 'openai/whisper';
     const version = process.env.REPLICATE_TRANSCRIBE_VERSION ?? (await latestVersion(slug, auth));
-    const output = await runPrediction(version, { audio: url, transcription: 'plain text' }, auth, 30);
+    // Minimal input — every whisper version accepts `audio`; extra fields risk a
+    // 422 that would silently null the transcript. Wider poll for GPU cold starts.
+    const output = await runPrediction(version, { audio: url }, auth, 45);
     const text = extractText(output).trim();
     let language: string | null = null;
     if (output && typeof output === 'object') {
