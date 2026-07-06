@@ -28,7 +28,13 @@ export interface MusicGenerationInput {
   // the instrumental beat model.
   lyrics?: string;
   withVocals?: boolean;
-  songEngine?: string; // 'ace_step' (default) | 'minimax'
+  songEngine?: string; // 'suno' | 'ace_step' (default) | 'minimax'
+  /**
+   * Best-of-N: render this many candidates in parallel, QC each, keep the best
+   * (the take with the most life — dynamics/punch, no clipping). Default from
+   * BEST_OF_N env (2). The model-independent quality lever.
+   */
+  candidates?: number;
   /**
    * Sound-DNA signature tokens for THIS genre, ordered most-distinctive first.
    * Adapters front-load these ahead of genre/bpm and drop the generic

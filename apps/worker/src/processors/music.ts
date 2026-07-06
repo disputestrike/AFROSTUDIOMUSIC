@@ -13,6 +13,26 @@ interface MusicPayload {
   input: MusicGenerationInput;
 }
 
+/**
+ * Rank a rendered candidate by measured quality — higher = more "alive". Prefers
+ * a passing verdict, rewards dynamic movement (loudness range) and punch (crest),
+ * penalises clipping / too-quiet / flat / squashed. This is how best-of-N picks
+ * the take with the most life instead of shipping the first (often flat) one.
+ */
+function qcScore(q: AudioQuality | null): number {
+  if (!q) return -1; // couldn't measure → lowest, but still usable if it's all we have
+  const verdictRank = q.verdict === 'pass' ? 2 : q.verdict === 'weak' ? 1 : 0;
+  let s = verdictRank * 100;
+  if (q.loudnessRangeLra != null) s += Math.min(Math.max(q.loudnessRangeLra, 0), 12) * 3; // dynamics = anti-"flat"
+  if (q.crestFactorDb != null) s += Math.min(Math.max(q.crestFactorDb, 0), 20); // punch
+  const f = q.flags ?? [];
+  if (f.includes('clipping')) s -= 40;
+  if (f.includes('too_quiet')) s -= 30;
+  if (f.includes('flat')) s -= 25;
+  if (f.includes('squashed')) s -= 15;
+  return s;
+}
+
 export async function processMusic(p: MusicPayload) {
   await markRunning(p.jobId);
   try {
@@ -35,68 +55,71 @@ export async function processMusic(p: MusicPayload) {
     let adapter = wantsVocals
       ? musicAdapter(engine, engineKey)
       : musicAdapter(ws?.musicProvider ?? undefined, ws?.musicApiKey ?? undefined);
-    let result = await adapter.generate(p.input);
+    type GenResult = Awaited<ReturnType<typeof adapter.generate>>;
 
-    // Poll until terminal — exponential backoff, cap at 25 attempts.
-    let attempts = 0;
-    while (result.status === 'queued' || result.status === 'running') {
-      if (!adapter.poll || !result.externalId) break;
-      const wait = result.pollAfterMs ?? 8_000;
-      await new Promise((r) => setTimeout(r, wait));
-      attempts += 1;
-      if (attempts > 25) break;
-      result = await adapter.poll(result.externalId);
-    }
+    // Run generate + poll-to-terminal for ONE candidate.
+    const generateOne = async (): Promise<GenResult> => {
+      let r = await adapter.generate(p.input);
+      let attempts = 0;
+      while (r.status === 'queued' || r.status === 'running') {
+        if (!adapter.poll || !r.externalId) break;
+        await new Promise((res) => setTimeout(res, r.pollAfterMs ?? 8_000));
+        if (++attempts > 25) break;
+        r = await adapter.poll(r.externalId);
+      }
+      return r;
+    };
 
-    // NO FAKE AUDIO. If a real provider fails, FAIL the job with the real reason
-    // — never substitute an off-genre placeholder (a SoundHelix rock mp3) and
-    // call it the artist's song. The stub is only acceptable when it's the
-    // explicitly-configured provider (local dev / STUB_AI), never as a silent
-    // fallback for a failed real render.
+    // BEST-OF-N: render N candidates IN PARALLEL (≈ same wall-clock as one), QC
+    // each, and keep the take with the most life — the model-independent quality
+    // lever that stops the studio shipping the first (often flat) take. Default 2.
+    const N = Math.max(1, Math.min(Number(p.input.candidates ?? process.env.BEST_OF_N ?? 2), 4));
+    const settled = await Promise.all(
+      Array.from({ length: N }, () =>
+        generateOne().catch((e) => ({ status: 'failed', error: String((e as Error)?.message ?? e) }) as GenResult)
+      )
+    );
+    const ok = settled.filter((r) => r.status === 'succeeded' && r.output);
+
+    // NO FAKE AUDIO. If every candidate failed on a real provider, fail the job
+    // with the real reason — never substitute a placeholder and call it the song.
     const placeholder = false;
     const fallbackReason: string | undefined = undefined;
-    if ((result.status !== 'succeeded' || !result.output) && adapter.name !== 'stub') {
-      await markFailed(
-        p.jobId,
-        `music_generation_failed: ${result.error ?? 'provider_failed'} — no placeholder emitted; retry or switch engine in Settings.`
-      );
+    if (!ok.length) {
+      const reason = settled.find((r) => r.error)?.error ?? 'provider_failed';
+      await markFailed(p.jobId, `music_generation_failed: ${reason} — no placeholder emitted; retry or switch engine in Settings.`);
       return;
     }
 
-    if (result.status !== 'succeeded' || !result.output) {
-      await markFailed(p.jobId, result.error ?? 'music_generation_failed');
-      return;
-    }
+    // QC every candidate on its provider URL (parallel, free ffmpeg pass) → best.
+    const scored = await Promise.all(
+      ok.map(async (r) => ({ r, qc: r.output ? await measureAudioQuality(r.output.mainAudioUrl).catch(() => null) : null }))
+    );
+    scored.sort((a, b) => qcScore(b.qc) - qcScore(a.qc));
+    const winner = scored[0]!;
+    const result = winner.r;
+    const out = result.output!;
+    let quality: AudioQuality | null = winner.qc;
 
-    // Persist asset + stems. We re-host the audio in our bucket so it survives
-    // provider URL expiry and gives us deterministic CDN paths.
+    // Re-host ONLY the winning take (survives provider URL expiry; stable CDN path).
     const ingestedMain = await ingestRemoteFile({
       workspaceId: p.workspaceId,
-      url: result.output.mainAudioUrl,
+      url: out.mainAudioUrl,
       kind: 'beats',
-      ext: result.output.format,
-      contentType:
-        result.output.format === 'mp3'
-          ? 'audio/mpeg'
-          : result.output.format === 'flac'
-          ? 'audio/flac'
-          : 'audio/wav',
+      ext: out.format,
+      contentType: out.format === 'mp3' ? 'audio/mpeg' : out.format === 'flac' ? 'audio/flac' : 'audio/wav',
     });
 
-    // Real QC — measure the rendered track (loudness, dynamic range, crest factor)
-    // so we catch flat / quiet / clipping output instead of only checking that a
-    // file exists. Fast, free, local ffmpeg pass that reads the R2 URL directly.
-    // Also yields the true duration for poll-streamed providers (MiniMax, Suno).
-    // Never fatal — falls back to a duration probe.
-    let durationS = result.output.durationS ?? 0;
-    let quality: AudioQuality | null = null;
-    if (!placeholder) {
-      quality = await measureAudioQuality(ingestedMain);
-      if (quality.durationS > 0) durationS = quality.durationS;
-      else if (durationS < 12) {
-        const probed = await probeDurationS(ingestedMain);
-        if (probed > 0) durationS = probed;
-      }
+    // Winner QC measured the provider URL (same bytes). Re-probe duration if unknown;
+    // if QC didn't run at all, measure the ingested file now. Never fatal.
+    let durationS = quality?.durationS && quality.durationS > 0 ? quality.durationS : out.durationS ?? 0;
+    if (!quality) {
+      quality = await measureAudioQuality(ingestedMain).catch(() => null);
+      if (quality?.durationS && quality.durationS > 0) durationS = quality.durationS;
+    }
+    if (durationS < 12) {
+      const probed = await probeDurationS(ingestedMain);
+      if (probed > 0) durationS = probed;
     }
 
     const beat = await prisma.beatAsset.create({
@@ -104,9 +127,9 @@ export async function processMusic(p: MusicPayload) {
         projectId: p.projectId,
         songId: p.songId,
         url: ingestedMain,
-        format: result.output.format,
-        bpm: result.output.bpm ?? p.input.bpm,
-        keySignature: result.output.keySignature ?? p.input.keySignature,
+        format: out.format,
+        bpm: out.bpm ?? p.input.bpm,
+        keySignature: out.keySignature ?? p.input.keySignature,
         duration: durationS,
         provider: adapter.name,
         // Generated by an explicit user action → usable immediately (mix/master/
@@ -116,8 +139,8 @@ export async function processMusic(p: MusicPayload) {
           externalId: result.externalId,
           placeholder,
           fallbackReason,
-          // Real QC — measured loudness/dynamics/clipping + honest verdict, not
-          // just "does a file exist". Consumed by the UI and the eval harness.
+          // Best-of-N provenance + measured QC of the WINNING take.
+          bestOf: { tried: N, rendered: ok.length, pickedScore: Math.round(qcScore(quality)) },
           qc: quality
             ? { ...quality, durationS: durationS || quality.durationS }
             : { durationS: durationS || null, verdict: durationS >= 12 ? 'pass' : 'fail', ok: durationS >= 12, flags: [] },
@@ -125,11 +148,11 @@ export async function processMusic(p: MusicPayload) {
       },
     });
 
-    if (result.output.stems?.length) {
+    if (out.stems?.length) {
       // Ingest each stem to our bucket first (parallel I/O), THEN build the
       // Prisma transaction. $transaction needs PrismaPromise[], not resolved values.
       const ingested = await Promise.all(
-        result.output.stems.map(async (s) => ({
+        out.stems.map(async (s) => ({
           role: s.role,
           url: await ingestRemoteFile({
             workspaceId: p.workspaceId,
@@ -149,7 +172,11 @@ export async function processMusic(p: MusicPayload) {
       );
     }
 
-    await markSucceeded(p.jobId, { beatId: beat.id, stems: result.output.stems?.length ?? 0, placeholder, fallbackReason }, result.estimatedCostUsd);
+    await markSucceeded(
+      p.jobId,
+      { beatId: beat.id, stems: out.stems?.length ?? 0, placeholder, fallbackReason, bestOf: { tried: N, rendered: ok.length } },
+      result.estimatedCostUsd
+    );
   } catch (err) {
     await markFailed(p.jobId, err);
   }
