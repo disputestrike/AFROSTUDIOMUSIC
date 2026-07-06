@@ -225,11 +225,19 @@ export function ReferenceListen({ projectId }: { projectId: string }) {
       const bpm = Math.min(Math.max(profile.bpm ?? 103, 60), 180);
       const genre = matchGenre(profile.genre);
       const theme = `A fresh ${genre.replace(/_/g, ' ')} song in the vibe of: ${profile.suggestedVibePrompt || profile.vibe}.${voiceLine(profile)} Catchy, original, never a copy.`;
-      const drop = await api.post<{ drop: Array<{ jobId?: string; error?: string }> }>(
+      // 202 + drop-job id instantly; poll for the written hook/lyrics result
+      // (holding one multi-minute HTTP request open dies on real networks).
+      const started = await api.post<{ jobId: string }>(
         `/projects/${projectId}/drop`,
         { theme, count: 1, genre, bpm, withVocals: true }
       );
-      const item = drop.drop?.[0];
+      let item: { jobId?: string; error?: string } | undefined;
+      for (let i = 0; i < 60; i++) {
+        await new Promise((r) => setTimeout(r, 5000));
+        const j = await api.get<{ status: string; outputJson?: { drop?: Array<typeof item> } }>(`/jobs/${started.jobId}`);
+        if (j.status === 'SUCCEEDED') { item = j.outputJson?.drop?.[0]; break; }
+        if (j.status === 'FAILED') throw new Error('Could not write the song — try again.');
+      }
       if (!item?.jobId) {
         throw new Error(item?.error === 'insufficient_credits' ? 'Daily limit reached — resets at midnight UTC.' : item?.error || 'Could not start the render.');
       }

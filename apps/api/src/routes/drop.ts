@@ -25,10 +25,45 @@ export default async function drop(app: FastifyInstance) {
       });
       const ctx = { app, workspaceId, userId, projectId: project.id };
 
-      // One shared brief for the whole drop.
-      await runChatTool({ ...ctx, name: 'polish_brief', args: { rawIdea: input.theme } });
+      // ASYNC BY DESIGN: the pipeline takes 1–3 minutes of LLM work. Holding one
+      // HTTP request open that long dies on real-world networks/proxies (browser
+      // click-through proved it: ECONNRESET mid-drop → user sees a dead button).
+      // So: 202 + a job id IMMEDIATELY; the pipeline runs detached and writes its
+      // result to the ProviderJob row; clients poll /jobs/:id.
+      const dropJob = await prisma.providerJob.create({
+        data: {
+          workspaceId,
+          projectId: project.id,
+          kind: 'drop',
+          provider: 'internal',
+          status: 'RUNNING',
+          startedAt: new Date(),
+          inputJson: input as never,
+        },
+      });
 
-      const drops: Array<{
+      void runDropPipeline(app, ctx, input, dropJob.id).catch(async (err) => {
+        app.log.error({ err, dropJobId: dropJob.id }, 'drop pipeline crashed');
+        await prisma.providerJob
+          .update({ where: { id: dropJob.id }, data: { status: 'FAILED', finishedAt: new Date(), errorJson: 'drop pipeline failed — try again' as never } })
+          .catch(() => {});
+      });
+
+      reply.code(202);
+      return { jobId: dropJob.id, status: 'queued', theme: input.theme };
+    }
+  );
+}
+
+type DropCtx = { app: FastifyInstance; workspaceId: string; userId: string; projectId: string };
+type DropInput = ReturnType<typeof dropBatchSchema.parse>;
+
+/** The actual Drop Machine pipeline — runs detached; result lands on the job row. */
+async function runDropPipeline(app: FastifyInstance, ctx: DropCtx, input: DropInput, dropJobId: string) {
+  // One shared brief for the whole drop.
+  await runChatTool({ ...ctx, name: 'polish_brief', args: { rawIdea: input.theme } });
+
+  const drops: Array<{
         songId?: string;
         hookId?: string;
         hookText?: string;
@@ -96,17 +131,21 @@ export default async function drop(app: FastifyInstance) {
             error: beat?.error,
           });
 
-          // If the daily cap was hit mid-batch, stop cleanly.
-          if (beat?.error === 'insufficient_credits') break;
-        } catch (err) {
-          req.log.warn({ err }, 'drop iteration failed');
-          drops.push({ score: null, error: 'this take failed — the batch continued' });
-        }
-      }
-
-      drops.sort((a, b) => (b.score ?? 0) - (a.score ?? 0));
-      reply.code(202);
-      return { theme: input.theme, requested: input.count, produced: drops.length, drop: drops };
+      // If the daily cap was hit mid-batch, stop cleanly.
+      if (beat?.error === 'insufficient_credits') break;
+    } catch (err) {
+      app.log.warn({ err }, 'drop iteration failed');
+      drops.push({ score: null, error: 'this take failed — the batch continued' });
     }
-  );
+  }
+
+  drops.sort((a, b) => (b.score ?? 0) - (a.score ?? 0));
+  await prisma.providerJob.update({
+    where: { id: dropJobId },
+    data: {
+      status: 'SUCCEEDED',
+      finishedAt: new Date(),
+      outputJson: { theme: input.theme, requested: input.count, produced: drops.length, drop: drops } as never,
+    },
+  });
 }

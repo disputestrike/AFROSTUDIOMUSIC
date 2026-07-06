@@ -79,12 +79,21 @@ export default function CreatePage() {
         ? ` In the VIBE/LANE of ${influence.trim()} (capture that energy, tempo and production feel — never copy their melodies/lyrics and never name them in the song).`
         : '';
       const theme = `${genreLabel} ${mood} song, ${bpm}bpm, ${langNames}${vibe ? `, ${vibe.trim()}` : ''}. Make it catchy and current.${influenceLine}`;
-      // This one call runs hooks → A&R pick → lyrics → queues the sung song.
-      const drop = await api.post<{ drop: Array<{ jobId?: string; hookText?: string; score: number | null; error?: string }> }>(
+      // Fire the Drop Machine — it replies 202 + a job id INSTANTLY and works in
+      // the background (holding a 3-minute HTTP request open dies on real
+      // networks). We poll the drop job for the hook/lyrics result…
+      const started = await api.post<{ jobId: string }>(
         `/projects/${project.id}/drop`,
         { theme, count: 1, genre, bpm, withVocals: true, songEngine: engine, influence: influence.trim() || undefined }
       );
-      const item = drop.drop?.[0];
+      let item: { jobId?: string; hookText?: string; score: number | null; error?: string } | undefined;
+      for (let i = 0; i < 60; i++) {
+        await sleep(5000);
+        if (i === 10) setStepIdx(2); // hooks done-ish → writing lyrics
+        const j = await api.get<{ status: string; outputJson?: { drop?: Array<typeof item> } }>(`/jobs/${started.jobId}`);
+        if (j.status === 'SUCCEEDED') { item = j.outputJson?.drop?.[0]; break; }
+        if (j.status === 'FAILED') throw new Error('Could not write the song — try again.');
+      }
       if (!item?.jobId) throw new Error(item?.error === 'insufficient_credits' ? 'Daily limit reached — try again tomorrow.' : item?.error || 'Could not start production.');
       setStepIdx(3);
       // Poll for the rendered audio.
