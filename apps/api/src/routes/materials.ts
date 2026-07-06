@@ -53,7 +53,8 @@ export default async function materials(app: FastifyInstance) {
     const bpm = input.bpm ?? 108;
 
     const jobs: Array<{ role: string; jobId: string }> = [];
-    for (const role of roles) {
+    for (let i = 0; i < roles.length; i++) {
+      const role = roles[i]!;
       const charge = await app.chargeCredits({ workspaceId, key: 'beat_idea_short_30s' });
       if (!charge.ok) return reply.code(402).send({ error: 'insufficient_credits', forged: jobs, ...charge });
       const job = await prisma.providerJob.create({
@@ -63,6 +64,9 @@ export default async function materials(app: FastifyInstance) {
         queue: app.queues.music,
         name: 'forge-material',
         payload: { jobId: job.id, workspaceId, genre: input.genre, role, bpm },
+        // STAGGER: Replicate throttles prediction creation (observed live: 6/min,
+        // burst 1) — parallel forges 429'd. 30s spacing keeps the kit flowing.
+        delayMs: i * 30_000,
       });
       jobs.push({ role, jobId: job.id });
     }

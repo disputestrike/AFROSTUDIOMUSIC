@@ -44,12 +44,15 @@ export async function enqueue<T>(opts: {
   queue: Queue;
   name: string;
   payload: T;
+  /** Delay before the job runs (ms) — used to STAGGER provider-rate-limited work. */
+  delayMs?: number;
 }) {
   return opts.queue.add(opts.name, opts.payload, {
     attempts: 3,
     backoff: { type: 'exponential', delay: 5_000 },
     removeOnComplete: { count: 1000 },
     removeOnFail: { count: 5000 },
+    ...(opts.delayMs ? { delay: opts.delayMs } : {}),
   });
 }
 

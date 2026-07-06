@@ -47,23 +47,31 @@ export async function processForgeMaterial(p: ForgePayload) {
     const ws = await prisma.workspace.findUnique({ where: { id: p.workspaceId }, select: { musicProvider: true, musicApiKey: true } });
     const adapter = musicAdapter(ws?.musicProvider ?? undefined, ws?.musicApiKey ?? undefined);
 
-    let result = await adapter.generate({
-      genre: p.genre,
-      bpm: p.bpm,
-      durationS: Math.min(loopDur, 30),
-      withStems: false,
-      vibePrompt: promptFor(p.genre, p.bpm),
-    });
-    let attempts = 0;
-    while (result.status === 'queued' || result.status === 'running') {
-      if (!adapter.poll || !result.externalId) break;
-      await new Promise((r) => setTimeout(r, result.pollAfterMs ?? 8000));
-      if (++attempts > 25) break;
-      result = await adapter.poll(result.externalId);
+    // Generate with 429-aware retries — Replicate throttles prediction creation
+    // (observed live: 6/min, burst 1), so a throttled forge WAITS and retries
+    // instead of dying.
+    let result: Awaited<ReturnType<typeof adapter.generate>> | null = null;
+    for (let tryNo = 0; tryNo < 4; tryNo++) {
+      if (tryNo > 0) await new Promise((r) => setTimeout(r, 20_000 * tryNo));
+      let r = await adapter.generate({
+        genre: p.genre,
+        bpm: p.bpm,
+        durationS: Math.min(loopDur, 30),
+        withStems: false,
+        vibePrompt: promptFor(p.genre, p.bpm),
+      });
+      let attempts = 0;
+      while (r.status === 'queued' || r.status === 'running') {
+        if (!adapter.poll || !r.externalId) break;
+        await new Promise((res) => setTimeout(res, r.pollAfterMs ?? 8000));
+        if (++attempts > 25) break;
+        r = await adapter.poll(r.externalId);
+      }
+      if (r.status === 'succeeded' && r.output) { result = r; break; }
+      const err = String(r.error ?? '');
+      if (!/429|throttl|rate limit|capacity/i.test(err)) throw new Error(`forge render failed: ${err || 'provider_failed'}`);
     }
-    if (result.status !== 'succeeded' || !result.output) {
-      throw new Error(`forge render failed: ${result.error ?? 'provider_failed'}`);
-    }
+    if (!result?.output) throw new Error('forge render failed: rate-limited after retries — try again in a minute');
 
     // Trim to an exact loop + QC it. A forged loop that fails QC is discarded —
     // only good material enters the library.
@@ -71,7 +79,18 @@ export async function processForgeMaterial(p: ForgePayload) {
     const loop = await trimToLoop(raw, p.bpm, bars);
     const url = await uploadBytes({ workspaceId: p.workspaceId, kind: 'material', bytes: loop, contentType: 'audio/wav', ext: 'wav' });
     const qc = await measureAudioQuality(url).catch(() => null);
-    if (qc && qc.verdict === 'fail') throw new Error(`forged ${p.role} loop failed QC (${qc.flags.join(',') || 'bad audio'}) — discarded, try again`);
+    // ISOLATED-LOOP gate (not song thresholds): a solo dry chord bed or shaker
+    // loop is SUPPOSED to be quiet-ish and steady — 'too_quiet'/'flat' would
+    // wrongly discard good material. Only reject true junk: near-silence,
+    // clipping, or no meaningful duration.
+    if (qc) {
+      const silent = qc.integratedLufs !== null && qc.integratedLufs < -38;
+      const clipping = (qc.flags ?? []).includes('clipping');
+      const tooShort = qc.durationS > 0 && qc.durationS < 3;
+      if (silent || clipping || tooShort) {
+        throw new Error(`forged ${p.role} loop is unusable (${silent ? 'near-silent' : clipping ? 'clipping' : 'too short'}) — discarded, try again`);
+      }
+    }
 
     const material = await prisma.materialAsset.create({
       data: {

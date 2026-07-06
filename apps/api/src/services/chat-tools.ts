@@ -726,7 +726,8 @@ async function forgeMaterialsTool(ctx: Ctx, a: { genre: string; bpm?: number }) 
     const job = await prisma.providerJob.create({
       data: { workspaceId: ctx.workspaceId, kind: 'material', provider: 'replicate', status: 'QUEUED', inputJson: { genre: a.genre, role, bpm } as never },
     });
-    await enqueue({ queue: ctx.app.queues.music, name: 'forge-material', payload: { jobId: job.id, workspaceId: ctx.workspaceId, genre: a.genre, role, bpm } });
+    // Staggered — Replicate throttles prediction creation (6/min observed live).
+    await enqueue({ queue: ctx.app.queues.music, name: 'forge-material', payload: { jobId: job.id, workspaceId: ctx.workspaceId, genre: a.genre, role, bpm }, delayMs: jobs.length * 30_000 });
     jobs.push({ role, jobId: job.id });
   }
   return { forging: jobs, note: `Forging ${jobs.length} isolated ${a.genre} loops at ${bpm}bpm. QC-passed loops land in the material library; then call assemble_beat.` };
