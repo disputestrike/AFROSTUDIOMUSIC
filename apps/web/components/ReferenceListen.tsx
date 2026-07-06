@@ -61,6 +61,19 @@ export function ReferenceListen({ projectId }: { projectId: string }) {
   const [status, setStatus] = useState<string>('');
   const [busy, setBusy] = useState(false);
   const [profile, setProfile] = useState<Profile | null>(null);
+  // Visible production state — creating from a listen takes 2-4 minutes and MUST
+  // look alive the whole time (a quiet status line reads as a dead button).
+  const [producing, setProducing] = useState<null | { step: number; label: string; startedAt: number }>(null);
+  const [prodElapsed, setProdElapsed] = useState(0);
+  const [madeUrl, setMadeUrl] = useState<string | null>(null);
+  const [prodError, setProdError] = useState('');
+  const PROD_STEPS = ['Writing the hook + lyrics (A&R picks the best)', 'Singing & producing the record', 'Done — play it'];
+
+  useEffect(() => {
+    if (!producing) return;
+    const t = setInterval(() => setProdElapsed(Math.round((Date.now() - producing.startedAt) / 1000)), 1000);
+    return () => clearInterval(t);
+  }, [producing]);
 
   // Mic capture (the Shazam "listen to the room" path).
   const mediaRef = useRef<MediaRecorder | null>(null);
@@ -159,43 +172,74 @@ export function ReferenceListen({ projectId }: { projectId: string }) {
     if (mediaRef.current && mediaRef.current.state !== 'inactive') mediaRef.current.stop();
   }
 
+  /** Poll a render job, then return the freshest beat URL for this project. */
+  async function pollRenderedAudio(jobId: string): Promise<string> {
+    for (let i = 0; i < 60; i++) {
+      await new Promise((r) => setTimeout(r, 5000));
+      const job = await api.get<{ status: string; errorJson?: unknown }>(`/jobs/${jobId}`);
+      if (job.status === 'SUCCEEDED') {
+        const beats = await api.get<Array<{ url: string; createdAt: string }>>(`/projects/${projectId}/beats`);
+        const url = beats.sort((a, b) => +new Date(b.createdAt) - +new Date(a.createdAt))[0]?.url;
+        if (url) return url;
+        throw new Error('Rendered, but the audio is still landing — check the studio in a minute.');
+      }
+      if (job.status === 'FAILED') {
+        throw new Error(typeof job.errorJson === 'string' ? job.errorJson : 'The render failed — try again or switch engine in Settings.');
+      }
+    }
+    throw new Error('Still rendering — it will appear in the studio when done.');
+  }
+
   async function makeBeat() {
-    if (!profile) return;
-    setBusy(true);
-    setStatus('Making a fresh beat in this vibe…');
+    if (!profile || producing) return;
+    setProdError('');
+    setMadeUrl(null);
+    setProducing({ step: 1, label: 'Producing the beat', startedAt: Date.now() });
     try {
       const bpm = Math.min(Math.max(profile.bpm ?? 103, 60), 180);
-      await api.post(`/projects/${projectId}/beats/generate`, {
+      const r = await api.post<{ jobId: string }>(`/projects/${projectId}/beats/generate`, {
         genre: matchGenre(profile.genre),
         bpm,
         ...(profile.key ? { keySignature: profile.key } : {}),
         vibePrompt: `${profile.genre ? profile.genre + ' — ' : ''}${profile.suggestedVibePrompt}${voiceLine(profile)}`,
         withStems: false,
       });
-      setStatus('✅ A fresh beat is generating in this vibe. Opening the studio…');
-      setTimeout(() => router.push(`/projects/${projectId}`), 1200);
+      const url = await pollRenderedAudio(r.jobId);
+      setMadeUrl(url);
+      setProducing((p) => (p ? { ...p, step: 2, label: 'Done' } : p));
     } catch (e) {
-      setStatus(`Couldn’t generate: ${(e as Error).message}`);
-    } finally {
-      setBusy(false);
+      setProdError((e as Error).message);
+      setProducing(null);
     }
   }
 
   async function makeFullSong() {
-    if (!profile) return;
-    setBusy(true);
-    setStatus('Writing + producing a full original song in this vibe…');
+    if (!profile || producing) return;
+    setProdError('');
+    setMadeUrl(null);
+    // Step 0 starts IMMEDIATELY — the /drop call alone takes 1-3 minutes (it
+    // writes the hook + lyrics server-side before responding), and the user must
+    // see life the entire time.
+    setProducing({ step: 0, label: PROD_STEPS[0]!, startedAt: Date.now() });
     try {
       const bpm = Math.min(Math.max(profile.bpm ?? 103, 60), 180);
       const genre = matchGenre(profile.genre);
       const theme = `A fresh ${genre.replace(/_/g, ' ')} song in the vibe of: ${profile.suggestedVibePrompt || profile.vibe}.${voiceLine(profile)} Catchy, original, never a copy.`;
-      await api.post(`/projects/${projectId}/drop`, { theme, count: 1, genre, bpm, withVocals: true });
-      setStatus('✅ Full song is being produced (hook → lyrics → sung song). Opening the studio…');
-      setTimeout(() => router.push(`/projects/${projectId}`), 1200);
+      const drop = await api.post<{ drop: Array<{ jobId?: string; error?: string }> }>(
+        `/projects/${projectId}/drop`,
+        { theme, count: 1, genre, bpm, withVocals: true }
+      );
+      const item = drop.drop?.[0];
+      if (!item?.jobId) {
+        throw new Error(item?.error === 'insufficient_credits' ? 'Daily limit reached — resets at midnight UTC.' : item?.error || 'Could not start the render.');
+      }
+      setProducing((p) => (p ? { ...p, step: 1, label: PROD_STEPS[1]! } : p));
+      const url = await pollRenderedAudio(item.jobId);
+      setMadeUrl(url);
+      setProducing((p) => (p ? { ...p, step: 2, label: PROD_STEPS[2]! } : p));
     } catch (e) {
-      setStatus(`Couldn’t generate: ${(e as Error).message}`);
-    } finally {
-      setBusy(false);
+      setProdError((e as Error).message);
+      setProducing(null);
     }
   }
 
@@ -264,22 +308,69 @@ export function ReferenceListen({ projectId }: { projectId: string }) {
               <Stat label="Instruments" value={profile.instruments?.join(', ') || '—'} />
             </div>
             {profile.vibe && <div className="rounded-lg border border-white/10 bg-black/20 p-3 text-sm text-slate-300">“{profile.vibe}”</div>}
-            <div className="flex flex-wrap gap-2">
-              <button
-                onClick={makeFullSong}
-                disabled={busy}
-                className="w-fit rounded-full bg-brand-gradient px-4 py-2 text-sm font-medium text-ink shadow-glow disabled:opacity-50"
-              >
-                🎤 Make the full sung song in this vibe
-              </button>
-              <button
-                onClick={makeBeat}
-                disabled={busy}
-                className="w-fit rounded-full border border-afrobrand-500/40 bg-afrobrand-500/10 px-4 py-2 text-sm font-medium text-afrobrand-300 hover:bg-afrobrand-500/20 disabled:opacity-50"
-              >
-                🎼 Just the beat
-              </button>
-            </div>
+
+            {/* Production error — loud, with a way forward. Never a quiet gray line. */}
+            {prodError && (
+              <div className="rounded-xl border border-red-500/40 bg-red-500/10 p-3 text-sm text-red-300">
+                Couldn’t make it: {prodError}
+                <button onClick={() => setProdError('')} className="ml-3 rounded-full border border-white/15 px-3 py-1 text-xs text-slate-200 hover:bg-white/10">Try again</button>
+              </div>
+            )}
+
+            {/* LIVE production panel — creating takes 2-4 min and must look alive. */}
+            {producing ? (
+              <div className="rounded-2xl border-gradient glass p-4">
+                <div className="flex items-center justify-between">
+                  <div className="animate-pulse font-display text-lg text-gradient">
+                    {producing.step >= 2 ? 'Your song is ready' : 'Making it now…'}
+                  </div>
+                  {producing.step < 2 && <span className="text-xs text-slate-500">{prodElapsed}s</span>}
+                </div>
+                <ul className="mt-3 space-y-2">
+                  {PROD_STEPS.map((s, i) => (
+                    <li key={s} className="flex items-center gap-2 text-sm">
+                      <span className={`flex h-5 w-5 items-center justify-center rounded-full text-[10px] ${i < producing.step ? 'bg-emerald-500/25 text-emerald-300' : i === producing.step ? 'bg-brand-gradient text-ink' : 'bg-white/5 text-slate-500'}`}>
+                        {i < producing.step ? '✓' : i === producing.step ? '●' : i + 1}
+                      </span>
+                      <span className={i <= producing.step ? 'text-slate-200' : 'text-slate-500'}>{s}</span>
+                    </li>
+                  ))}
+                </ul>
+                {producing.step < 2 && (
+                  <p className="mt-2 text-xs text-slate-500">Stay here — writing + singing takes about 2–4 minutes. It’s working the whole time.</p>
+                )}
+                {madeUrl && (
+                  <div className="mt-3">
+                    <audio controls autoPlay className="w-full" src={madeUrl} />
+                    <div className="mt-3 flex flex-wrap gap-2">
+                      <button onClick={() => router.push(`/projects/${projectId}`)} className="rounded-full bg-brand-gradient px-4 py-2 text-sm font-medium text-ink shadow-glow">
+                        🎬 Open the studio (cover, mix, release) →
+                      </button>
+                      <button onClick={() => { setProducing(null); setMadeUrl(null); }} className="rounded-full border border-white/15 bg-white/5 px-4 py-2 text-sm hover:bg-white/10">
+                        Make another take
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>
+            ) : (
+              <div className="flex flex-wrap gap-2">
+                <button
+                  onClick={makeFullSong}
+                  disabled={busy}
+                  className="w-fit rounded-full bg-brand-gradient px-4 py-2 text-sm font-medium text-ink shadow-glow disabled:opacity-50"
+                >
+                  🎤 Make the full sung song in this vibe
+                </button>
+                <button
+                  onClick={makeBeat}
+                  disabled={busy}
+                  className="w-fit rounded-full border border-afrobrand-500/40 bg-afrobrand-500/10 px-4 py-2 text-sm font-medium text-afrobrand-300 hover:bg-afrobrand-500/20 disabled:opacity-50"
+                >
+                  🎼 Just the beat
+                </button>
+              </div>
+            )}
           </div>
         )}
       </div>
