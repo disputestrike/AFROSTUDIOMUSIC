@@ -93,14 +93,21 @@ export function ReferenceListen({ projectId }: { projectId: string }) {
     };
   }, []);
 
+  // The id of the SoundReference the analyze just stored — PINNED into the
+  // remake so the song rebuilds THIS record's sound, not a lucky-recent one.
+  const referenceIdRef = useRef<string | null>(null);
+
   async function poll(jobId: string): Promise<Profile> {
     // Replicate can cold-start (first call after idle) for 2-3 min — poll up to
     // ~6 min and keep the user informed instead of giving up at 2 min.
     const MAX = 72; // 72 × 5s = 360s
     for (let i = 0; i < MAX; i++) {
       await new Promise((r) => setTimeout(r, 5000));
-      const job = await api.get<{ status: string; outputJson?: { profile?: Profile }; errorJson?: unknown }>(`/jobs/${jobId}`);
-      if (job.status === 'SUCCEEDED' && job.outputJson?.profile) return job.outputJson.profile;
+      const job = await api.get<{ status: string; outputJson?: { profile?: Profile; referenceId?: string | null }; errorJson?: unknown }>(`/jobs/${jobId}`);
+      if (job.status === 'SUCCEEDED' && job.outputJson?.profile) {
+        referenceIdRef.current = job.outputJson.referenceId ?? null;
+        return job.outputJson.profile;
+      }
       if (job.status === 'FAILED') throw new Error(typeof job.errorJson === 'string' ? job.errorJson : JSON.stringify(job.errorJson ?? 'analyze failed'));
       setStatus(`🎧 The AI is listening… (${(i + 1) * 5}s — first run can take a couple minutes)`);
     }
@@ -201,6 +208,8 @@ export function ReferenceListen({ projectId }: { projectId: string }) {
         genre: matchGenre(profile.genre),
         bpm,
         ...(profile.key ? { keySignature: profile.key } : {}),
+        mood: profile.mood ?? undefined,
+        pinnedReferenceId: referenceIdRef.current ?? undefined,
         vibePrompt: `${profile.genre ? profile.genre + ' — ' : ''}${profile.suggestedVibePrompt}${voiceLine(profile)}`,
         withStems: false,
       });
@@ -229,7 +238,17 @@ export function ReferenceListen({ projectId }: { projectId: string }) {
       // (holding one multi-minute HTTP request open dies on real networks).
       const started = await api.post<{ jobId: string }>(
         `/projects/${projectId}/drop`,
-        { theme, count: 1, genre, bpm, withVocals: true }
+        {
+          theme,
+          count: 1,
+          genre,
+          bpm,
+          withVocals: true,
+          // Pin the exact reference we just heard + carry its mood — the remake
+          // must rebuild THAT sound.
+          mood: profile.mood ?? undefined,
+          pinnedReferenceId: referenceIdRef.current ?? undefined,
+        }
       );
       let item: { jobId?: string; error?: string } | undefined;
       for (let i = 0; i < 60; i++) {

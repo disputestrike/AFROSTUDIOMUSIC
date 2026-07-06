@@ -245,15 +245,65 @@ export function lyricModes(): LyricMode[] {
   return LYRIC_MODES;
 }
 
+// ---------------------------------------------------------------------------
+// HAND-WRITTEN below (keep when regenerating the blocks above).
+//
+// MOOD → MODE ROUTER — the fix for "only luxury lands". Dumping all 8 modes
+// let the writer wander to whatever register it liked (usually the flashy one).
+// Now the picked mood SELECTS one mode and the writer must COMMIT to it.
+// ---------------------------------------------------------------------------
+const MOOD_TO_MODE: Record<string, string> = {
+  luxury: 'gifted_devotion',
+  lifestyle: 'gifted_devotion',
+  love: 'sensual_interiority',
+  sexy: 'sensual_interiority',
+  heartbreak: 'experiential_testimony',
+  hustle: 'experiential_testimony',
+  nostalgic: 'experiential_testimony',
+  family: 'experiential_testimony',
+  party: 'hook_first_flirtation',
+  vibey: 'amapiano_groove_chant',
+  confident: 'street_hype_anthem',
+  triumphant: 'street_hype_anthem',
+  spiritual: 'worship_praise',
+};
+
+/** The ONE lyric mode a mood maps to (null when the mood is unknown/absent). */
+export function selectLyricMode(mood?: string | null): LyricMode | null {
+  if (!mood) return null;
+  const id = MOOD_TO_MODE[mood.toLowerCase().trim()];
+  return LYRIC_MODES.find((m) => m.id === id) ?? null;
+}
+
+/** A focused single-mode directive the writer must COMMIT to. */
+function modeDirective(m: LyricMode): string {
+  return [
+    `LYRIC MODE FOR THIS SONG — COMMIT to "${m.label}" (${m.id}). Do not drift into another register.`,
+    `WHEN THIS MODE FITS: ${m.whenToUse}`,
+    `PERSPECTIVE/VOICE: ${m.perspective}`,
+    `REGISTER: ${m.register}`,
+    `THEMES TO WORK: ${m.themes.join(', ')}`,
+    `DEVICES: ${m.devices.join(', ')}`,
+    `HOOK RULE: ${m.hookRule}`,
+    m.lexicalShape ? `LEXICAL SHAPE: ${m.lexicalShape}` : '',
+    m.codeSwitch ? `CODE-SWITCH: ${m.codeSwitch}` : '',
+    'CROSS-MODE RULES still apply: real code-switching (never flatten to English), flag uncertain heritage-language lines for native review, ZERO verbatim lines from any real song.',
+  ].filter(Boolean).join('\n');
+}
+
 /**
  * Injectable craft brief for GENERATION. 'hook' = modes + hook mechanics +
  * code-switch; 'lyric' = the full writing craft (adds themes + prosody).
+ * When `mood` maps to a mode, the full 8-mode dump is REPLACED by a focused
+ * single-mode directive — commitment beats a menu.
  */
-export function hitCraftBrief(kind: 'hook' | 'lyric' = 'lyric'): string {
+export function hitCraftBrief(kind: 'hook' | 'lyric' = 'lyric', mood?: string | null): string {
+  const mode = selectLyricMode(mood);
+  const modesBlock = mode ? modeDirective(mode) : HIT_CRAFT_BLOCKS.modes;
   const parts =
     kind === 'hook'
-      ? [HIT_CRAFT_BLOCKS.modes, HIT_CRAFT_BLOCKS.hooks, HIT_CRAFT_BLOCKS.language]
-      : [HIT_CRAFT_BLOCKS.modes, HIT_CRAFT_BLOCKS.hooks, HIT_CRAFT_BLOCKS.language, HIT_CRAFT_BLOCKS.themes, HIT_CRAFT_BLOCKS.prosody];
+      ? [modesBlock, HIT_CRAFT_BLOCKS.hooks, HIT_CRAFT_BLOCKS.language]
+      : [modesBlock, HIT_CRAFT_BLOCKS.hooks, HIT_CRAFT_BLOCKS.language, HIT_CRAFT_BLOCKS.themes, HIT_CRAFT_BLOCKS.prosody];
   return ['HIT-CRAFT (what makes top-streamed Afro/global songs work — follow it, never copy any real song):', ...parts.filter(Boolean)].join('\n\n');
 }
 

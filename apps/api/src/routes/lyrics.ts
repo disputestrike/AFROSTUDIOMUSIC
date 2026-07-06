@@ -56,7 +56,7 @@ export default async function lyrics(app: FastifyInstance) {
           hookText: hook.text,
           cleanVersion: input.cleanVersion,
           languageMix: input.languageMix as never,
-          soundDna: [soundBrief(project.genre).brief, prompts.hitCraftBrief('lyric')].filter(Boolean).join('\n\n'),
+          soundDna: [soundBrief(project.genre).brief, prompts.hitCraftBrief('lyric', (project.briefs?.[0] as { mood?: string } | undefined)?.mood)].filter(Boolean).join('\n\n'),
         }),
         temperature: 0.8,
         maxOutputTokens: 4_000,

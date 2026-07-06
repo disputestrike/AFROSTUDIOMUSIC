@@ -8,7 +8,7 @@ GOLD STANDARD — what a real hit Afrobeats lyric does (match this CRAFT, never 
 - Ad-libs woven THROUGHOUT — short vocal tags at the ends of lines and in the gaps ("le-le", "eh-eh", "aah-ahn", "oh-oh", "yeah", "won", "eh-yeah"). They are the LIFE of the record; use them generously but tastefully.
 - Short, punchy, singable lines. Repetition and melody over dense wordplay. If a line can't be chanted, simplify it.
 - Call-and-response: plant response phrases in parentheses the backing vocals answer.
-- Concrete, vivid, aspirational imagery — love, flex, hustle-turned-success, movement, night-out energy — specific nouns, not vague abstractions.
+- Concrete, vivid imagery IN THE BRIEF'S MOOD — specific nouns, not vague abstractions. The mood dictates the palette: heartbreak = loss/empty rooms/unsent texts; spiritual = gratitude/testimony/praise; party = the floor/the DJ/the crowd; love = skin/names/small moments; luxury/flex = provision/status. NEVER default to flex/night-out imagery when the mood is something else.
 - Smooth section flow with clean transitions; a drum-roll/fill lifts into the hook and choruses.
 
 You follow these rules without exception:

@@ -13,7 +13,7 @@ import { prisma } from '@afrohit/db';
 import { prompts, generateJson, scoreItems, runRightsCheck, canonicalReceiptHash, directorRefineHooks, researchTrends, enrichLyricsForVocals, soundBrief, blendSoundBrief, predictHit } from '@afrohit/ai';
 import { enqueue } from '../lib/queue';
 import { assertSafeUrl } from '../lib/url-guard';
-import { learnedReferenceBrief } from '../lib/learned';
+import { learnedReferenceBrief, learnedStyleTags } from '../lib/learned';
 import { memoryContext, recordFeedback } from './artist-memory';
 
 type Ctx = {
@@ -134,7 +134,7 @@ async function generateHooks(ctx: Ctx, count: number) {
   const tasteMemory = await memoryContext(project.artistId);
   const trendData = await researchTrends({ genre: project.genre }).catch(() => null);
   const trends = trendData?.digest;
-  const soundDna = [soundBrief(project.genre).brief, await learnedReferenceBrief(ctx.workspaceId, project.genre), prompts.hitCraftBrief('hook')].filter(Boolean).join('\n\n');
+  const soundDna = [soundBrief(project.genre).brief, await learnedReferenceBrief(ctx.workspaceId, project.genre), prompts.hitCraftBrief('hook', (project.briefs[0] as { mood?: string } | undefined)?.mood)].filter(Boolean).join('\n\n');
   const result = await generateJson<{ hooks: Array<{ text: string; language?: string[]; bpm?: number; syllablePattern?: string; melodyNotes?: string; callResponse?: boolean }> }>({
     system: prompts.HOOK_SYSTEM,
     user: prompts.hookUserPrompt({ artist: project.artist as never, brief: project.briefs[0] as never, count, tasteMemory, trends, soundDna }),
@@ -259,7 +259,7 @@ async function generateLyrics(ctx: Ctx, hookId: string, cleanVersion: boolean) {
       brief: hook.project.briefs[0] as never,
       hookText: hook.text,
       cleanVersion,
-      soundDna: [soundBrief(hook.project.genre).brief, await learnedReferenceBrief(ctx.workspaceId, hook.project.genre), prompts.hitCraftBrief('lyric')].filter(Boolean).join('\n\n'),
+      soundDna: [soundBrief(hook.project.genre).brief, await learnedReferenceBrief(ctx.workspaceId, hook.project.genre), prompts.hitCraftBrief('lyric', (hook.project.briefs[0] as { mood?: string } | undefined)?.mood)].filter(Boolean).join('\n\n'),
     }),
     temperature: 0.8,
     maxTokens: 4_000,
@@ -291,7 +291,7 @@ async function generateLyrics(ctx: Ctx, hookId: string, cleanVersion: boolean) {
   return { lyric: { id: lyric.id, title: lyric.title } };
 }
 
-async function createBeatJob(ctx: Ctx, a: { genre: string; fusionGenres?: string[]; bpm: number; keySignature?: string; durationS?: number; vibePrompt?: string; withStems?: boolean; withVocals?: boolean; songEngine?: 'suno' | 'ace_step' | 'minimax'; influence?: string }) {
+async function createBeatJob(ctx: Ctx, a: { genre: string; fusionGenres?: string[]; mood?: string; pinnedReferenceId?: string; bpm: number; keySignature?: string; durationS?: number; vibePrompt?: string; withStems?: boolean; withVocals?: boolean; songEngine?: 'suno' | 'ace_step' | 'minimax'; influence?: string }) {
   if (!ctx.projectId) return { error: 'no_project_in_thread' };
 
   // Honor the requested genre for the whole session — the chat's scratch project
@@ -318,14 +318,17 @@ async function createBeatJob(ctx: Ctx, a: { genre: string; fusionGenres?: string
     if (!lyrics) return { error: 'no_lyrics — write the lyrics first, then make the full song' };
   }
 
-  // Genre Sound DNA (blended when the artist mixes genres) + what it LEARNED
-  // from the artist's own references: signature tokens front-load the music
-  // model; the rich brief grounds the arranger in the real sound it heard.
-  const dna = a.fusionGenres?.length ? blendSoundBrief([a.genre, ...a.fusionGenres]) : soundBrief(a.genre);
-  const learned = await learnedReferenceBrief(ctx.workspaceId, a.genre);
+  // Genre Sound DNA (blended when mixing genres, COLORED by the mood) + what it
+  // LEARNED from the artist's own references — the pinned just-listened one
+  // first. Learned tokens join the MUSIC-MODEL tags so the heard sound shapes
+  // the audio, not only the words.
+  const dna = a.fusionGenres?.length ? blendSoundBrief([a.genre, ...a.fusionGenres], a.mood) : soundBrief(a.genre, a.mood);
+  const learned = await learnedReferenceBrief(ctx.workspaceId, a.genre, a.pinnedReferenceId);
+  const learnedTags = await learnedStyleTags(ctx.workspaceId, a.genre, a.pinnedReferenceId);
+  const dnaTags = [...(dna.tags ?? []), ...learnedTags];
 
   // Arrange the vocal to sound ALIVE — ad-libs, doubled/harmonized hook.
-  let styleHints = '';
+  let styleHints: string[] = [];
   if (a.withVocals && lyrics) {
     const project = await prisma.project.findUnique({
       where: { id: ctx.projectId },
@@ -339,7 +342,7 @@ async function createBeatJob(ctx: Ctx, a: { genre: string; fusionGenres?: string
     });
     if (enriched) {
       lyrics = enriched.enrichedLyrics;
-      styleHints = enriched.styleTags.join(', ');
+      styleHints = enriched.styleTags;
     }
   }
 
@@ -370,12 +373,14 @@ async function createBeatJob(ctx: Ctx, a: { genre: string; fusionGenres?: string
         ...a,
         // Influence = steer the SOUND toward an artist's lane (vibe/energy),
         // never a clone and never named. Goes to the music model as a style cue.
-        vibePrompt: [a.vibePrompt, a.influence ? `in the vibe/lane of ${a.influence} (capture the feel, not a copy)` : null, styleHints].filter(Boolean).join(', ') || undefined,
+        // ANTI-SOUP: vibe stays short (vibe + influence only); styleHints ride
+        // as tags on dnaTags where terse tokens belong.
+        vibePrompt: [a.vibePrompt, a.influence ? `in the vibe/lane of ${a.influence} (capture the feel, not a copy)` : null].filter(Boolean).join(', ') || undefined,
         durationS: a.durationS ?? (a.withVocals ? 150 : 60),
         withStems: a.withStems ?? !a.withVocals,
         withVocals: a.withVocals ?? false,
         songEngine: a.songEngine,
-        dnaTags: dna.tags,
+        dnaTags: [...dnaTags, ...styleHints.slice(0, 3)],
         lyrics,
       },
     },

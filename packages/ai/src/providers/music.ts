@@ -38,19 +38,36 @@ function composeStyleTags(
   const hasDna = !!input.dnaTags?.length;
   // Humanize the genre enum so the model reads "afro dancehall", not "afro_dancehall".
   const genreLabel = opts.genreLabel ?? (input.genre ?? 'afrobeats').replace(/_/g, ' ');
-  return [
-    ...(input.dnaTags ?? []),
-    genreLabel,
+  const isAfro = /afro|amapiano|highlife|street_pop|gospel/.test(input.genre ?? '');
+  // ANTI-SOUP: models weight early tokens and truncate late ones, so this order
+  // is a BUDGET, not a bag — identity leads (genre+tempo+key), then the DNA +
+  // learned tokens, then a CAPPED vibe (an uncapped vibePrompt used to drown the
+  // identity), then tone. Near-duplicate tokens are deduped.
+  const vibe = (input.vibePrompt ?? '').trim().slice(0, 160);
+  const raw = [
+    `${genreLabel}, ${input.bpm} bpm${input.keySignature ? `, ${opts.keyPrefix ?? 'key '}${input.keySignature}` : ''}`,
     opts.genreSuffix ?? null,
-    `${input.bpm} bpm`,
-    input.keySignature ? `${opts.keyPrefix ?? 'key '}${input.keySignature}` : null,
-    input.vibePrompt ?? '',
+    ...(input.dnaTags ?? []),
+    vibe || null,
     input.artistTone?.length ? `${opts.tonePrefix ?? ''}${input.artistTone.join(', ')}` : null,
-    // Always-on Afro production feel: percussion fills/drum rolls announcing the
-    // hook, verses and chorus — the transitions that make Afro records lift.
-    'Afro drum rolls and percussion fills leading into the hook, verses and chorus',
+    // Afro production feel — the fills/rolls that make Afro records lift. Only
+    // for Afro-family genres; on pop/rock/EDM it just wastes prompt budget.
+    isAfro ? 'Afro drum rolls and percussion fills leading into the hook, verses and chorus' : null,
     hasDna ? null : opts.fallbackLiteral,
   ].filter(Boolean) as string[];
+  // Case-insensitive dedupe on token prefixes — kills "energetic"×3 repeats.
+  const seen = new Set<string>();
+  const out: string[] = [];
+  let budget = 0;
+  for (const t of raw) {
+    const k = t.toLowerCase().slice(0, 24);
+    if (seen.has(k)) continue;
+    seen.add(k);
+    if (budget + t.length + 2 > 700) break; // identity budget before adapter caps
+    out.push(t);
+    budget += t.length + 2;
+  }
+  return out;
 }
 
 /** Accept common env-var spellings so a naming mismatch can't silently break it. */

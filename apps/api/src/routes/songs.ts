@@ -403,7 +403,7 @@ export default async function songs(app: FastifyInstance) {
     const dna = soundBrief(genre);
     const learned = await learnedReferenceBrief(workspaceId, genre);
     let lyricsForSong = lyrics;
-    let styleHints = '';
+    let styleHints: string[] = [];
     const enriched = await enrichLyricsForVocals({
       lyricBody: lyrics,
       languages: song.project.artist.languages,
@@ -412,7 +412,7 @@ export default async function songs(app: FastifyInstance) {
     });
     if (enriched) {
       lyricsForSong = enriched.enrichedLyrics;
-      styleHints = enriched.styleTags.join(', ');
+      styleHints = enriched.styleTags;
     }
 
     // Keep the previous engine if it was a vocal engine; else let the worker
@@ -434,8 +434,9 @@ export default async function songs(app: FastifyInstance) {
         jobId: job.id, workspaceId, projectId: song.projectId, songId: song.id,
         input: {
           genre, bpm: song.project.bpm ?? 103, withVocals: true, withStems: false, songEngine,
-          lyrics: lyricsForSong, vibePrompt: styleHints || undefined,
-          artistTone: song.project.artist.vocalTone, languages: song.project.artist.languages, dnaTags: dna.tags,
+          lyrics: lyricsForSong,
+          artistTone: song.project.artist.vocalTone, languages: song.project.artist.languages,
+          dnaTags: [...(dna.tags ?? []), ...styleHints.slice(0, 3)],
         },
       },
     });

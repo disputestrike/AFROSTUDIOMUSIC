@@ -48,7 +48,7 @@ export default async function hooks(app: FastifyInstance) {
       // Genre Sound DNA + HIT-CRAFT (mode typology + hook mechanics + code-switch
       // rules distilled from the top-streamed-songs study) so hooks sit in the
       // lane's pocket AND follow what actually makes hooks hit.
-      const soundDna = [soundBrief(project.genre).brief, prompts.hitCraftBrief('hook')].filter(Boolean).join('\n\n');
+      const soundDna = [soundBrief(project.genre).brief, prompts.hitCraftBrief('hook', (brief as { mood?: string } | undefined)?.mood)].filter(Boolean).join('\n\n');
 
       const result = await generateJson<{
         hooks: Array<{

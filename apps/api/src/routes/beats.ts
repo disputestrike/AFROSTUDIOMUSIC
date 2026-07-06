@@ -2,7 +2,7 @@ import type { FastifyInstance } from 'fastify';
 import { prisma } from '@afrohit/db';
 import { generateBeatInputSchema, attachBeatUploadSchema } from '@afrohit/shared';
 import { enrichLyricsForVocals, soundBrief, blendSoundBrief } from '@afrohit/ai';
-import { learnedReferenceBrief } from '../lib/learned';
+import { learnedReferenceBrief, learnedStyleTags } from '../lib/learned';
 import { requireAuth } from '../middleware/auth';
 import { enqueue, QUEUES } from '../lib/queue';
 import { publicUrlFor, assertOwnedKey } from '../lib/storage';
@@ -34,7 +34,7 @@ export default async function beats(app: FastifyInstance) {
 
       // Full song WITH AI vocals: use provided lyrics, else pull the latest.
       let lyrics = input.lyrics;
-      let styleHints = '';
+      let styleHints: string[] = [];
       if (input.withVocals && !lyrics) {
         const lyric = await prisma.lyricDraft.findFirst({
           where: { projectId: project.id, ...(input.songId ? { songId: input.songId } : {}) },
@@ -43,12 +43,15 @@ export default async function beats(app: FastifyInstance) {
         lyrics = lyric?.cleanVersion ?? lyric?.body ?? undefined;
         if (!lyrics) return reply.code(400).send({ error: 'no_lyrics — write lyrics first for a vocal song' });
       }
-      // Genre Sound DNA (blended when the artist mixes genres) + learned
-      // references so the beat sits in the lane and rebuilds the real sound.
+      // Genre Sound DNA (blended when mixing genres, colored by mood) + learned
+      // references (the pinned just-listened one FIRST) so the beat rebuilds the
+      // real sound it heard — learned tokens join the music-model tags.
       const dna = input.fusionGenres?.length
-        ? blendSoundBrief([input.genre, ...input.fusionGenres])
-        : soundBrief(project.genre);
-      const learned = await learnedReferenceBrief(workspaceId, project.genre);
+        ? blendSoundBrief([input.genre, ...input.fusionGenres], input.mood)
+        : soundBrief(project.genre, input.mood);
+      const learned = await learnedReferenceBrief(workspaceId, project.genre, input.pinnedReferenceId);
+      const learnedTags = await learnedStyleTags(workspaceId, project.genre, input.pinnedReferenceId);
+      const dnaTags = [...(dna.tags ?? []), ...learnedTags];
 
       // Arrange the vocal to sound ALIVE (ad-libs, doubled/harmonized hook).
       if (input.withVocals && lyrics && input.richVocals) {
@@ -60,7 +63,7 @@ export default async function beats(app: FastifyInstance) {
         });
         if (enriched) {
           lyrics = enriched.enrichedLyrics;
-          styleHints = enriched.styleTags.join(', ');
+          styleHints = enriched.styleTags;
         }
       }
 
@@ -94,10 +97,12 @@ export default async function beats(app: FastifyInstance) {
           input: {
             ...input,
             lyrics,
-            vibePrompt: [input.vibePrompt, styleHints].filter(Boolean).join(', ') || undefined,
+            // ANTI-SOUP: styleHints are TAGS (they join dnaTags), not sentence glue —
+            // an ever-growing vibePrompt used to drown the genre identity.
+            vibePrompt: input.vibePrompt || undefined,
             artistTone: project.artist.vocalTone,
             languages: project.artist.languages,
-            dnaTags: dna.tags,
+            dnaTags: [...dnaTags, ...styleHints.slice(0, 3)],
           },
         },
       });

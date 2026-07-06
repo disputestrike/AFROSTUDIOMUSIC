@@ -120,7 +120,7 @@ export async function runDropPipeline(app: FastifyInstance, ctx: DropCtx, input:
           const beat = (await runChatTool({
             ...ctx,
             name: 'create_beat_job',
-            args: { genre: input.genre, fusionGenres: input.fusionGenres, bpm: input.bpm, withVocals: input.withVocals, songEngine: input.songEngine, influence: input.influence },
+            args: { genre: input.genre, fusionGenres: input.fusionGenres, mood: input.mood, pinnedReferenceId: input.pinnedReferenceId, bpm: input.bpm, withVocals: input.withVocals, songEngine: input.songEngine, influence: input.influence },
           })) as { jobId?: string; songId?: string; error?: string };
 
           drops.push({

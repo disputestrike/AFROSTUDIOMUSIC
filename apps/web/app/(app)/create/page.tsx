@@ -114,7 +114,7 @@ export default function CreatePage() {
       // networks). We poll the drop job for the hook/lyrics result…
       const started = await api.post<{ jobId: string }>(
         `/projects/${project.id}/drop`,
-        { theme, count: 1, genre, fusionGenres: fusion.length ? fusion : undefined, bpm, withVocals: true, songEngine: engine, influence: influence.trim() || undefined }
+        { theme, count: 1, genre, fusionGenres: fusion.length ? fusion : undefined, mood, bpm, withVocals: true, songEngine: engine, influence: influence.trim() || undefined }
       );
       let item: { jobId?: string; hookText?: string; score: number | null; error?: string } | undefined;
       for (let i = 0; i < 60; i++) {

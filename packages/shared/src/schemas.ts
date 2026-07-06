@@ -116,6 +116,9 @@ export const generateBeatInputSchema = z.object({
   genre: genreSchema,
   // FUSION: extra genres blended into the primary (primary = backbone).
   fusionGenres: z.array(genreSchema).max(2).optional(),
+  // First-class mood + the just-listened reference to rebuild (see dropBatchSchema).
+  mood: z.string().max(40).optional(),
+  pinnedReferenceId: z.string().cuid().optional(),
   bpm: z.number().int().min(60).max(180),
   keySignature: z.string().optional(),
   durationS: z.number().int().min(15).max(240).default(60),
@@ -369,6 +372,12 @@ export const dropBatchSchema = z.object({
   // FUSION: extra genres blended into the primary (e.g. amapiano × drill) —
   // the primary is the backbone; these inject their signature sounds.
   fusionGenres: z.array(genreSchema).max(2).optional(),
+  // MOOD is a first-class production input (colors the music-model tags, the
+  // hooks and the lyrics) — not just a word buried in the theme sentence.
+  mood: z.string().max(40).optional(),
+  // Pin the SoundReference the artist JUST listened to — the remake must
+  // rebuild THAT record's sound, not whatever reference happens to be recent.
+  pinnedReferenceId: z.string().cuid().optional(),
   bpm: z.number().int().min(60).max(180).default(103),
   withVocals: z.boolean().default(true),
   songEngine: z.enum(['suno', 'ace_step', 'minimax']).optional(),

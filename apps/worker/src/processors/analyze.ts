@@ -83,7 +83,7 @@ export async function processAnalyze(p: AnalyzePayload) {
     // LEARN: store the deep production recipe as a reusable reference so future
     // songs in this genre/workspace can be built from what it heard. This is the
     // compounding "listen & learn" library — it grows with every reference.
-    await prisma.soundReference
+    const reference = await prisma.soundReference
       .create({
         data: {
           workspaceId: p.workspaceId,
@@ -96,7 +96,10 @@ export async function processAnalyze(p: AnalyzePayload) {
         },
       })
       // A failed write here silently loses a LEARNED reference — log it.
-      .catch((err) => console.warn('[analyze] SoundReference write failed:', (err as Error)?.message));
+      .catch((err) => {
+        console.warn('[analyze] SoundReference write failed:', (err as Error)?.message);
+        return null;
+      });
 
     // Taste graph — what the artist chose to listen to / build from. Compounds.
     await prisma.analyticsEvent
@@ -108,7 +111,9 @@ export async function processAnalyze(p: AnalyzePayload) {
         },
       })
       .catch((err) => console.warn('[analyze] taste event write failed:', (err as Error)?.message));
-    await markSucceeded(p.jobId, { profile });
+    // referenceId lets the UI PIN this exact reference for the remake — the song
+    // made next must rebuild THIS record's sound, not a lucky-recent one.
+    await markSucceeded(p.jobId, { profile, referenceId: reference?.id ?? null });
   } catch (err) {
     await markFailed(p.jobId, err);
   }

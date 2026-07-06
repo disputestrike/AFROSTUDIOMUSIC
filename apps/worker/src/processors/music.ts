@@ -166,6 +166,16 @@ export async function processMusic(p: MusicPayload) {
     // Uploads still outrank these at retrieval (they're the artist's true sound);
     // failures and weak takes never enter the library.
     if (wantsVocals && quality?.verdict === 'pass') {
+      // Dedupe: at most ONE self-training row per workspace+genre per day —
+      // otherwise generated rows flood the library and bury the artist's real
+      // uploads at retrieval.
+      const since = new Date(Date.now() - 24 * 60 * 60 * 1000);
+      const recentGenerated = await prisma.soundReference.count({
+        where: { workspaceId: p.workspaceId, genre: p.input.genre ?? undefined, createdAt: { gte: since }, title: { startsWith: 'generated' } },
+      });
+      if (recentGenerated > 0) {
+        // Already learned from today's renders in this genre — skip quietly.
+      } else {
       await prisma.soundReference
         .create({
           data: {
@@ -186,6 +196,7 @@ export async function processMusic(p: MusicPayload) {
           },
         })
         .catch((err) => console.warn('[music] self-training reference write failed:', (err as Error)?.message));
+      }
     }
 
     if (out.stems?.length) {
