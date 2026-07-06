@@ -37,10 +37,25 @@ const MOODS = ['confident', 'love', 'heartbreak', 'party', 'vibey', 'spiritual',
 const STEPS = ['Setting up your session', 'Writing hooks + A&R picking the best', 'Writing the lyrics', 'Singing & producing your song'];
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
+interface Deconstruction {
+  title: string;
+  languages: string[];
+  mode: string;
+  themes: string[];
+  structure: string[];
+  hookLine: string | null;
+  suggestedGenre: string;
+  suggestedBpm: number;
+  mood: string;
+  vocalDirection: string;
+  notes: string;
+}
+
 export default function CreatePage() {
   const api = useApi();
   const router = useRouter();
-  const [genre, setGenre] = useState('afrobeats');
+  // MULTI-GENRE: first pick = the backbone; a second pick FUSES into it.
+  const [genres, setGenres] = useState<string[]>(['afrobeats']);
   const [mood, setMood] = useState('confident');
   const [bpm, setBpm] = useState(103);
   const [langs, setLangs] = useState<string[]>(['pcm', 'en']);
@@ -48,13 +63,27 @@ export default function CreatePage() {
   const [influence, setInfluence] = useState('');
   const [engine, setEngine] = useState<'suno' | 'ace_step' | 'minimax'>('suno');
 
+  // Three ways in: describe it / bring your own lyrics / listen & recreate.
+  const [path, setPath] = useState<'song' | 'lyrics'>('song');
+  const [lyricsText, setLyricsText] = useState('');
+  const [decon, setDecon] = useState<Deconstruction | null>(null);
+  const [deconBusy, setDeconBusy] = useState(false);
+  const [deconTitle, setDeconTitle] = useState('');
+
   const [phase, setPhase] = useState<'form' | 'producing' | 'done' | 'error'>('form');
   const [stepIdx, setStepIdx] = useState(0);
   const [err, setErr] = useState('');
   const [song, setSong] = useState<{ title: string; hook?: string; score: number | null; url: string; projectId: string } | null>(null);
 
   const toggleLang = (l: string) => setLangs((p) => (p.includes(l) ? p.filter((x) => x !== l) : [...p, l]));
-  const genreLabel = GENRES.find((g) => g.value === genre)?.label ?? genre;
+  const toggleGenre = (g: string) =>
+    setGenres((p) => {
+      if (p.includes(g)) return p.length > 1 ? p.filter((x) => x !== g) : p; // never empty
+      return p.length >= 2 ? [p[0]!, g] : [...p, g]; // max 2: backbone + fusion
+    });
+  const genre = genres[0]!;
+  const fusion = genres.slice(1);
+  const genreLabel = genres.map((g) => GENRES.find((x) => x.value === g)?.label ?? g).join(' × ');
 
   async function createSong() {
     setErr('');
@@ -78,13 +107,14 @@ export default function CreatePage() {
       const influenceLine = influence.trim()
         ? ` In the VIBE/LANE of ${influence.trim()} (capture that energy, tempo and production feel — never copy their melodies/lyrics and never name them in the song).`
         : '';
-      const theme = `${genreLabel} ${mood} song, ${bpm}bpm, ${langNames}${vibe ? `, ${vibe.trim()}` : ''}. Make it catchy and current.${influenceLine}`;
+      const fusionLine = fusion.length ? ` This is a GENRE FUSION: ${genreLabel} — both identities must be clearly audible, something new, never mush.` : '';
+      const theme = `${genreLabel} ${mood} song, ${bpm}bpm, ${langNames}${vibe ? `, ${vibe.trim()}` : ''}. Make it catchy and current.${fusionLine}${influenceLine}`;
       // Fire the Drop Machine — it replies 202 + a job id INSTANTLY and works in
       // the background (holding a 3-minute HTTP request open dies on real
       // networks). We poll the drop job for the hook/lyrics result…
       const started = await api.post<{ jobId: string }>(
         `/projects/${project.id}/drop`,
-        { theme, count: 1, genre, bpm, withVocals: true, songEngine: engine, influence: influence.trim() || undefined }
+        { theme, count: 1, genre, fusionGenres: fusion.length ? fusion : undefined, bpm, withVocals: true, songEngine: engine, influence: influence.trim() || undefined }
       );
       let item: { jobId?: string; hookText?: string; score: number | null; error?: string } | undefined;
       for (let i = 0; i < 60; i++) {
@@ -110,6 +140,82 @@ export default function CreatePage() {
       }
       if (!url) throw new Error('Still rendering — check the studio in a minute.');
       setSong({ title, hook: item.hookText, score: item.score, url, projectId: project.id });
+      setPhase('done');
+    } catch (e) {
+      setErr((e as Error).message);
+      setPhase('error');
+    }
+  }
+
+  /** FROM-LYRICS step 1: the AI reads YOUR lyrics and fills out what they are. */
+  async function deconstruct() {
+    if (lyricsText.trim().length < 20 || deconBusy) return;
+    setDeconBusy(true);
+    setErr('');
+    try {
+      // A scratch project scopes the call; reuse the persistent one if present.
+      const KEY = 'afrohit.lyricsProject';
+      let pid = typeof localStorage !== 'undefined' ? localStorage.getItem(KEY) : null;
+      if (pid) { try { await api.get(`/projects/${pid}`); } catch { pid = null; } }
+      if (!pid) {
+        const p = await api.post<{ id: string }>('/projects', { title: '📝 From my lyrics', genre: 'afrobeats', bpm: 103 });
+        pid = p.id;
+        localStorage.setItem(KEY, pid);
+      }
+      const d = await api.post<Deconstruction>(`/projects/${pid}/lyrics/deconstruct`, { lyrics: lyricsText.trim() });
+      setDecon(d);
+      setDeconTitle(d.title);
+      // Prefill the shared dials from what it heard — all still editable.
+      if (GENRES.some((g) => g.value === d.suggestedGenre)) setGenres([d.suggestedGenre]);
+      setBpm(d.suggestedBpm);
+      if (MOODS.includes(d.mood)) setMood(d.mood);
+    } catch (e) {
+      setErr((e as Error).message.slice(0, 160));
+    } finally {
+      setDeconBusy(false);
+    }
+  }
+
+  /** FROM-LYRICS step 2: sing EXACTLY these words over a produced record. */
+  async function createFromLyrics() {
+    if (!decon || lyricsText.trim().length < 20) return;
+    setErr('');
+    try {
+      const pf = await api.get<{ ok: boolean; mode: string }>('/billing/preflight').catch(() => ({ ok: true, mode: 'unknown' }));
+      if (!pf.ok) { setErr('Daily limit reached — resets at midnight UTC.'); setPhase('error'); return; }
+    } catch { /* advisory */ }
+    setPhase('producing');
+    setStepIdx(0);
+    try {
+      const title = (deconTitle || decon.title || 'My lyrics').slice(0, 100);
+      const project = await api.post<{ id: string }>('/projects', { title, genre, bpm });
+      const attached = await api.post<{ songId: string }>(`/projects/${project.id}/lyrics/attach`, { title, body: lyricsText.trim() });
+      setStepIdx(3); // straight to singing — the words are already written
+      const r = await api.post<{ jobId: string }>(`/projects/${project.id}/beats/generate`, {
+        songId: attached.songId,
+        genre,
+        fusionGenres: fusion.length ? fusion : undefined,
+        bpm,
+        durationS: 160,
+        withStems: false,
+        withVocals: true,
+        lyrics: lyricsText.trim(),
+        songEngine: engine,
+        vibePrompt: [`${mood} energy`, decon.vocalDirection, fusion.length ? `genre fusion: ${genreLabel}` : null].filter(Boolean).join('. '),
+      });
+      let url: string | null = null;
+      for (let i = 0; i < 60; i++) {
+        await sleep(5000);
+        const job = await api.get<{ status: string }>(`/jobs/${r.jobId}`);
+        if (job.status === 'SUCCEEDED') {
+          const beats = await api.get<Array<{ url: string; createdAt: string }>>(`/projects/${project.id}/beats`);
+          url = beats.sort((a, b) => +new Date(b.createdAt) - +new Date(a.createdAt))[0]?.url ?? null;
+          break;
+        }
+        if (job.status === 'FAILED') throw new Error('The render failed — try again or switch engine.');
+      }
+      if (!url) throw new Error('Still rendering — check the studio in a minute.');
+      setSong({ title, hook: decon.hookLine ?? undefined, score: null, url, projectId: project.id });
       setPhase('done');
     } catch (e) {
       setErr((e as Error).message);
@@ -208,7 +314,63 @@ export default function CreatePage() {
         </button>
       </div>
 
-      <Picker label="Genre" items={GENRES} value={genre} onPick={setGenre} />
+      {/* THREE WAYS IN */}
+      <div className="mt-6 flex flex-wrap gap-2">
+        {([
+          { id: 'song' as const, label: '✨ Describe it' },
+          { id: 'lyrics' as const, label: '📝 Start from my lyrics' },
+        ]).map((t) => (
+          <button key={t.id} onClick={() => setPath(t.id)} className={`rounded-full px-4 py-2 text-sm font-medium ${path === t.id ? 'bg-white/15 text-white shadow-[inset_0_0_0_1px_rgba(249,115,22,.5)]' : 'border border-white/10 text-slate-400 hover:bg-white/5'}`}>
+            {t.label}
+          </button>
+        ))}
+        <button onClick={() => router.push('/listen')} className="rounded-full border border-white/10 px-4 py-2 text-sm font-medium text-slate-400 hover:bg-white/5">
+          🎧 Listen &amp; recreate
+        </button>
+      </div>
+
+      {path === 'lyrics' && (
+        <div className="mt-6 rounded-2xl glass p-4">
+          <div className="mb-2 text-sm text-slate-400">Paste or write your lyrics — the studio reads them like a producer, tells you exactly what they are, and sings them.</div>
+          <textarea
+            value={lyricsText}
+            onChange={(e) => { setLyricsText(e.target.value); setDecon(null); }}
+            rows={10}
+            placeholder={'[Hook]\nYour words here…\n\n[Verse]\n…'}
+            className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2.5 font-mono text-xs leading-relaxed"
+          />
+          {err && path === 'lyrics' && phase === 'form' && <div className="mt-2 rounded-lg border border-red-500/40 bg-red-500/10 p-2.5 text-xs text-red-300">{err}</div>}
+          {!decon ? (
+            <button
+              onClick={() => void deconstruct()}
+              disabled={deconBusy || lyricsText.trim().length < 20}
+              className="mt-3 rounded-full bg-brand-gradient px-5 py-2.5 text-sm font-medium text-ink shadow-glow disabled:opacity-50"
+            >
+              {deconBusy ? '🔍 Reading your lyrics…' : '🔍 Deconstruct my lyrics'}
+            </button>
+          ) : (
+            <div className="mt-4 rounded-xl border border-white/10 bg-black/20 p-3">
+              <div className="text-xs font-medium uppercase tracking-widest text-slate-500">What the studio heard</div>
+              <div className="mt-2 grid gap-2 text-xs sm:grid-cols-2">
+                <div><span className="text-slate-500">Mode:</span> <span className="text-afrobrand-300">{decon.mode.replace(/_/g, ' ')}</span></div>
+                <div><span className="text-slate-500">Languages:</span> <span className="text-slate-200">{decon.languages.join(', ') || '—'}</span></div>
+                <div className="sm:col-span-2"><span className="text-slate-500">Themes:</span> <span className="text-slate-200">{decon.themes.join(' · ')}</span></div>
+                <div className="sm:col-span-2"><span className="text-slate-500">Structure:</span> <span className="text-slate-200">{decon.structure.join(' → ')}</span></div>
+                {decon.hookLine && <div className="sm:col-span-2"><span className="text-slate-500">The hook:</span> <span className="text-slate-200">“{decon.hookLine}”</span></div>}
+                <div className="sm:col-span-2"><span className="text-slate-500">Vocal direction:</span> <span className="text-slate-200">{decon.vocalDirection}</span></div>
+                {decon.notes && <div className="sm:col-span-2 text-slate-400">💡 {decon.notes}</div>}
+              </div>
+              <div className="mt-3">
+                <div className="mb-1 text-xs text-slate-500">Title</div>
+                <input value={deconTitle} onChange={(e) => setDeconTitle(e.target.value)} className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm" />
+              </div>
+              <p className="mt-2 text-[11px] text-slate-500">Genre, tempo, mood and engine below are prefilled from your lyrics — adjust anything, then hit go.</p>
+            </div>
+          )}
+        </div>
+      )}
+
+      <Picker label={`Genre — pick one; tap a second to FUSE (${genreLabel})`} items={GENRES} selected={genres} onPick={toggleGenre} />
       <div className="mt-6"><div className="mb-2 text-sm text-slate-400">Mood</div>
         <div className="flex flex-wrap gap-2">{MOODS.map((m) => (
           <button key={m} onClick={() => setMood(m)} className={`rounded-full px-3.5 py-1.5 text-sm capitalize ${mood === m ? 'bg-white/15 text-white shadow-[inset_0_0_0_1px_rgba(249,115,22,.4)]' : 'border border-white/10 text-slate-400 hover:bg-white/5'}`}>{m}</button>
@@ -247,29 +409,47 @@ export default function CreatePage() {
       </div>
 
       <div className="mt-8 flex flex-wrap gap-3">
-        <button onClick={() => void createSong()} className="rounded-full bg-brand-gradient px-6 py-3 font-medium text-ink shadow-glow">
-          ⚡ Create the song
-        </button>
+        {path === 'song' ? (
+          <button onClick={() => void createSong()} className="rounded-full bg-brand-gradient px-6 py-3 font-medium text-ink shadow-glow">
+            ⚡ Create the song
+          </button>
+        ) : (
+          <button
+            onClick={() => void createFromLyrics()}
+            disabled={!decon}
+            title={!decon ? 'Deconstruct your lyrics first' : undefined}
+            className="rounded-full bg-brand-gradient px-6 py-3 font-medium text-ink shadow-glow disabled:opacity-50"
+          >
+            🎤 Sing MY lyrics — make the song
+          </button>
+        )}
         <button onClick={() => void openStudio()} className="rounded-full border border-white/15 bg-white/5 px-6 py-3 font-medium hover:bg-white/10">
-          🎤 I’ll bring my own beat / voice
-        </button>
-        <button onClick={() => router.push('/listen')} className="rounded-full border border-white/15 bg-white/5 px-6 py-3 font-medium hover:bg-white/10">
-          🎧 Play a track &amp; make it mine
+          🎛️ I’ll bring my own beat / voice
         </button>
       </div>
-      <p className="mt-3 text-xs text-slate-500">“Create the song” makes it here, start to finish. “Bring my own” opens the studio to upload a beat or record. “Play a track” lets the AI listen to a reference and build a fresh original in that vibe.</p>
+      <p className="mt-3 text-xs text-slate-500">
+        {path === 'song'
+          ? '“Create the song” makes it here, start to finish. Pick TWO genres to fuse them into something new.'
+          : 'It sings EXACTLY your words — deconstruct first so the production matches what your lyrics actually are.'}
+        {' '}“Bring my own” opens the studio to upload a beat or record your voice.
+      </p>
     </div>
   );
 }
 
-function Picker({ label, items, value, onPick }: { label: string; items: { value: string; label: string }[]; value: string; onPick: (v: string) => void }) {
+function Picker({ label, items, selected, onPick }: { label: string; items: { value: string; label: string }[]; selected: string[]; onPick: (v: string) => void }) {
   return (
     <div className="mt-6">
       <div className="mb-2 text-sm text-slate-400">{label}</div>
       <div className="flex flex-wrap gap-2">
-        {items.map((g) => (
-          <button key={g.value} onClick={() => onPick(g.value)} className={`rounded-full px-4 py-2 text-sm ${value === g.value ? 'bg-brand-gradient text-ink shadow-glow' : 'border border-white/10 bg-white/5 text-slate-300 hover:bg-white/10'}`}>{g.label}</button>
-        ))}
+        {items.map((g) => {
+          const idx = selected.indexOf(g.value);
+          return (
+            <button key={g.value} onClick={() => onPick(g.value)} className={`rounded-full px-4 py-2 text-sm ${idx === 0 ? 'bg-brand-gradient text-ink shadow-glow' : idx > 0 ? 'bg-white/20 text-white shadow-[inset_0_0_0_1px_rgba(226,62,140,.6)]' : 'border border-white/10 bg-white/5 text-slate-300 hover:bg-white/10'}`}>
+              {idx > 0 ? '+ ' : ''}{g.label}
+            </button>
+          );
+        })}
       </div>
     </div>
   );

@@ -3,7 +3,7 @@
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { useApi } from '@/lib/api';
-import { Trash2, Download, Wand2, FileText, Copy, Recycle, Pencil, Sliders, X, Loader2, Music2, Layers, TrendingUp, RefreshCw, Mic } from 'lucide-react';
+import { Trash2, Download, Wand2, FileText, Copy, Recycle, Pencil, Sliders, X, Loader2, Music2, Layers, TrendingUp, RefreshCw, Mic, Disc3 } from 'lucide-react';
 
 interface HitPrediction {
   hitScore: number;
@@ -60,8 +60,17 @@ export default function CatalogGrid({ initial }: { initial: SongRow[] }) {
 
   async function remove(id: string) {
     if (!confirm('Delete this song? This cannot be undone.')) return;
+    const before = songs;
     setSongs((s) => s.filter((x) => x.id !== id));
-    try { await api.del(`/songs/${id}`); } catch { /* best-effort */ }
+    try {
+      await api.del(`/songs/${id}`);
+      flash('Deleted.');
+    } catch (e) {
+      // NEVER pretend: if the server refused, put the song back and say so —
+      // a silently-failed delete is exactly the "it always comes back" bug.
+      setSongs(before);
+      flash(`Couldn’t delete: ${(e as Error).message.slice(0, 120)}`);
+    }
   }
 
   async function remaster(s: SongRow) {
@@ -92,14 +101,45 @@ export default function CatalogGrid({ initial }: { initial: SongRow[] }) {
     finally { setBusy(''); }
   }
 
-  // Reuse ONLY the clean instrumental (requires stems separated first).
+  // Reuse ONLY the clean instrumental — SEAMLESSLY. If the stems don't exist
+  // yet, this orchestrates the whole chain itself: separate → wait → reuse.
+  // The user clicks once; the studio does the work and narrates it.
   async function reuseInstrumental(s: SongRow) {
     setBusy(`${s.id}:reuseinst`);
     try {
-      const r = await api.post<{ projectId: string; message?: string }>(`/songs/${s.id}/reuse-instrumental`, {});
-      flash(r.message || 'Instrumental reused in a new song. Opening the studio…');
-      setTimeout(() => router.push(`/projects/${r.projectId}`), 1400);
-    } catch (e) { flash((e as Error).message || 'No clean instrumental yet — run “Instrumental” first.'); }
+      try {
+        const r = await api.post<{ projectId: string; message?: string }>(`/songs/${s.id}/reuse-instrumental`, {});
+        flash(r.message || 'Instrumental reused in a new song. Opening the studio…');
+        setTimeout(() => router.push(`/projects/${r.projectId}`), 1400);
+        return;
+      } catch (e) {
+        if (!/no_instrumental_stem/.test((e as Error).message)) throw e;
+      }
+      // No clean instrumental yet — make one first, then finish the job.
+      flash('No clean instrumental yet — separating the vocals now (about a minute)…');
+      const sep = await api.post<{ jobId: string }>(`/songs/${s.id}/stems`, { mode: 'instrumental' });
+      for (let i = 0; i < 36; i++) {
+        await new Promise((r) => setTimeout(r, 5000));
+        const j = await api.get<{ status: string }>(`/jobs/${sep.jobId}`);
+        if (j.status === 'SUCCEEDED') break;
+        if (j.status === 'FAILED') throw new Error('Separation failed — try again in a moment.');
+        if (i === 35) throw new Error('Separation is taking long — it will finish in the background; try Reuse instrumental again shortly.');
+      }
+      const r2 = await api.post<{ projectId: string; message?: string }>(`/songs/${s.id}/reuse-instrumental`, {});
+      flash(r2.message || 'Clean instrumental extracted + reused in a new song. Opening the studio…');
+      setTimeout(() => router.push(`/projects/${r2.projectId}`), 1400);
+    } catch (e) { flash((e as Error).message.slice(0, 140)); }
+    finally { setBusy(''); }
+  }
+
+  // Start an ALBUM anchored to this song's sound — every next track holds it.
+  async function startAlbum(s: SongRow) {
+    setBusy(`${s.id}:album`);
+    try {
+      const a = await api.post<{ id: string; title: string }>('/albums', { anchorSongId: s.id });
+      flash(`Album started: “${a.title}”. Opening Albums…`);
+      setTimeout(() => router.push('/albums'), 1200);
+    } catch (e) { flash((e as Error).message.slice(0, 140)); }
     finally { setBusy(''); }
   }
 
@@ -240,6 +280,7 @@ export default function CatalogGrid({ initial }: { initial: SongRow[] }) {
                   <Action label="Reuse beat" icon={<Recycle className="h-3.5 w-3.5" />} busy={isBusy(s.id, 'reuse')} onClick={() => void reuseBeat(s)} />
                   <Action label="Reuse lyrics" icon={<FileText className="h-3.5 w-3.5" />} busy={isBusy(s.id, 'reuselyrics')} onClick={() => void reuseLyrics(s)} />
                   <Action label="Reuse instrumental" icon={<Mic className="h-3.5 w-3.5" />} busy={isBusy(s.id, 'reuseinst')} onClick={() => void reuseInstrumental(s)} />
+                  <Action label="Start an album from this" icon={<Disc3 className="h-3.5 w-3.5" />} busy={isBusy(s.id, 'album')} onClick={() => void startAlbum(s)} />
                   <Action label="Duplicate" icon={<Copy className="h-3.5 w-3.5" />} busy={isBusy(s.id, 'dup')} onClick={() => void duplicate(s)} />
                   <Action label="Rename" icon={<Pencil className="h-3.5 w-3.5" />} onClick={() => void rename(s)} />
                   <Action label="Studio" icon={<Sliders className="h-3.5 w-3.5" />} onClick={() => router.push(`/projects/${s.projectId}`)} />

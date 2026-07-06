@@ -159,6 +159,35 @@ export async function processMusic(p: MusicPayload) {
       },
     });
 
+    // SELF-TRAINING (legal — our own output, zero third-party material): every
+    // full sung song whose measured QC PASSES becomes a SoundReference, so the
+    // library compounds from every good record the studio makes. The recipe is
+    // the actual production directives that produced it + the measured result.
+    // Uploads still outrank these at retrieval (they're the artist's true sound);
+    // failures and weak takes never enter the library.
+    if (wantsVocals && quality?.verdict === 'pass') {
+      await prisma.soundReference
+        .create({
+          data: {
+            workspaceId: p.workspaceId,
+            genre: p.input.genre ?? null,
+            sourceUrl: ingestedMain,
+            title: `generated · ${p.input.genre ?? 'song'} · ${adapter.name}`,
+            recipe: {
+              source: 'generated',
+              engine: adapter.name,
+              genre: p.input.genre,
+              bpm: out.bpm ?? p.input.bpm,
+              dnaTags: p.input.dnaTags ?? [],
+              vibePrompt: (p.input.vibePrompt ?? '').slice(0, 500),
+              qc: quality,
+            } as never,
+            summary: `Generated ${p.input.genre ?? ''} record that passed QC (${Math.round(quality.loudnessRangeLra ?? 0)}LU range, crest ${quality.crestFactorDb ?? '—'}dB) on ${adapter.name}: ${(p.input.dnaTags ?? []).slice(0, 6).join(', ')}`,
+          },
+        })
+        .catch((err) => console.warn('[music] self-training reference write failed:', (err as Error)?.message));
+    }
+
     if (out.stems?.length) {
       // Ingest each stem to our bucket first (parallel I/O), THEN build the
       // Prisma transaction. $transaction needs PrismaPromise[], not resolved values.

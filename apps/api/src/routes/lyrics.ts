@@ -1,7 +1,8 @@
 import type { FastifyInstance } from 'fastify';
+import { z } from 'zod';
 import { prisma } from '@afrohit/db';
-import { generateLyricsInputSchema } from '@afrohit/shared';
-import { prompts, responsesJson, soundBrief } from '@afrohit/ai';
+import { generateLyricsInputSchema, GENRES } from '@afrohit/shared';
+import { prompts, responsesJson, soundBrief, generateJson } from '@afrohit/ai';
 import { requireAuth } from '../middleware/auth';
 
 export default async function lyrics(app: FastifyInstance) {
@@ -108,6 +109,81 @@ export default async function lyrics(app: FastifyInstance) {
 
       reply.code(201);
       return { lyric, needsNativeReview: flags, reviewTaskId };
+    }
+  );
+
+  /**
+   * FROM-LYRICS path, step 1 — DECONSTRUCT: the artist pastes their own lyrics
+   * and the studio reads them like a producer: language mix, lyric success-mode,
+   * themes, structure, the hook line, and the genre/BPM/mood it wants to be.
+   * Pure analysis (no DB write) — the UI shows it for confirmation before "Go".
+   */
+  const deconstructSchema = z.object({ lyrics: z.string().min(20).max(6000) });
+  app.post<{ Params: { projectId: string } }>(
+    '/deconstruct',
+    { schema: { body: deconstructSchema } },
+    async (req, reply) => {
+      const { workspaceId } = requireAuth(req);
+      await prisma.project.findFirstOrThrow({ where: { id: req.params.projectId, workspaceId } });
+      const { lyrics: raw } = deconstructSchema.parse(req.body);
+      const charge = await app.chargeCredits({ workspaceId, key: 'brief_polish', refTable: 'Project', refId: req.params.projectId });
+      if (!charge.ok) return reply.code(402).send({ error: 'insufficient_credits', ...charge });
+
+      const modes = prompts.lyricModes().map((m) => `${m.id}: ${m.whenToUse}`).join('\n');
+      const out = await generateJson<{
+        title: string;
+        languages: string[];
+        mode: string;
+        themes: string[];
+        structure: string[];
+        hookLine: string | null;
+        suggestedGenre: string;
+        suggestedBpm: number;
+        mood: string;
+        vocalDirection: string;
+        notes: string;
+      }>({
+        system:
+          'You are a top producer DECONSTRUCTING an artist\'s own lyrics so the studio can produce them correctly. Read the lyrics and return strict JSON: ' +
+          'title (from the hook/theme, never an instruction), languages (ISO-ish codes like en/pcm/yo/ig/ha/es/fr among those present), ' +
+          `mode (the lyric success-mode id that best fits, one of:\n${modes}\n), ` +
+          'themes (3-6 short tags), structure (the sections you can identify in order, e.g. ["verse","pre-hook","hook"...]; infer if unlabeled), ' +
+          'hookLine (the single most chantable line, or null), ' +
+          `suggestedGenre (EXACTLY one of: ${GENRES.join(', ')}), ` +
+          'suggestedBpm (integer 60-180 typical for that genre+flow), mood (one word), ' +
+          'vocalDirection (one line: delivery/energy/ad-lib guidance for the singer), notes (one honest line: what these lyrics need to hit). Return only JSON.',
+        user: raw,
+        temperature: 0.3,
+        maxTokens: 900,
+      });
+      // Never let a hallucinated genre escape the enum.
+      const genre = (GENRES as readonly string[]).includes(out.suggestedGenre) ? out.suggestedGenre : 'afrobeats';
+      return { ...out, suggestedGenre: genre, suggestedBpm: Math.min(Math.max(Math.round(out.suggestedBpm || 103), 60), 180) };
+    }
+  );
+
+  /**
+   * FROM-LYRICS path, step 2 — ATTACH: bind the artist's own lyrics to a fresh
+   * Song so production (beats/generate withVocals) sings EXACTLY these words.
+   * Artist-authored = authentic → approved, same doctrine as uploads.
+   */
+  const attachSchema = z.object({ title: z.string().min(1).max(120), body: z.string().min(20).max(6000) });
+  app.post<{ Params: { projectId: string } }>(
+    '/attach',
+    { schema: { body: attachSchema } },
+    async (req, reply) => {
+      const { workspaceId } = requireAuth(req);
+      const project = await prisma.project.findFirstOrThrow({ where: { id: req.params.projectId, workspaceId } });
+      const { title, body } = attachSchema.parse(req.body);
+      const song = await prisma.song.create({
+        data: { workspaceId, projectId: project.id, title, status: 'SKETCH' },
+      });
+      const lyric = await prisma.lyricDraft.create({
+        data: { projectId: project.id, songId: song.id, title, body, approved: true },
+      });
+      await prisma.song.update({ where: { id: song.id }, data: { lyricId: lyric.id } });
+      reply.code(201);
+      return { songId: song.id, lyricId: lyric.id };
     }
   );
 

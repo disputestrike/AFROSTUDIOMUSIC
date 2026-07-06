@@ -10,7 +10,7 @@
  */
 import type { FastifyInstance } from 'fastify';
 import { prisma } from '@afrohit/db';
-import { prompts, generateJson, scoreItems, runRightsCheck, canonicalReceiptHash, directorRefineHooks, researchTrends, enrichLyricsForVocals, soundBrief, predictHit } from '@afrohit/ai';
+import { prompts, generateJson, scoreItems, runRightsCheck, canonicalReceiptHash, directorRefineHooks, researchTrends, enrichLyricsForVocals, soundBrief, blendSoundBrief, predictHit } from '@afrohit/ai';
 import { enqueue } from '../lib/queue';
 import { assertSafeUrl } from '../lib/url-guard';
 import { learnedReferenceBrief } from '../lib/learned';
@@ -291,7 +291,7 @@ async function generateLyrics(ctx: Ctx, hookId: string, cleanVersion: boolean) {
   return { lyric: { id: lyric.id, title: lyric.title } };
 }
 
-async function createBeatJob(ctx: Ctx, a: { genre: string; bpm: number; keySignature?: string; durationS?: number; vibePrompt?: string; withStems?: boolean; withVocals?: boolean; songEngine?: 'suno' | 'ace_step' | 'minimax'; influence?: string }) {
+async function createBeatJob(ctx: Ctx, a: { genre: string; fusionGenres?: string[]; bpm: number; keySignature?: string; durationS?: number; vibePrompt?: string; withStems?: boolean; withVocals?: boolean; songEngine?: 'suno' | 'ace_step' | 'minimax'; influence?: string }) {
   if (!ctx.projectId) return { error: 'no_project_in_thread' };
 
   // Honor the requested genre for the whole session — the chat's scratch project
@@ -318,10 +318,10 @@ async function createBeatJob(ctx: Ctx, a: { genre: string; bpm: number; keySigna
     if (!lyrics) return { error: 'no_lyrics — write the lyrics first, then make the full song' };
   }
 
-  // Genre Sound DNA + what it LEARNED from the artist's own references: signature
-  // tokens front-load the music model; the rich brief + learned recipe ground the
-  // arranger in the real drums/percussion/bass/groove it heard.
-  const dna = soundBrief(a.genre);
+  // Genre Sound DNA (blended when the artist mixes genres) + what it LEARNED
+  // from the artist's own references: signature tokens front-load the music
+  // model; the rich brief grounds the arranger in the real sound it heard.
+  const dna = a.fusionGenres?.length ? blendSoundBrief([a.genre, ...a.fusionGenres]) : soundBrief(a.genre);
   const learned = await learnedReferenceBrief(ctx.workspaceId, a.genre);
 
   // Arrange the vocal to sound ALIVE — ad-libs, doubled/harmonized hook.

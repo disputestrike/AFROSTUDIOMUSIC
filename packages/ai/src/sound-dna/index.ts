@@ -145,3 +145,41 @@ export function soundBrief(genre?: string | null, mood?: string): { tags?: strin
   if (!dna) return {};
   return { tags: musicTags(dna, mood), brief: llmBrief(dna), typicalBpm: dna.typicalBpm };
 }
+
+/**
+ * FUSION — blend 2-3 genres into something new (the artist's explicit mix, e.g.
+ * amapiano × drill). The FIRST genre is the backbone (groove/tempo/arrangement);
+ * the others contribute their most distinctive signature elements. Tags
+ * interleave so the music model hears both identities; the brief instructs the
+ * LLMs to fuse, not average.
+ */
+export function blendSoundBrief(genres: string[], mood?: string): { tags?: string[]; brief?: string; typicalBpm?: number } {
+  const dnas = genres.map((g) => getSoundDNA(g)).filter((d): d is SoundDNA => !!d);
+  if (dnas.length === 0) return {};
+  if (dnas.length === 1) return soundBrief(dnas[0]!.genre, mood);
+  const [primary, ...rest] = dnas as [SoundDNA, ...SoundDNA[]];
+  // Interleave: primary leads, each fusion genre injects its top signatures early.
+  const primaryTags = musicTags(primary, mood);
+  const fusionTags = rest.flatMap((d) => [d.displayName, ...d.signatureElements.slice(0, 2).map((s) => s.split(/[—:;(,]/)[0]!.trim().slice(0, 40))]);
+  const tags = [
+    `${primary.displayName} x ${rest.map((d) => d.displayName).join(' x ')} fusion`,
+    ...primaryTags.slice(0, 5),
+    ...fusionTags,
+    ...primaryTags.slice(5),
+  ].slice(0, 14);
+  const brief = [
+    `GENRE FUSION — ${primary.displayName} × ${rest.map((d) => d.displayName).join(' × ')}: build something NEW from both lanes, never a genre averaged into mush.`,
+    `BACKBONE (groove, tempo, arrangement, mix): ${primary.displayName}.`,
+    llmBrief(primary),
+    ...rest.map((d) =>
+      [
+        `FUSE IN from ${d.displayName} (its identity must be clearly audible):`,
+        `  Signature sounds: ${d.signatureElements.slice(0, 3).join('; ')}`,
+        `  Percussion/bass: ${d.instrumentation.percussion.slice(0, 2).join('; ')} · ${d.instrumentation.bass}`,
+        `  Groove flavor: ${d.groove.feel}`,
+        `  Vocal flavor: ${d.vocalStyle.delivery}`,
+      ].join('\n')
+    ),
+  ].join('\n\n');
+  return { tags, brief, typicalBpm: primary.typicalBpm };
+}

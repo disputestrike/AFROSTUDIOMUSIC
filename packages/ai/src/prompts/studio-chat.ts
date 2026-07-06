@@ -147,6 +147,7 @@ export const STUDIO_CHAT_TOOLS = [
       type: 'object',
       properties: {
         genre: { type: 'string' },
+        fusionGenres: { type: 'array', items: { type: 'string' }, description: 'Optional extra genres to FUSE with the primary (e.g. ["drill"] on genre "amapiano") when the user wants to mix genres into something new.' },
         bpm: { type: 'integer' },
         keySignature: { type: 'string' },
         durationS: { type: 'integer', default: 60 },

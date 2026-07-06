@@ -19,7 +19,23 @@ export default function ListenPage() {
     let cancelled = false;
     (async () => {
       try {
-        const p = await api.post<{ id: string }>('/projects', { title: 'Reference session', genre: 'afrobeats', bpm: 103 });
+        // REUSE one persistent listen project — creating a fresh "Reference
+        // session" on every visit littered the Projects page (and made deleted
+        // junk look like it "came back"). Validate the remembered one still
+        // exists (it may have been deleted — deletes must STICK).
+        const KEY = 'afrohit.listenProject';
+        const remembered = typeof localStorage !== 'undefined' ? localStorage.getItem(KEY) : null;
+        if (remembered) {
+          try {
+            await api.get(`/projects/${remembered}`);
+            if (!cancelled) setProjectId(remembered);
+            return;
+          } catch {
+            localStorage.removeItem(KEY); // deleted or gone — start fresh
+          }
+        }
+        const p = await api.post<{ id: string }>('/projects', { title: '🎧 Listen sessions', genre: 'afrobeats', bpm: 103 });
+        localStorage.setItem(KEY, p.id);
         if (!cancelled) setProjectId(p.id);
       } catch (e) {
         if (!cancelled) setErr((e as Error).message);

@@ -114,6 +114,8 @@ export const generateBeatInputSchema = z.object({
   projectId: z.string().cuid(),
   songId: z.string().cuid().optional(),
   genre: genreSchema,
+  // FUSION: extra genres blended into the primary (primary = backbone).
+  fusionGenres: z.array(genreSchema).max(2).optional(),
   bpm: z.number().int().min(60).max(180),
   keySignature: z.string().optional(),
   durationS: z.number().int().min(15).max(240).default(60),
@@ -363,6 +365,9 @@ export const dropBatchSchema = z.object({
   theme: z.string().min(3).max(500),
   count: z.number().int().min(1).max(6).default(3),
   genre: z.string().max(40).default('afrobeats'),
+  // FUSION: extra genres blended into the primary (e.g. amapiano × drill) —
+  // the primary is the backbone; these inject their signature sounds.
+  fusionGenres: z.array(genreSchema).max(2).optional(),
   bpm: z.number().int().min(60).max(180).default(103),
   withVocals: z.boolean().default(true),
   songEngine: z.enum(['suno', 'ace_step', 'minimax']).optional(),

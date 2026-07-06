@@ -55,11 +55,12 @@ export default async function drop(app: FastifyInstance) {
   );
 }
 
-type DropCtx = { app: FastifyInstance; workspaceId: string; userId: string; projectId: string };
-type DropInput = ReturnType<typeof dropBatchSchema.parse>;
+export type DropCtx = { app: FastifyInstance; workspaceId: string; userId: string; projectId: string };
+export type DropInput = ReturnType<typeof dropBatchSchema.parse>;
 
-/** The actual Drop Machine pipeline — runs detached; result lands on the job row. */
-async function runDropPipeline(app: FastifyInstance, ctx: DropCtx, input: DropInput, dropJobId: string) {
+/** The actual Drop Machine pipeline — runs detached; result lands on the job row.
+ *  Exported so Albums can generate "the next track in this album's style". */
+export async function runDropPipeline(app: FastifyInstance, ctx: DropCtx, input: DropInput, dropJobId: string) {
   // One shared brief for the whole drop.
   await runChatTool({ ...ctx, name: 'polish_brief', args: { rawIdea: input.theme } });
 
@@ -119,7 +120,7 @@ async function runDropPipeline(app: FastifyInstance, ctx: DropCtx, input: DropIn
           const beat = (await runChatTool({
             ...ctx,
             name: 'create_beat_job',
-            args: { genre: input.genre, bpm: input.bpm, withVocals: input.withVocals, songEngine: input.songEngine, influence: input.influence },
+            args: { genre: input.genre, fusionGenres: input.fusionGenres, bpm: input.bpm, withVocals: input.withVocals, songEngine: input.songEngine, influence: input.influence },
           })) as { jobId?: string; songId?: string; error?: string };
 
           drops.push({

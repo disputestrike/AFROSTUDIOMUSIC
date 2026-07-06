@@ -58,6 +58,7 @@ model Workspace {
   chatThreads   ChatThread[]
   ledgerEntries CreditLedger[]
   analyticsEvents AnalyticsEvent[]
+  albums        Album[]
 
   @@index([slug])
 }
@@ -294,12 +295,32 @@ model SongBrief {
 // Songs (a project can have multiple finished song versions)
 // ===========================================================================
 
+// An album anchored to ONE song's sound: the anchor's voice/flow/production
+// defines the style, and every "next track" is generated INSIDE that lane.
+model Album {
+  id           String   @id @default(cuid())
+  workspaceId  String
+  title        String
+  anchorSongId String?
+  // Distilled style directive from the anchor (engine, genre, bpm, vocal, tags)
+  // injected into every generation for this album.
+  styleBrief   String?  @db.Text
+  meta         Json?
+  createdAt    DateTime @default(now()) @db.Timestamptz(6)
+
+  workspace    Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  songs        Song[]
+
+  @@index([workspaceId])
+}
+
 model Song {
   id          String   @id @default(cuid())
   workspaceId String
   projectId   String
   title       String
   versionLabel String?  // "demo-1", "club-mix"
+  albumId     String?   // album this song belongs to (style-anchored)
   status      SongStatus @default(SKETCH)
   storyboard  Json?     // arrangement timeline (intro/hook/verse/bridge/outro)
   // Rights spine — what makes a release bankable + payable.
@@ -324,8 +345,10 @@ model Song {
   taste       TasteScore[]
   shareLinks  ShareLink[]
   release     Release?  @relation("ReleaseSong")
+  album       Album?    @relation(fields: [albumId], references: [id], onDelete: SetNull)
 
   @@index([projectId])
+  @@index([albumId])
   // Catalog list is the hottest read (workspace scan ordered by recency).
   @@index([workspaceId, createdAt(sort: Desc)])
 }
@@ -356,7 +379,7 @@ model HookCandidate {
   createdAt   DateTime @default(now()) @db.Timestamptz(6)
 
   project     Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  song        Song?   @relation(fields: [songId], references: [id])
+  song        Song?   @relation(fields: [songId], references: [id], onDelete: SetNull)
   tasteScores TasteScore[]
 
   @@index([projectId])
@@ -380,7 +403,7 @@ model LyricDraft {
   createdAt     DateTime @default(now()) @db.Timestamptz(6)
 
   project       Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  song          Song?   @relation("SongPrimaryLyric", fields: [songId], references: [id])
+  song          Song?   @relation("SongPrimaryLyric", fields: [songId], references: [id], onDelete: Cascade)
 
   @@index([projectId])
 }
@@ -404,7 +427,7 @@ model BeatAsset {
   createdAt   DateTime @default(now()) @db.Timestamptz(6)
 
   project     Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  song        Song?   @relation(fields: [songId], references: [id])
+  song        Song?   @relation(fields: [songId], references: [id], onDelete: Cascade)
   stems       Stem[]
 
   @@index([projectId])
@@ -440,7 +463,7 @@ model VocalRender {
   createdAt       DateTime @default(now()) @db.Timestamptz(6)
 
   project         Project       @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  song            Song?         @relation(fields: [songId], references: [id])
+  song            Song?         @relation(fields: [songId], references: [id], onDelete: Cascade)
   voiceProfile    VoiceProfile? @relation(fields: [voiceProfileId], references: [id])
 
   @@index([projectId])
@@ -458,7 +481,7 @@ model Mix {
   createdAt   DateTime @default(now()) @db.Timestamptz(6)
 
   project     Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  song        Song?   @relation(fields: [songId], references: [id])
+  song        Song?   @relation(fields: [songId], references: [id], onDelete: Cascade)
   masters     Master[]
 
   @@index([projectId])
@@ -476,7 +499,7 @@ model Master {
   createdAt   DateTime @default(now()) @db.Timestamptz(6)
 
   project     Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  song        Song?   @relation(fields: [songId], references: [id])
+  song        Song?   @relation(fields: [songId], references: [id], onDelete: Cascade)
   mix         Mix?    @relation(fields: [mixId], references: [id])
 
   @@index([projectId])
@@ -635,7 +658,7 @@ model RightsReceipt {
 
   workspace     Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
   project       Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  song          Song      @relation(fields: [songId], references: [id])
+  song          Song      @relation(fields: [songId], references: [id], onDelete: Cascade)
 
   @@index([projectId])
 }
@@ -653,7 +676,7 @@ model Export {
   createdAt   DateTime @default(now()) @db.Timestamptz(6)
 
   project     Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  song        Song    @relation(fields: [songId], references: [id])
+  song        Song    @relation(fields: [songId], references: [id], onDelete: Cascade)
 
   @@index([projectId])
 }
@@ -673,7 +696,7 @@ model Release {
 
   workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
   artist      Artist    @relation(fields: [artistId], references: [id], onDelete: Cascade)
-  song        Song      @relation("ReleaseSong", fields: [songId], references: [id])
+  song        Song      @relation("ReleaseSong", fields: [songId], references: [id], onDelete: Cascade)
 }
 
 // ===========================================================================
@@ -690,7 +713,7 @@ model ShareLink {
   createdAt   DateTime @default(now()) @db.Timestamptz(6)
 
   workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  song        Song      @relation(fields: [songId], references: [id])
+  song        Song      @relation(fields: [songId], references: [id], onDelete: Cascade)
   events      ShareEvent[]
 
   @@index([songId])
@@ -767,7 +790,7 @@ model ProviderJob {
   createdAt     DateTime  @default(now()) @db.Timestamptz(6)
 
   workspace     Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  project       Project?  @relation(fields: [projectId], references: [id])
+  project       Project?  @relation(fields: [projectId], references: [id], onDelete: SetNull)
 
   @@index([workspaceId])
   @@index([status])
@@ -798,7 +821,7 @@ model ChatThread {
 
   workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
   user        User      @relation(fields: [userId], references: [id])
-  project     Project?  @relation(fields: [projectId], references: [id])
+  project     Project?  @relation(fields: [projectId], references: [id], onDelete: SetNull)
   messages    ChatMessage[]
 
   @@index([workspaceId, userId])
