@@ -85,11 +85,17 @@ export default async function projects(app: FastifyInstance) {
     }
   );
 
-  app.post<{ Params: { id: string }; Body: { gate: string; decision: string; notes?: string } }>(
+  const approveSchema = z.object({
+    gate: z.enum(['brief', 'hook', 'lyrics', 'beat', 'voice', 'mix', 'rights', 'release']),
+    decision: z.enum(['approved', 'rejected', 'changes_requested']),
+    notes: z.string().max(2000).optional(),
+  });
+  app.post<{ Params: { id: string } }>(
     '/:id/approve',
+    { schema: { body: approveSchema } },
     async (req, reply) => {
       const { userId, workspaceId } = requireAuth(req);
-      const { gate, decision, notes } = req.body;
+      const { gate, decision, notes } = approveSchema.parse(req.body);
       // Scope: only approve gates on a project in this workspace.
       const project = await prisma.project.findFirst({ where: { id: req.params.id, workspaceId }, select: { id: true } });
       if (!project) return reply.code(404).send({ error: 'project_not_found' });

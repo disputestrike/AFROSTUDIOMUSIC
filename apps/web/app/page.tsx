@@ -41,13 +41,12 @@ export default function Landing() {
         <div className="rounded-3xl border border-slate-800 bg-slate-900/40 p-6">
           <p className="text-sm font-medium uppercase tracking-widest text-slate-400">A typical session</p>
           <pre className="mt-4 whitespace-pre-wrap rounded-2xl bg-black/40 p-4 text-sm text-slate-200">
-{`> Make me Afro-fusion love song, 103 bpm,
+{`> Make me an Afro-fusion love song, 103 bpm,
   pidgin/yoruba, smooth wizkid lane.
-  Give me 20 hooks. Score them.
-  Pick the best 3. Make me a beat,
-  render demo vocal in my voice,
-  cover art, and a 15-second vertical video.
-  Then run rights check and bundle the release.`}
+  Give me 8 hooks, scored for viral potential.
+  I pick one — it writes the lyrics, sings the
+  full record, makes cover art and a TikTok clip.
+  Then rights check and bundle the release.`}
           </pre>
         </div>
       </section>

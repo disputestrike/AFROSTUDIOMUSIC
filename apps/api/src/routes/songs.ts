@@ -210,13 +210,18 @@ export default async function songs(app: FastifyInstance) {
 
     const res = await fetch(url);
     if (!res.ok || !res.body) return reply.code(502).send({ error: 'source_unavailable' });
-    const buf = Buffer.from(await res.arrayBuffer());
+    // STREAM, never buffer — a WAV master can be 50MB+; buffering N concurrent
+    // downloads OOMs the API. Cap at 250MB as a sanity ceiling.
+    const MAX_BYTES = 250 * 1024 * 1024;
+    const len = Number(res.headers.get('content-length') ?? 0);
+    if (len > MAX_BYTES) return reply.code(413).send({ error: 'file_too_large' });
     const safeTitle = (song.lyric?.title || song.title || 'afrohit').replace(/[^a-z0-9 _-]/gi, '').trim().slice(0, 60) || 'afrohit';
     const name = type === 'stem' ? `${safeTitle} - stem-${req.query.stem}` : `${safeTitle} - ${type}`;
     reply.header('content-disposition', `attachment; filename="${name}.${ext}"`);
     reply.header('content-type', res.headers.get('content-type') ?? 'application/octet-stream');
-    reply.header('content-length', String(buf.length));
-    return buf;
+    if (len > 0) reply.header('content-length', String(len));
+    const { Readable } = await import('node:stream');
+    return reply.send(Readable.fromWeb(res.body as never));
   });
 
   // ---- Master / re-master on demand (song-first) ----

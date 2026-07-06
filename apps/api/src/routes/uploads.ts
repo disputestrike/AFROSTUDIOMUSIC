@@ -111,9 +111,12 @@ export default async function uploads(app: FastifyInstance) {
       // A redirect that pointed at a blocked/private host is rejected mid-fetch.
       const uc = (err as { urlCheck?: { code: number; error: string; message?: string } }).urlCheck;
       if (uc) return reply.code(uc.code).send({ error: uc.error, message: uc.message });
+      // Log the real cause; give the client a safe, actionable message (raw
+      // fetch errors can leak internal hostnames/stack details).
+      req.log.warn({ err }, 'import fetch failed');
       return reply
         .code(502)
-        .send({ error: 'fetch_failed', message: (err as Error).message.slice(0, 200) });
+        .send({ error: 'fetch_failed', message: 'Could not fetch that URL — check it is a public, direct audio link and try again.' });
     } finally {
       clearTimeout(t);
     }

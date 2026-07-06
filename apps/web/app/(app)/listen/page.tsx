@@ -8,6 +8,7 @@
 import { useEffect, useState } from 'react';
 import { useApi } from '@/lib/api';
 import { ReferenceListen } from '@/components/ReferenceListen';
+import { LearnMySound } from '@/components/LearnMySound';
 
 export default function ListenPage() {
   const api = useApi();
@@ -42,6 +43,7 @@ export default function ListenPage() {
       {err && <div className="mt-6 rounded-xl border border-red-500/30 bg-red-500/10 p-4 text-sm text-red-300">Couldn’t start a session: {err}</div>}
       {!projectId && !err && <div className="mt-8 text-sm text-slate-500">Setting up your session…</div>}
       {projectId && <ReferenceListen projectId={projectId} />}
+      {projectId && <LearnMySound projectId={projectId} />}
     </div>
   );
 }

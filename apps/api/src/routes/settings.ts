@@ -74,7 +74,9 @@ export default async function settings(app: FastifyInstance) {
       }
       return { ok: true, provider: ws.musicProvider, message: 'Saved.' };
     } catch (e) {
-      return reply.code(502).send({ ok: false, error: (e as Error).message });
+      // Log the real cause; never echo raw fetch/internal errors to the client.
+      req.log.warn({ err: e }, 'integration key test failed');
+      return reply.code(502).send({ ok: false, error: 'Could not reach the provider to test the key — try again in a moment.' });
     }
   });
 }

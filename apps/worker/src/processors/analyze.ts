@@ -73,7 +73,8 @@ export async function processAnalyze(p: AnalyzePayload) {
           summary: profile.learnedRecipe || profile.suggestedVibePrompt || null,
         },
       })
-      .catch(() => {});
+      // A failed write here silently loses a LEARNED reference — log it.
+      .catch((err) => console.warn('[analyze] SoundReference write failed:', (err as Error)?.message));
 
     // Taste graph — what the artist chose to listen to / build from. Compounds.
     await prisma.analyticsEvent
@@ -84,7 +85,7 @@ export async function processAnalyze(p: AnalyzePayload) {
           properties: { bpm: profile.bpm, genre: profile.genre, mood: profile.mood, energy: profile.energy } as never,
         },
       })
-      .catch(() => {});
+      .catch((err) => console.warn('[analyze] taste event write failed:', (err as Error)?.message));
     await markSucceeded(p.jobId, { profile });
   } catch (err) {
     await markFailed(p.jobId, err);

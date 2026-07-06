@@ -73,10 +73,21 @@ export async function processMusic(p: MusicPayload) {
     // BEST-OF-N: render N candidates IN PARALLEL (≈ same wall-clock as one), QC
     // each, and keep the take with the most life — the model-independent quality
     // lever that stops the studio shipping the first (often flat) take. Default 2.
+    // Each candidate is raced against a hard 12-min ceiling so a hung provider
+    // HTTP call can never wedge the job forever (poll caps alone don't cover a
+    // fetch that neither resolves nor rejects).
+    const HARD_TIMEOUT_MS = 12 * 60 * 1000;
+    const withTimeout = (run: Promise<GenResult>): Promise<GenResult> =>
+      Promise.race([
+        run,
+        new Promise<GenResult>((resolve) =>
+          setTimeout(() => resolve({ status: 'failed', error: 'render timed out after 12 minutes' } as GenResult), HARD_TIMEOUT_MS)
+        ),
+      ]);
     const N = Math.max(1, Math.min(Number(p.input.candidates ?? process.env.BEST_OF_N ?? 2), 4));
     const settled = await Promise.all(
       Array.from({ length: N }, () =>
-        generateOne().catch((e) => ({ status: 'failed', error: String((e as Error)?.message ?? e) }) as GenResult)
+        withTimeout(generateOne()).catch((e) => ({ status: 'failed', error: String((e as Error)?.message ?? e) }) as GenResult)
       )
     );
     const ok = settled.filter((r) => r.status === 'succeeded' && r.output);

@@ -61,31 +61,45 @@ export default async function webhooks(app: FastifyInstance) {
     const dup = await prisma.creditLedger.findUnique({ where: { paypalEventId: event.id } });
     if (dup) return reply.send({ received: true, idempotent: true });
 
-    switch (event.event_type) {
-      case 'BILLING.SUBSCRIPTION.ACTIVATED': {
-        await activateSubscription(event);
-        break;
+    try {
+      switch (event.event_type) {
+        case 'BILLING.SUBSCRIPTION.ACTIVATED': {
+          await activateSubscription(event);
+          break;
+        }
+        case 'BILLING.SUBSCRIPTION.CANCELLED':
+        case 'BILLING.SUBSCRIPTION.EXPIRED':
+        case 'BILLING.SUBSCRIPTION.SUSPENDED': {
+          await downgradeSubscription(event);
+          break;
+        }
+        case 'PAYMENT.CAPTURE.COMPLETED': {
+          // One-off credit pack purchases land here as well as the return URL.
+          await creditCapture(event);
+          break;
+        }
+        case 'PAYMENT.SALE.COMPLETED': {
+          // Recurring subscription payments. We don't need to do anything here;
+          // logging is enough since the plan is already active.
+          req.log.info({ eventId: event.id }, 'paypal recurring sale completed');
+          break;
+        }
+        default:
+          req.log.info({ eventType: event.event_type }, 'paypal webhook unhandled');
+          break;
       }
-      case 'BILLING.SUBSCRIPTION.CANCELLED':
-      case 'BILLING.SUBSCRIPTION.EXPIRED':
-      case 'BILLING.SUBSCRIPTION.SUSPENDED': {
-        await downgradeSubscription(event);
-        break;
+    } catch (err) {
+      // Concurrent delivery race (webhook + return-URL landing at once): the
+      // check-then-act dup test can pass on both, but the @unique paypalEventId
+      // aborts the LOSER'S whole transaction — so credits can never double-apply.
+      // Treat that unique violation as idempotent success instead of 500ing
+      // (a 500 would make PayPal retry forever).
+      const code = (err as { code?: string })?.code;
+      if (code === 'P2002') {
+        req.log.info({ eventId: event.id }, 'paypal webhook idempotent (concurrent duplicate)');
+        return reply.send({ received: true, idempotent: true });
       }
-      case 'PAYMENT.CAPTURE.COMPLETED': {
-        // One-off credit pack purchases land here as well as the return URL.
-        await creditCapture(event);
-        break;
-      }
-      case 'PAYMENT.SALE.COMPLETED': {
-        // Recurring subscription payments. We don't need to do anything here;
-        // logging is enough since the plan is already active.
-        req.log.info({ eventId: event.id }, 'paypal recurring sale completed');
-        break;
-      }
-      default:
-        req.log.info({ eventType: event.event_type }, 'paypal webhook unhandled');
-        break;
+      throw err;
     }
 
     return { received: true };
@@ -130,20 +144,22 @@ async function activateSubscription(event: PaypalEvent) {
   if (!workspaceId || !r.plan_id || !r.id) return;
   const plan = mapPlanIdToTier(r.plan_id);
   if (!plan) return;
-  await prisma.workspace.update({
-    where: { id: workspaceId },
-    data: { plan, paypalSubscriptionId: r.id },
-  });
-  // Stamp the event so we don't double-process retries.
-  await prisma.creditLedger.create({
-    data: {
-      workspaceId,
-      delta: 0,
-      reason: 'paypal_subscription_activated',
-      paypalEventId: event.id,
-      meta: { subscriptionId: r.id, planId: r.plan_id } as never,
-    },
-  });
+  // One transaction: the plan flip and its idempotency stamp commit together.
+  await prisma.$transaction([
+    prisma.workspace.update({
+      where: { id: workspaceId },
+      data: { plan, paypalSubscriptionId: r.id },
+    }),
+    prisma.creditLedger.create({
+      data: {
+        workspaceId,
+        delta: 0,
+        reason: 'paypal_subscription_activated',
+        paypalEventId: event.id,
+        meta: { subscriptionId: r.id, planId: r.plan_id } as never,
+      },
+    }),
+  ]);
 }
 
 async function downgradeSubscription(event: PaypalEvent) {
@@ -153,19 +169,22 @@ async function downgradeSubscription(event: PaypalEvent) {
   // Find workspace by subscription id (custom_id may not be present on cancel events).
   const ws = await prisma.workspace.findUnique({ where: { paypalSubscriptionId: subscriptionId } });
   if (!ws) return;
-  await prisma.workspace.update({
-    where: { id: ws.id },
-    data: { plan: 'STARTER', paypalSubscriptionId: null },
-  });
-  await prisma.creditLedger.create({
-    data: {
-      workspaceId: ws.id,
-      delta: 0,
-      reason: `paypal_${event.event_type.toLowerCase()}`,
-      paypalEventId: event.id,
-      meta: { subscriptionId } as never,
-    },
-  });
+  // One transaction: the downgrade and its idempotency stamp commit together.
+  await prisma.$transaction([
+    prisma.workspace.update({
+      where: { id: ws.id },
+      data: { plan: 'STARTER', paypalSubscriptionId: null },
+    }),
+    prisma.creditLedger.create({
+      data: {
+        workspaceId: ws.id,
+        delta: 0,
+        reason: `paypal_${event.event_type.toLowerCase()}`,
+        paypalEventId: event.id,
+        meta: { subscriptionId } as never,
+      },
+    }),
+  ]);
 }
 
 async function creditCapture(event: PaypalEvent) {

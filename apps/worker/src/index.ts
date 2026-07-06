@@ -107,11 +107,25 @@ async function registerCron() {
 
 registerCron().catch((err) => log.error({ err }, 'cron registration failed'));
 
-process.on('SIGTERM', async () => {
-  log.info('SIGTERM — closing workers');
-  await Promise.all(workers.map((w) => w.close()));
-  await connection.quit();
+/**
+ * Graceful shutdown with a bounded drain. close() waits for active jobs, but
+ * the platform hard-kills after ~30s — so we drain for 25s, then force-close.
+ * Force-closed jobs are left "active" and BullMQ's stalled-checker re-queues
+ * them, so nothing is silently lost — worst case a render re-runs.
+ */
+async function shutdown(signal: string) {
+  log.info({ signal }, 'shutting down — draining active jobs (max 25s)');
+  const drained = Promise.all(workers.map((w) => w.close()));
+  const timeout = new Promise<'timeout'>((r) => setTimeout(() => r('timeout'), 25_000));
+  const result = await Promise.race([drained.then(() => 'drained' as const), timeout]);
+  if (result === 'timeout') {
+    log.warn('drain timed out — force-closing (stalled jobs will be re-queued by BullMQ)');
+    await Promise.allSettled(workers.map((w) => w.close(true)));
+  }
+  await connection.quit().catch(() => {});
   process.exit(0);
-});
+}
+process.on('SIGTERM', () => void shutdown('SIGTERM'));
+process.on('SIGINT', () => void shutdown('SIGINT'));
 
 log.info('worker up, listening on queues: music, voice, image, video, mix, master, export, cron');

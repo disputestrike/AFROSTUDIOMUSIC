@@ -25,6 +25,7 @@ export const GENRES = [
   'house',
   'edm',
   'reggaeton',
+  'latin_pop',
   'country',
   'rock',
   'soul',

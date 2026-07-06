@@ -135,7 +135,7 @@ export default async function ProjectPage({
           {p.imageAssets.length ? (
             <div className="grid grid-cols-3 gap-2">
               {p.imageAssets.map((i) => (
-                <img key={i.id} src={i.url} alt="" className="aspect-square w-full rounded-lg border border-slate-800 object-cover" />
+                <img key={i.id} src={i.url} alt="Generated cover art" className="aspect-square w-full rounded-lg border border-slate-800 object-cover" />
               ))}
             </div>
           ) : <Empty hint="Generate cover art from chat." />}

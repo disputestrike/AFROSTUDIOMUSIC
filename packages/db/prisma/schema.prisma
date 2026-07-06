@@ -326,6 +326,8 @@ model Song {
   release     Release?  @relation("ReleaseSong")
 
   @@index([projectId])
+  // Catalog list is the hottest read (workspace scan ordered by recency).
+  @@index([workspaceId, createdAt(sort: Desc)])
 }
 
 enum SongStatus {
@@ -575,8 +577,9 @@ model TasteScore {
   tooAiRisk       Float?   // 0-1
   createdAt       DateTime @default(now()) @db.Timestamptz(6)
 
-  song            Song?         @relation(fields: [songId], references: [id])
-  hook            HookCandidate? @relation(fields: [hookId], references: [id])
+  // Cascade: taste rows are meaningless without their subject — no orphans.
+  song            Song?         @relation(fields: [songId], references: [id], onDelete: Cascade)
+  hook            HookCandidate? @relation(fields: [hookId], references: [id], onDelete: Cascade)
 }
 
 model Approval {
@@ -768,6 +771,8 @@ model ProviderJob {
 
   @@index([workspaceId])
   @@index([status])
+  // Jobs dashboard: workspace scan ordered by recency.
+  @@index([workspaceId, createdAt(sort: Desc)])
 }
 
 enum JobStatus {
@@ -813,6 +818,8 @@ model ChatMessage {
   thread      ChatThread @relation(fields: [threadId], references: [id], onDelete: Cascade)
 
   @@index([threadId])
+  // Every chat load reads thread history in order — cover filter + sort.
+  @@index([threadId, createdAt])
 }
 
 // ===========================================================================

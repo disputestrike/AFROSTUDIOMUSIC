@@ -51,6 +51,30 @@ const subscribeSchema = z.object({ plan: z.enum(['STARTER', 'CREATOR', 'PRO', 'S
 const packSchema = z.object({ pack: z.enum(['pack_10', 'pack_25', 'pack_50', 'pack_100']) });
 
 export default async function billing(app: FastifyInstance) {
+  /**
+   * PRE-FLIGHT — can the workspace afford a generation RIGHT NOW?
+   * Read-only mirror of chargeCredits' gate logic so the UI can refuse BEFORE
+   * the user commits to a multi-minute wait (the old flow errored after it).
+   */
+  app.get('/preflight', async (req) => {
+    const { workspaceId } = requireAuth(req);
+    const { isInternalMode } = await import('../middleware/auth');
+    if (isInternalMode()) {
+      const cap = Number(process.env.MAX_DAILY_GENERATIONS ?? 300);
+      const since = new Date();
+      since.setUTCHours(0, 0, 0, 0);
+      const usedToday = await prisma.creditLedger.count({
+        where: { workspaceId, createdAt: { gte: since }, delta: { lt: 0 } },
+      });
+      const remaining = cap > 0 ? Math.max(0, cap - usedToday) : Number.MAX_SAFE_INTEGER;
+      return { ok: remaining > 0, mode: 'internal', usedToday, cap, remainingToday: remaining };
+    }
+    const ws = await prisma.workspace.findUniqueOrThrow({ where: { id: workspaceId }, select: { creditsCents: true } });
+    // A full sung song is the most expensive common action — use it as the bar.
+    const estimatedCostCents = 2 * 100 * 100; // $2.00 in micro-cents (full_song_demo ceiling)
+    return { ok: ws.creditsCents >= estimatedCostCents, mode: 'credits', balanceCents: ws.creditsCents, estimatedCostCents };
+  });
+
   app.get('/me', async (req) => {
     const { workspaceId } = requireAuth(req);
     const ws = await prisma.workspace.findUniqueOrThrow({

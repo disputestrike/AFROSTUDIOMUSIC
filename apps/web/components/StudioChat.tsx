@@ -216,9 +216,11 @@ export default function StudioChat({ projectId }: { projectId?: string }) {
   }
 
   return (
-    <div className="grid h-full grid-cols-[240px_1fr]">
+    // Mobile: the fixed 240px rail would crush the chat — hide it below md
+    // (threads still resume via localStorage; history is a desktop affordance).
+    <div className="grid h-full grid-cols-1 md:grid-cols-[240px_1fr]">
       {/* History rail */}
-      <aside className="flex flex-col border-r border-slate-800 bg-slate-950/60">
+      <aside className="hidden md:flex flex-col border-r border-slate-800 bg-slate-950/60">
         <button
           onClick={newChat}
           className="m-3 flex items-center justify-center gap-2 rounded-xl bg-afrobrand-500 px-3 py-2 text-sm font-medium text-ink hover:bg-afrobrand-400"

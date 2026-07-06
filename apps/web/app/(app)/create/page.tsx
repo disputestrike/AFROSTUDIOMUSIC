@@ -10,12 +10,23 @@ import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { useApi } from '@/lib/api';
 
+// ALL genres — Afro core + global. Every entry has full Sound DNA + current-trend
+// enrichment behind it (packages/ai/src/sound-dna), so the front door offers the
+// whole library, not just the Afro lanes.
 const GENRES = [
+  // Afro / diaspora core
   { value: 'afrobeats', label: 'Afrobeats' }, { value: 'afro_fusion', label: 'Afro-fusion' },
   { value: 'amapiano', label: 'Amapiano' }, { value: 'afro_dancehall', label: 'Afro-dancehall' },
   { value: 'street_pop', label: 'Street-pop / Zanku' }, { value: 'afro_rnb', label: 'Afro R&B' },
   { value: 'afro_pop', label: 'Afropop' }, { value: 'highlife', label: 'Highlife' },
   { value: 'gospel', label: 'Gospel' }, { value: 'hip_hop', label: 'Hip-hop' }, { value: 'reggae', label: 'Reggae' },
+  // Global
+  { value: 'pop', label: 'Pop' }, { value: 'rnb', label: 'R&B' },
+  { value: 'dancehall', label: 'Dancehall' }, { value: 'drill', label: 'Drill' },
+  { value: 'trap', label: 'Trap' }, { value: 'house', label: 'House' },
+  { value: 'edm', label: 'EDM' }, { value: 'reggaeton', label: 'Reggaeton' },
+  { value: 'latin_pop', label: 'Latin pop' }, { value: 'country', label: 'Country' },
+  { value: 'rock', label: 'Rock' }, { value: 'soul', label: 'Soul' },
 ];
 const LANGS = [
   { value: 'pcm', label: 'Pidgin' }, { value: 'en', label: 'English' }, { value: 'yo', label: 'Yoruba' },
@@ -46,9 +57,19 @@ export default function CreatePage() {
   const genreLabel = GENRES.find((g) => g.value === genre)?.label ?? genre;
 
   async function createSong() {
+    setErr('');
+    // PRE-FLIGHT: refuse BEFORE the user commits to a multi-minute wait — never
+    // let them sit through "producing…" only to hit the daily cap at the end.
+    try {
+      const pf = await api.get<{ ok: boolean; mode: string; remainingToday?: number }>('/billing/preflight');
+      if (!pf.ok) {
+        setErr(pf.mode === 'internal' ? 'Daily limit reached — resets at midnight UTC.' : 'insufficient_credits');
+        setPhase('error');
+        return;
+      }
+    } catch { /* preflight is advisory — if it can't be read, proceed */ }
     setPhase('producing');
     setStepIdx(0);
-    setErr('');
     try {
       const title = vibe.trim().slice(0, 60) || `${genreLabel} ${mood}`;
       const project = await api.post<{ id: string }>('/projects', { title, genre, bpm });
@@ -140,11 +161,23 @@ export default function CreatePage() {
 
   // ---- Error ----
   if (phase === 'error') {
+    const isLimit = /insufficient_credits|daily limit/i.test(err);
     return (
       <div className="mx-auto max-w-lg px-6 py-16 text-center">
-        <div className="font-display text-2xl">Couldn’t finish that one</div>
-        <p className="mt-2 text-sm text-red-400">{err}</p>
-        <button onClick={() => setPhase('form')} className="mt-6 rounded-full bg-brand-gradient px-5 py-2.5 text-sm font-medium text-ink shadow-glow">Try again</button>
+        <div className="font-display text-2xl">{isLimit ? 'You’ve hit today’s limit' : 'Couldn’t finish that one'}</div>
+        <p className="mt-2 text-sm text-red-400">
+          {isLimit ? 'The daily generation cap protects your budget. It resets at midnight UTC — or top up / raise the cap.' : err}
+        </p>
+        <div className="mt-6 flex flex-wrap justify-center gap-3">
+          {isLimit ? (
+            <>
+              <button onClick={() => router.push('/billing')} className="rounded-full bg-brand-gradient px-5 py-2.5 text-sm font-medium text-ink shadow-glow">See plans &amp; credits →</button>
+              <button onClick={() => router.push('/catalog')} className="rounded-full border border-white/15 bg-white/5 px-5 py-2.5 text-sm hover:bg-white/10">Work on existing songs</button>
+            </>
+          ) : (
+            <button onClick={() => setPhase('form')} className="rounded-full bg-brand-gradient px-5 py-2.5 text-sm font-medium text-ink shadow-glow">Try again</button>
+          )}
+        </div>
       </div>
     );
   }

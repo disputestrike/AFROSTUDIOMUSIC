@@ -1,4 +1,5 @@
 import type { FastifyInstance } from 'fastify';
+import { z } from 'zod';
 import { prisma } from '@afrohit/db';
 import { briefSchema } from '@afrohit/shared';
 import { responsesJson } from '@afrohit/ai';
@@ -23,10 +24,13 @@ export default async function briefs(app: FastifyInstance) {
     }
   );
 
-  app.post<{ Params: { projectId: string }; Body: { rawIdea: string } }>(
+  const polishSchema = z.object({ rawIdea: z.string().min(1).max(2000) });
+  app.post<{ Params: { projectId: string } }>(
     '/polish',
+    { schema: { body: polishSchema } },
     async (req, reply) => {
       const { workspaceId } = requireAuth(req);
+      const { rawIdea } = polishSchema.parse(req.body);
       const charge = await app.chargeCredits({
         workspaceId,
         key: 'brief_polish',
@@ -45,7 +49,7 @@ export default async function briefs(app: FastifyInstance) {
         notes: string;
       }>({
         system: prompts.BRIEF_POLISH_SYSTEM,
-        user: JSON.stringify({ rawIdea: req.body.rawIdea }),
+        user: JSON.stringify({ rawIdea }),
         temperature: 0.4,
       });
 

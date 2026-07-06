@@ -99,7 +99,8 @@ export default async function drop(app: FastifyInstance) {
           // If the daily cap was hit mid-batch, stop cleanly.
           if (beat?.error === 'insufficient_credits') break;
         } catch (err) {
-          drops.push({ score: null, error: (err as Error).message });
+          req.log.warn({ err }, 'drop iteration failed');
+          drops.push({ score: null, error: 'this take failed — the batch continued' });
         }
       }
 

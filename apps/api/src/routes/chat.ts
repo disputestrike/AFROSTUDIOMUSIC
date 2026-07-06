@@ -339,7 +339,22 @@ export default async function chat(app: FastifyInstance) {
         'access-control-allow-origin': (process.env.WEB_URL ?? 'http://localhost:3000').split(',')[0]!,
         'access-control-allow-credentials': 'true',
       });
-      const send = (data: unknown) => reply.raw.write(`data: ${JSON.stringify(data)}\n\n`);
+      // Safe send: a non-serializable payload or a disconnected client must never
+      // crash the loop — the work (queued jobs) continues server-side regardless.
+      reply.raw.on('error', () => {/* client went away — keep processing */});
+      const send = (data: unknown) => {
+        try {
+          let body: string;
+          try {
+            body = JSON.stringify(data);
+          } catch {
+            body = JSON.stringify({ type: 'tool_result', note: 'result_not_serializable' });
+          }
+          if (!reply.raw.writableEnded) reply.raw.write(`data: ${body}\n\n`);
+        } catch {
+          /* socket dead — swallow; finally{} ends the stream */
+        }
+      };
 
       try {
         const thread = body.threadId

@@ -203,22 +203,27 @@ export default async function hooks(app: FastifyInstance) {
   );
 
   // Edit a hook's wording before (or after) approving it — surgical control.
-  app.patch<{ Params: { projectId: string; hookId: string }; Body: { text?: string } }>(
+  const hookEditSchema = z.object({ text: z.string().trim().min(1, 'Hook text cannot be empty.').max(500, 'Keep the hook under 500 characters.') });
+  app.patch<{ Params: { projectId: string; hookId: string } }>(
     '/:hookId',
+    { schema: { body: hookEditSchema } },
     async (req, reply) => {
       const { workspaceId } = requireAuth(req);
-      const text = typeof req.body?.text === 'string' ? req.body.text.trim() : '';
-      if (!text) return reply.code(400).send({ error: 'empty_text', message: 'Hook text cannot be empty.' });
-      if (text.length > 500) return reply.code(400).send({ error: 'too_long', message: 'Keep the hook under 500 characters.' });
+      const { text } = hookEditSchema.parse(req.body);
       const hook = await prisma.hookCandidate.findFirst({ where: { id: req.params.hookId, project: { workspaceId } } });
       if (!hook) return reply.code(404).send({ error: 'hook_not_found' });
       const updated = await prisma.hookCandidate.update({
         where: { id: hook.id },
         data: { text, meta: { ...((hook.meta as Record<string, unknown>) ?? {}), edited: true } as never },
       });
-      // If this hook is already bound to a song, keep the song title in sync.
+      // If this hook is bound to a song whose title still mirrors the OLD hook,
+      // keep the title in sync. Read-compare-update (no heuristic updateMany).
       if (hook.songId) {
-        await prisma.song.updateMany({ where: { id: hook.songId, workspaceId, title: hook.text.split('\n')[0]!.slice(0, 80) }, data: { title: text.split('\n')[0]!.slice(0, 80) } }).catch(() => {});
+        const oldTitle = hook.text.split('\n')[0]!.slice(0, 80);
+        const song = await prisma.song.findFirst({ where: { id: hook.songId, workspaceId }, select: { id: true, title: true } });
+        if (song && song.title === oldTitle) {
+          await prisma.song.update({ where: { id: song.id }, data: { title: text.split('\n')[0]!.slice(0, 80) } }).catch(() => {});
+        }
       }
       return { hookId: updated.id, text: updated.text };
     }

@@ -11,6 +11,44 @@ const scoreInputSchema = z.object({
 });
 
 export default async function taste(app: FastifyInstance) {
+  /**
+   * Learn-My-Sound profile — what the studio has LEARNED from the artist's own
+   * uploads. Aggregates the SoundReference library (per-genre counts + the
+   * freshest learned traits) so the artist can SEE their sound taking shape.
+   * Free + fast (no AI call — reads the already-learned recipes).
+   */
+  app.get('/sound-profile', async (req) => {
+    const { workspaceId } = requireAuth(req);
+    const refs = await prisma.soundReference.findMany({
+      where: { workspaceId },
+      orderBy: { createdAt: 'desc' },
+      take: 100,
+      select: { id: true, genre: true, title: true, summary: true, createdAt: true, recipe: true },
+    });
+    const byGenre = new Map<string, number>();
+    for (const r of refs) {
+      const g = r.genre ?? 'unknown';
+      byGenre.set(g, (byGenre.get(g) ?? 0) + 1);
+    }
+    // Freshest trait lines per genre — the visible "what it knows about MY sound".
+    const traits: Array<{ genre: string; trait: string; learnedAt: Date }> = [];
+    const seen = new Set<string>();
+    for (const r of refs) {
+      const g = r.genre ?? 'unknown';
+      if (seen.has(g)) continue;
+      seen.add(g);
+      const rec = (r.recipe ?? {}) as { drums?: string; groove?: string; vocalStyle?: string; vibe?: string };
+      const trait = [rec.drums, rec.groove, rec.vocalStyle].filter(Boolean).join(' · ') || r.summary || rec.vibe || '';
+      if (trait) traits.push({ genre: g, trait: trait.slice(0, 220), learnedAt: r.createdAt });
+    }
+    return {
+      totalReferences: refs.length,
+      genres: [...byGenre.entries()].map(([genre, count]) => ({ genre, count })).sort((a, b) => b.count - a.count),
+      traits,
+      lastLearnedAt: refs[0]?.createdAt ?? null,
+    };
+  });
+
   app.post(
     '/score',
     { schema: { body: scoreInputSchema } },

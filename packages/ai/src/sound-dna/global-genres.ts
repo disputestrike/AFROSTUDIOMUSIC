@@ -1838,6 +1838,208 @@ export const GLOBAL_SOUND_DNA: Record<string, SoundDNA> = {
       "https://www.goldminemag.com/columns/the-tone-of-soul/four-more-modern-soul-must-haves-for-2026-so-far/",
       "https://www.masterclass.com/articles/soul-music-guide"
     ]
+  },
+  "latin_pop": {
+    "genre": "latin_pop",
+    "displayName": "Latin Pop / Global Latin Crossover (Urbano-Pop)",
+    "bpmRange": [
+      84,
+      108
+    ],
+    "typicalBpm": 94,
+    "commonKeys": [
+      "A minor",
+      "B minor",
+      "C# minor",
+      "D minor",
+      "E minor",
+      "F# minor",
+      "G minor",
+      "C major",
+      "F major",
+      "G major"
+    ],
+    "modalFlavor": "Natural minor (Aeolian) is the default emotional home; Dorian brightens urbano verses with the raised 6th; the Andalusian/Phrygian descent (flamenco inheritance) colors hooks and guitar figures; harmonic-minor V appears in bolero- and bachata-leaning moments for that classic tropical pull.",
+    "chordProgressions": [
+      {
+        "roman": "i - VI - III - VII",
+        "description": "The modern urbano-pop workhorse: a four-chord minor loop that never resolves, keeping perpetual motion under a dembow groove. Emotional but danceable.",
+        "whereUsed": "Chorus and full-song loops in reggaeton-pop crossovers; the safest current-lane default."
+      },
+      {
+        "roman": "i - iv - VII - III",
+        "description": "Minor loop with a subdominant lean that adds melancholy lift into the relative-major III; documented as a signature move in Bad Bunny-lane hits (e.g. the 'La Noche de Anoche' harmonic family).",
+        "whereUsed": "Verses and moody mid-tempo choruses; pairs well with plucked synth or nylon guitar."
+      },
+      {
+        "roman": "iv - i - VI - V",
+        "description": "The 'Tusa'-family progression: starting on iv creates instant tension, V (major, borrowed from harmonic minor) snaps the loop back with drama.",
+        "whereUsed": "Big diva-pop choruses and string-led breakup anthems."
+      },
+      {
+        "roman": "i - VII - VI - V",
+        "description": "The Andalusian cadence, Latin pop's oldest fingerprint: stepwise descent to a major V, flamenco-derived and instantly 'Latin' to global ears.",
+        "whereUsed": "Guitar intros, bridges, and tropical/bachata-leaning sections."
+      },
+      {
+        "roman": "I - V - vi - IV",
+        "description": "The bright global-pop axis progression, used when the record leans radio-pop over urbano; often voiced on piano or clean electric guitar.",
+        "whereUsed": "Sunny tropi-pop revival cuts and Spanglish crossover singles."
+      },
+      {
+        "roman": "ii-7 - V7 - i (with V7/iv pivots)",
+        "description": "Salsa/bolero harmonic language: functional jazz-adjacent cadences with montuno piano; now re-entering pop via the retro-Caribbean revival.",
+        "whereUsed": "Salsa-pop bridges, bolero intros, and horn-stab turnarounds in 2025-26 revival lanes."
+      }
+    ],
+    "arrangement": [
+      {
+        "section": "Intro",
+        "bars": "2-4",
+        "whatHappens": "Atmospheric hook tease: filtered nylon guitar or bolero-style keys, one vocal ad-lib or producer tag, often no drums; sometimes a folkloric field-recording texture (waves, street sound, panderos) before the beat."
+      },
+      {
+        "section": "Verse 1",
+        "bars": "8-16",
+        "whatHappens": "Dembow enters at reduced energy (kick + rim only, or perc-less 808 pulse). Intimate close-mic vocal, conversational melody, sparse plucks. Sub bass carries harmony."
+      },
+      {
+        "section": "Pre-Chorus",
+        "bars": "4-8",
+        "whatHappens": "Percussion thins or drops entirely; vocal stacks widen; riser or reverse swell; melodic tension climbs to the loop's V or VII. Often a one-bar mute right before the drop."
+      },
+      {
+        "section": "Chorus 1",
+        "bars": "8",
+        "whatHappens": "Full dembow drop: kick, bright rimshot snare, güira/shaker 16ths, sub-808 locked to kick. Hook is short, chantable, repeated twice; harmony stacks in thirds; ad-lib channel answers every line."
+      },
+      {
+        "section": "Verse 2",
+        "bars": "8-16",
+        "whatHappens": "Groove stays but flips a detail (new perc layer, syncopated bass fill, montuno piano sneaking in). Delivery gets more rhythmic/semi-rapped; a guest feature commonly lands here."
+      },
+      {
+        "section": "Chorus 2",
+        "bars": "8",
+        "whatHappens": "Same hook plus additive layers: brass stabs or salsa piano, crowd 'eh-eh' chants, wider ad-libs, timbale fills into every 4th bar."
+      },
+      {
+        "section": "Bridge / Perreo Breakdown",
+        "bars": "4-8",
+        "whatHappens": "Either a stripped perreo section (half-feel, filthy sub, whispered vocal) or a folkloric left-turn: plena panderos, bomba barril, salsa horn mambo, or bachata requinto solo — the 2025-26 signature move."
+      },
+      {
+        "section": "Final Chorus",
+        "bars": "8-16",
+        "whatHappens": "Biggest pass: all percussion, key-consistent vocal ad-lib peaks, gang vocals on hook answers, timbale roll into the downbeat, optional DJ rewind ('¡otra vez!')."
+      },
+      {
+        "section": "Outro",
+        "bars": "2-4",
+        "whatHappens": "Beat strips to guitar/keys + one lead line or spoken outro; folkloric texture or laughter/street ambience tails out. Cold ends are common for playlist skip-resistance."
+      }
+    ],
+    "instrumentation": {
+      "core": [
+        "dembow drum kit (punchy kick + bright rimshot snare)",
+        "sine/808 sub bass",
+        "plucked synth (marimba/steel-pluck hybrid)",
+        "nylon-string Spanish guitar",
+        "warm analog-style pads",
+        "piano"
+      ],
+      "signature": [
+        "bachata requinto guitar lines",
+        "salsa piano montuno",
+        "brass section stabs (trumpets + trombone)",
+        "plena panderos / bomba barril hand drums",
+        "detuned perreo synth lead",
+        "bolero vibrato electric guitar",
+        "accordion or bajo-quinto touches from the regional-Mexican crossover"
+      ],
+      "percussion": [
+        "dembow kick/rim pattern",
+        "güira or güiro 16ths",
+        "congas and bongó",
+        "timbales (fills + bell)",
+        "shaker and maracas",
+        "clave (3-2 son) accents",
+        "hand claps / gang snaps"
+      ],
+      "bass": "Sub-heavy sine or saturated 808 following the kick's tresillo placement, with melodic passing tones into chord changes; in salsa/bachata-leaning cuts, a round fingered electric or baby bass playing tumbao (anticipated bass) figures.",
+      "keys": "Dark felt piano or Rhodes for verses; salsa montuno patterns (syncopated octave-double vamps) for revival choruses; warm juno-style pads glueing the midrange; occasional bolero organ.",
+      "guitar": "Nylon-string arpeggios and Andalusian runs as the melodic identity layer; bachata-style requinto with heavy chorus/delay for revival cuts; muted funk-pop electric skanks on brighter tropi-pop songs."
+    },
+    "groove": {
+      "feel": "Dembow: the boom-ch-boom-chick two-beat cell under almost everything, mid-tempo (90s BPM), hips-first rather than feet-first; tropical revival cuts swap in bachata derecho or merengue drive at higher tempos.",
+      "swing": "Mostly straight 16ths with a light 5-12% swing on shakers/güira; percussion humanized with early congas and slightly late snare for lean-back pocket.",
+      "syncopation": "Tresillo (3+3+2) logic everywhere: kick placement, bassline anticipations, vocal phrasing landing on the 'and' of 2; clave-consistent accents keep folkloric layers honest.",
+      "pocketNotes": "Kick and sub must move as one voice — tune the 808 to the key and sidechain nothing audible. The rimshot snare sits on 2 and 4 equivalents of the dembow cell, bright and dry. Leave air at 100-2k for the vocal; the groove reads through kick, rim, and güira alone."
+    },
+    "vocalStyle": {
+      "delivery": "Alternates intimate, breathy sung hooks with rhythmic semi-rapped verses; melodic tuning is audible but musical (polished, not hyper-warped); phrasing rides the tresillo, front-loading syllables and resting on beat 3; falsetto flips for emotional peaks.",
+      "adLibs": [
+        "¡Ey!",
+        "¡Wuh!",
+        "¡Dímelo!",
+        "¡Mera!",
+        "¡Baby!",
+        "¡Jeje!",
+        "¡Rrra!",
+        "¡Uff!",
+        "¡Vamo' allá!"
+      ],
+      "harmonyApproach": "Doubled lead through choruses with a third above; octave-down whisper track for intimacy; wide stacked 'oohs' as pads; a dedicated ad-lib channel panned off-center answering every hook line, call-and-response like a live corillo.",
+      "languageMix": "Spanish-first with strategic Spanglish hook fragments for global playlists; Caribbean slang (Puerto Rican and Colombian) signals lane authenticity; a full English line is rare now — 2025-26 hits prove Spanish needs no translation."
+    },
+    "signatureElements": [
+      "Dembow drop after a drum-less sung intro",
+      "One-bar full mute before the chorus lands",
+      "Folkloric interlude (plena, bomba, salsa mambo) as the bridge",
+      "Pitch-shifted vocal chop hook doubling the plucks",
+      "Crowd 'eh-eh' gang chants answering the hook",
+      "Timbale roll + air-horn-free DJ rewind into last chorus",
+      "Bachata requinto or salsa piano appearing only in the final third",
+      "Street-ambience / voice-note outro"
+    ],
+    "referenceArtists": [
+      "Bad Bunny",
+      "Karol G",
+      "Rauw Alejandro",
+      "Feid",
+      "Shakira",
+      "Peso Pluma",
+      "Manuel Turizo",
+      "Myke Towers",
+      "Young Miko",
+      "Maluma",
+      "Camilo",
+      "Sebastián Yatra",
+      "Rosalía",
+      "Grupo Frontera"
+    ],
+    "mixTraits": {
+      "lowEnd": "Mono below ~100 Hz; sine-808 tuned to key, living at 40-60 Hz, locked phase-tight with the kick; high-pass everything else at 100+ so the sub owns the floor without mud.",
+      "drums": "Kick punchy and short (beater click ~3-4k), rimshot snare bright and bone-dry up front; güira/shakers crisp at 8-12k giving the genre its air; congas/timbales bussed with short room, never washed.",
+      "vocals": "Loud and forward (top of the mix, urbano convention); polished tuning, de-essed silk top, slap delay (1/8 dotted) plus small plate; ad-lib channel darker, wider, and 2-3 dB back.",
+      "space": "Verses dry and intimate; choruses open via stereo stacks and pad width rather than long reverbs; folkloric percussion kept naturally roomy for authenticity contrast.",
+      "loudness": "Streaming-competitive: roughly -7.5 to -8.5 LUFS-I on club-leaning masters, a touch more dynamic (-9 to -10) on tropical/bachata revival cuts; preserve the mute-bar drops — the contrast is the loudness."
+    },
+    "productionPromptSnippet": "Mid-90s BPM Latin urbano-pop: dembow kick-and-rimshot groove with güira 16ths, key-tuned sub-808 moving in tresillo, dark minor four-chord loop (i-VI-III-VII) on plucked synth and nylon Spanish guitar, intimate breathy Spanish lead vocal with stacked-third chorus harmonies and off-center ad-libs, one-bar mute into a chantable hook, salsa piano montuno and brass stabs entering the final chorus, folkloric hand-percussion bridge, bright dry drums, forward polished vocal, cold ambient outro.",
+    "freshnessGuardrails": "Do NOT recycle 2017-era tropical-house 'Despacito' flutes, EDM moombahton drops, or stock 'Latin trap siren' cliches — the lane has moved to organic folkloric color over dembow. No verbatim melodies, lyrics, or interpolations of existing songs; artists listed are style lanes only. Keep Spanish lyric culture authentic (PR/Colombian slang used correctly or not at all). Live-feel percussion (congas, panderos, timbales) over quantized loop packs. Chantable original hooks, not soundalike hooks.",
+    "sources": [
+      "https://www.billboard.com/lists/latin-music-trends-2026-predictions/",
+      "https://en.wikipedia.org/wiki/Deb%C3%AD_Tirar_M%C3%A1s_Fotos",
+      "https://en.wikipedia.org/wiki/2026_in_Latin_music",
+      "https://www.rollingstone.com/music/music-album-reviews/rauw-alejandro-cosa-nuestra-review-1235166219/",
+      "https://remezcla.com/music/listen-silencio-proves-why-rauw-alejandro-should-drop-a-bachata-album-next/",
+      "https://bpmcalc.com/genres/reggaeton/",
+      "https://www.mixgraph.io/bpm-for/reggaeton",
+      "https://orphiq.com/resources/what-is-dembow",
+      "https://unison.audio/reggaeton-chord-progressions/",
+      "https://soundsandcolours.com/subjects/travel/why-latin-american-music-owns-the-global-moment-175323/",
+      "https://www.billboard.com/pro/bad-bunny-karol-g-2025-billboard-year-end-latin-charts/"
+    ]
   }
 };
 
@@ -2560,5 +2762,69 @@ export const GLOBAL_ENRICHMENT: Record<string, GenreEnrichment> = {
       "https://www.goldminemag.com/columns/the-tone-of-soul/four-more-modern-soul-must-haves-for-2026-so-far/"
     ],
     "researchedAt": "2026-07-05"
+  },
+  "latin_pop": {
+    "genre": "latin_pop",
+    "trendingProductionMoves": [
+      "Folkloric layers over dembow: plena panderos, bomba barril, and jibaro cuatro woven into urbano-pop (the DTMF blueprint that won Album of the Year at the 2026 Grammys and 2025 Latin Grammys)",
+      "Salsa revival inside pop records: montuno piano, brass mambos, and baby-bass tumbao as chorus lifts (Rauw Alejandro's Cosa Nuestra lane)",
+      "Bachata-pop revival: Romeo Santos-school requinto guitar and derecho rhythm framed with modern pop mixes",
+      "Tropical maximalism: merengue, vallenato, and cumbia colors in female-led pop (Karol G's Tropicoqueta lane)",
+      "Latin x Afrobeats hybrids: log-drum bounce and 6/8-adjacent shaker feels under Spanish toplines",
+      "Corridos tumbados bleed-through: charchetas, tololoche, and requinto phrasing crossing from regional Mexican into urbano collabs",
+      "Interpolation-free nostalgia: retro bolero intros, tape hiss, and street-ambience outros instead of cleared samples",
+      "One-bar full mutes and DJ rewinds as arrangement punctuation for short-form video cut points"
+    ],
+    "currentSubgenres": [
+      "Urbano-pop crossover (reggaeton-pop core)",
+      "Alt-reggaeton / folkloric fusion (plena-bomba-jibaro infused)",
+      "Tropi-pop revival (merengue/vallenato-forward diva pop)",
+      "Bachata-pop revival",
+      "Salsa-pop retro (Afro-Caribbean homage records)",
+      "Latin-Afrobeats fusion",
+      "Corridos-tumbados-influenced pop collabs",
+      "Guaracha / Latin tech-house club edits (remix lane)"
+    ],
+    "whatMakesItHitNow": [
+      "Cultural specificity wins globally: Spanish-language, homeland-rooted records now take general-field Grammys — authenticity is the crossover strategy, not English hooks",
+      "Bad Bunny's 'DTMF' held #1 on Hot Latin Songs for a record 57 weeks, proving folkloric-urbano fusion has mainstream staying power",
+      "Billboard's April 2025 split into Latin Pop / Latin Rhythm / Regional Mexican / Tropical subcharts reflects (and rewards) lane-blending records that place on multiple charts",
+      "Organic percussion and live tropical instrumentation differentiate against a decade of quantized dembow loops",
+      "Chantable, gang-vocal hooks and mute-bar drops are engineered for short-form video edits",
+      "Women-led tropical pop is headline-scale (Karol G is Coachella 2026's first female Latin headliner)",
+      "Cross-genre features (regional Mexican x urbano, Latin x Afrobeats) generate event-release moments"
+    ],
+    "currentReferenceLanes": [
+      "Bad Bunny folkloric-urbano (plena/salsa-infused alt-reggaeton with emotional weight)",
+      "Karol G tropical maximalist diva pop (merengue-vallenato color, big-sisterhood energy)",
+      "Rauw Alejandro retro Afro-Caribbean (salsa/bolero/bachata homage with modern low end)",
+      "Feid Medellin neon-reggaeton pop (minimal, melodic, green-lit late-night mood)",
+      "Manuel Turizo bachata-pop balladry (requinto-led heartbreak at pop scale)",
+      "Peso Pluma x urbano crossover (corridos phrasing over hybrid pop production)",
+      "Young Miko playful perreo-pop (conversational flow, minimal beat, meme-ready hooks)"
+    ],
+    "freshTokens": [
+      "plena panderos over dembow",
+      "salsa montuno chorus lift",
+      "bachata requinto feature",
+      "afro-latin log-drum bounce",
+      "perreo breakdown half-feel",
+      "tropi-pop guira shimmer",
+      "bolero intro tape hiss",
+      "one-bar mute into hook",
+      "gang-chant hook answers",
+      "street-ambience cold outro"
+    ],
+    "bpmDriftNote": "The reggaeton-pop core is stable at 90-97 BPM (95 is the de facto radio standard; medians cluster 92-95). The 2025-26 tropical revival stretches the lane upward — bachata-pop sits ~118-130 and merengue-leaning cuts push 120+ — while moody perreo and bolero-tinged openers dip to the mid-80s. Author at 94 and let sections breathe rather than chasing tempo novelty.",
+    "confidence": "high",
+    "sources": [
+      "https://www.billboard.com/lists/latin-music-trends-2026-predictions/",
+      "https://en.wikipedia.org/wiki/Deb%C3%AD_Tirar_M%C3%A1s_Fotos",
+      "https://en.wikipedia.org/wiki/2026_in_Latin_music",
+      "https://www.rollingstone.com/music/music-album-reviews/rauw-alejandro-cosa-nuestra-review-1235166219/",
+      "https://remezcla.com/music/listen-silencio-proves-why-rauw-alejandro-should-drop-a-bachata-album-next/",
+      "https://bpmcalc.com/genres/reggaeton/"
+    ],
+    "researchedAt": "2026-07-06"
   }
 };

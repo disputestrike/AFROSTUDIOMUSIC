@@ -7,6 +7,7 @@
  * taste instead of resetting every session.
  */
 import { prisma } from '@afrohit/db';
+import { embed } from '@afrohit/ai';
 
 export async function recordFeedback(opts: {
   workspaceId: string;
@@ -16,15 +17,17 @@ export async function recordFeedback(opts: {
   sourceKind: 'hook' | 'lyric';
   sourceId: string;
 }): Promise<void> {
-  // Store the feedback chunk. Retrieval (memoryContext) uses recency, so no
-  // embedding is needed yet. When semantic search is added later, compute an
-  // embedding here and store it in the `embedding` JSON column.
+  // Semantic memory: compute the embedding NOW so the taste graph supports
+  // similarity retrieval, not just recency. Best-effort — feedback must never
+  // be lost because the embedding provider blinked (embedding stays null).
+  const embedding = await embed(opts.content.slice(0, 2_000)).catch(() => null);
   await prisma.artistMemoryChunk.create({
     data: {
       workspaceId: opts.workspaceId,
       artistId: opts.artistId,
       kind: opts.kind,
       content: opts.content.slice(0, 2_000),
+      embedding: (embedding ?? undefined) as never,
       meta: { sourceKind: opts.sourceKind, sourceId: opts.sourceId } as never,
     },
   });

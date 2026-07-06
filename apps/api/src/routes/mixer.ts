@@ -28,8 +28,9 @@ async function resolveSong(workspaceId: string, projectId: string, songId?: stri
 
 async function loadTracks(projectId: string, songId: string) {
   const [beats, vocals, lastConsole] = await Promise.all([
-    prisma.beatAsset.findMany({ where: { songId, projectId }, orderBy: { createdAt: 'asc' } }),
-    prisma.vocalRender.findMany({ where: { songId, projectId }, orderBy: { createdAt: 'asc' } }),
+    // Only approved assets belong on the console (mix/master/export gate on approved).
+    prisma.beatAsset.findMany({ where: { songId, projectId, approved: true }, orderBy: { createdAt: 'asc' } }),
+    prisma.vocalRender.findMany({ where: { songId, projectId, approved: true }, orderBy: { createdAt: 'asc' } }),
     prisma.mix.findFirst({
       where: { songId, projectId, preset: 'console' },
       orderBy: { createdAt: 'desc' },
