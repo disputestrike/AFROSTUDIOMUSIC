@@ -362,7 +362,8 @@ export const rightsInputSchema = z.object({
 // ---------- Drop Machine (batch generate → rank → shortlist) ---------------
 
 export const dropBatchSchema = z.object({
-  theme: z.string().min(3).max(500),
+  // Roomy: album next-tracks prepend the anchor's styleBrief to the theme.
+  theme: z.string().min(3).max(2000),
   count: z.number().int().min(1).max(6).default(3),
   genre: z.string().max(40).default('afrobeats'),
   // FUSION: extra genres blended into the primary (e.g. amapiano × drill) —

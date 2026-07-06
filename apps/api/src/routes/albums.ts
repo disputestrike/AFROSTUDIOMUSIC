@@ -116,7 +116,8 @@ export default async function albums(app: FastifyInstance) {
 
     const engine = (['suno', 'ace_step', 'minimax'] as const).find((e) => e === anchor.beats[0]?.provider);
     const input = dropBatchSchema.parse({
-      theme: `${album.styleBrief ?? ''}\n\nNEXT ALBUM TRACK: ${theme?.trim() || 'a fresh song in exactly this sound — same voice, same flow, new story.'}`,
+      // Defensive slice: styleBrief is bounded, but never let a long one 500 the job.
+      theme: `${(album.styleBrief ?? '').slice(0, 1500)}\n\nNEXT ALBUM TRACK: ${(theme?.trim() || 'a fresh song in exactly this sound — same voice, same flow, new story.').slice(0, 300)}`,
       count: 1,
       genre: anchor.project.genre,
       bpm: anchor.project.bpm ?? 103,
