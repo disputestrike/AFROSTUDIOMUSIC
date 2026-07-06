@@ -185,6 +185,94 @@ export async function measureAudioQuality(input: string): Promise<AudioQuality> 
   }
 }
 
+// ---------------------------------------------------------------------------
+// MATERIAL LAYER — the arranger's hands. Real loops in, a real beat out.
+// ---------------------------------------------------------------------------
+
+/** Trim raw audio to an exact N-bar loop at the given BPM (4/4), gentle edges. */
+export async function trimToLoop(input: Buffer, bpm: number, bars: number, startS = 0.5): Promise<Buffer> {
+  const dur = (60 / bpm) * 4 * bars;
+  const dir = await mkdtemp(join(tmpdir(), 'loop-'));
+  const inPath = join(dir, 'in');
+  const outPath = join(dir, 'loop.wav');
+  try {
+    await writeFile(inPath, input);
+    // Tiny declick fades at the edges so the loop seam doesn't pop.
+    await runFfmpeg([
+      '-ss', String(startS), '-t', dur.toFixed(3), '-i', inPath,
+      '-af', `afade=t=in:d=0.01,afade=t=out:st=${(dur - 0.015).toFixed(3)}:d=0.015`,
+      '-ar', '44100', '-ac', '2', outPath,
+    ]);
+    return await readFile(outPath);
+  } finally {
+    await rm(dir, { recursive: true, force: true }).catch(() => {});
+  }
+}
+
+export interface AssemblyLayer {
+  /** local temp path to the loop file */
+  path: string;
+  /** loop's native bpm (time-stretched to the target) */
+  sourceBpm: number;
+  /** relative gain 0..1.5 */
+  gain: number;
+}
+export interface AssemblySection {
+  name: string; // intro | verse | hook | outro …
+  bars: number;
+  /** indexes into the layers array — which material plays in this section */
+  layerIdx: number[];
+}
+
+/**
+ * Assemble a full beat from real material: each section loops its layers to the
+ * section length (time-stretched to the target BPM), mixes them, then sections
+ * concat into one continuous WAV. Deterministic — the exact beat, every time.
+ */
+export async function assembleBeat(opts: {
+  layers: AssemblyLayer[];
+  sections: AssemblySection[];
+  targetBpm: number;
+}): Promise<Buffer> {
+  const dir = await mkdtemp(join(tmpdir(), 'assemble-'));
+  try {
+    const sectionFiles: string[] = [];
+    for (let s = 0; s < opts.sections.length; s++) {
+      const sec = opts.sections[s]!;
+      const secDur = (60 / opts.targetBpm) * 4 * sec.bars;
+      const active = sec.layerIdx.map((i) => opts.layers[i]).filter(Boolean) as AssemblyLayer[];
+      if (!active.length) continue;
+      const inputs: string[] = [];
+      const chains: string[] = [];
+      const labels: string[] = [];
+      active.forEach((l, i) => {
+        // -stream_loop -1 + -t: loop the material to the section length.
+        inputs.push('-stream_loop', '-1', '-t', (secDur + 1).toFixed(3), '-i', l.path);
+        // Time-stretch to the target tempo (atempo valid 0.5–2.0 per stage).
+        const ratio = Math.min(Math.max(opts.targetBpm / l.sourceBpm, 0.5), 2.0);
+        chains.push(`[${i}:a]aformat=channel_layouts=stereo,atempo=${ratio.toFixed(4)},volume=${l.gain.toFixed(2)}[l${i}]`);
+        labels.push(`[l${i}]`);
+      });
+      const outPath = join(dir, `sec${s}.wav`);
+      const filter =
+        active.length === 1
+          ? `${chains[0]!.replace(/\[l0\]$/, '[out]')}`
+          : `${chains.join(';')};${labels.join('')}amix=inputs=${active.length}:duration=longest:normalize=0[out]`;
+      await runFfmpeg([...inputs, '-filter_complex', filter, '-map', '[out]', '-t', secDur.toFixed(3), '-ar', '44100', '-ac', '2', outPath]);
+      sectionFiles.push(outPath);
+    }
+    if (!sectionFiles.length) throw new Error('assembly produced no sections');
+    // Concat the sections into the full beat.
+    const listPath = join(dir, 'list.txt');
+    await writeFile(listPath, sectionFiles.map((f) => `file '${f.replace(/\\/g, '/')}'`).join('\n'));
+    const outPath = join(dir, 'beat.wav');
+    await runFfmpeg(['-f', 'concat', '-safe', '0', '-i', listPath, '-ar', '44100', '-ac', '2', outPath]);
+    return await readFile(outPath);
+  } finally {
+    await rm(dir, { recursive: true, force: true }).catch(() => {});
+  }
+}
+
 export interface MixPreset {
   /** filter applied to the vocal before mixing */
   vocalChain: string;

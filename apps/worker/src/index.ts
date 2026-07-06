@@ -7,6 +7,7 @@ import pino from 'pino';
 import * as Sentry from '@sentry/node';
 
 import { processMusic } from './processors/music';
+import { processForgeMaterial, processAssembleBeat } from './processors/material';
 import { processAnalyze } from './processors/analyze';
 import { processSnippet } from './processors/snippet';
 import { processStems } from './processors/stems';
@@ -58,6 +59,8 @@ const workers = [
     if (job.name === 'analyze-audio') await processAnalyze(job.data as never);
     else if (job.name === 'snippet') await processSnippet(job.data as never);
     else if (job.name === 'stems') await processStems(job.data as never);
+    else if (job.name === 'forge-material') await processForgeMaterial(job.data as never);
+    else if (job.name === 'assemble-beat') await processAssembleBeat(job.data as never);
     else await processMusic(job.data as never);
   }),
   makeWorker('voice', async (job: { data: never; name: string }) => {

@@ -44,6 +44,33 @@ export async function processStems(p: StemsPayload) {
     await prisma.stem.deleteMany({ where: { beatId: beat.id, role: { in: roles } } });
     await prisma.$transaction(ingested.map((s) => prisma.stem.create({ data: { beatId: beat.id, role: s.role, url: s.url, format: 'mp3' } })));
 
+    // MATERIAL HARVEST: the artist's own non-vocal stems join the material
+    // library — real, owned audio the arranger can place into future beats.
+    const project = await prisma.project.findUnique({ where: { id: p.projectId }, select: { genre: true } });
+    const ROLE_MAP: Record<string, string> = { drums: 'drums', bass: 'bass', other: 'chords', instrumental: 'other' };
+    await Promise.all(
+      ingested
+        .filter((s) => s.role !== 'vocals')
+        .map((s) =>
+          prisma.materialAsset
+            .create({
+              data: {
+                workspaceId: p.workspaceId,
+                kind: 'stem',
+                role: ROLE_MAP[s.role] ?? 'other',
+                genre: project?.genre ?? null,
+                bpm: beat.bpm,
+                keySignature: beat.keySignature,
+                durationS: beat.duration,
+                url: s.url,
+                source: 'artist_stem',
+                meta: { fromBeatId: beat.id, fromSongId: p.songId, stemRole: s.role } as never,
+              },
+            })
+            .catch((err) => console.warn('[stems] material harvest failed:', (err as Error)?.message))
+        )
+    );
+
     await markSucceeded(p.jobId, {
       beatId: beat.id,
       stems: ingested.length,

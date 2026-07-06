@@ -59,6 +59,7 @@ model Workspace {
   ledgerEntries CreditLedger[]
   analyticsEvents AnalyticsEvent[]
   albums        Album[]
+  materials     MaterialAsset[]
 
   @@index([slug])
 }
@@ -294,6 +295,30 @@ model SongBrief {
 // ===========================================================================
 // Songs (a project can have multiple finished song versions)
 // ===========================================================================
+
+// THE MATERIAL LAYER — real, owned musical material the AI ARRANGES instead of
+// asking a text-to-audio model to hallucinate everything. Sources: the artist's
+// own separated stems + loops the studio forged itself (both fully owned).
+// This is the "exact beat" foundation.
+model MaterialAsset {
+  id           String   @id @default(cuid())
+  workspaceId  String
+  kind         String   // 'loop' | 'stem'
+  role         String   // 'drums' | 'log_drum' | 'bass' | 'percussion' | 'chords' | 'melody' | 'other'
+  genre        String?
+  bpm          Int?
+  keySignature String?
+  bars         Int?
+  durationS    Float?
+  url          String
+  source       String   // 'forged' (studio-generated isolated loop) | 'artist_stem'
+  meta         Json?    // qc, forge prompt, origin beat/song ids
+  createdAt    DateTime @default(now()) @db.Timestamptz(6)
+
+  workspace    Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@index([workspaceId, genre, role])
+}
 
 // An album anchored to ONE song's sound: the anchor's voice/flow/production
 // defines the style, and every "next track" is generated INSIDE that lane.

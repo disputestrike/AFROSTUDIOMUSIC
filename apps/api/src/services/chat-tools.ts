@@ -72,6 +72,10 @@ export async function runChatTool(args: Ctx & { name: string; args: Record<strin
       return setReleaseRightsTool(ctx, a as never);
     case 'predict_hit':
       return predictHitTool(ctx, a.songId ? String(a.songId) : undefined);
+    case 'forge_materials':
+      return forgeMaterialsTool(ctx, a as never);
+    case 'assemble_beat':
+      return assembleBeatTool(ctx, a as never);
     case 'separate_stems':
       return separateStemsTool(ctx, a.songId ? String(a.songId) : undefined, a.mode === 'full' ? 'full' : 'instrumental');
     default:
@@ -709,6 +713,47 @@ async function separateStemsTool(ctx: Ctx, songId: string | undefined, mode: 'in
   const job = await prisma.providerJob.create({ data: { workspaceId: ctx.workspaceId, projectId: song.projectId, kind: 'stems', provider: 'replicate', status: 'QUEUED', inputJson: { songId: song.id, beatId: beat.id, mode } as never } });
   await enqueue({ queue: ctx.app.queues.music, name: 'stems', payload: { jobId: job.id, workspaceId: ctx.workspaceId, projectId: song.projectId, songId: song.id, beatId: beat.id, mode } });
   return { jobId: job.id, status: 'queued', mode, note: mode === 'instrumental' ? 'Instrumental will appear in the song download shortly.' : 'Stems (vocals/drums/bass/other) will appear in the song download shortly.' };
+}
+
+/** Forge isolated loops (the material layer's raw stock) for a genre. */
+async function forgeMaterialsTool(ctx: Ctx, a: { genre: string; bpm?: number }) {
+  const bpm = Number(a.bpm ?? 108);
+  const roles = /amapiano/.test(a.genre) ? ['log_drum', 'drums', 'percussion', 'chords'] : ['drums', 'percussion', 'bass', 'chords'];
+  const jobs: Array<{ role: string; jobId: string }> = [];
+  for (const role of roles) {
+    const charge = await ctx.app.chargeCredits({ workspaceId: ctx.workspaceId, key: 'beat_idea_short_30s' });
+    if (!charge.ok) return { error: 'insufficient_credits', forged: jobs };
+    const job = await prisma.providerJob.create({
+      data: { workspaceId: ctx.workspaceId, kind: 'material', provider: 'replicate', status: 'QUEUED', inputJson: { genre: a.genre, role, bpm } as never },
+    });
+    await enqueue({ queue: ctx.app.queues.music, name: 'forge-material', payload: { jobId: job.id, workspaceId: ctx.workspaceId, genre: a.genre, role, bpm } });
+    jobs.push({ role, jobId: job.id });
+  }
+  return { forging: jobs, note: `Forging ${jobs.length} isolated ${a.genre} loops at ${bpm}bpm. QC-passed loops land in the material library; then call assemble_beat.` };
+}
+
+/** Assemble the EXACT beat from real material (deterministic — no hallucination). */
+async function assembleBeatTool(ctx: Ctx, a: { genre: string; bpm?: number }) {
+  if (!ctx.projectId) return { error: 'no_project_in_thread' };
+  const bpm = Number(a.bpm ?? 108);
+  const rows = await prisma.materialAsset.findMany({ where: { workspaceId: ctx.workspaceId, genre: a.genre }, orderBy: { createdAt: 'desc' }, take: 100 });
+  const wanted = /amapiano/.test(a.genre) ? ['log_drum', 'drums', 'percussion', 'chords'] : ['drums', 'percussion', 'bass', 'chords'];
+  const GAINS: Record<string, number> = { drums: 1.0, log_drum: 1.05, bass: 0.95, percussion: 0.8, chords: 0.7 };
+  const picks: Array<{ id: string; url: string; sourceBpm: number; role: string; gain: number }> = [];
+  for (const role of wanted) {
+    const best = rows
+      .filter((m) => m.role === role && m.bpm && Math.abs(m.bpm - bpm) / bpm <= 0.15)
+      .sort((x, y) => (x.source === 'artist_stem' ? -1 : 0) - (y.source === 'artist_stem' ? -1 : 0) || Math.abs((x.bpm ?? 0) - bpm) - Math.abs((y.bpm ?? 0) - bpm))[0];
+    if (best) picks.push({ id: best.id, url: best.url, sourceBpm: best.bpm ?? bpm, role, gain: GAINS[role] ?? 0.9 });
+  }
+  if (picks.length < 2) return { error: 'not_enough_material', have: picks.map((p) => p.role), note: `Forge ${a.genre} loops first (forge_materials), then assemble.` };
+  const charge = await ctx.app.chargeCredits({ workspaceId: ctx.workspaceId, key: 'beat_idea_short_30s' });
+  if (!charge.ok) return { error: 'insufficient_credits' };
+  const job = await prisma.providerJob.create({
+    data: { workspaceId: ctx.workspaceId, projectId: ctx.projectId, kind: 'music', provider: 'material', status: 'QUEUED', inputJson: { assemble: true, genre: a.genre, bpm, picks: picks.map((p) => p.role) } as never },
+  });
+  await enqueue({ queue: ctx.app.queues.music, name: 'assemble-beat', payload: { jobId: job.id, workspaceId: ctx.workspaceId, projectId: ctx.projectId, bpm, genre: a.genre, picks } });
+  return { jobId: job.id, status: 'queued', roles: picks.map((p) => p.role), note: 'Assembling the EXACT beat from real material — deterministic layers, real placement.' };
 }
 
 async function setReleaseRightsTool(ctx: Ctx, a: { songId: string; splitSheet?: Array<{ name: string; role: string; share: number }>; nativeReviewOk?: boolean }) {

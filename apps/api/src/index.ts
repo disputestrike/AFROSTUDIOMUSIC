@@ -39,6 +39,7 @@ import admin from './routes/admin';
 import reviews from './routes/reviews';
 import songs from './routes/songs';
 import albums from './routes/albums';
+import materials from './routes/materials';
 import uploads from './routes/uploads';
 import mixer from './routes/mixer';
 import settings from './routes/settings';
@@ -118,6 +119,7 @@ async function bootstrap() {
       await api.register(reviews, { prefix: '/reviews' });
       await api.register(songs, { prefix: '/songs' });
       await api.register(albums, { prefix: '/albums' });
+      await api.register(materials, { prefix: '/materials' });
       await api.register(uploads, { prefix: '/uploads' });
       await api.register(settings, { prefix: '/settings' });
       await api.register(publicRoutes, { prefix: '/public' });

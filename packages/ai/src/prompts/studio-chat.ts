@@ -323,6 +323,28 @@ export const STUDIO_CHAT_TOOLS = [
   },
   {
     type: 'function' as const,
+    name: 'forge_materials',
+    description:
+      "MATERIAL LAYER step 1: forge ISOLATED, owned loops (solo drums / log drum / bass / percussion / chord bed) for a genre into the material library. Use when the user wants 'the exact beat' or real arranged material and the library is empty for that genre.",
+    parameters: {
+      type: 'object',
+      properties: { genre: { type: 'string' }, bpm: { type: 'integer', default: 108 } },
+      required: ['genre'],
+    },
+  },
+  {
+    type: 'function' as const,
+    name: 'assemble_beat',
+    description:
+      "MATERIAL LAYER step 2: ASSEMBLE the exact beat by arranging real loops from the material library (time-stretched, layered per section — deterministic, not hallucinated). Needs forged/harvested material for the genre first (forge_materials).",
+    parameters: {
+      type: 'object',
+      properties: { genre: { type: 'string' }, bpm: { type: 'integer', default: 108 } },
+      required: ['genre'],
+    },
+  },
+  {
+    type: 'function' as const,
     name: 'separate_stems',
     description:
       'Split a rendered song into a downloadable INSTRUMENTAL (mode=instrumental) or full stems — vocals/drums/bass/other (mode=full) for remixing. Use when the user wants the instrumental or stems.',
