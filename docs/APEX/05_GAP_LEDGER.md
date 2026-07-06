@@ -72,6 +72,14 @@ with reason; OWNER = needs an operator/content decision._
 | Self-improving loop | **PARTIAL** — eval harness v1 + semantic memory embeddings shipped; nightly trend-refresh cron LEDGER (needs Tavily quota + Owner cost sign-off) |
 | Real-material layer ("exact beat") | **LEDGER (L)** — STRATEGY.md Phase 5; needs Owner licensing/cost decision on producer packs |
 
+## Found by the BROWSER CLICK-THROUGH (post-K2 — curl tests could never catch these)
+
+| # | Item | Status |
+|---|---|---|
+| CT-1 (**P1, the Owner's "does nothing" bug**) | /drop held one HTTP request open 1–3 min of LLM work — real-world connections die mid-request (observed live: `ECONNRESET → 500` after minutes of silent waiting). Create + Listen both consumed it synchronously. | **FIXED** (436f73f) — drop replies 202+jobId in ~1s, pipeline runs detached onto a ProviderJob, clients poll; verified live: probe returned `{jobId,status:queued}` in 1s |
+| CT-2 (P1) | Listen page make-song showed only a tiny gray status line for the whole multi-minute flow — reads as a dead button; errors equally invisible | **FIXED** (690df77) — visible stepper + elapsed + loud error box + inline playback |
+| CT-3 (P2) | Catalog rendered a FALSE "No songs yet" when the songs fetch failed (`.catch(() => [])`) — an outage masquerades as an empty library | **FIXED** — failure now renders an honest error panel distinct from empty |
+
 ## P3 (polish)
 
 - 2 TODO comments; unused provider scaffolds (eleven/stable_audio/mubert docs-only) — keep, they're honest adapters; documented in 02_FEATURE_MATRIX.
