@@ -1,7 +1,7 @@
 import type { FastifyInstance } from 'fastify';
 import { prisma } from '@afrohit/db';
 import { generateLyricsInputSchema } from '@afrohit/shared';
-import { prompts, responsesJson } from '@afrohit/ai';
+import { prompts, responsesJson, soundBrief } from '@afrohit/ai';
 import { requireAuth } from '../middleware/auth';
 
 export default async function lyrics(app: FastifyInstance) {
@@ -55,6 +55,7 @@ export default async function lyrics(app: FastifyInstance) {
           hookText: hook.text,
           cleanVersion: input.cleanVersion,
           languageMix: input.languageMix as never,
+          soundDna: [soundBrief(project.genre).brief, prompts.hitCraftBrief('lyric')].filter(Boolean).join('\n\n'),
         }),
         temperature: 0.8,
         maxOutputTokens: 4_000,

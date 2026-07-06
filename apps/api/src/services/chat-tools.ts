@@ -134,7 +134,7 @@ async function generateHooks(ctx: Ctx, count: number) {
   const tasteMemory = await memoryContext(project.artistId);
   const trendData = await researchTrends({ genre: project.genre }).catch(() => null);
   const trends = trendData?.digest;
-  const soundDna = [soundBrief(project.genre).brief, await learnedReferenceBrief(ctx.workspaceId, project.genre)].filter(Boolean).join('\n\n');
+  const soundDna = [soundBrief(project.genre).brief, await learnedReferenceBrief(ctx.workspaceId, project.genre), prompts.hitCraftBrief('hook')].filter(Boolean).join('\n\n');
   const result = await generateJson<{ hooks: Array<{ text: string; language?: string[]; bpm?: number; syllablePattern?: string; melodyNotes?: string; callResponse?: boolean }> }>({
     system: prompts.HOOK_SYSTEM,
     user: prompts.hookUserPrompt({ artist: project.artist as never, brief: project.briefs[0] as never, count, tasteMemory, trends, soundDna }),
@@ -150,7 +150,8 @@ async function generateHooks(ctx: Ctx, count: number) {
     drafts,
     tasteMemory,
     trends,
-    soundDna,
+    // A&R judges with the hit-craft rubric (what correlates with streams) too.
+    soundDna: [soundDna, prompts.arCraftRubric()].filter(Boolean).join('\n\n'),
   });
 
   const rows = refined
@@ -258,7 +259,7 @@ async function generateLyrics(ctx: Ctx, hookId: string, cleanVersion: boolean) {
       brief: hook.project.briefs[0] as never,
       hookText: hook.text,
       cleanVersion,
-      soundDna: [soundBrief(hook.project.genre).brief, await learnedReferenceBrief(ctx.workspaceId, hook.project.genre)].filter(Boolean).join('\n\n'),
+      soundDna: [soundBrief(hook.project.genre).brief, await learnedReferenceBrief(ctx.workspaceId, hook.project.genre), prompts.hitCraftBrief('lyric')].filter(Boolean).join('\n\n'),
     }),
     temperature: 0.8,
     maxTokens: 4_000,

@@ -45,8 +45,10 @@ export default async function hooks(app: FastifyInstance) {
       // Live trends (Tavily) so hooks reflect what's popping right now.
       const trendData = await researchTrends({ genre: project.genre }).catch(() => null);
       const trends = trendData?.digest;
-      // Genre Sound DNA so hooks sit in the lane's pocket/arrangement.
-      const soundDna = soundBrief(project.genre).brief;
+      // Genre Sound DNA + HIT-CRAFT (mode typology + hook mechanics + code-switch
+      // rules distilled from the top-streamed-songs study) so hooks sit in the
+      // lane's pocket AND follow what actually makes hooks hit.
+      const soundDna = [soundBrief(project.genre).brief, prompts.hitCraftBrief('hook')].filter(Boolean).join('\n\n');
 
       const result = await generateJson<{
         hooks: Array<{
@@ -81,7 +83,8 @@ export default async function hooks(app: FastifyInstance) {
         drafts,
         tasteMemory,
         trends,
-        soundDna,
+        // A&R judges with the hit-craft rubric (what correlates with streams) too.
+        soundDna: [soundDna, prompts.arCraftRubric()].filter(Boolean).join('\n\n'),
       });
 
       const langFilter = (arr: string[]) =>
