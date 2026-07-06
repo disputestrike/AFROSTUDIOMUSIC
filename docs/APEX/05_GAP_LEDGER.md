@@ -75,3 +75,4 @@ with reason; OWNER = needs an operator/content decision._
 ## P3 (polish)
 
 - 2 TODO comments; unused provider scaffolds (eleven/stable_audio/mubert docs-only) — keep, they're honest adapters; documented in 02_FEATURE_MATRIX.
+- SoundReference.genre not normalized on write (found by K2-2: "Afro Fusion" vs "afro_fusion" split the profile counts) — **FIXED** post-K2: processAnalyze normalizes to the GENRES enum key before create.

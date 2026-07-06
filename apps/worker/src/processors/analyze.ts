@@ -58,6 +58,28 @@ export async function processAnalyze(p: AnalyzePayload) {
       metrics,
     });
 
+    // Normalize the model's free-text genre ("Afro Fusion") to our enum key
+    // ("afro_fusion") so the learn library aggregates cleanly per genre instead
+    // of splitting counts across label variants. Unknown genres fall back to the
+    // project's stated genre.
+    const normalizeGenre = (g: string | null | undefined): string | null => {
+      if (!g) return null;
+      const k = g.toLowerCase().trim().replace(/[\s/-]+/g, '_').replace(/[^a-z_]/g, '');
+      const KNOWN = new Set([
+        'afrobeats', 'afro_fusion', 'amapiano', 'afro_dancehall', 'street_pop', 'afro_rnb', 'gospel', 'afro_pop',
+        'hip_hop', 'highlife', 'reggae', 'pop', 'rnb', 'dancehall', 'drill', 'trap', 'house', 'edm', 'reggaeton',
+        'latin_pop', 'country', 'rock', 'soul',
+      ]);
+      if (KNOWN.has(k)) return k;
+      if (k.includes('amapiano') || k.includes('piano')) return 'amapiano';
+      if (k.includes('afrobeat')) return 'afrobeats';
+      if (k.includes('fusion')) return 'afro_fusion';
+      if (k.includes('hiphop') || k.includes('rap')) return 'hip_hop';
+      if (k.includes('rnb') || k.includes('r_b')) return 'rnb';
+      return null;
+    };
+    const learnedGenre = normalizeGenre(profile.genre) ?? project?.genre ?? null;
+
     // LEARN: store the deep production recipe as a reusable reference so future
     // songs in this genre/workspace can be built from what it heard. This is the
     // compounding "listen & learn" library — it grows with every reference.
@@ -66,7 +88,7 @@ export async function processAnalyze(p: AnalyzePayload) {
         data: {
           workspaceId: p.workspaceId,
           artistId: project?.artistId ?? null,
-          genre: profile.genre ?? project?.genre ?? null,
+          genre: learnedGenre,
           sourceUrl: p.url,
           title: profile.vibe?.slice(0, 120) ?? null,
           recipe: profile as never,
