@@ -17,6 +17,9 @@
     "push:deploy": "prisma db push --skip-generate",
     "studio": "prisma studio",
     "seed": "tsx src/seed.ts",
+    "lexicon:seed": "node seed/lexicon-seed.mjs",
+    "lexicon:dump": "node seed/dump-lexicon.mjs",
+    "lexicon:corpus": "node seed/dump-lexicon.mjs && node seed/build-corpus.mjs",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
