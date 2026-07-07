@@ -104,21 +104,24 @@ export async function learnLyricCraft(opts: {
     system:
       'You are a master songwriting analyst building a CRAFT LIBRARY. Study the lyrics and extract ONLY the craft — techniques, patterns, structure. ' +
       'HARD RULE: never quote, reproduce, or closely paraphrase ANY line; describe every technique abstractly (e.g. "3-syllable chant repeated 4x with call-response echo", never the words themselves). ' +
-      'Return strict JSON: craftTitle (a descriptive name for this STYLE, e.g. "praise-chant devotion with pidgin call-response", never the song title), ' +
-      `genre (EXACTLY one of: ${GENRES.join(', ')}), ` +
+      // MOST IMPORTANT fields FIRST (craftLessons especially) so they always
+      // survive even if the response is cut short.
+      'Return strict JSON with these keys IN THIS ORDER: ' +
+      'craftTitle (a descriptive name for this STYLE, e.g. "praise-chant devotion with pidgin call-response", never the song title), ' +
       `mode (best-fit lyric success-mode id, one of:\n${modes}\n), ` +
-      'languages (ISO-ish codes present, e.g. en/pcm/yo/ig/ha/es/fr), themes (3-6 short tags), ' +
-      'structure (section flow in order, e.g. ["intro-chant","verse","pre-hook","hook","post-hook"]), ' +
+      'craftLessons (4-5 SPECIFIC transferable one-line lessons a writer can APPLY to a brand-new song — this is the most important field, be concrete: what makes the hook stick, how the repetition works, how languages split the work, what imagery field to draw from), ' +
       'hookMechanics (HOW the hook works: syllable shape, repetition count, call-response, melodic contour — abstract, no words), ' +
-      'flow (cadence/rhyme density/pocket: where syllables land against the beat, line lengths, breath points), ' +
-      'repetitionEngine (what repeats at what scale: word/phrase/line/section, and why it compounds), ' +
-      'codeSwitching (which languages carry which jobs — e.g. emotional lines vs chant vs flex — abstract), ' +
       'imageryPalette (the FIELD the images come from, e.g. "street hustle + divine favor + luxury markers", never specific lines), ' +
+      'codeSwitching (which languages carry which jobs — e.g. emotional lines vs chant vs flex — abstract), ' +
+      'repetitionEngine (what repeats at what scale: word/phrase/line/section, and why it compounds), ' +
+      'flow (cadence/rhyme density/pocket: where syllables land, line lengths, breath points), ' +
       'adLibStyle (density, placement, vowel shapes), ' +
-      'craftLessons (3-5 transferable one-line lessons a writer can APPLY to a brand-new song). Return only JSON.',
+      `genre (EXACTLY one of: ${GENRES.join(', ')}), ` +
+      'languages (ISO-ish codes present, e.g. en/pcm/yo/ig/ha), themes (3-6 short tags), ' +
+      'structure (section flow in order, e.g. ["intro-chant","verse","pre-hook","hook","post-hook"]). Return only JSON.',
     user: opts.raw.slice(0, 6000),
     temperature: 0.3,
-    maxTokens: 1200,
+    maxTokens: 2000,
   });
 
   // Doctrine enforcement — nothing verbatim reaches the lake — and shape
@@ -141,6 +144,21 @@ export async function learnLyricCraft(opts: {
     adLibStyle: str(scrubbed.adLibStyle),
     craftLessons: arr(scrubbed.craftLessons, 5),
   };
+  // NEVER leave the lessons blank (the visible payoff + what feeds generation).
+  // If the model didn't fill them, derive concrete lessons from the craft it DID
+  // extract, so the card and the "outdo this" bridge always have something real.
+  if (!craft.craftLessons.length) {
+    craft.craftLessons = [
+      craft.hookMechanics && `Build the hook like this: ${craft.hookMechanics}`,
+      craft.repetitionEngine && `Repetition engine: ${craft.repetitionEngine}`,
+      craft.codeSwitching && `Split the languages: ${craft.codeSwitching}`,
+      craft.imageryPalette && `Draw imagery from: ${craft.imageryPalette}`,
+      craft.flow && `Flow/pocket: ${craft.flow}`,
+    ]
+      .filter((x): x is string => !!x)
+      .map((s) => s.slice(0, 160))
+      .slice(0, 5);
+  }
   const genre = (GENRES as readonly string[]).includes(craft.genre)
     ? craft.genre
     : opts.genreHint && (GENRES as readonly string[]).includes(opts.genreHint)
