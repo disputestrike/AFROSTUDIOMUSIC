@@ -55,9 +55,10 @@ export async function claudeJson<T>(opts: {
   if (!key) throw new Error('ANTHROPIC_API_KEY missing');
   const timeoutMs = opts.timeoutMs ?? 55_000;
 
-  // Retry once on transient overload/timeout — Claude 529s under load; a hung
-  // call is worse than a fast fallback, so we bound it and try again briefly.
-  for (let attempt = 0; attempt < 2; attempt++) {
+  // Retry on transient overload/timeout — Claude 529s under load. With OpenAI
+  // billing exhausted, Claude is the only brain, so we try harder (3 attempts,
+  // growing backoff) before giving up rather than bounce to a dead fallback.
+  for (let attempt = 0; attempt < 3; attempt++) {
     const ctrl = new AbortController();
     const timer = setTimeout(() => ctrl.abort(), timeoutMs);
     try {
@@ -79,7 +80,7 @@ export async function claudeJson<T>(opts: {
       });
       clearTimeout(timer);
       if (res.status === 429 || res.status === 529 || res.status >= 500) {
-        if (attempt === 0) { await new Promise((r) => setTimeout(r, 1500)); continue; }
+        if (attempt < 2) { await new Promise((r) => setTimeout(r, 1500 * (attempt + 1) ** 2)); continue; } // 1.5s, 6s
         throw new Error(`anthropic ${res.status}: ${(await res.text()).slice(0, 200)}`);
       }
       if (!res.ok) throw new Error(`anthropic ${res.status}: ${(await res.text()).slice(0, 300)}`);
@@ -89,9 +90,9 @@ export async function claudeJson<T>(opts: {
     } catch (e) {
       clearTimeout(timer);
       const msg = (e as Error).message;
-      // Abort/timeout or transient → retry once, then let the caller fall back.
-      if (attempt === 0 && /aborted|timeout|ECONNRESET|fetch failed|network/i.test(msg)) {
-        await new Promise((r) => setTimeout(r, 800));
+      // Abort/timeout or transient network → retry with growing backoff.
+      if (attempt < 2 && /aborted|timeout|ECONNRESET|fetch failed|network/i.test(msg)) {
+        await new Promise((r) => setTimeout(r, 800 * (attempt + 1)));
         continue;
       }
       throw e;
