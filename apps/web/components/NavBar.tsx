@@ -9,6 +9,7 @@ const LINKS = [
   { href: '/studio', label: 'Chat' },
   { href: '/projects', label: 'Projects' },
   { href: '/catalog', label: 'Catalog' },
+  { href: '/materials', label: 'Materials' },
   { href: '/albums', label: 'Albums' },
   { href: '/billing', label: 'Billing' },
   { href: '/settings', label: 'Settings' },

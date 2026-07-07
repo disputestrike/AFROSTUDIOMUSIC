@@ -325,10 +325,10 @@ export const STUDIO_CHAT_TOOLS = [
     type: 'function' as const,
     name: 'forge_materials',
     description:
-      "MATERIAL LAYER step 1: forge ISOLATED, owned loops (solo drums / log drum / bass / percussion / chord bed) for a genre into the material library. Use when the user wants 'the exact beat' or real arranged material and the library is empty for that genre.",
+      "MATERIAL LAYER step 1: forge ISOLATED, owned loops (solo drums / log drum / bass / percussion / chord bed) for a genre into the material library — melodic loops in key. Use when the user wants 'the exact beat' or real arranged material and the library is empty for that genre.",
     parameters: {
       type: 'object',
-      properties: { genre: { type: 'string' }, bpm: { type: 'integer', default: 108 } },
+      properties: { genre: { type: 'string' }, bpm: { type: 'integer', default: 108 }, keySignature: { type: 'string', description: "e.g. 'B minor' — defaults to the genre's home key" } },
       required: ['genre'],
     },
   },
@@ -336,10 +336,10 @@ export const STUDIO_CHAT_TOOLS = [
     type: 'function' as const,
     name: 'assemble_beat',
     description:
-      "MATERIAL LAYER step 2: ASSEMBLE the exact beat by arranging real loops from the material library (time-stretched, layered per section — deterministic, not hallucinated). Needs forged/harvested material for the genre first (forge_materials).",
+      "MATERIAL LAYER step 2: ASSEMBLE the exact beat — Claude arranges real loops from the material library (key-aware picks, time-stretched, layered per section — deterministic, not hallucinated). Needs forged/harvested material for the genre first (forge_materials).",
     parameters: {
       type: 'object',
-      properties: { genre: { type: 'string' }, bpm: { type: 'integer', default: 108 } },
+      properties: { genre: { type: 'string' }, bpm: { type: 'integer', default: 108 }, keySignature: { type: 'string' }, vibe: { type: 'string', description: 'short arrangement direction, e.g. "slow build, big drop"' } },
       required: ['genre'],
     },
   },
@@ -351,6 +351,17 @@ export const STUDIO_CHAT_TOOLS = [
     parameters: {
       type: 'object',
       properties: { songId: { type: 'string' }, mode: { type: 'string', enum: ['instrumental', 'full'], default: 'instrumental' } },
+    },
+  },
+  {
+    type: 'function' as const,
+    name: 'learn_lyrics',
+    description:
+      'STUDY pasted lyrics into the learning library: extracts the craft (hook mechanics, flow, repetition engine, code-switching, imagery field) — never stores the words. Use when the user pastes lyrics to LEARN FROM (teach the studio a style), not to sing verbatim. Future hooks/lyrics automatically pull from what was learned.',
+    parameters: {
+      type: 'object',
+      properties: { lyrics: { type: 'string' }, genreHint: { type: 'string' } },
+      required: ['lyrics'],
     },
   },
   {

@@ -20,7 +20,12 @@ export default async function taste(app: FastifyInstance) {
   app.get('/sound-profile', async (req) => {
     const { workspaceId } = requireAuth(req);
     const refs = await prisma.soundReference.findMany({
-      where: { workspaceId },
+      // "MY sound" = heard/uploaded songs only — lyric-craft studies and trend
+      // snapshots live in the same lake but are NOT the artist's sound.
+      where: {
+        workspaceId,
+        NOT: [{ sourceUrl: { startsWith: 'lyric:' } }, { sourceUrl: { startsWith: 'trend:' } }],
+      },
       orderBy: { createdAt: 'desc' },
       take: 100,
       select: { id: true, genre: true, title: true, summary: true, createdAt: true, recipe: true },
@@ -46,6 +51,73 @@ export default async function taste(app: FastifyInstance) {
       genres: [...byGenre.entries()].map(([genre, count]) => ({ genre, count })).sort((a, b) => b.count - a.count),
       traits,
       lastLearnedAt: refs[0]?.createdAt ?? null,
+    };
+  });
+
+  /**
+   * THE DATA LAKE — everything the studio has learned, in one honest report:
+   * what's in it, how much, and WHERE each kind feeds generation. This is the
+   * "what do we have and are we orchestrating from it" answer, live.
+   */
+  app.get('/data-lake', async (req) => {
+    const { workspaceId } = requireAuth(req);
+    // Exact totals come from COUNT queries (a take-N page would silently freeze
+    // the numbers as the lake grows); the page below only feeds the per-genre
+    // breakdown + latest list.
+    const [refTotal, lyricCraftN, trendN, generatedN, refs, materials, counts] = await Promise.all([
+      prisma.soundReference.count({ where: { workspaceId } }),
+      prisma.soundReference.count({ where: { workspaceId, sourceUrl: { startsWith: 'lyric:' } } }),
+      prisma.soundReference.count({ where: { workspaceId, sourceUrl: { startsWith: 'trend:' } } }),
+      prisma.soundReference.count({ where: { workspaceId, recipe: { path: ['source'], equals: 'generated' } } }),
+      prisma.soundReference.findMany({
+        where: { workspaceId },
+        orderBy: { createdAt: 'desc' },
+        take: 500,
+        select: { genre: true, sourceUrl: true, title: true, createdAt: true, recipe: true },
+      }),
+      prisma.materialAsset.groupBy({ by: ['genre', 'role'], where: { workspaceId }, _count: true }),
+      Promise.all([
+        prisma.song.count({ where: { workspaceId } }),
+        prisma.lyricDraft.count({ where: { approved: true, project: { workspaceId } } }),
+        prisma.hookCandidate.count({ where: { project: { workspaceId } } }),
+        prisma.tasteScore.count(),
+        prisma.analyticsEvent.count({ where: { workspaceId } }),
+      ]),
+    ]);
+    const kind = (r: { sourceUrl: string; recipe: unknown }) =>
+      r.sourceUrl.startsWith('lyric:') ? 'lyricCraft'
+      : r.sourceUrl.startsWith('trend:') ? 'trendSnapshots'
+      : ((r.recipe ?? {}) as { source?: string }).source === 'generated' ? 'selfTraining'
+      : 'heardSongs';
+    const byKind = {
+      heardSongs: Math.max(0, refTotal - lyricCraftN - trendN - generatedN),
+      lyricCraft: lyricCraftN,
+      trendSnapshots: trendN,
+      selfTraining: generatedN,
+    };
+    const genresByKind: Record<string, Record<string, number>> = {};
+    for (const r of refs) {
+      const k = kind(r);
+      const g = r.genre ?? 'unknown';
+      genresByKind[k] = genresByKind[k] ?? {};
+      genresByKind[k]![g] = (genresByKind[k]![g] ?? 0) + 1;
+    }
+    return {
+      soundReferences: { total: refTotal, byKind, genresByKind, latest: refs.slice(0, 5).map((r) => ({ title: r.title, genre: r.genre, kind: kind(r), at: r.createdAt })) },
+      materials: { total: materials.reduce((n, m) => n + m._count, 0), shelf: materials.map((m) => ({ genre: m.genre, role: m.role, count: m._count })) },
+      songs: counts[0],
+      approvedLyrics: counts[1],
+      hooks: counts[2],
+      tasteScores: counts[3],
+      tasteEvents: counts[4],
+      orchestration: {
+        heardSongs: 'learnedReferenceBrief → hooks/lyrics/arranger prompts + learnedStyleTags → the MUSIC MODEL itself',
+        lyricCraft: 'learnedLyricCraftBrief → hook writer + lyric writer (patterns only, never words)',
+        trendSnapshots: 'researchTrends digest → hook writer + A&R director (snapshotted 1/genre/day)',
+        selfTraining: 'QC-passed renders re-enter learnedReferenceBrief (max 1 per brief, uploads always outrank)',
+        materials: 'pickMaterial + claudeArrangement → assemble-beat (the exact, deterministic beat)',
+        staticLibraries: 'Sound DNA (23 genres + trends enrichment) + hit-craft (8 lyric modes) compiled into every prompt',
+      },
     };
   });
 

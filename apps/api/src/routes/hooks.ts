@@ -5,6 +5,7 @@ import { generateHooksInputSchema, langSchema } from '@afrohit/shared';
 import { prompts, generateJson, directorRefineHooks, researchTrends, anthropicEnabled, soundBrief } from '@afrohit/ai';
 import { requireAuth } from '../middleware/auth';
 import { memoryContext, recordFeedback } from '../services/artist-memory';
+import { learnedReferenceBrief, learnedLyricCraftBrief, snapshotTrend } from '../lib/learned';
 
 export default async function hooks(app: FastifyInstance) {
   app.get<{ Params: { projectId: string } }>(
@@ -42,13 +43,19 @@ export default async function hooks(app: FastifyInstance) {
       const brief = input.brief ?? project.briefs[0] ?? undefined;
       // Taste feedback loop — recent approvals/rejections steer generation.
       const tasteMemory = await memoryContext(project.artistId);
-      // Live trends (Tavily) so hooks reflect what's popping right now.
+      // Live trends so hooks reflect what's popping right now — and the digest
+      // is shelved in the data lake (one snapshot/genre/day) so it compounds.
       const trendData = await researchTrends({ genre: project.genre }).catch(() => null);
       const trends = trendData?.digest;
-      // Genre Sound DNA + HIT-CRAFT (mode typology + hook mechanics + code-switch
-      // rules distilled from the top-streamed-songs study) so hooks sit in the
-      // lane's pocket AND follow what actually makes hooks hit.
-      const soundDna = [soundBrief(project.genre).brief, prompts.hitCraftBrief('hook', (brief as { mood?: string } | undefined)?.mood)].filter(Boolean).join('\n\n');
+      void snapshotTrend(workspaceId, project.genre, trendData);
+      // Genre Sound DNA + the artist's LEARNED references + STUDIED lyric craft
+      // + HIT-CRAFT — the full data lake behind every hook.
+      const soundDna = [
+        soundBrief(project.genre).brief,
+        await learnedReferenceBrief(workspaceId, project.genre),
+        await learnedLyricCraftBrief(workspaceId, project.genre),
+        prompts.hitCraftBrief('hook', (brief as { mood?: string } | undefined)?.mood),
+      ].filter(Boolean).join('\n\n');
 
       const result = await generateJson<{
         hooks: Array<{

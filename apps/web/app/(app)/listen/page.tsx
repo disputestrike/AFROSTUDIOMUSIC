@@ -8,6 +8,7 @@
 import { useEffect, useState } from 'react';
 import { useApi } from '@/lib/api';
 import { ReferenceListen } from '@/components/ReferenceListen';
+import { LearnFromLyrics } from '@/components/LearnFromLyrics';
 import { LearnMySound } from '@/components/LearnMySound';
 
 export default function ListenPage() {
@@ -48,17 +49,19 @@ export default function ListenPage() {
   return (
     <div className="mx-auto max-w-3xl px-6 py-10">
       <h1 className="font-display text-3xl">
-        Play a track — <span className="text-gradient">the AI listens</span>
+        The studio <span className="text-gradient">learns</span> — three ways in
       </h1>
       <p className="mt-2 max-w-xl text-sm text-slate-400">
-        Like Shazam, but it creates. Play a song out loud from any phone, speaker or device and tap <span className="text-slate-200">Listen now</span> —
-        the AI hears it through your mic (or drop a file), reads its BPM, key, genre, mood and instruments, then builds a
-        <span className="text-slate-200"> fresh original</span> in that vibe — never a copy.
+        <span className="text-slate-200">1 · Learn from a song</span> — play it out loud (Shazam-style) or drop a file; the AI hears the drums, groove, bass and voice.{' '}
+        <span className="text-slate-200">2 · Learn from a lyric</span> — paste any lyrics; it studies the craft, never the words.{' '}
+        <span className="text-slate-200">3 · Learn my sound</span> — feed it your own catalog. Everything lands in one library that every
+        new song pulls from — and it compounds.
       </p>
 
       {err && <div className="mt-6 rounded-xl border border-red-500/30 bg-red-500/10 p-4 text-sm text-red-300">Couldn’t start a session: {err}</div>}
       {!projectId && !err && <div className="mt-8 text-sm text-slate-500">Setting up your session…</div>}
       {projectId && <ReferenceListen projectId={projectId} />}
+      {projectId && <LearnFromLyrics projectId={projectId} />}
       {projectId && <LearnMySound projectId={projectId} />}
     </div>
   );

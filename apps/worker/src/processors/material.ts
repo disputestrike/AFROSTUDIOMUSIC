@@ -20,13 +20,15 @@ import { join } from 'node:path';
 
 // Role → forge prompt. ISOLATION is everything: one instrument group per loop,
 // dry, no melody bleeding in — this is what makes the material arrangeable.
-const FORGE_PROMPTS: Record<string, (genre: string, bpm: number) => string> = {
+// Melodic roles are forged IN KEY so separately-forged loops fit together.
+const FORGE_PROMPTS: Record<string, (genre: string, bpm: number, key?: string) => string> = {
   drums: (g, b) => `solo drum kit groove loop for ${g.replace(/_/g, ' ')}, ${b} bpm, tight kick snare and hi-hats only, completely dry, no melody, no bass, no vocals, seamless loop`,
-  log_drum: (g, b) => `solo amapiano log drum bassline loop, ${b} bpm, deep woody log drum only, completely dry, no other instruments, no vocals, seamless loop`,
-  bass: (g, b) => `solo bassline loop for ${g.replace(/_/g, ' ')}, ${b} bpm, warm round sub bass only, no drums, no melody, no vocals, seamless loop`,
+  log_drum: (g, b, k) => `solo amapiano log drum bassline loop${k ? ` in ${k}` : ''}, ${b} bpm, deep woody log drum only, completely dry, no other instruments, no vocals, seamless loop`,
+  bass: (g, b, k) => `solo bassline loop for ${g.replace(/_/g, ' ')}${k ? ` in ${k}` : ''}, ${b} bpm, warm round sub bass only, no drums, no melody, no vocals, seamless loop`,
   percussion: (g, b) => `solo percussion bed loop for ${g.replace(/_/g, ' ')}, ${b} bpm, shakers congas and woodblock only, no kick, no snare, no melody, no vocals, seamless loop`,
-  chords: (g, b) => `solo warm chord bed loop for ${g.replace(/_/g, ' ')}, ${b} bpm, soft keys or guitar chords only, no drums, no bass, no vocals, seamless loop`,
+  chords: (g, b, k) => `solo warm chord bed loop for ${g.replace(/_/g, ' ')}${k ? ` in ${k}` : ''}, ${b} bpm, soft keys or guitar chords only, no drums, no bass, no vocals, seamless loop`,
 };
+const MELODIC_ROLES = new Set(['log_drum', 'bass', 'chords']);
 
 interface ForgePayload {
   jobId: string;
@@ -34,6 +36,7 @@ interface ForgePayload {
   genre: string;
   role: string;
   bpm: number;
+  keySignature?: string;
   bars?: number;
 }
 
@@ -42,6 +45,7 @@ export async function processForgeMaterial(p: ForgePayload) {
   try {
     const promptFor = FORGE_PROMPTS[p.role];
     if (!promptFor) throw new Error(`unknown material role: ${p.role}`);
+    const key = MELODIC_ROLES.has(p.role) ? p.keySignature : undefined;
     const bars = p.bars ?? 8;
     const loopDur = Math.ceil((60 / p.bpm) * 4 * bars) + 3; // headroom for trim
     const ws = await prisma.workspace.findUnique({ where: { id: p.workspaceId }, select: { musicProvider: true, musicApiKey: true } });
@@ -58,7 +62,7 @@ export async function processForgeMaterial(p: ForgePayload) {
         bpm: p.bpm,
         durationS: Math.min(loopDur, 30),
         withStems: false,
-        vibePrompt: promptFor(p.genre, p.bpm),
+        vibePrompt: promptFor(p.genre, p.bpm, key),
       });
       let attempts = 0;
       while (r.status === 'queued' || r.status === 'running') {
@@ -99,11 +103,12 @@ export async function processForgeMaterial(p: ForgePayload) {
         role: p.role,
         genre: p.genre,
         bpm: p.bpm,
+        keySignature: key ?? null,
         bars,
         durationS: (60 / p.bpm) * 4 * bars,
         url,
         source: 'forged',
-        meta: { qc, prompt: promptFor(p.genre, p.bpm), engine: adapter.name } as never,
+        meta: { qc, prompt: promptFor(p.genre, p.bpm, key), engine: adapter.name } as never,
       },
     });
     await markSucceeded(p.jobId, { materialId: material.id, role: p.role, url, qc: qc?.verdict ?? 'unmeasured' }, result.estimatedCostUsd);
@@ -121,6 +126,8 @@ interface AssemblePayload {
   genre: string;
   /** materials picked API-side: [{id, url, sourceBpm, role, gain}] */
   picks: Array<{ id: string; url: string; sourceBpm: number; role: string; gain: number }>;
+  /** Claude-authored arrangement (API-side, validated); absent → classic template. */
+  sections?: Array<{ name: string; bars: number; roles: string[] }> | null;
 }
 
 export async function processAssembleBeat(p: AssemblePayload) {
@@ -141,8 +148,13 @@ export async function processAssembleBeat(p: AssemblePayload) {
     }
     const idx = (roles: string[]) => roles.map((r) => roleIdx.get(r)).filter((i): i is number => i != null);
     const all = layers.map((_, i) => i);
-    // The arrangement — a real producer's build: strip in, stack the hook, breathe, strip out.
-    const sections: AssemblySection[] = [
+    // The arrangement: Claude's plan when the API authored one (creative,
+    // per-material), otherwise the classic producer template — strip in,
+    // stack the hook, breathe, strip out.
+    const planned: AssemblySection[] = (p.sections ?? [])
+      .map((s) => ({ name: s.name, bars: s.bars, layerIdx: idx(s.roles) }))
+      .filter((s) => s.layerIdx.length > 0 && s.bars >= 2);
+    const sections: AssemblySection[] = planned.length >= 3 ? planned : [
       { name: 'intro', bars: 4, layerIdx: idx(['percussion', 'chords']).length ? idx(['percussion', 'chords']) : all.slice(0, 1) },
       { name: 'verse', bars: 8, layerIdx: idx(['drums', 'percussion', 'bass', 'log_drum']).length ? idx(['drums', 'percussion', 'bass', 'log_drum']) : all },
       { name: 'hook', bars: 8, layerIdx: all },
@@ -166,6 +178,7 @@ export async function processAssembleBeat(p: AssemblePayload) {
         approved: true,
         meta: {
           assembled: true,
+          arrangedBy: planned.length >= 3 ? 'claude' : 'template',
           materialIds: p.picks.map((x) => x.id),
           roles: p.picks.map((x) => x.role),
           sections: sections.map((s) => `${s.name}:${s.bars}`),

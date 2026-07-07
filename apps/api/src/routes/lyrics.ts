@@ -4,6 +4,8 @@ import { prisma } from '@afrohit/db';
 import { generateLyricsInputSchema, GENRES } from '@afrohit/shared';
 import { prompts, responsesJson, soundBrief, generateJson } from '@afrohit/ai';
 import { requireAuth } from '../middleware/auth';
+import { learnLyricCraft, findLearnedLyric } from '../lib/lyric-learn';
+import { learnedReferenceBrief, learnedLyricCraftBrief } from '../lib/learned';
 
 export default async function lyrics(app: FastifyInstance) {
   app.get<{ Params: { projectId: string } }>(
@@ -56,7 +58,12 @@ export default async function lyrics(app: FastifyInstance) {
           hookText: hook.text,
           cleanVersion: input.cleanVersion,
           languageMix: input.languageMix as never,
-          soundDna: [soundBrief(project.genre).brief, prompts.hitCraftBrief('lyric', (project.briefs?.[0] as { mood?: string } | undefined)?.mood)].filter(Boolean).join('\n\n'),
+          soundDna: [
+            soundBrief(project.genre).brief,
+            await learnedReferenceBrief(workspaceId, project.genre),
+            await learnedLyricCraftBrief(workspaceId, project.genre),
+            prompts.hitCraftBrief('lyric', (project.briefs?.[0] as { mood?: string } | undefined)?.mood),
+          ].filter(Boolean).join('\n\n'),
         }),
         temperature: 0.8,
         maxOutputTokens: 4_000,
@@ -158,7 +165,45 @@ export default async function lyrics(app: FastifyInstance) {
       });
       // Never let a hallucinated genre escape the enum.
       const genre = (GENRES as readonly string[]).includes(out.suggestedGenre) ? out.suggestedGenre : 'afrobeats';
+      // Every lyric brought to the studio ALSO teaches it (fire-and-forget —
+      // the craft lands in the data lake and feeds future hooks/lyrics).
+      // Deduped by lyric hash and charged like any other LLM call, so
+      // re-deconstructing while iterating never double-studies or dodges caps.
+      void (async () => {
+        if (await findLearnedLyric(workspaceId, raw)) return;
+        const learnCharge = await app.chargeCredits({ workspaceId, key: 'brief_polish', refTable: 'Project', refId: req.params.projectId });
+        if (!learnCharge.ok) return;
+        await learnLyricCraft({ workspaceId, raw, genreHint: genre });
+      })().catch(() => {});
       return { ...out, suggestedGenre: genre, suggestedBpm: Math.min(Math.max(Math.round(out.suggestedBpm || 103), 60), 180) };
+    }
+  );
+
+  /**
+   * LEARN FROM A LYRIC — the data-lake teacher (Listen page, third option).
+   * Bring ANY lyrics: the studio studies the CRAFT (hook mechanics, flow,
+   * repetition, code-switching, imagery field) and shelves the LESSONS — never
+   * the words (Feist doctrine, enforced in lyric-learn.ts). Every future hook
+   * and lyric pulls from what it learned here.
+   */
+  const learnSchema = z.object({ lyrics: z.string().min(40).max(6000), genreHint: z.string().max(40).optional() });
+  app.post<{ Params: { projectId: string } }>(
+    '/learn',
+    { schema: { body: learnSchema } },
+    async (req, reply) => {
+      const { workspaceId } = requireAuth(req);
+      await prisma.project.findFirstOrThrow({ where: { id: req.params.projectId, workspaceId } });
+      const input = learnSchema.parse(req.body);
+      // Already studied? Return the existing lesson free — no charge, no dup row.
+      const existing = await findLearnedLyric(workspaceId, input.lyrics);
+      if (!existing) {
+        const charge = await app.chargeCredits({ workspaceId, key: 'brief_polish', refTable: 'Project', refId: req.params.projectId });
+        if (!charge.ok) return reply.code(402).send({ error: 'insufficient_credits', ...charge });
+      }
+      const { referenceId, craft, alreadyLearned } = await learnLyricCraft({ workspaceId, raw: input.lyrics, genreHint: input.genreHint });
+      const learned = await prisma.soundReference.count({ where: { workspaceId, sourceUrl: { startsWith: 'lyric:' } } });
+      reply.code(201);
+      return { referenceId, craft, alreadyLearned: alreadyLearned ?? false, lyricCraftInLibrary: learned };
     }
   );
 

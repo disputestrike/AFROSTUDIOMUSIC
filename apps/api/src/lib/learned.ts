@@ -34,6 +34,7 @@ interface RefRow {
   title: string | null;
   summary: string | null;
   genre: string | null;
+  sourceUrl: string;
   createdAt: Date;
   recipe: RecipeShape;
   generated: boolean;
@@ -50,11 +51,17 @@ function genreMatches(a?: string | null, b?: string | null): boolean {
 }
 
 async function fetchRefs(workspaceId: string, genre: string, pinnedId?: string | null): Promise<RefRow[]> {
+  // The lake holds more than SOUND now (lyric craft, trend snapshots) — those
+  // are excluded IN THE QUERY, not after take:60, so a growing lake can never
+  // evict the artist's real heard/uploaded references from the window.
   const rows = await prisma.soundReference.findMany({
-    where: { workspaceId },
+    where: {
+      workspaceId,
+      NOT: [{ sourceUrl: { startsWith: 'lyric:' } }, { sourceUrl: { startsWith: 'trend:' } }],
+    },
     orderBy: { createdAt: 'desc' },
-    take: 40,
-    select: { id: true, title: true, summary: true, genre: true, createdAt: true, recipe: true },
+    take: 60,
+    select: { id: true, title: true, summary: true, genre: true, sourceUrl: true, createdAt: true, recipe: true },
   });
   const all: RefRow[] = rows.map((r) => {
     const recipe = (r.recipe ?? {}) as RecipeShape;
@@ -138,4 +145,62 @@ export async function learnedStyleTags(
   return [shorten(rec.drums), shorten(rec.percussion, 36), shorten(rec.groove, 36), shorten(rec.bass, 32)]
     .filter((t): t is string => !!t)
     .slice(0, 4);
+}
+
+/**
+ * LEARNED LYRIC CRAFT — what the studio has studied from lyrics brought to it
+ * (patterns/technique only, never words — see lyric-learn.ts doctrine).
+ * In-genre lessons lead; craft transfers, so off-genre lessons still season.
+ * Feeds the hook writer + lyric writer alongside hit-craft.
+ */
+export async function learnedLyricCraftBrief(workspaceId: string, genre?: string | null): Promise<string> {
+  const rows = await prisma.soundReference.findMany({
+    where: { workspaceId, sourceUrl: { startsWith: 'lyric:' } },
+    orderBy: { createdAt: 'desc' },
+    take: 24,
+    select: { title: true, summary: true, genre: true },
+  });
+  if (!rows.length) return '';
+  const inGenre = genre ? rows.filter((r) => genreMatches(r.genre, genre)) : [];
+  const rest = rows.filter((r) => !inGenre.includes(r));
+  const picked = [...inGenre.slice(0, 2), ...rest.slice(0, 1)].filter((r) => r.summary);
+  if (!picked.length) return '';
+  return (
+    'STUDIED LYRIC CRAFT (from lyrics the artist brought to learn from — apply the TECHNIQUES to brand-new words, never reuse phrasing):\n' +
+    picked.map((r) => `• ${r.title ? r.title + ': ' : ''}${r.summary!.slice(0, 700)}`).join('\n')
+  );
+}
+
+/**
+ * Shelve a trend digest into the data lake (one snapshot per genre per day) so
+ * chart-awareness COMPOUNDS instead of evaporating after each request.
+ * Best-effort: never throws into the caller's path.
+ */
+export async function snapshotTrend(
+  workspaceId: string,
+  genre: string | null | undefined,
+  trend: { digest: string; source: string; sources?: Array<{ title: string; url: string }> } | null
+): Promise<void> {
+  try {
+    if (!trend?.digest || !genre) return;
+    const day = new Date().toISOString().slice(0, 10);
+    const title = `trends:${genre}:${day}`;
+    // Deterministic id = race-proof dedupe: two concurrent generations both
+    // trying to snapshot the same genre+day collide on the PRIMARY KEY and the
+    // second create simply throws into this catch — exactly one row per day.
+    const id = `trend_${workspaceId.slice(-8)}_${genre.replace(/[^a-z0-9]/gi, '')}_${day.replace(/-/g, '')}`;
+    await prisma.soundReference.create({
+      data: {
+        id,
+        workspaceId,
+        genre,
+        sourceUrl: `trend:${trend.source}`,
+        title,
+        summary: trend.digest.slice(0, 2000),
+        recipe: { source: 'trend', provider: trend.source, charts: (trend.sources ?? []).slice(0, 12) } as never,
+      },
+    });
+  } catch {
+    /* duplicate day-snapshot or transient DB error — never worth failing a generation */
+  }
 }

@@ -22,7 +22,7 @@ export function youtubeKey(): string | undefined {
 export interface TrendResult {
   digest: string;
   sources: Array<{ title: string; url: string }>;
-  source: 'youtube' | 'tavily' | 'brave' | 'news_rss' | 'stub';
+  source: 'youtube' | 'apple_charts' | 'tavily' | 'brave' | 'news_rss' | 'stub';
 }
 
 /** Diagnostic: raw Tavily call surfacing the real status/error. */
@@ -120,6 +120,36 @@ async function tryYouTube(genre: string, region: string): Promise<TrendResult | 
   }
 }
 
+/**
+ * FREE + KEYLESS + LEGAL: Apple's public marketing RSS returns the actual
+ * most-played chart per country as plain JSON (titles/artists only — facts,
+ * never audio). Nigeria's chart for the Afro family, US otherwise. This is the
+ * always-on chart source that works even when every paid key is capped.
+ */
+async function tryAppleCharts(genre: string, region: string): Promise<TrendResult | null> {
+  try {
+    const afro = /afro|amapiano|highlife|street|gospel|juju|fuji|alte|bongo/i.test(genre) || /nigeria|africa/i.test(region);
+    const cc = afro ? 'ng' : 'us';
+    const res = await fetch(`https://rss.marketingtools.apple.com/api/v2/${cc}/music/most-played/25/songs.json`, {
+      headers: { 'user-agent': 'Mozilla/5.0 AfroHitStudio' },
+    });
+    if (!res.ok) return null;
+    const data = (await res.json()) as { feed?: { results?: Array<{ name?: string; artistName?: string; url?: string; genres?: Array<{ name?: string }> }> } };
+    const rows = (data.feed?.results ?? []).filter((r) => r.name);
+    if (!rows.length) return null;
+    const sources = rows.slice(0, 15).map((r) => ({
+      title: `${r.name}${r.artistName ? ` — ${r.artistName}` : ''}${r.genres?.[0]?.name ? ` (${r.genres[0].name})` : ''}`,
+      url: r.url || 'https://music.apple.com',
+    }));
+    const digest =
+      `Most-played songs on Apple Music ${cc.toUpperCase()} RIGHT NOW (what listeners actually play — study the wave, never copy):\n` +
+      sources.map((s, i) => `${i + 1}. ${s.title}`).join('\n');
+    return { digest, sources: sources.slice(0, 8), source: 'apple_charts' };
+  } catch {
+    return null;
+  }
+}
+
 function decodeEntities(s: string): string {
   return s
     .replace(/<!\[CDATA\[(.*?)\]\]>/g, '$1')
@@ -181,10 +211,22 @@ export async function researchTrends(opts: {
     };
   }
 
-  // YouTube first (most genre-specific + current: the actual charting tracks),
-  // then web digests, then the free always-on news fallback.
+  // YouTube first (most genre-specific + current: the actual charting tracks).
+  // Apple's keyless country chart (real most-played facts, survives every
+  // quota cap) comes next — EXCEPT when the caller asked a specific question:
+  // a country top-25 can't answer a custom query, so web digests go first then.
+  if (opts.query) {
+    return (
+      (await tryYouTube(genre, region)) ??
+      (await tryTavily(query)) ??
+      (await tryBrave(query)) ??
+      (await tryAppleCharts(genre, region)) ??
+      (await tryNewsRss(genre, region))
+    );
+  }
   return (
     (await tryYouTube(genre, region)) ??
+    (await tryAppleCharts(genre, region)) ??
     (await tryTavily(query)) ??
     (await tryBrave(query)) ??
     (await tryNewsRss(genre, region))

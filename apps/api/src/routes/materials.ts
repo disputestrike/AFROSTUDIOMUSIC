@@ -2,25 +2,18 @@ import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { prisma } from '@afrohit/db';
 import { genreSchema } from '@afrohit/shared';
+import { getSoundDNA } from '@afrohit/ai';
 import { requireAuth } from '../middleware/auth';
 import { enqueue } from '../lib/queue';
+import { kitRolesFor, homeKeyFor, pickMaterial, claudeArrangement } from '../lib/material-plan';
 
 /**
  * THE MATERIAL LAYER API — real, owned loops the AI arranges into exact beats.
  *
  *  GET  /            → the material library (per genre/role)
- *  POST /forge       → forge a genre KIT: isolated loops for the core roles
- *  POST /assemble    → arrange picked material into a real beat (exact, deterministic)
+ *  POST /forge       → forge a genre KIT: isolated loops for the core roles (in key)
+ *  POST /assemble    → Claude arranges picked material into a real beat (exact, deterministic)
  */
-
-// The core kit per genre family — which roles the arranger wants on the shelf.
-function kitRolesFor(genre: string): string[] {
-  if (/amapiano/.test(genre)) return ['log_drum', 'drums', 'percussion', 'chords'];
-  if (/afro|street_pop|highlife|gospel/.test(genre)) return ['drums', 'percussion', 'bass', 'chords'];
-  if (/drill|trap|hip_hop/.test(genre)) return ['drums', 'bass', 'chords'];
-  if (/house|edm/.test(genre)) return ['drums', 'percussion', 'bass', 'chords'];
-  return ['drums', 'percussion', 'bass', 'chords'];
-}
 
 export default async function materials(app: FastifyInstance) {
   /** The library — what's on the shelf, grouped for the UI/chat. */
@@ -33,24 +26,27 @@ export default async function materials(app: FastifyInstance) {
     });
     return {
       total: rows.length,
-      materials: rows.map((m) => ({ id: m.id, role: m.role, genre: m.genre, bpm: m.bpm, bars: m.bars, source: m.source, url: m.url, createdAt: m.createdAt })),
+      materials: rows.map((m) => ({ id: m.id, role: m.role, genre: m.genre, bpm: m.bpm, keySignature: m.keySignature, bars: m.bars, source: m.source, url: m.url, createdAt: m.createdAt })),
     };
   });
 
   /**
-   * FORGE a genre kit — one isolated loop per core role. Each loop is a paid
-   * render (~$0.10) so the whole kit is cost-capped like everything else.
+   * FORGE a genre kit — one isolated loop per core role, melodic roles in the
+   * genre's home key so separately-forged loops fit together. Each loop is a
+   * paid render (~$0.10) so the whole kit is cost-capped like everything else.
    */
   const forgeSchema = z.object({
     genre: genreSchema,
     bpm: z.number().int().min(60).max(180).optional(),
+    keySignature: z.string().max(24).optional(),
     roles: z.array(z.enum(['drums', 'log_drum', 'bass', 'percussion', 'chords'])).max(5).optional(),
   });
   app.post('/forge', { schema: { body: forgeSchema } }, async (req, reply) => {
     const { workspaceId } = requireAuth(req);
     const input = forgeSchema.parse(req.body);
     const roles = input.roles?.length ? input.roles : kitRolesFor(input.genre);
-    const bpm = input.bpm ?? 108;
+    const bpm = input.bpm ?? getSoundDNA(input.genre)?.typicalBpm ?? 108;
+    const keySignature = input.keySignature ?? homeKeyFor(input.genre);
 
     const jobs: Array<{ role: string; jobId: string }> = [];
     for (let i = 0; i < roles.length; i++) {
@@ -58,12 +54,12 @@ export default async function materials(app: FastifyInstance) {
       const charge = await app.chargeCredits({ workspaceId, key: 'beat_idea_short_30s' });
       if (!charge.ok) return reply.code(402).send({ error: 'insufficient_credits', forged: jobs, ...charge });
       const job = await prisma.providerJob.create({
-        data: { workspaceId, kind: 'material', provider: 'replicate', status: 'QUEUED', inputJson: { genre: input.genre, role, bpm } as never },
+        data: { workspaceId, kind: 'material', provider: 'replicate', status: 'QUEUED', inputJson: { genre: input.genre, role, bpm, keySignature } as never },
       });
       await enqueue({
         queue: app.queues.music,
         name: 'forge-material',
-        payload: { jobId: job.id, workspaceId, genre: input.genre, role, bpm },
+        payload: { jobId: job.id, workspaceId, genre: input.genre, role, bpm, keySignature },
         // STAGGER: Replicate throttles prediction creation (observed live: 6/min,
         // burst 1) — parallel forges 429'd. 30s spacing keeps the kit flowing.
         delayMs: i * 30_000,
@@ -71,60 +67,63 @@ export default async function materials(app: FastifyInstance) {
       jobs.push({ role, jobId: job.id });
     }
     reply.code(202);
-    return { forging: jobs, note: `Forging ${jobs.length} isolated ${input.genre} loops at ${bpm}bpm — poll each job; QC-passed loops land in the library.` };
+    return { forging: jobs, keySignature, note: `Forging ${jobs.length} isolated ${input.genre} loops at ${bpm}bpm in ${keySignature} — poll each job; QC-passed loops land in the library.` };
   });
 
   /**
-   * ASSEMBLE — the exact beat. Picks the best material per role (bpm-proximate,
-   * artist stems preferred) and hands the arranger an explicit plan.
+   * ASSEMBLE — the exact beat. Picks the best material per role (key-aware,
+   * bpm-proximate, artist stems preferred), then CLAUDE ARRANGES the build for
+   * this exact material (worker falls back to the classic template if the plan
+   * is unusable — never a broken beat).
    */
   const assembleSchema = z.object({
     projectId: z.string().cuid(),
     songId: z.string().cuid().optional(),
     genre: genreSchema,
     bpm: z.number().int().min(60).max(180),
+    keySignature: z.string().max(24).optional(),
+    vibe: z.string().max(200).optional(),
   });
   app.post('/assemble', { schema: { body: assembleSchema } }, async (req, reply) => {
     const { workspaceId } = requireAuth(req);
     const input = assembleSchema.parse(req.body);
     await prisma.project.findFirstOrThrow({ where: { id: input.projectId, workspaceId } });
 
-    // Pick per-role: right genre → closest bpm (±15%) → artist stems first.
     const rows = await prisma.materialAsset.findMany({
       where: { workspaceId, genre: input.genre },
       orderBy: { createdAt: 'desc' },
       take: 100,
     });
-    const wanted = kitRolesFor(input.genre);
-    const GAINS: Record<string, number> = { drums: 1.0, log_drum: 1.05, bass: 0.95, percussion: 0.8, chords: 0.7 };
-    const picks: Array<{ id: string; url: string; sourceBpm: number; role: string; gain: number }> = [];
-    for (const role of wanted) {
-      const candidates = rows
-        .filter((m) => m.role === role && m.bpm && Math.abs(m.bpm - input.bpm) / input.bpm <= 0.15)
-        .sort((a, b) => (a.source === 'artist_stem' ? -1 : 0) - (b.source === 'artist_stem' ? -1 : 0) || Math.abs((a.bpm ?? 0) - input.bpm) - Math.abs((b.bpm ?? 0) - input.bpm));
-      const best = candidates[0];
-      if (best) picks.push({ id: best.id, url: best.url, sourceBpm: best.bpm ?? input.bpm, role, gain: GAINS[role] ?? 0.9 });
-    }
+    const picks = pickMaterial(rows, input.genre, input.bpm, input.keySignature);
     if (picks.length < 2) {
       return reply.code(400).send({
         error: 'not_enough_material',
         have: picks.map((p) => p.role),
-        need: wanted,
+        need: kitRolesFor(input.genre),
         message: `The ${input.genre} shelf needs more loops near ${input.bpm}bpm — run POST /materials/forge {"genre":"${input.genre}","bpm":${input.bpm}} first.`,
       });
     }
 
     const charge = await app.chargeCredits({ workspaceId, key: 'beat_idea_short_30s', refTable: 'Project', refId: input.projectId });
     if (!charge.ok) return reply.code(402).send({ error: 'insufficient_credits', ...charge });
+
+    const sections = await claudeArrangement(input.genre, input.bpm, picks.map((p) => p.role), input.vibe);
+
     const job = await prisma.providerJob.create({
-      data: { workspaceId, projectId: input.projectId, kind: 'music', provider: 'material', status: 'QUEUED', inputJson: { assemble: true, ...input, picks: picks.map((p) => p.role) } as never },
+      data: { workspaceId, projectId: input.projectId, kind: 'music', provider: 'material', status: 'QUEUED', inputJson: { assemble: true, ...input, picks: picks.map((p) => p.role), sections } as never },
     });
     await enqueue({
       queue: app.queues.music,
       name: 'assemble-beat',
-      payload: { jobId: job.id, workspaceId, projectId: input.projectId, songId: input.songId, bpm: input.bpm, genre: input.genre, picks },
+      payload: { jobId: job.id, workspaceId, projectId: input.projectId, songId: input.songId, bpm: input.bpm, genre: input.genre, picks, sections },
     });
     reply.code(202);
-    return { jobId: job.id, status: 'queued', roles: picks.map((p) => p.role), note: 'Assembling the exact beat from real material — poll the job.' };
+    return {
+      jobId: job.id,
+      status: 'queued',
+      roles: picks.map((p) => p.role),
+      arrangement: sections ? sections.map((s) => `${s.name}:${s.bars}bars[${s.roles.join('+')}]`) : 'classic template',
+      note: 'Assembling the exact beat from real material — poll the job.',
+    };
   });
 }
