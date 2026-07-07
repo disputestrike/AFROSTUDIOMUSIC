@@ -1,5 +1,5 @@
 import { prisma } from '@afrohit/db';
-import { SEED_LEXICON } from '@afrohit/ai';
+import { SEED_LEXICON, EXPANSION_LEXICON } from '@afrohit/ai';
 
 /**
  * THE WORD BANK — thousands of authentic African/diaspora terms the writer
@@ -23,14 +23,15 @@ const LANG_BUCKETS: Record<string, string[]> = {
 /** Seed the shared library once. Cheap: skips entirely if already populated. */
 export async function seedLexiconIfEmpty(): Promise<number> {
   try {
-    const have = await prisma.lexiconEntry.count({ where: { source: 'seed' } });
-    if (have >= SEED_LEXICON.length * 0.9) return 0; // already seeded
+    const ALL = [...SEED_LEXICON, ...EXPANSION_LEXICON];
+    const have = await prisma.lexiconEntry.count({ where: { source: { in: ['seed', 'research'] } } });
+    if (have >= ALL.length * 0.95) return 0; // already seeded
     let n = 0;
-    for (const r of SEED_LEXICON) {
+    for (const r of ALL) {
       await prisma.lexiconEntry
         .upsert({
           where: { term_language_category: { term: r.term, language: r.language, category: r.category } },
-          create: { workspaceId: null, term: r.term, language: r.language, category: r.category, register: r.register ?? null, meaning: r.meaning ?? null, example: r.example ?? null, tags: r.tags ?? [], source: 'seed' },
+          create: { workspaceId: null, term: r.term, language: r.language, category: r.category, register: r.register ?? null, meaning: r.meaning ?? null, example: r.example ?? null, tags: r.tags ?? [], source: (r.meaning ? 'research' : 'seed') },
           update: {},
         })
         .then(() => { n++; })
