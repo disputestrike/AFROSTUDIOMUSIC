@@ -557,6 +557,31 @@ model SoundReference {
   @@index([artistId])
 }
 
+// The WORD BANK — thousands of authentic African/diaspora terms (Pidgin,
+// Yoruba, Igbo, Hausa, Ghanaian Twi/Ga, Swahili + theme/drum/ad-lib/proverb
+// banks) with meaning + register, searchable and sampled into generation so
+// the writer has a WIDE vocabulary palette instead of repeating the same
+// words. Seeded from a curated pack + expanded by research. GLOBAL by default
+// (workspaceId null = shared library everyone draws from); a non-null
+// workspaceId is a private/custom addition. Facts/vocabulary, never lyrics.
+model LexiconEntry {
+  id          String   @id @default(cuid())
+  workspaceId String?  // null = shared global library; set = private addition
+  term        String
+  language    String   // pcm | yo | ig | ha | twi | sw | en | mixed | motif
+  category    String   // love | street | party | faith | proverb | dance | drums | places | slang | music | adlib | ...
+  register    String?  // casual | chant | poetic | vulgar | sacred | flex
+  meaning     String?  @db.Text // plain-English gloss (so the writer uses it correctly)
+  example     String?  @db.Text // one short original usage line (never a real lyric)
+  tags        String[] // freeform: moods/genres it fits
+  source      String   @default("seed") // seed | research | user | learned
+  createdAt   DateTime @default(now()) @db.Timestamptz(6)
+
+  @@unique([term, language, category])
+  @@index([language, category])
+  @@index([workspaceId])
+}
+
 // ===========================================================================
 // Visuals (cover art + video)
 // ===========================================================================

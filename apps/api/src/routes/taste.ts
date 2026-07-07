@@ -2,6 +2,7 @@ import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { prisma } from '@afrohit/db';
 import { scoreItems } from '@afrohit/ai';
+import { lexiconStats } from '../lib/lexicon';
 import { requireAuth } from '../middleware/auth';
 
 const scoreInputSchema = z.object({
@@ -110,6 +111,7 @@ export default async function taste(app: FastifyInstance) {
         latest: refs.slice(0, 40).map((r) => ({ id: r.id, title: r.title, genre: r.genre, kind: kind(r), summary: (r.summary ?? '').slice(0, 260), at: r.createdAt })),
       },
       materials: { total: materials.reduce((n, m) => n + m._count, 0), shelf: materials.map((m) => ({ genre: m.genre, role: m.role, count: m._count })) },
+      wordBank: await lexiconStats(workspaceId).catch(() => ({ total: 0, byLanguage: [], byCategory: [] })),
       songs: counts[0],
       approvedLyrics: counts[1],
       hooks: counts[2],
@@ -122,6 +124,7 @@ export default async function taste(app: FastifyInstance) {
         selfTraining: 'QC-passed renders re-enter learnedReferenceBrief (max 1 per brief, uploads always outrank)',
         materials: 'pickMaterial + claudeArrangement → assemble-beat (the exact, deterministic beat)',
         staticLibraries: 'Sound DNA (23 genres + trends enrichment) + hit-craft (8 lyric modes) compiled into every prompt',
+        wordBank: 'lexiconPalette → a rotating slice of authentic terms (per language + mood) injected into every hook + lyric so vocabulary stays wide',
       },
     };
   });

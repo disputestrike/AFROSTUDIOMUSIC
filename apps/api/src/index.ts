@@ -40,6 +40,7 @@ import reviews from './routes/reviews';
 import songs from './routes/songs';
 import albums from './routes/albums';
 import materials from './routes/materials';
+import lexicon from './routes/lexicon';
 import uploads from './routes/uploads';
 import mixer from './routes/mixer';
 import settings from './routes/settings';
@@ -120,6 +121,7 @@ async function bootstrap() {
       await api.register(songs, { prefix: '/songs' });
       await api.register(albums, { prefix: '/albums' });
       await api.register(materials, { prefix: '/materials' });
+      await api.register(lexicon, { prefix: '/lexicon' });
       await api.register(uploads, { prefix: '/uploads' });
       await api.register(settings, { prefix: '/settings' });
       await api.register(publicRoutes, { prefix: '/public' });
@@ -139,6 +141,10 @@ async function bootstrap() {
   const port = Number(process.env.PORT ?? 4000);
   await app.listen({ port, host: '0.0.0.0' });
   app.log.info(`API listening on :${port}`);
+  // Seed the shared word bank once (idempotent; skips if already populated).
+  void import('./lib/lexicon').then(({ seedLexiconIfEmpty }) => seedLexiconIfEmpty())
+    .then((n) => { if (n) app.log.info(`lexicon seeded: ${n} entries`); })
+    .catch((err) => app.log.warn({ err }, 'lexicon seed skipped'));
 }
 
 bootstrap().catch((err) => {

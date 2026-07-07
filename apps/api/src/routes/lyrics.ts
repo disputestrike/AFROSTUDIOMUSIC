@@ -6,6 +6,7 @@ import { prompts, responsesJson, soundBrief, generateJson } from '@afrohit/ai';
 import { requireAuth } from '../middleware/auth';
 import { learnLyricCraft, findLearnedLyric } from '../lib/lyric-learn';
 import { learnedReferenceBrief, learnedLyricCraftBrief, freshnessBrief } from '../lib/learned';
+import { lexiconPalette } from '../lib/lexicon';
 
 export default async function lyrics(app: FastifyInstance) {
   app.get<{ Params: { projectId: string } }>(
@@ -60,6 +61,7 @@ export default async function lyrics(app: FastifyInstance) {
           languageMix: input.languageMix as never,
           soundDna: [
             await freshnessBrief(workspaceId),
+            await lexiconPalette({ workspaceId, languages: project.artist.languages, mood: (project.briefs?.[0] as { mood?: string } | undefined)?.mood, rotate: Date.now() % 97 }),
             soundBrief(project.genre).brief,
             await learnedReferenceBrief(workspaceId, project.genre),
             await learnedLyricCraftBrief(workspaceId, project.genre),

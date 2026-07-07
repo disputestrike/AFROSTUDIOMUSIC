@@ -13,3 +13,4 @@ export * from './sound-dna';
 export * from './generate';
 export * from './stems';
 export * from './hit-predictor';
+export * from './lexicon-seed';

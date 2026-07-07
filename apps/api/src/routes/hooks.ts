@@ -6,6 +6,7 @@ import { prompts, generateJson, directorRefineHooks, researchTrends, anthropicEn
 import { requireAuth } from '../middleware/auth';
 import { memoryContext, recordFeedback } from '../services/artist-memory';
 import { learnedReferenceBrief, learnedLyricCraftBrief, snapshotTrend, freshnessBrief } from '../lib/learned';
+import { lexiconPalette } from '../lib/lexicon';
 
 export default async function hooks(app: FastifyInstance) {
   app.get<{ Params: { projectId: string } }>(
@@ -52,6 +53,7 @@ export default async function hooks(app: FastifyInstance) {
       // + HIT-CRAFT — the full data lake behind every hook.
       const soundDna = [
         await freshnessBrief(workspaceId),
+        await lexiconPalette({ workspaceId, mood: (brief as { mood?: string } | undefined)?.mood, rotate: input.count }),
         soundBrief(project.genre).brief,
         await learnedReferenceBrief(workspaceId, project.genre),
         await learnedLyricCraftBrief(workspaceId, project.genre),

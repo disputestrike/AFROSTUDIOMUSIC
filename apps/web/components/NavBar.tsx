@@ -11,6 +11,7 @@ const LINKS = [
   { href: '/catalog', label: 'Catalog' },
   { href: '/materials', label: 'Materials' },
   { href: '/lake', label: 'Data Lake' },
+  { href: '/lexicon', label: 'Word Bank' },
   { href: '/albums', label: 'Albums' },
   { href: '/billing', label: 'Billing' },
   { href: '/settings', label: 'Settings' },
