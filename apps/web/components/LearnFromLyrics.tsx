@@ -105,7 +105,7 @@ export function LearnFromLyrics({ projectId }: { projectId: string }) {
 
             {/* THE BRIDGE: learned → now go make one that OUTDOES it. */}
             <Link
-              href={`/create?genre=${encodeURIComponent(result.craft.genre || 'afrobeats')}&vibe=${encodeURIComponent(
+              href={`/create?produce=1&genre=${encodeURIComponent(result.craft.genre || 'afrobeats')}&vibe=${encodeURIComponent(
                 `outdo the style just studied (${result.craft.craftTitle || 'the lesson'}): ${(result.craft.craftLessons ?? []).slice(0, 2).join('; ')}`.slice(0, 280)
               )}`}
               className="mt-4 inline-flex items-center gap-2 rounded-full bg-brand-gradient px-5 py-2.5 text-sm font-medium text-ink shadow-glow"

@@ -76,8 +76,11 @@ export default function CreatePage() {
   const [err, setErr] = useState('');
   const [song, setSong] = useState<{ title: string; hook?: string; score: number | null; url: string; projectId: string } | null>(null);
 
-  // Prefill from links like /create?genre=...&mood=...&bpm=...&vibe=... —
+  // Prefill from links like /create?genre=...&mood=...&bpm=...&vibe=...&produce=1
   // e.g. "Make a song that outdoes this" after learning a lyric on /listen.
+  // With produce=1 we AUTO-CREATE immediately — the user asked to make a song,
+  // so don't dump them back on the form to click again.
+  const [autoProduce, setAutoProduce] = useState(false);
   useEffect(() => {
     const q = new URLSearchParams(window.location.search);
     const g = q.get('genre');
@@ -88,7 +91,20 @@ export default function CreatePage() {
     if (b >= 60 && b <= 180) setBpm(Math.round(b));
     const v = q.get('vibe');
     if (v) setVibe(v.slice(0, 300));
+    if (q.get('produce') === '1') setAutoProduce(true);
+    // Clean the URL so a refresh doesn't re-fire the auto-create.
+    if (q.toString()) window.history.replaceState(null, '', '/create');
   }, []);
+
+  // Fire the create ONCE, after the prefills above have applied (state is set
+  // by the time this effect runs). createSong reads the now-current genre/vibe.
+  useEffect(() => {
+    if (autoProduce && phase === 'form') {
+      setAutoProduce(false);
+      void createSong();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [autoProduce]);
 
   const toggleLang = (l: string) => setLangs((p) => (p.includes(l) ? p.filter((x) => x !== l) : [...p, l]));
   const toggleGenre = (g: string) =>
