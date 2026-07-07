@@ -76,7 +76,7 @@ export async function runDropPipeline(app: FastifyInstance, ctx: DropCtx, input:
 
       for (let i = 0; i < input.count; i++) {
         try {
-          const hk = (await runChatTool({ ...ctx, name: 'generate_hooks', args: { count: 10, languages: input.languages } })) as {
+          const hk = (await runChatTool({ ...ctx, name: 'generate_hooks', args: { count: 6, languages: input.languages } })) as {
             hooks?: Array<{ id: string; text: string; score: number | null }>;
           };
           let hooks = hk?.hooks ?? [];
@@ -98,7 +98,7 @@ export async function runDropPipeline(app: FastifyInstance, ctx: DropCtx, input:
           // hard-failing the drop (a strong hook is what carries an Afrobeats record).
           const MIN_HOOK_SCORE = Number(process.env.MIN_HOOK_SCORE ?? 6.5);
           if ((best.score ?? 0) < MIN_HOOK_SCORE) {
-            const hk2 = (await runChatTool({ ...ctx, name: 'generate_hooks', args: { count: 10, languages: input.languages } })) as {
+            const hk2 = (await runChatTool({ ...ctx, name: 'generate_hooks', args: { count: 6, languages: input.languages } })) as {
               hooks?: Array<{ id: string; text: string; score: number | null }>;
             };
             let hooks2 = hk2?.hooks ?? [];

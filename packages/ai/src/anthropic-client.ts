@@ -41,6 +41,54 @@ function extractJson(text: string): string {
   return text.trim();
 }
 
+/**
+ * Parse JSON, and if it's TRUNCATED (the model hit max_tokens mid-array — a
+ * common cause of "Expected ',' or ']'"), salvage the complete prefix: keep
+ * everything up to the last complete top-level element and close the brackets.
+ * Turns a hard failure into "we got 6 of the 8 hooks" instead of losing the take.
+ */
+function parseJsonLoose<T>(raw: string): T {
+  try {
+    return JSON.parse(raw) as T;
+  } catch {
+    // Walk the string tracking string/escape + bracket depth; remember the last
+    // index where depth returned to a safe "between elements" state.
+    let depth = 0, inStr = false, esc = false, lastGood = -1;
+    const stack: string[] = [];
+    for (let i = 0; i < raw.length; i++) {
+      const c = raw[i]!;
+      if (inStr) {
+        if (esc) esc = false;
+        else if (c === '\\') esc = true;
+        else if (c === '"') inStr = false;
+        continue;
+      }
+      if (c === '"') inStr = true;
+      else if (c === '{' || c === '[') { stack.push(c === '{' ? '}' : ']'); depth++; }
+      else if (c === '}' || c === ']') { stack.pop(); depth--; if (depth >= 0) lastGood = i; }
+      else if (c === ',' && depth > 0) lastGood = i - 1; // safe cut before a dangling comma
+    }
+    if (lastGood > 0) {
+      let candidate = raw.slice(0, lastGood + 1).replace(/,\s*$/, '');
+      // Close whatever is still open, innermost-first.
+      const open: string[] = [];
+      let s2 = false, e2 = false, d = 0;
+      for (let i = 0; i < candidate.length; i++) {
+        const c = candidate[i]!;
+        if (s2) { if (e2) e2 = false; else if (c === '\\') e2 = true; else if (c === '"') s2 = false; continue; }
+        if (c === '"') s2 = true;
+        else if (c === '{') open.push('}');
+        else if (c === '[') open.push(']');
+        else if (c === '}' || c === ']') open.pop();
+        void d;
+      }
+      candidate += open.reverse().join('');
+      return JSON.parse(candidate) as T;
+    }
+    throw new Error('unparseable JSON (no salvageable prefix)');
+  }
+}
+
 export async function claudeJson<T>(opts: {
   system: string;
   user: string;
@@ -86,7 +134,7 @@ export async function claudeJson<T>(opts: {
       if (!res.ok) throw new Error(`anthropic ${res.status}: ${(await res.text()).slice(0, 300)}`);
       const data = (await res.json()) as { content?: Array<{ type: string; text?: string }> };
       const text = data.content?.map((c) => c.text ?? '').join('') ?? '';
-      return JSON.parse(extractJson(text)) as T;
+      return parseJsonLoose<T>(extractJson(text));
     } catch (e) {
       clearTimeout(timer);
       const msg = (e as Error).message;

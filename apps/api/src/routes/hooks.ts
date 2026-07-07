@@ -71,7 +71,7 @@ export default async function hooks(app: FastifyInstance) {
         system: prompts.HOOK_SYSTEM,
         user: prompts.hookUserPrompt({ artist: project.artist as never, brief: brief as never, count: input.count, tasteMemory, trends, soundDna: soundDna.slice(0, 2600) }),
         temperature: 0.95,
-        maxTokens: 2_600,
+        maxTokens: 3_500,
       });
       const refined = await directorRefineHooks({
         artist: project.artist as never,
