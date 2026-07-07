@@ -333,7 +333,7 @@ async function generateLyrics(ctx: Ctx, hookId: string, cleanVersion: boolean, l
   // instead of failing the take. The last good attempt wins.
   let firstOutput: LyricOut = { title: '', body: '' };
   for (let attempt = 0; attempt < 3; attempt++) {
-    const out = await generateJson<LyricOut>({ system: prompts.LYRIC_SYSTEM, user: lyricUser, temperature: 0.8, maxTokens: 5_000 }).catch(() => null);
+    const out = await generateJson<LyricOut>({ system: prompts.LYRIC_SYSTEM, user: lyricUser, temperature: 0.8, maxTokens: 5_000, timeoutMs: 90_000 }).catch(() => null);
     if (out && typeof out.body === 'string' && out.body.trim().length >= 20) { firstOutput = out; break; }
     firstOutput = out ?? firstOutput;
   }

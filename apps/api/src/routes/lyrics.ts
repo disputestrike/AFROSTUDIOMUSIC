@@ -65,7 +65,7 @@ export default async function lyrics(app: FastifyInstance) {
       // ~1 in 3; regenerate up to 3x instead of failing.
       let output: LyricOut = { title: '', body: '' };
       for (let attempt = 0; attempt < 3; attempt++) {
-        const out = await generateJson<LyricOut>({ system: prompts.LYRIC_SYSTEM, user: lyricUser, temperature: 0.8, maxTokens: 4_500 }).catch(() => null);
+        const out = await generateJson<LyricOut>({ system: prompts.LYRIC_SYSTEM, user: lyricUser, temperature: 0.8, maxTokens: 4_500, timeoutMs: 90_000 }).catch(() => null);
         if (out && typeof out.body === 'string' && out.body.trim().length >= 20) { output = out; break; }
         output = out ?? output;
       }

@@ -46,6 +46,8 @@ export interface GenerateOptions {
   temperature?: number;
   /** Force a brain. Default: Claude when configured, else OpenAI. */
   brain?: 'claude' | 'openai';
+  /** Longer Claude timeout for big/slow calls (e.g. lyrics). Default 55s. */
+  timeoutMs?: number;
 }
 
 const JSON_ONLY =
@@ -73,7 +75,7 @@ export async function generateJson<T>(opts: GenerateOptions): Promise<T> {
 
   const wantClaude = (opts.brain ?? (anthropicEnabled() ? 'claude' : 'openai')) === 'claude';
   const callClaude = () =>
-    claudeJson<T>({ system: opts.system + JSON_ONLY, user: opts.user, maxTokens: opts.maxTokens, temperature: opts.temperature });
+    claudeJson<T>({ system: opts.system + JSON_ONLY, user: opts.user, maxTokens: opts.maxTokens, temperature: opts.temperature, timeoutMs: opts.timeoutMs });
 
   if (wantClaude && anthropicEnabled()) {
     try {

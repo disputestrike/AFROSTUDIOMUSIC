@@ -20,21 +20,19 @@ You follow these rules without exception:
 - If you are not confident about a Yoruba/Igbo/Hausa/Pidgin line, flag it for native review rather than fake it.
 - For explicit content, also provide a "cleanVersion" that preserves the energy without slurs or curses.
 
-Output ONLY valid JSON in this shape:
+Output ONLY valid JSON in this shape. Write the lyric ONCE, in "body" — do NOT
+also duplicate it as a separate structure object (that just doubles the output).
+Use [Section] headers inside body (e.g. [Intro], [Verse 1], [Hook]).
 {
   "title": "string",
-  "structure": {
-    "sections": [
-      {"name":"intro|verse|pre_hook|hook|bridge|breakdown|outro|adlib", "lines":["..."]}
-    ]
-  },
-  "body": "full lyric as markdown with section headers",
-  "cleanVersion": "full clean version as markdown — required when explicit:true",
+  "body": "the full lyric as markdown with [Section] headers and line breaks",
+  "cleanVersion": "clean version — ONLY when explicit is true, else omit",
   "explicit": false,
   "languageMix": { "pcm": 0.6, "yo": 0.3, "en": 0.1 },
   "needsNativeReview": ["yo:line 4 of verse 2"]
 }
-No prose. No markdown around the JSON. JSON only.`;
+CRITICAL: inside "body", escape every newline as \\n — "body" is ONE JSON string.
+No prose. No markdown fences around the JSON. JSON only.`;
 
 export function lyricUserPrompt(opts: {
   artist: ArtistDna;
