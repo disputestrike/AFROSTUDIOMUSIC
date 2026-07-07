@@ -13,6 +13,40 @@ import { anthropicEnabled, claudeJson } from './anthropic-client';
 import { AR_DIRECTOR_SYSTEM, arDirectorUserPrompt } from './prompts/ar-director';
 import type { ArtistDna, Brief } from '@afrohit/shared';
 
+/**
+ * ONE-CALL hooks: write AND A&R-score in a single Claude pass. Replaces the old
+ * two-call "GPT drafts → Claude refines" dance (which meant two sequential ~30s
+ * Claude calls = ~67s + timeouts). Claude is the brain now, so it drafts and
+ * judges together — roughly 2x faster, and the A&R score never goes missing.
+ */
+export async function writeAndScoreHooks(opts: {
+  artist: ArtistDna;
+  brief?: Brief;
+  count: number;
+  tasteMemory?: { approvedExamples: string[]; rejectedExamples: string[] };
+  trends?: string;
+  soundDna?: string;
+}): Promise<ARHook[] | null> {
+  if (!anthropicEnabled() || process.env.STUB_AI === '1') return null;
+  const n = Math.max(3, Math.min(opts.count || 8, 12));
+  try {
+    const out = await claudeJson<{ hooks: ARHook[] }>({
+      system:
+        AR_DIRECTOR_SYSTEM +
+        `\n\nYOU ARE ALSO THE WRITER: FIRST write ${n} distinct, original Afrobeats hooks, THEN score each as A&R in the SAME response. ` +
+        'Each hook: text (2-4 chantable lines), language (codes present), score (0-10 overall), viralScore (0-10 short-form), reason (one line), needsNativeReview (bool), tiktokMoment (string or null). ' +
+        'Return strict JSON {"hooks":[...]}. No two hooks may share the same core phrase; kill clichés.',
+      user: arDirectorUserPrompt({ ...opts, drafts: [`Write ${n} fresh hooks from the brief above — do not refine an existing list, CREATE them.`] }),
+      maxTokens: 2_600,
+      temperature: 0.9,
+    });
+    const hooks = (out.hooks ?? []).filter((h) => h && typeof h.text === 'string');
+    return hooks.length ? hooks : null;
+  } catch {
+    return null;
+  }
+}
+
 export interface ARHook {
   text: string;
   language: string[];
