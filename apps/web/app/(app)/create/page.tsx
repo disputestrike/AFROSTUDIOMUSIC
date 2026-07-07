@@ -57,6 +57,9 @@ export default function CreatePage() {
   const router = useRouter();
   // MULTI-GENRE: first pick = the backbone; a second pick FUSES into it.
   const [genres, setGenres] = useState<string[]>(['afrobeats']);
+  // Has the user (or a prefill) actually chosen a genre? Until then the shown
+  // 'afrobeats' is just a default, and the first tap REPLACES it.
+  const [genreTouched, setGenreTouched] = useState(false);
   const [mood, setMood] = useState('confident');
   const [bpm, setBpm] = useState(103);
   const [langs, setLangs] = useState<string[]>(['pcm', 'en']);
@@ -84,7 +87,7 @@ export default function CreatePage() {
   useEffect(() => {
     const q = new URLSearchParams(window.location.search);
     const g = q.get('genre');
-    if (g && GENRES.some((x) => x.value === g)) setGenres([g]);
+    if (g && GENRES.some((x) => x.value === g)) { setGenres([g]); setGenreTouched(true); }
     const m = q.get('mood');
     if (m && MOODS.includes(m)) setMood(m);
     const b = Number(q.get('bpm'));
@@ -109,7 +112,11 @@ export default function CreatePage() {
   const toggleLang = (l: string) => setLangs((p) => (p.includes(l) ? p.filter((x) => x !== l) : [...p, l]));
   const toggleGenre = (g: string) =>
     setGenres((p) => {
-      if (p.includes(g)) return p.length > 1 ? p.filter((x) => x !== g) : p; // never empty
+      // The FIRST manual pick REPLACES the default backbone — so you can switch
+      // the primary genre freely (the old bug: Afrobeats was stuck because tap
+      // #1 just ADDED a fusion). After that, tap = toggle/fuse (max 2).
+      if (!genreTouched) { setGenreTouched(true); return [g]; }
+      if (p.includes(g)) return p.length > 1 ? p.filter((x) => x !== g) : p; // keep at least 1
       return p.length >= 2 ? [p[0]!, g] : [...p, g]; // max 2: backbone + fusion
     });
   const genre = genres[0]!;
