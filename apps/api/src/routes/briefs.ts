@@ -2,7 +2,7 @@ import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { prisma } from '@afrohit/db';
 import { briefSchema } from '@afrohit/shared';
-import { responsesJson } from '@afrohit/ai';
+import { generateJson } from '@afrohit/ai';
 import { prompts } from '@afrohit/ai';
 import { requireAuth } from '../middleware/auth';
 
@@ -39,7 +39,7 @@ export default async function briefs(app: FastifyInstance) {
       });
       if (!charge.ok) return reply.code(402).send({ error: 'insufficient_credits', ...charge });
 
-      const polished = await responsesJson<{
+      const polished = await generateJson<{
         mood: string;
         topic: string;
         language: string[];

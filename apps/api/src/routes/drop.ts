@@ -81,16 +81,15 @@ export async function runDropPipeline(app: FastifyInstance, ctx: DropCtx, input:
           };
           let hooks = hk?.hooks ?? [];
           if (!hooks.length) continue;
-          // If the Claude A&R didn't score them (no ANTHROPIC_API_KEY), score via
-          // the taste engine (OpenAI) so the shortlist actually ranks.
+          // If the Claude A&R didn't score them, score via the taste engine — but
+          // NEVER let a scoring hiccup kill the whole take. If it fails, we ship
+          // the hooks unscored (ranked by generation order) rather than failing.
           if (hooks.every((h) => h.score == null)) {
-            const sc = (await runChatTool({
-              ...ctx,
-              name: 'score_hooks',
-              args: { hookIds: hooks.map((h) => h.id) },
-            })) as { scores?: Array<{ id: string; overall: number }> };
-            const m = new Map((sc?.scores ?? []).map((s) => [s.id, s.overall]));
-            hooks = hooks.map((h) => ({ ...h, score: m.get(h.id) ?? h.score }));
+            try {
+              const sc = (await runChatTool({ ...ctx, name: 'score_hooks', args: { hookIds: hooks.map((h) => h.id) } })) as { scores?: Array<{ id: string; overall: number }> };
+              const m = new Map((sc?.scores ?? []).map((s) => [s.id, s.overall]));
+              hooks = hooks.map((h) => ({ ...h, score: m.get(h.id) ?? h.score }));
+            } catch { /* scoring unavailable — keep the hooks, pick the first */ }
           }
           let best = hooks.slice().sort((a, b) => (b.score ?? 0) - (a.score ?? 0))[0]!;
 
@@ -104,11 +103,11 @@ export async function runDropPipeline(app: FastifyInstance, ctx: DropCtx, input:
             };
             let hooks2 = hk2?.hooks ?? [];
             if (hooks2.length && hooks2.every((h) => h.score == null)) {
-              const sc2 = (await runChatTool({ ...ctx, name: 'score_hooks', args: { hookIds: hooks2.map((h) => h.id) } })) as {
-                scores?: Array<{ id: string; overall: number }>;
-              };
-              const m2 = new Map((sc2?.scores ?? []).map((s) => [s.id, s.overall]));
-              hooks2 = hooks2.map((h) => ({ ...h, score: m2.get(h.id) ?? h.score }));
+              try {
+                const sc2 = (await runChatTool({ ...ctx, name: 'score_hooks', args: { hookIds: hooks2.map((h) => h.id) } })) as { scores?: Array<{ id: string; overall: number }> };
+                const m2 = new Map((sc2?.scores ?? []).map((s) => [s.id, s.overall]));
+                hooks2 = hooks2.map((h) => ({ ...h, score: m2.get(h.id) ?? h.score }));
+              } catch { /* scoring unavailable — keep hooks2 as-is */ }
             }
             const combined = [...hooks, ...hooks2].sort((a, b) => (b.score ?? 0) - (a.score ?? 0));
             if (combined[0]) best = combined[0];

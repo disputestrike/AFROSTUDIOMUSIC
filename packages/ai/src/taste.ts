@@ -6,9 +6,8 @@
  * Future: add a learned regression model fed by your past streaming data,
  * once the catalog grows.
  */
-import { responsesJson } from './providers/text';
+import { generateJson } from './generate';
 import { TASTE_SYSTEM, tasteUserPrompt } from './prompts/taste';
-import { MODELS } from './openai-client';
 import type { ArtistDna } from '@afrohit/shared';
 
 export interface TasteInputItem {
@@ -32,12 +31,13 @@ export async function scoreItems(opts: {
   model?: string;
 }): Promise<TasteScore[]> {
   if (opts.items.length === 0) return [];
-  const result = await responsesJson<{ scores: TasteScore[] }>({
+  // generateJson = Claude-first (resilient) instead of OpenAI-only — the taste
+  // scorer must not hard-fail when the OpenAI account is quota-exhausted.
+  const result = await generateJson<{ scores: TasteScore[] }>({
     system: TASTE_SYSTEM,
     user: tasteUserPrompt({ artist: opts.artist, items: opts.items }),
-    model: opts.model ?? MODELS.text,
     temperature: 0.2,
-    maxOutputTokens: 4_000,
+    maxTokens: 3_000,
   });
   return result.scores ?? [];
 }

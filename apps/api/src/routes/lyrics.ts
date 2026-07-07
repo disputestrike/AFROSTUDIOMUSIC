@@ -2,7 +2,7 @@ import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { prisma } from '@afrohit/db';
 import { generateLyricsInputSchema, GENRES } from '@afrohit/shared';
-import { joinBriefs, prompts, responsesJson, soundBrief, generateJson} from '@afrohit/ai';
+import { joinBriefs, prompts, soundBrief, generateJson} from '@afrohit/ai';
 import { requireAuth } from '../middleware/auth';
 import { learnLyricCraft, findLearnedLyric } from '../lib/lyric-learn';
 import { learnedReferenceBrief, learnedLyricCraftBrief, freshnessBrief } from '../lib/learned';
@@ -43,7 +43,7 @@ export default async function lyrics(app: FastifyInstance) {
       });
       if (!charge.ok) return reply.code(402).send({ error: 'insufficient_credits', ...charge });
 
-      const output = await responsesJson<{
+      const output = await generateJson<{
         title: string;
         body: string;
         cleanVersion?: string;
@@ -69,7 +69,7 @@ export default async function lyrics(app: FastifyInstance) {
           ]),
         }),
         temperature: 0.8,
-        maxOutputTokens: 4_000,
+        maxTokens: 3_000,
       });
 
       // songId is @unique on LyricDraft — upsert so re-generating a song's lyric
