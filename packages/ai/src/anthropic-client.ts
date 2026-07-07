@@ -47,16 +47,48 @@ function extractJson(text: string): string {
  * everything up to the last complete top-level element and close the brackets.
  * Turns a hard failure into "we got 6 of the 8 hooks" instead of losing the take.
  */
+/**
+ * LLMs returning long multi-line text (a full lyric body) often put LITERAL
+ * newlines/tabs inside JSON string values — which is invalid JSON and makes
+ * JSON.parse throw (the "empty lyric" bug: ~1 in 3 lyrics came back blank).
+ * This escapes raw control chars that appear INSIDE strings so the JSON parses.
+ */
+function escapeRawControlChars(raw: string): string {
+  let out = '';
+  let inStr = false, esc = false;
+  for (let i = 0; i < raw.length; i++) {
+    const c = raw[i]!;
+    if (inStr) {
+      if (esc) { out += c; esc = false; continue; }
+      if (c === '\\') { out += c; esc = true; continue; }
+      if (c === '"') { out += c; inStr = false; continue; }
+      if (c === '\n') { out += '\\n'; continue; }
+      if (c === '\r') { out += '\\r'; continue; }
+      if (c === '\t') { out += '\\t'; continue; }
+      out += c;
+      continue;
+    }
+    if (c === '"') inStr = true;
+    out += c;
+  }
+  return out;
+}
+
 function parseJsonLoose<T>(raw: string): T {
   try {
     return JSON.parse(raw) as T;
   } catch {
+    // First: literal control chars inside strings (the common long-text failure).
+    try {
+      return JSON.parse(escapeRawControlChars(raw)) as T;
+    } catch { /* fall through to bracket salvage */ }
     // Walk the string tracking string/escape + bracket depth; remember the last
     // index where depth returned to a safe "between elements" state.
+    const src = escapeRawControlChars(raw);
     let depth = 0, inStr = false, esc = false, lastGood = -1;
     const stack: string[] = [];
-    for (let i = 0; i < raw.length; i++) {
-      const c = raw[i]!;
+    for (let i = 0; i < src.length; i++) {
+      const c = src[i]!;
       if (inStr) {
         if (esc) esc = false;
         else if (c === '\\') esc = true;
@@ -69,7 +101,7 @@ function parseJsonLoose<T>(raw: string): T {
       else if (c === ',' && depth > 0) lastGood = i - 1; // safe cut before a dangling comma
     }
     if (lastGood > 0) {
-      let candidate = raw.slice(0, lastGood + 1).replace(/,\s*$/, '');
+      let candidate = src.slice(0, lastGood + 1).replace(/,\s*$/, '');
       // Close whatever is still open, innermost-first.
       const open: string[] = [];
       let s2 = false, e2 = false, d = 0;

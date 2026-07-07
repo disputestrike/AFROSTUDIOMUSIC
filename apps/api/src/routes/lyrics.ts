@@ -44,39 +44,35 @@ export default async function lyrics(app: FastifyInstance) {
       });
       if (!charge.ok) return reply.code(402).send({ error: 'insufficient_credits', ...charge });
 
-      const output = await generateJson<{
-        title: string;
-        body: string;
-        cleanVersion?: string;
-        explicit?: boolean;
-        structure?: unknown;
-        languageMix?: Record<string, number>;
-        needsNativeReview?: string[];
-      }>({
-        system: prompts.LYRIC_SYSTEM,
-        user: prompts.lyricUserPrompt({
-          artist: project.artist as never,
-          brief: project.briefs[0] as never,
-          hookText: hook.text,
-          cleanVersion: input.cleanVersion,
-          languageMix: input.languageMix as never,
-          soundDna: fuseSoundDna({
-            freshness: await freshnessBrief(workspaceId),
-            palette: await lexiconPalette({ workspaceId, languages: project.artist.languages, mood: (project.briefs?.[0] as { mood?: string } | undefined)?.mood, rotate: Date.now() % 97 }),
-            dna: soundBrief(project.genre).brief,
-            learnedRef: await learnedReferenceBrief(workspaceId, project.genre),
-            learnedCraft: await learnedLyricCraftBrief(workspaceId, project.genre),
-            hitCraft: prompts.hitCraftBrief('lyric', (project.briefs?.[0] as { mood?: string } | undefined)?.mood),
-          }),
-        }),
-        temperature: 0.8,
-        maxTokens: 4_500,
+      type LyricOut = { title: string; body: string; cleanVersion?: string; explicit?: boolean; structure?: unknown; languageMix?: Record<string, number>; needsNativeReview?: string[] };
+      const lmood = (project.briefs?.[0] as { mood?: string } | undefined)?.mood;
+      const lyricUser = prompts.lyricUserPrompt({
+        artist: project.artist as never,
+        brief: project.briefs[0] as never,
+        hookText: hook.text,
+        cleanVersion: input.cleanVersion,
+        languageMix: input.languageMix as never,
+        soundDna: fuseSoundDna({
+          freshness: await freshnessBrief(workspaceId),
+          palette: await lexiconPalette({ workspaceId, languages: project.artist.languages, mood: lmood, rotate: Date.now() % 97 }),
+          dna: soundBrief(project.genre).brief,
+          learnedRef: await learnedReferenceBrief(workspaceId, project.genre),
+          learnedCraft: await learnedLyricCraftBrief(workspaceId, project.genre),
+          hitCraft: prompts.hitCraftBrief('lyric', lmood),
+        }, 6000),
       });
+      // RETRY UNTIL NON-EMPTY — a long lyric returned as JSON comes back empty
+      // ~1 in 3; regenerate up to 3x instead of failing.
+      let output: LyricOut = { title: '', body: '' };
+      for (let attempt = 0; attempt < 3; attempt++) {
+        const out = await generateJson<LyricOut>({ system: prompts.LYRIC_SYSTEM, user: lyricUser, temperature: 0.8, maxTokens: 4_500 }).catch(() => null);
+        if (out && typeof out.body === 'string' && out.body.trim().length >= 20) { output = out; break; }
+        output = out ?? output;
+      }
 
-      // GUARD: body is required — never write a truncated/empty lyric (that's the
-      // ugly Prisma upsert error). A short body = this generation failed.
+      // GUARD: after 3 tries still empty → honest error (rare now).
       const body = typeof output.body === 'string' ? output.body.trim() : '';
-      if (body.length < 20) return reply.code(503).send({ error: 'lyric_incomplete', message: 'The lyric came back empty — try again.' });
+      if (body.length < 20) return reply.code(503).send({ error: 'lyric_incomplete', message: 'The lyric came back empty after retries — try again.' });
       // songId is @unique on LyricDraft — upsert so re-generating a song's lyric
       // updates it instead of hitting the unique constraint.
       const lyricData = {

@@ -20,10 +20,16 @@ export interface LakeParts {
 
 const cap = (s: string | undefined, n: number) => (s ? s.slice(0, n) : '');
 
-export function fuseSoundDna(p: LakeParts): string {
+/**
+ * @param maxTotal optional overall budget. Hooks use the full ~11k; lyrics pass
+ *   a leaner ~6k (a huge INPUT + a long multi-line lyric OUTPUT as JSON breaks
+ *   more often, so lyrics stay tighter). The word bank + freshness + hard
+ *   constraints always survive; the verbose genre-DNA/hit-craft blocks yield first.
+ */
+export function fuseSoundDna(p: LakeParts, maxTotal = 11000): string {
   // Order: constraints → freshness → WORD BANK → genre DNA → learned → craft →
   // hit modes. Word bank sits high so it always survives and leads word choice.
-  return [
+  const parts = [
     cap(p.extra, 900),
     cap(p.freshness, 800),
     cap(p.palette, 1400), // the vocabulary — generous
@@ -31,8 +37,18 @@ export function fuseSoundDna(p: LakeParts): string {
     cap(p.learnedRef, 1600),
     cap(p.learnedCraft, 1400),
     cap(p.hitCraft, 2200),
-  ]
-    .map((s) => s.trim())
-    .filter(Boolean)
-    .join('\n\n'); // ~11k chars max — full breadth, still bounded
+  ].map((s) => s.trim()).filter(Boolean);
+
+  const out: string[] = [];
+  let used = 0;
+  for (const s of parts) {
+    if (used + s.length > maxTotal) {
+      const room = maxTotal - used;
+      if (room > 300) out.push(s.slice(0, room));
+      break;
+    }
+    out.push(s);
+    used += s.length + 2;
+  }
+  return out.join('\n\n');
 }

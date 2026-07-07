@@ -314,18 +314,29 @@ async function generateLyrics(ctx: Ctx, hookId: string, cleanVersion: boolean, l
   const charge = await ctx.app.chargeCredits({ workspaceId: ctx.workspaceId, key: 'lyrics_full' });
   if (!charge.ok) return { error: 'insufficient_credits', ...charge };
 
-  const firstOutput = await generateJson<{ title: string; body: string; cleanVersion?: string; explicit?: boolean; structure?: unknown; languageMix?: Record<string, number>; needsNativeReview?: string[] }>({
-    system: prompts.LYRIC_SYSTEM,
-    user: prompts.lyricUserPrompt({
-      artist: hook.project.artist as never,
-      brief: hook.project.briefs[0] as never,
-      hookText: hook.text,
-      cleanVersion,
-      soundDna: fuseSoundDna({ extra: hardConstraints(hook.project.genre, languages), freshness: await freshnessBrief(ctx.workspaceId), palette: await lexiconPalette({ workspaceId: ctx.workspaceId, languages, mood: (hook.project.briefs[0] as { mood?: string } | undefined)?.mood, rotate: Date.now() % 97 }), dna: soundBrief(hook.project.genre).brief, learnedRef: await learnedReferenceBrief(ctx.workspaceId, hook.project.genre), learnedCraft: await learnedLyricCraftBrief(ctx.workspaceId, hook.project.genre), hitCraft: prompts.hitCraftBrief('lyric', (hook.project.briefs[0] as { mood?: string } | undefined)?.mood) }),
-    }),
-    temperature: 0.8,
-    maxTokens: 5_000,
-  });
+  const lmood = (hook.project.briefs[0] as { mood?: string } | undefined)?.mood;
+  const lyricSoundDna = fuseSoundDna({
+    extra: hardConstraints(hook.project.genre, languages),
+    freshness: await freshnessBrief(ctx.workspaceId),
+    palette: await lexiconPalette({ workspaceId: ctx.workspaceId, languages, mood: lmood, rotate: Date.now() % 97 }),
+    dna: soundBrief(hook.project.genre).brief,
+    learnedRef: await learnedReferenceBrief(ctx.workspaceId, hook.project.genre),
+    learnedCraft: await learnedLyricCraftBrief(ctx.workspaceId, hook.project.genre),
+    hitCraft: prompts.hitCraftBrief('lyric', lmood),
+  }, 6000); // lyrics: leaner than hooks — a huge input + long output JSON breaks more often
+
+  type LyricOut = { title: string; body: string; cleanVersion?: string; explicit?: boolean; structure?: unknown; languageMix?: Record<string, number>; needsNativeReview?: string[] };
+  const lyricUser = prompts.lyricUserPrompt({ artist: hook.project.artist as never, brief: hook.project.briefs[0] as never, hookText: hook.text, cleanVersion, soundDna: lyricSoundDna });
+
+  // RETRY UNTIL NON-EMPTY: a long multi-line lyric returned as a JSON string
+  // sometimes comes back empty/broken (~1 in 3 live) — regenerate up to 3x
+  // instead of failing the take. The last good attempt wins.
+  let firstOutput: LyricOut = { title: '', body: '' };
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const out = await generateJson<LyricOut>({ system: prompts.LYRIC_SYSTEM, user: lyricUser, temperature: 0.8, maxTokens: 5_000 }).catch(() => null);
+    if (out && typeof out.body === 'string' && out.body.trim().length >= 20) { firstOutput = out; break; }
+    firstOutput = out ?? firstOutput;
+  }
 
   // GUARDRAIL: verify language obedience against the SELECTION; one stern
   // retry on violation. Any remaining violation is reported, never hidden.
