@@ -68,7 +68,7 @@ export default async function debug(app: FastifyInstance) {
       assembledSoundDna: assembled,
       assembledLength: assembled.length,
       // Each source, present-or-empty + its length, so you can see the fusion.
-      parts: parts.map((p) => ({ source: p.name, present: !!p.text, chars: p.text.length, preview: p.text.slice(0, 200) })),
+      parts: parts.map((p) => ({ source: p.name, present: !!p.text, chars: (p.text ?? '').length, preview: (p.text ?? '').slice(0, 200) })),
       wired: {
         wordBankInPrompt: !!palette && assembled.includes(palette.slice(0, 40)),
         freshnessInPrompt: !!freshness && assembled.includes(freshness.slice(0, 40)),
