@@ -544,6 +544,47 @@ class AceStepSongAdapter implements MusicProviderAdapter {
 }
 
 /**
+ * Format a lyric for MiniMax music-2.6, which SINGS the lyrics field literally.
+ *
+ * Our vocal arranger writes an ACE-Step "performance script": the lyric peppered
+ * with inline STAGE DIRECTIONS — "(drum roll — build up)", "(enter late, lean
+ * behind the beat)", "(soft, hazy)", "(breath)". ACE-Step reads those as cues;
+ * MiniMax would SING them as words ("drum roll", "soft hazy") — the exact kind of
+ * garbage that reads as "fake". So for MiniMax we KEEP the [Section] tags and the
+ * short, genuinely-singable ad-libs (a tight whitelist of interjections MiniMax
+ * renders as backing) and DROP everything else in parentheses. Clean lead lines +
+ * structure is MiniMax's sweet spot; it arranges its own natural phrasing. A
+ * length cap on whole lines keeps us under the model's lyric limit.
+ */
+const MINIMAX_SINGABLE =
+  /^(?:ooh|oh|eh|ah|mmm|hmm|yeah|ya|hey|heh|woah|whoa|na|la|da|yee+|uh|chai|oya|ehen|omo+|baby|shout|gang|come on|let'?s go|gbedu|jeje|ehn)(?:[\s,!'-]+(?:ooh|oh|eh|ah|mmm|hmm|yeah|ya|hey|woah|whoa|na|la|da|yee+|uh|baby))*!?$/i;
+export function cleanLyricsForMinimax(raw: string, maxChars = 2400): string {
+  const cleaned = raw
+    .split('\n')
+    .map((line) =>
+      line
+        // Keep only whitelisted singable parentheticals; drop stage directions.
+        .replace(/\(([^)]*)\)/g, (_m, inner: string) =>
+          MINIMAX_SINGABLE.test(inner.trim()) ? `(${inner.trim()})` : ''
+        )
+        .replace(/[ \t]{2,}/g, ' ')
+        .trim()
+    )
+    // Collapse the blank-line runs the drops leave behind.
+    .filter((l, i, arr) => !(l.trim() === '' && (arr[i - 1]?.trim() ?? '') === ''))
+    .join('\n')
+    .trim();
+  if (cleaned.length <= maxChars) return cleaned;
+  // Trim to whole lines so we never cut a word (or a [Section]) mid-way.
+  let acc = '';
+  for (const l of cleaned.split('\n')) {
+    if ((acc ? acc.length + 1 : 0) + l.length > maxChars) break;
+    acc += (acc ? '\n' : '') + l;
+  }
+  return acc;
+}
+
+/**
  * MiniMax Music (via Replicate) — full song WITH vocals from lyrics, no
  * reference track needed. Higher vocal realism than ACE-Step for many styles.
  * Selectable per request (songEngine: 'minimax'); same Replicate key.
@@ -576,7 +617,7 @@ class MiniMaxSongAdapter implements MusicProviderAdapter {
     // send only valid keys. We sing our lyrics; if none, let the model write them.
     const hasLyrics = !!input.lyrics?.trim();
     const modelInput: Record<string, unknown> = { prompt: style };
-    if (hasLyrics) modelInput.lyrics = input.lyrics;
+    if (hasLyrics) modelInput.lyrics = cleanLyricsForMinimax(input.lyrics!);
     else modelInput.lyrics_optimizer = true;
 
     const res = await fetch('https://api.replicate.com/v1/predictions', {

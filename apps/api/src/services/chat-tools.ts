@@ -464,7 +464,7 @@ async function createBeatJob(ctx: Ctx, a: { genre: string; fusionGenres?: string
       workspaceId: ctx.workspaceId,
       projectId: ctx.projectId,
       kind: 'music',
-      provider: a.withVocals ? a.songEngine ?? 'ace_step' : process.env.MUSIC_PROVIDER ?? 'stub',
+      provider: a.withVocals ? a.songEngine ?? 'minimax' : process.env.MUSIC_PROVIDER ?? 'stub',
       status: 'QUEUED',
       inputJson: a as never,
     },
