@@ -324,7 +324,7 @@ async function generateLyrics(ctx: Ctx, hookId: string, cleanVersion: boolean, l
       soundDna: fuseSoundDna({ extra: hardConstraints(hook.project.genre, languages), freshness: await freshnessBrief(ctx.workspaceId), palette: await lexiconPalette({ workspaceId: ctx.workspaceId, languages, mood: (hook.project.briefs[0] as { mood?: string } | undefined)?.mood, rotate: Date.now() % 97 }), dna: soundBrief(hook.project.genre).brief, learnedRef: await learnedReferenceBrief(ctx.workspaceId, hook.project.genre), learnedCraft: await learnedLyricCraftBrief(ctx.workspaceId, hook.project.genre), hitCraft: prompts.hitCraftBrief('lyric', (hook.project.briefs[0] as { mood?: string } | undefined)?.mood) }),
     }),
     temperature: 0.8,
-    maxTokens: 4_000,
+    maxTokens: 5_000,
   });
 
   // GUARDRAIL: verify language obedience against the SELECTION; one stern
@@ -345,23 +345,31 @@ async function generateLyrics(ctx: Ctx, hookId: string, cleanVersion: boolean, l
           soundDna: hardConstraints(hook.project.genre, languages),
         }),
       temperature: 0.7,
-      maxTokens: 4_000,
+      maxTokens: 5_000,
     }).catch(() => null);
     if (retry?.body) {
       output = retry;
       langViolation = languageViolations(retry.languageMix, languages);
     }
   }
+  // GUARD: `body` is required (non-null). A truncated/salvaged JSON response can
+  // arrive without it — never pass undefined to Prisma (that's the ugly
+  // "Invalid prisma.lyricDraft.upsert()" the user saw). If the body is missing,
+  // this take failed cleanly; the drop batch continues.
+  const body = typeof output.body === 'string' ? output.body.trim() : '';
+  if (body.length < 20) {
+    throw new Error('lyric came back empty/truncated — regenerating recommended');
+  }
   // LyricDraft.songId is @unique — a song can have ONE lyric. Re-running lyrics
   // (Continue/Regenerate) must UPDATE it, not crash on the unique constraint.
   const lyricData = {
     projectId: hook.projectId,
-    title: output.title,
-    body: output.body,
-    cleanVersion: output.cleanVersion,
+    title: (typeof output.title === 'string' && output.title.trim()) || hook.text.split('\n')[0]!.slice(0, 80),
+    body,
+    cleanVersion: typeof output.cleanVersion === 'string' ? output.cleanVersion : undefined,
     explicit: output.explicit ?? false,
-    structure: output.structure as never,
-    languageMix: output.languageMix as never,
+    structure: (output.structure ?? undefined) as never,
+    languageMix: (output.languageMix ?? undefined) as never,
   };
   const lyric = hook.songId
     ? await prisma.lyricDraft.upsert({

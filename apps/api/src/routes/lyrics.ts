@@ -70,15 +70,19 @@ export default async function lyrics(app: FastifyInstance) {
           }),
         }),
         temperature: 0.8,
-        maxTokens: 3_000,
+        maxTokens: 4_500,
       });
 
+      // GUARD: body is required — never write a truncated/empty lyric (that's the
+      // ugly Prisma upsert error). A short body = this generation failed.
+      const body = typeof output.body === 'string' ? output.body.trim() : '';
+      if (body.length < 20) return reply.code(503).send({ error: 'lyric_incomplete', message: 'The lyric came back empty — try again.' });
       // songId is @unique on LyricDraft — upsert so re-generating a song's lyric
       // updates it instead of hitting the unique constraint.
       const lyricData = {
         projectId: project.id,
-        title: output.title,
-        body: output.body,
+        title: (typeof output.title === 'string' && output.title.trim()) || hook.text.slice(0, 80),
+        body,
         cleanVersion: output.cleanVersion,
         explicit: output.explicit ?? false,
         structure: output.structure as never,
