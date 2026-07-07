@@ -137,7 +137,10 @@ export async function runDropPipeline(app: FastifyInstance, ctx: DropCtx, input:
       if (beat?.error === 'insufficient_credits') break;
     } catch (err) {
       app.log.warn({ err }, 'drop iteration failed');
-      drops.push({ score: null, error: 'this take failed — the batch continued' });
+      // Surface the REAL reason (truncated) so failures are diagnosable instead
+      // of a generic "take failed" — the user (and we) can see WHY.
+      const why = (err as Error)?.message?.slice(0, 160) || 'unknown error';
+      drops.push({ score: null, error: `this take failed: ${why}` });
     }
   }
 

@@ -190,8 +190,12 @@ export async function snapshotTrend(
     // trying to snapshot the same genre+day collide on the PRIMARY KEY and the
     // second create simply throws into this catch — exactly one row per day.
     const id = `trend_${workspaceId.slice(-8)}_${genre.replace(/[^a-z0-9]/gi, '')}_${day.replace(/-/g, '')}`;
-    await prisma.soundReference.create({
-      data: {
+    // UPSERT (not create) — concurrent generations racing to snapshot the same
+    // genre+day used to collide on the PK and log a noisy prisma P2002 error;
+    // upsert makes the second one a no-op update instead. One row per day.
+    await prisma.soundReference.upsert({
+      where: { id },
+      create: {
         id,
         workspaceId,
         genre,
@@ -200,6 +204,7 @@ export async function snapshotTrend(
         summary: trend.digest.slice(0, 2000),
         recipe: { source: 'trend', provider: trend.source, charts: (trend.sources ?? []).slice(0, 12) } as never,
       },
+      update: {},
     });
   } catch {
     /* duplicate day-snapshot or transient DB error — never worth failing a generation */
