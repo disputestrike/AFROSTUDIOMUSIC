@@ -72,27 +72,32 @@ export async function generateJson<T>(opts: GenerateOptions): Promise<T> {
   }
 
   const wantClaude = (opts.brain ?? (anthropicEnabled() ? 'claude' : 'openai')) === 'claude';
+  const callClaude = () =>
+    claudeJson<T>({ system: opts.system + JSON_ONLY, user: opts.user, maxTokens: opts.maxTokens, temperature: opts.temperature });
+
   if (wantClaude && anthropicEnabled()) {
     try {
-      const data = await claudeJson<T>({
-        system: opts.system + JSON_ONLY,
-        user: opts.user,
-        maxTokens: opts.maxTokens,
-        temperature: opts.temperature,
-      });
+      const data = await callClaude();
       lastBrain = 'claude';
       return data;
     } catch {
-      // Claude erred (quota, transient) → fall through to OpenAI so we never
-      // hard-fail a generation the user is waiting on.
+      // Claude erred (transient/parse) → try OpenAI so we don't hard-fail.
     }
   }
 
-  lastBrain = 'openai';
-  return responsesJson<T>({
-    system: opts.system,
-    user: opts.user,
-    temperature: opts.temperature,
-    maxOutputTokens: opts.maxTokens,
-  });
+  try {
+    lastBrain = 'openai';
+    return await responsesJson<T>({ system: opts.system, user: opts.user, temperature: opts.temperature, maxOutputTokens: opts.maxTokens });
+  } catch (e) {
+    // OpenAI billing can be exhausted (429 insufficient_quota). Rather than
+    // surface a confusing quota error, give Claude a real second attempt —
+    // it's the only working brain in that state.
+    if (anthropicEnabled() && /quota|insufficient|429|rate limit/i.test((e as Error).message)) {
+      await new Promise((r) => setTimeout(r, 1200));
+      const data = await callClaude();
+      lastBrain = 'claude';
+      return data;
+    }
+    throw e;
+  }
 }
