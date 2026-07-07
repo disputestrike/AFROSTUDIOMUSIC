@@ -2,8 +2,8 @@ import { prisma } from '@afrohit/db';
 import { musicAdapter, sunoKey } from '@afrohit/ai';
 import type { MusicGenerationInput } from '@afrohit/ai';
 import { markFailed, markRunning, markSucceeded } from '../lib/jobs';
-import { ingestRemoteFile } from '../lib/storage';
-import { probeDurationS, measureAudioQuality, type AudioQuality } from '../lib/ffmpeg';
+import { ingestRemoteFile, downloadToBuffer, uploadBytes } from '../lib/storage';
+import { probeDurationS, measureAudioQuality, ffmpegAvailable, master as ffmpegMaster, MASTER_TARGETS, type AudioQuality } from '../lib/ffmpeg';
 
 interface MusicPayload {
   jobId: string;
@@ -223,9 +223,41 @@ export async function processMusic(p: MusicPayload) {
       );
     }
 
+    // AUTO-MASTER — a record is NOT done until it can compete sonically (the
+    // A&R read itself was flagging "not mastered"). Master inline right here
+    // (same host, same ffmpeg): wrap the render as the source Mix, run the
+    // streaming chain, shelve an approved Master. The catalog serves the
+    // MASTERED file from now on. Best-effort: a master hiccup never kills the
+    // render — the raw take stays playable and Re-master still exists.
+    let masteredUrl: string | null = null;
+    if (wantsVocals && !placeholder && p.songId) {
+      try {
+        if (await ffmpegAvailable()) {
+          const preset = 'streaming_lufs_-14';
+          const mixRow = await prisma.mix.create({
+            data: { projectId: p.projectId, songId: p.songId, preset: 'source', url: ingestedMain, notes: 'Master source (auto, from render)', approved: true },
+          });
+          const srcBytes = await downloadToBuffer(ingestedMain);
+          const { wav, mp3 } = await ffmpegMaster({ mix: srcBytes, preset });
+          const [wavUrl, mp3Url] = await Promise.all([
+            uploadBytes({ workspaceId: p.workspaceId, kind: 'masters', bytes: wav, contentType: 'audio/wav', ext: 'wav' }),
+            uploadBytes({ workspaceId: p.workspaceId, kind: 'masters', bytes: mp3, contentType: 'audio/mpeg', ext: 'mp3' }),
+          ]);
+          const target = MASTER_TARGETS[preset]!;
+          await prisma.master.create({
+            data: { projectId: p.projectId, songId: p.songId, mixId: mixRow.id, preset, url: wavUrl, loudness: target.lufs, approved: true },
+          });
+          await prisma.song.update({ where: { id: p.songId }, data: { status: 'MASTERED' } });
+          masteredUrl = mp3Url;
+        }
+      } catch (err) {
+        console.warn('[music] auto-master failed (render still usable):', (err as Error)?.message);
+      }
+    }
+
     await markSucceeded(
       p.jobId,
-      { beatId: beat.id, stems: out.stems?.length ?? 0, placeholder, fallbackReason, bestOf: { tried: N, rendered: ok.length } },
+      { beatId: beat.id, stems: out.stems?.length ?? 0, placeholder, fallbackReason, autoMastered: !!masteredUrl, masterUrl: masteredUrl, bestOf: { tried: N, rendered: ok.length } },
       result.estimatedCostUsd
     );
   } catch (err) {

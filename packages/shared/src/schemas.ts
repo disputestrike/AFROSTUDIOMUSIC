@@ -365,6 +365,8 @@ export const rightsInputSchema = z.object({
 // ---------- Drop Machine (batch generate → rank → shortlist) ---------------
 
 export const dropBatchSchema = z.object({
+  /** HARD language constraint — the writers must use ONLY these. */
+  languages: z.array(z.string().min(2).max(12)).max(5).optional(),
   // Roomy: album next-tracks prepend the anchor's styleBrief to the theme.
   theme: z.string().min(3).max(2000),
   count: z.number().int().min(1).max(6).default(3),

@@ -25,6 +25,37 @@ type Ctx = {
   projectId: string | null;
 };
 
+// ---------------------------------------------------------------------------
+// HARD CONSTRAINTS — the user's SELECTIONS are law, not flavor. Injected at the
+// top of every writer prompt; language obedience is VERIFIED after generation.
+const LANG_NAMES: Record<string, string> = { pcm: 'Nigerian Pidgin', en: 'English', yo: 'Yoruba', ig: 'Igbo', ha: 'Hausa', fr: 'French', pt: 'Portuguese', sw: 'Swahili', zu: 'Zulu', twi: 'Twi', es: 'Spanish' };
+const normLang = (l: string) => {
+  const x = l.toLowerCase().trim();
+  const alias: Record<string, string> = { english: 'en', pidgin: 'pcm', 'nigerian pidgin': 'pcm', yoruba: 'yo', igbo: 'ig', hausa: 'ha', french: 'fr', portuguese: 'pt', swahili: 'sw', zulu: 'zu', spanish: 'es' };
+  return alias[x] ?? x;
+};
+function hardConstraints(genre: string, languages?: string[] | null): string {
+  const g = genre.replace(/_/g, ' ');
+  const lines = [
+    'HARD CONSTRAINTS (the artist SELECTED these — they are law, not suggestions):',
+    `- GENRE: this is a ${g} record. Every choice — imagery, slang, word-rhythm, hook shape — must serve ${g}. Drifting to another genre's feel is a FAILURE.`,
+  ];
+  if (languages?.length) {
+    lines.push(
+      `- LANGUAGES: write ONLY in ${languages.map((l) => LANG_NAMES[normLang(l)] ?? l).join(' + ')}. Every single line. A line in any other language is a FAILURE and the whole take gets discarded.`
+    );
+  }
+  return lines.join('\n');
+}
+/** Languages the model reported vs what was selected — the guardrail check. */
+function languageViolations(reported: Record<string, number> | undefined, allowed?: string[] | null): string[] {
+  if (!allowed?.length || !reported) return [];
+  const ok = new Set(allowed.map(normLang));
+  return Object.entries(reported)
+    .filter(([lang, share]) => (Number(share) || 0) >= 8 && !ok.has(normLang(lang)))
+    .map(([lang]) => lang);
+}
+
 export async function runChatTool(args: Ctx & { name: string; args: Record<string, unknown> }) {
   const { name, args: a, ...ctx } = args;
   switch (name) {
@@ -33,13 +64,13 @@ export async function runChatTool(args: Ctx & { name: string; args: Record<strin
     case 'polish_brief':
       return polishBrief(ctx, String(a.rawIdea ?? ''));
     case 'generate_hooks':
-      return generateHooks(ctx, Number(a.count ?? 8));
+      return generateHooks(ctx, Number(a.count ?? 8), a.languages as string[] | undefined);
     case 'score_hooks':
       return scoreHooks(ctx, (a.hookIds as string[]) ?? []);
     case 'approve_hook':
       return approveHook(ctx, String(a.hookId));
     case 'generate_lyrics':
-      return generateLyrics(ctx, String(a.hookId), Boolean(a.cleanVersion ?? true));
+      return generateLyrics(ctx, String(a.hookId), Boolean(a.cleanVersion ?? true), a.languages as string[] | undefined);
     case 'create_beat_job':
       return createBeatJob(ctx, a as never);
     case 'render_demo_vocal':
@@ -154,7 +185,7 @@ async function polishBrief(ctx: Ctx, rawIdea: string) {
   return { briefId: brief.id, polished };
 }
 
-async function generateHooks(ctx: Ctx, count: number) {
+async function generateHooks(ctx: Ctx, count: number, languages?: string[]) {
   if (!ctx.projectId) return { error: 'no_project_in_thread' };
   const project = await prisma.project.findFirstOrThrow({
     where: { id: ctx.projectId, workspaceId: ctx.workspaceId },
@@ -170,7 +201,7 @@ async function generateHooks(ctx: Ctx, count: number) {
   const trendData = await researchTrends({ genre: project.genre }).catch(() => null);
   const trends = trendData?.digest;
   void snapshotTrend(ctx.workspaceId, project.genre, trendData);
-  const soundDna = [soundBrief(project.genre).brief, await learnedReferenceBrief(ctx.workspaceId, project.genre), await learnedLyricCraftBrief(ctx.workspaceId, project.genre), prompts.hitCraftBrief('hook', (project.briefs[0] as { mood?: string } | undefined)?.mood)].filter(Boolean).join('\n\n');
+  const soundDna = [hardConstraints(project.genre, languages), soundBrief(project.genre).brief, await learnedReferenceBrief(ctx.workspaceId, project.genre), await learnedLyricCraftBrief(ctx.workspaceId, project.genre), prompts.hitCraftBrief('hook', (project.briefs[0] as { mood?: string } | undefined)?.mood)].filter(Boolean).join('\n\n');
   const result = await generateJson<{ hooks: Array<{ text: string; language?: string[]; bpm?: number; syllablePattern?: string; melodyNotes?: string; callResponse?: boolean }> }>({
     system: prompts.HOOK_SYSTEM,
     user: prompts.hookUserPrompt({ artist: project.artist as never, brief: project.briefs[0] as never, count, tasteMemory, trends, soundDna }),
@@ -280,7 +311,7 @@ async function approveHook(ctx: Ctx, hookId: string) {
   return { hookId, songId: song.id };
 }
 
-async function generateLyrics(ctx: Ctx, hookId: string, cleanVersion: boolean) {
+async function generateLyrics(ctx: Ctx, hookId: string, cleanVersion: boolean, languages?: string[]) {
   const hook = await prisma.hookCandidate.findFirstOrThrow({
     where: { id: hookId, project: { workspaceId: ctx.workspaceId } },
     include: { project: { include: { artist: true, briefs: { take: 1, orderBy: { createdAt: 'desc' } } } } },
@@ -288,18 +319,44 @@ async function generateLyrics(ctx: Ctx, hookId: string, cleanVersion: boolean) {
   const charge = await ctx.app.chargeCredits({ workspaceId: ctx.workspaceId, key: 'lyrics_full' });
   if (!charge.ok) return { error: 'insufficient_credits', ...charge };
 
-  const output = await generateJson<{ title: string; body: string; cleanVersion?: string; explicit?: boolean; structure?: unknown; languageMix?: Record<string, number>; needsNativeReview?: string[] }>({
+  const firstOutput = await generateJson<{ title: string; body: string; cleanVersion?: string; explicit?: boolean; structure?: unknown; languageMix?: Record<string, number>; needsNativeReview?: string[] }>({
     system: prompts.LYRIC_SYSTEM,
     user: prompts.lyricUserPrompt({
       artist: hook.project.artist as never,
       brief: hook.project.briefs[0] as never,
       hookText: hook.text,
       cleanVersion,
-      soundDna: [soundBrief(hook.project.genre).brief, await learnedReferenceBrief(ctx.workspaceId, hook.project.genre), await learnedLyricCraftBrief(ctx.workspaceId, hook.project.genre), prompts.hitCraftBrief('lyric', (hook.project.briefs[0] as { mood?: string } | undefined)?.mood)].filter(Boolean).join('\n\n'),
+      soundDna: [hardConstraints(hook.project.genre, languages), soundBrief(hook.project.genre).brief, await learnedReferenceBrief(ctx.workspaceId, hook.project.genre), await learnedLyricCraftBrief(ctx.workspaceId, hook.project.genre), prompts.hitCraftBrief('lyric', (hook.project.briefs[0] as { mood?: string } | undefined)?.mood)].filter(Boolean).join('\n\n'),
     }),
     temperature: 0.8,
     maxTokens: 4_000,
   });
+
+  // GUARDRAIL: verify language obedience against the SELECTION; one stern
+  // retry on violation. Any remaining violation is reported, never hidden.
+  let output = firstOutput;
+  let langViolation = languageViolations(output.languageMix, languages);
+  if (langViolation.length) {
+    const retry = await generateJson<typeof firstOutput>({
+      system: prompts.LYRIC_SYSTEM,
+      user:
+        `YOUR PREVIOUS ATTEMPT FAILED THE LANGUAGE RULE — it used: ${langViolation.join(', ')}. ` +
+        `REWRITE THE WHOLE LYRIC using ONLY ${(languages ?? []).map((l) => LANG_NAMES[normLang(l)] ?? l).join(' + ')}. No exceptions, not even one line.\n\n` +
+        prompts.lyricUserPrompt({
+          artist: hook.project.artist as never,
+          brief: hook.project.briefs[0] as never,
+          hookText: hook.text,
+          cleanVersion,
+          soundDna: hardConstraints(hook.project.genre, languages),
+        }),
+      temperature: 0.7,
+      maxTokens: 4_000,
+    }).catch(() => null);
+    if (retry?.body) {
+      output = retry;
+      langViolation = languageViolations(retry.languageMix, languages);
+    }
+  }
   // LyricDraft.songId is @unique — a song can have ONE lyric. Re-running lyrics
   // (Continue/Regenerate) must UPDATE it, not crash on the unique constraint.
   const lyricData = {
@@ -324,10 +381,10 @@ async function generateLyrics(ctx: Ctx, hookId: string, cleanVersion: boolean) {
       data: { lyricId: lyric.id, status: 'DEMO' },
     });
   }
-  return { lyric: { id: lyric.id, title: lyric.title } };
+  return { lyric: { id: lyric.id, title: lyric.title }, ...(langViolation.length ? { languageWarning: `still contains: ${langViolation.join(', ')} — regenerate or edit` } : {}) };
 }
 
-async function createBeatJob(ctx: Ctx, a: { genre: string; fusionGenres?: string[]; mood?: string; pinnedReferenceId?: string; bpm: number; keySignature?: string; durationS?: number; vibePrompt?: string; withStems?: boolean; withVocals?: boolean; songEngine?: 'suno' | 'ace_step' | 'minimax'; influence?: string }) {
+async function createBeatJob(ctx: Ctx, a: { genre: string; fusionGenres?: string[]; mood?: string; pinnedReferenceId?: string; bpm: number; keySignature?: string; durationS?: number; vibePrompt?: string; withStems?: boolean; withVocals?: boolean; songEngine?: 'suno' | 'ace_step' | 'minimax'; influence?: string; languages?: string[] }) {
   if (!ctx.projectId) return { error: 'no_project_in_thread' };
 
   // Honor the requested genre for the whole session — the chat's scratch project
@@ -372,7 +429,8 @@ async function createBeatJob(ctx: Ctx, a: { genre: string; fusionGenres?: string
     });
     const enriched = await enrichLyricsForVocals({
       lyricBody: lyrics,
-      languages: project?.artist.languages,
+      // The user's SELECTED languages outrank the artist profile's defaults.
+      languages: a.languages?.length ? a.languages : project?.artist.languages,
       laneSummary: project?.artist.laneSummary ?? undefined,
       soundDna: [dna.brief, learned].filter(Boolean).join('\n\n'),
     });
@@ -417,6 +475,7 @@ async function createBeatJob(ctx: Ctx, a: { genre: string; fusionGenres?: string
         withVocals: a.withVocals ?? false,
         songEngine: a.songEngine,
         dnaTags: [...dnaTags, ...styleHints.slice(0, 3)],
+        languages: a.languages?.length ? a.languages : undefined,
         lyrics,
       },
     },

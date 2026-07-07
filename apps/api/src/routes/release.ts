@@ -21,7 +21,7 @@ type Split = { name: string; role: string; share: number };
 const REVIEW_LANGS = ['yo', 'ig', 'ha'];
 
 function greenLight(
-  song: { lyricId: string | null; isrc: string | null; splitSheet: unknown; nativeReviewOk: boolean },
+  song: { lyricId: string | null; isrc: string | null; splitSheet: unknown; nativeReviewOk: boolean; hitScore?: number | null },
   hasAudio: boolean,
   hasCover: boolean,
   languages: string[]
@@ -41,6 +41,14 @@ function greenLight(
       detail: needsReview ? (song.nativeReviewOk ? 'signed off' : `needed (${languages.filter((l) => REVIEW_LANGS.includes(l.toLowerCase())).join('/')})`) : 'n/a (English/Pidgin)',
     },
     { name: 'Rights-clean (no rips/samples)', ok: true, detail: 'original generation / cleared' },
+    // THE A&R GATE (Benjamin): no song releases without a Will-it-hit read.
+    // The read must EXIST to green-light; the score itself is advisory (his
+    // ear decides), but he sees it here before anything ships.
+    {
+      name: 'A&R read (Will it hit?)',
+      ok: song.hitScore != null,
+      detail: song.hitScore != null ? `hit ${song.hitScore}/100` : 'not read yet — run "Will it hit?" or "Make it bigger"',
+    },
   ];
   return { ready: checks.every((c) => c.ok), checks, needsReview };
 }
@@ -64,7 +72,7 @@ async function assignUpc(workspaceId: string): Promise<string> {
   return `0${String(n).padStart(11, '0')}`; // placeholder barcode
 }
 
-async function statusFor(song: { id: string; title: string; isrc: string | null; upc: string | null; splitSheet: unknown; releaseReady: boolean; lyricId: string | null; projectId: string; nativeReviewOk: boolean }) {
+async function statusFor(song: { id: string; title: string; isrc: string | null; upc: string | null; splitSheet: unknown; releaseReady: boolean; lyricId: string | null; projectId: string; nativeReviewOk: boolean; hitScore?: number | null }) {
   const [master, mix, cover, languages] = await Promise.all([
     prisma.master.findFirst({ where: { songId: song.id } }),
     prisma.mix.findFirst({ where: { songId: song.id } }),
@@ -175,7 +183,7 @@ export default async function release(app: FastifyInstance) {
         prisma.imageAsset.findFirst({ where: { projectId: song.projectId, kind: 'cover' } }),
         languagesForProject(song.projectId),
       ]);
-      const gl = greenLight({ lyricId: song.lyricId, isrc, splitSheet: splits, nativeReviewOk }, !!(master || mix), !!cover, languages);
+      const gl = greenLight({ lyricId: song.lyricId, isrc, splitSheet: splits, nativeReviewOk, hitScore: song.hitScore }, !!(master || mix), !!cover, languages);
 
       const updated = await prisma.song.update({
         where: { id: song.id },

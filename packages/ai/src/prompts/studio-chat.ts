@@ -96,7 +96,7 @@ export const STUDIO_CHAT_TOOLS = [
       'Generate N hooks for the current project based on its brief and artist DNA.',
     parameters: {
       type: 'object',
-      properties: {
+      properties: { languages: { type: 'array', items: { type: 'string' }, description: 'HARD constraint: ONLY these language codes (pcm/en/yo/ig/ha/...) may appear in the writing' },
         count: { type: 'integer', minimum: 1, maximum: 50, default: 8 },
         excludeIds: { type: 'array', items: { type: 'string' } },
       },
@@ -131,7 +131,7 @@ export const STUDIO_CHAT_TOOLS = [
     description: 'Generate a full song lyric around an approved hook.',
     parameters: {
       type: 'object',
-      properties: {
+      properties: { languages: { type: 'array', items: { type: 'string' }, description: 'HARD constraint: ONLY these language codes (pcm/en/yo/ig/ha/...) may appear in the writing' },
         hookId: { type: 'string' },
         cleanVersion: { type: 'boolean', default: true },
       },
@@ -145,7 +145,7 @@ export const STUDIO_CHAT_TOOLS = [
       'Generate music. Set withVocals=true to make a FULL SONG where the AI SINGS the approved lyrics (needs lyrics written first) — this is the complete, catchy record. Leave withVocals=false for an instrumental beat only.',
     parameters: {
       type: 'object',
-      properties: {
+      properties: { languages: { type: 'array', items: { type: 'string' }, description: 'HARD constraint: ONLY these language codes (pcm/en/yo/ig/ha/...) may appear in the writing' },
         genre: { type: 'string' },
         fusionGenres: { type: 'array', items: { type: 'string' }, description: 'Optional extra genres to FUSE with the primary (e.g. ["drill"] on genre "amapiano") when the user wants to mix genres into something new.' },
         bpm: { type: 'integer' },

@@ -3,6 +3,7 @@ import { prisma } from '@afrohit/db';
 import { dropBatchSchema } from '@afrohit/shared';
 import { requireAuth } from '../middleware/auth';
 import { runChatTool } from '../services/chat-tools';
+import { arReadAfterRender } from '../lib/ar-read';
 
 /**
  * The Drop Machine — batch song factory.
@@ -75,7 +76,7 @@ export async function runDropPipeline(app: FastifyInstance, ctx: DropCtx, input:
 
       for (let i = 0; i < input.count; i++) {
         try {
-          const hk = (await runChatTool({ ...ctx, name: 'generate_hooks', args: { count: 10 } })) as {
+          const hk = (await runChatTool({ ...ctx, name: 'generate_hooks', args: { count: 10, languages: input.languages } })) as {
             hooks?: Array<{ id: string; text: string; score: number | null }>;
           };
           let hooks = hk?.hooks ?? [];
@@ -98,7 +99,7 @@ export async function runDropPipeline(app: FastifyInstance, ctx: DropCtx, input:
           // hard-failing the drop (a strong hook is what carries an Afrobeats record).
           const MIN_HOOK_SCORE = Number(process.env.MIN_HOOK_SCORE ?? 6.5);
           if ((best.score ?? 0) < MIN_HOOK_SCORE) {
-            const hk2 = (await runChatTool({ ...ctx, name: 'generate_hooks', args: { count: 10 } })) as {
+            const hk2 = (await runChatTool({ ...ctx, name: 'generate_hooks', args: { count: 10, languages: input.languages } })) as {
               hooks?: Array<{ id: string; text: string; score: number | null }>;
             };
             let hooks2 = hk2?.hooks ?? [];
@@ -116,11 +117,11 @@ export async function runDropPipeline(app: FastifyInstance, ctx: DropCtx, input:
           const ap = (await runChatTool({ ...ctx, name: 'approve_hook', args: { hookId: best.id } })) as {
             songId?: string;
           };
-          await runChatTool({ ...ctx, name: 'generate_lyrics', args: { hookId: best.id, cleanVersion: true } });
+          await runChatTool({ ...ctx, name: 'generate_lyrics', args: { hookId: best.id, cleanVersion: true, languages: input.languages } });
           const beat = (await runChatTool({
             ...ctx,
             name: 'create_beat_job',
-            args: { genre: input.genre, fusionGenres: input.fusionGenres, mood: input.mood, pinnedReferenceId: input.pinnedReferenceId, bpm: input.bpm, withVocals: input.withVocals, songEngine: input.songEngine, influence: input.influence },
+            args: { genre: input.genre, fusionGenres: input.fusionGenres, mood: input.mood, pinnedReferenceId: input.pinnedReferenceId, bpm: input.bpm, withVocals: input.withVocals, songEngine: input.songEngine, influence: input.influence, languages: input.languages },
           })) as { jobId?: string; songId?: string; error?: string };
 
           drops.push({
@@ -149,4 +150,9 @@ export async function runDropPipeline(app: FastifyInstance, ctx: DropCtx, input:
       outputJson: { theme: input.theme, requested: input.count, produced: drops.length, drop: drops } as never,
     },
   });
+
+  // THE A&R GATE — no song is done until the Will-it-hit engine has read it.
+  // Detached: waits for each render to land, then scores + stores the read on
+  // the song (catalog shows it without clicking; "Make it bigger" implements it).
+  void arReadAfterRender(app, ctx.workspaceId, drops).catch(() => {});
 }

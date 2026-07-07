@@ -7,6 +7,7 @@
  */
 
 import { useEffect, useState } from 'react';
+import { MumbleBooth } from '@/components/MumbleBooth';
 import { useRouter } from 'next/navigation';
 import { useApi } from '@/lib/api';
 
@@ -64,7 +65,7 @@ export default function CreatePage() {
   const [engine, setEngine] = useState<'suno' | 'ace_step' | 'minimax'>('suno');
 
   // Three ways in: describe it / bring your own lyrics / listen & recreate.
-  const [path, setPath] = useState<'song' | 'lyrics'>('song');
+  const [path, setPath] = useState<'song' | 'lyrics' | 'mumble'>('song');
   const [lyricsText, setLyricsText] = useState('');
   const [decon, setDecon] = useState<Deconstruction | null>(null);
   const [deconBusy, setDeconBusy] = useState(false);
@@ -128,7 +129,7 @@ export default function CreatePage() {
       // networks). We poll the drop job for the hook/lyrics result…
       const started = await api.post<{ jobId: string }>(
         `/projects/${project.id}/drop`,
-        { theme, count: 1, genre, fusionGenres: fusion.length ? fusion : undefined, mood, bpm, withVocals: true, songEngine: engine, influence: influence.trim() || undefined }
+        { theme, count: 1, genre, fusionGenres: fusion.length ? fusion : undefined, mood, bpm, withVocals: true, songEngine: engine, influence: influence.trim() || undefined, languages: langs }
       );
       let item: { jobId?: string; hookText?: string; score: number | null; error?: string } | undefined;
       for (let i = 0; i < 60; i++) {
@@ -162,8 +163,9 @@ export default function CreatePage() {
   }
 
   /** FROM-LYRICS step 1: the AI reads YOUR lyrics and fills out what they are. */
-  async function deconstruct() {
-    if (lyricsText.trim().length < 20 || deconBusy) return;
+  async function deconstruct(textOverride?: string) {
+    const text = (textOverride ?? lyricsText).trim();
+    if (text.length < 20 || deconBusy) return;
     setDeconBusy(true);
     setErr('');
     try {
@@ -176,7 +178,7 @@ export default function CreatePage() {
         pid = p.id;
         localStorage.setItem(KEY, pid);
       }
-      const d = await api.post<Deconstruction>(`/projects/${pid}/lyrics/deconstruct`, { lyrics: lyricsText.trim() });
+      const d = await api.post<Deconstruction>(`/projects/${pid}/lyrics/deconstruct`, { lyrics: text });
       setDecon(d);
       setDeconTitle(d.title);
       // Prefill the shared dials from what it heard — all still editable.
@@ -333,6 +335,7 @@ export default function CreatePage() {
         {([
           { id: 'song' as const, label: '✨ Describe it' },
           { id: 'lyrics' as const, label: '📝 Start from my lyrics' },
+          { id: 'mumble' as const, label: '🎤 Hum it (mumble first)' },
         ]).map((t) => (
           <button key={t.id} onClick={() => setPath(t.id)} className={`rounded-full px-4 py-2 text-sm font-medium ${path === t.id ? 'bg-white/15 text-white shadow-[inset_0_0_0_1px_rgba(249,115,22,.5)]' : 'border border-white/10 text-slate-400 hover:bg-white/5'}`}>
             {t.label}
@@ -342,6 +345,20 @@ export default function CreatePage() {
           🎧 Listen &amp; recreate
         </button>
       </div>
+
+      {path === 'mumble' && (
+        <div className="mt-6">
+          <MumbleBooth
+            onPick={(lyric) => {
+              // The booth found the flow; the from-lyrics path produces it.
+              setLyricsText(lyric);
+              setDecon(null);
+              setPath('lyrics');
+              void deconstruct(lyric);
+            }}
+          />
+        </div>
+      )}
 
       {path === 'lyrics' && (
         <div className="mt-6 rounded-2xl glass p-4">

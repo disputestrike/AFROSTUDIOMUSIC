@@ -34,6 +34,8 @@ export interface SongRow {
   stemCount?: number;
   hasLyrics?: boolean;
   releaseReady?: boolean;
+  hitScore?: number | null;
+  viralScore?: number | null;
   coverUrl: string | null;
   createdAt: string;
 }
@@ -77,6 +79,18 @@ export default function CatalogGrid({ initial }: { initial: SongRow[] }) {
     setBusy(`${s.id}:master`);
     try { await api.post(`/songs/${s.id}/master`, { preset: 'streaming_lufs_-14' }); flash('Re-master queued — refresh in ~1 min for the new master.'); }
     catch (e) { flash((e as Error).message || 'Master failed'); }
+    finally { setBusy(''); }
+  }
+
+  async function makeItBigger(s: SongRow) {
+    setBusy(`${s.id}:bigger`);
+    try {
+      const res = await api.post<{ whatChanged: string[] }>(`/songs/${s.id}/make-it-bigger`, {});
+      // The old score no longer describes this song — clear it locally too
+      // (the gate re-scores automatically once the new render lands).
+      setSongs((prev) => prev.map((x) => (x.id === s.id ? { ...x, hitScore: null, viralScore: null, versionLabel: 'bigger (A&R notes applied)' } : x)));
+      flash(`A&R notes implemented — re-singing the bigger version (auto-masters + re-scores). Changed: ${(res.whatChanged ?? []).slice(0, 2).join('; ') || 'see lyrics'}`);
+    } catch (e) { flash((e as Error).message || 'Make-it-bigger failed'); }
     finally { setBusy(''); }
   }
 
@@ -266,7 +280,8 @@ export default function CatalogGrid({ initial }: { initial: SongRow[] }) {
               <div className="mt-3 flex flex-wrap gap-1.5">
                 <Action label="Download" icon={<Download className="h-3.5 w-3.5" />} busy={isBusy(s.id, 'dl')} onClick={() => void openDownloads(s)} />
                 <Action label="Lyrics" icon={<FileText className="h-3.5 w-3.5" />} busy={isBusy(s.id, 'lyrics')} onClick={() => void openLyrics(s)} />
-                <Action label="Will it hit?" icon={<TrendingUp className="h-3.5 w-3.5" />} busy={isBusy(s.id, 'hit')} onClick={() => void willItHit(s)} />
+                <Action label={s.hitScore != null ? `A&R ${s.hitScore}/100` : 'Will it hit?'} icon={<TrendingUp className="h-3.5 w-3.5" />} busy={isBusy(s.id, 'hit')} onClick={() => void willItHit(s)} />
+                {s.hitScore != null && <Action label="🚀 Make it bigger" busy={isBusy(s.id, 'bigger')} onClick={() => void makeItBigger(s)} />}
                 <Action label="Re-master" icon={<Wand2 className="h-3.5 w-3.5" />} busy={isBusy(s.id, 'master')} onClick={() => void remaster(s)} />
                 <button onClick={() => setOpenId(openId === s.id ? null : s.id)} className="rounded-full border border-white/10 bg-white/5 px-2.5 py-1 text-xs text-slate-300 hover:bg-white/10">
                   {openId === s.id ? 'Less' : 'More'}
@@ -379,7 +394,7 @@ function ScorePill({ label, value }: { label: string; value: number }) {
   );
 }
 
-function Action({ label, icon, onClick, busy }: { label: string; icon: React.ReactNode; onClick: () => void; busy?: boolean }) {
+function Action({ label, icon, onClick, busy }: { label: string; icon?: React.ReactNode; onClick: () => void; busy?: boolean }) {
   return (
     <button onClick={onClick} disabled={busy} className="inline-flex items-center gap-1 rounded-full border border-white/10 bg-white/5 px-2.5 py-1 text-xs text-slate-300 hover:bg-white/10 disabled:opacity-50">
       {busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : icon}

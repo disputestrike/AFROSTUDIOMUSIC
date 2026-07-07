@@ -208,6 +208,64 @@ export default async function lyrics(app: FastifyInstance) {
   );
 
   /**
+   * MUMBLE → LYRICS (Benjamin's own method: "I always start with mumbles and
+   * random words... after I get a vibe I go in and make those mumbles into
+   * words"). Takes a finished analyze job of a HUMMED/MUMBLED take and converts
+   * the phonetics into lyric candidates that PRESERVE the take's rhythm —
+   * syllable counts, line lengths, where the stresses land. The vibe was found
+   * by the body; the words come after. Improvisation-first, like real writing.
+   */
+  const mumbleSchema = z.object({ analyzeJobId: z.string().cuid() });
+  app.post<{ Params: { projectId: string } }>(
+    '/from-mumble',
+    { schema: { body: mumbleSchema } },
+    async (req, reply) => {
+      const { workspaceId } = requireAuth(req);
+      await prisma.project.findFirstOrThrow({ where: { id: req.params.projectId, workspaceId } });
+      const { analyzeJobId } = mumbleSchema.parse(req.body);
+      const job = await prisma.providerJob.findFirst({ where: { id: analyzeJobId, workspaceId }, select: { status: true, outputJson: true } });
+      if (!job || job.status !== 'SUCCEEDED') return reply.code(400).send({ error: 'analyze_not_ready', message: 'The listen job has not finished — poll it first.' });
+      const profile = (job.outputJson as { profile?: { raw?: string; bpm?: number; mood?: string; genre?: string; language?: string | null } } | null)?.profile;
+      if (!profile) return reply.code(400).send({ error: 'no_profile', message: 'That job has no audio profile.' });
+      // profile.raw = signals joined by '\n'; the transcript block runs until the
+      // next known signal header (or the end) — transcript lines themselves are
+      // multi-line, so never stop at "any capitalized line".
+      const transcript =
+        /Transcript \(lyrics heard\):\n([\s\S]*?)(?=\nProducer's ear \(audio model description\):|$)/.exec(profile.raw ?? '')?.[1]?.trim() ||
+        (profile.raw ?? '').slice(0, 800);
+      if (transcript.replace(/\s/g, '').length < 8) {
+        return reply.code(400).send({ error: 'no_vocal_heard', message: 'Could not hear a voice in that take — hum or mumble a bit louder/longer (10s+) and try again.' });
+      }
+
+      const charge = await app.chargeCredits({ workspaceId, key: 'lyrics_full', refTable: 'Project', refId: req.params.projectId });
+      if (!charge.ok) return reply.code(402).send({ error: 'insufficient_credits', ...charge });
+
+      const out = await generateJson<{
+        candidates: Array<{ title: string; hookLine: string; lyric: string; flowNotes: string }>;
+      }>({
+        system:
+          'You are a songwriter converting a singer\'s MUMBLE TAKE into real words — the artist found the melody and rhythm with their body first; your job is language that fits THAT groove exactly. ' +
+          'RULES: (1) PRESERVE THE FLOW — match each mumbled line\'s syllable count, stresses and line length as closely as possible; the words must sing on the same contour. ' +
+          '(2) The mumble transcript is phonetic soup — hear THROUGH it: keep any real words/phrases that already landed (they were instinct), replace the rest. ' +
+          '(3) Give THREE distinct directions (e.g. love/flex/testimony) so the artist picks the story, not just the words. ' +
+          '(4) Each candidate: title, hookLine (the single most chantable line), lyric (a [Hook] + one [Verse] built ON the mumble\'s structure — mark sections), flowNotes (one line: how the words ride the take\'s rhythm). ' +
+          '(5) Match the languages heard (pidgin/english/yoruba etc). Return only JSON {candidates:[...3]}.',
+        user:
+          `MUMBLE TRANSCRIPT (phonetic, from the take):\n${transcript.slice(0, 1200)}\n\n` +
+          `HEARD: ${profile.bpm ? profile.bpm + 'bpm, ' : ''}${profile.mood ?? ''} ${profile.genre ?? ''}${profile.language ? ', language: ' + profile.language : ''}`.trim(),
+        temperature: 0.8,
+        maxTokens: 2500,
+      });
+      const candidates = (out?.candidates ?? []).filter((c) => c?.lyric).slice(0, 3);
+      if (!candidates.length) return reply.code(503).send({ error: 'conversion_failed', message: 'Could not convert this take — try a longer mumble.' });
+      return {
+        heard: { transcript: transcript.slice(0, 500), bpm: profile.bpm ?? null, mood: profile.mood ?? null, genre: profile.genre ?? null },
+        candidates,
+      };
+    }
+  );
+
+  /**
    * FROM-LYRICS path, step 2 — ATTACH: bind the artist's own lyrics to a fresh
    * Song so production (beats/generate withVocals) sings EXACTLY these words.
    * Artist-authored = authentic → approved, same doctrine as uploads.

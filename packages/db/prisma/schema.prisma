@@ -354,6 +354,10 @@ model Song {
   splitSheet  Json?     // [{name, role, share}] writer/producer splits summing to 100
   nativeReviewOk Boolean @default(false) // a native speaker signed off on Yoruba/Igbo/Hausa delivery
   releaseReady Boolean  @default(false) // green-lit for distribution
+  // A&R read — every produced song gets scored BEFORE it's considered done.
+  hitScore    Int?      // 0-100 from the Will-it-hit engine
+  viralScore  Int?      // 0-100
+  hitRead     Json?     // full prediction: strengths/risks/toMakeItBigger/tiktokMoment
   createdAt   DateTime @default(now()) @db.Timestamptz(6)
 
   workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)

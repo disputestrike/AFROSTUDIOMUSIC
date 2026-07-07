@@ -1,10 +1,11 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { prisma } from '@afrohit/db';
-import { predictHit, soundBrief, researchTrends, enrichLyricsForVocals } from '@afrohit/ai';
+import { predictHit, soundBrief, researchTrends, enrichLyricsForVocals, generateJson, prompts } from '@afrohit/ai';
 import { requireAuth } from '../middleware/auth';
 import { enqueue } from '../lib/queue';
 import { learnedReferenceBrief } from '../lib/learned';
+import { arReadSong, arReadAfterRender } from '../lib/ar-read';
 import { recordFeedback } from '../services/artist-memory';
 
 /** Freshest playable audio for a song: the most RECENT of master/mix/beat by
@@ -72,6 +73,8 @@ export default async function songs(app: FastifyInstance) {
       stemCount: s.beats[0]?.stems.length ?? 0,
       hasLyrics: !!s.lyric,
       releaseReady: s.releaseReady,
+      hitScore: s.hitScore,
+      viralScore: s.viralScore,
       coverUrl: coverByProject.get(s.projectId) ?? null,
       createdAt: s.createdAt,
     }));
@@ -549,7 +552,108 @@ export default async function songs(app: FastifyInstance) {
     if (prediction.hitScore >= 75 && song.hooks[0]) {
       await recordFeedback({ workspaceId, artistId: song.project.artistId, kind: 'approved', content: song.hooks[0].text, sourceKind: 'hook', sourceId: song.hooks[0].id }).catch(() => {});
     }
+    // PERSIST the read — the catalog shows it without clicking, and
+    // "Make it bigger" implements exactly these notes.
+    await prisma.song
+      .update({ where: { id: song.id }, data: { hitScore: prediction.hitScore, viralScore: prediction.viralScore, hitRead: prediction as never } })
+      .catch(() => {});
     return { songId: song.id, ...prediction };
+  });
+
+  /**
+   * MAKE IT BIGGER — implement the A&R notes as a NEW VERSION.
+   * Takes the stored Will-it-hit read (or runs one now), has Claude rewrite the
+   * lyric executing every "toMakeItBigger" note + fixing the risks, then
+   * RE-SINGS with the same engine. The render auto-masters and re-scores when
+   * it lands — the full loop: analyze → approve → implement → bigger version.
+   */
+  app.post<{ Params: { id: string } }>('/:id/make-it-bigger', async (req, reply) => {
+    const { workspaceId } = requireAuth(req);
+    const song = await prisma.song.findFirst({
+      where: { id: req.params.id, workspaceId },
+      include: {
+        project: { include: { artist: true } },
+        lyric: true,
+        beats: { orderBy: { createdAt: 'desc' }, take: 1 },
+      },
+    });
+    if (!song) return reply.code(404).send({ error: 'song_not_found' });
+    if (!song.lyric?.body) return reply.code(400).send({ error: 'no_lyrics', message: 'This song has no lyric to improve — generate or attach one first.' });
+
+    // The notes to implement — the stored read, or a fresh one right now.
+    let read = song.hitRead as { toMakeItBigger?: string[]; risks?: string[] } | null;
+    if (!read?.toMakeItBigger?.length) {
+      read = await arReadSong(app, workspaceId, song.id);
+      if (!read) return reply.code(503).send({ error: 'a&r_unavailable', message: 'The A&R read failed — run "Will it hit?" first; its notes drive the rewrite.' });
+    }
+
+    const charge = await app.chargeCredits({ workspaceId, key: 'lyrics_full', refTable: 'Song', refId: song.id });
+    if (!charge.ok) return reply.code(402).send({ error: 'insufficient_credits', ...charge });
+
+    const genre = song.project.genre;
+    const rewritten = await generateJson<{ title: string; body: string; whatChanged: string[] }>({
+      system: prompts.LYRIC_SYSTEM,
+      user:
+        `REWRITE this song implementing the A&R notes — a NEW, BIGGER version, not a patch. Keep the song's identity (same story, mood, language mix) but execute EVERY note.\n\n` +
+        `CURRENT LYRIC:\n${song.lyric.body.slice(0, 4000)}\n\n` +
+        `A&R NOTES TO IMPLEMENT:\n${(read.toMakeItBigger ?? []).map((n) => `- ${n}`).join('\n')}\n\n` +
+        `RISKS TO FIX:\n${(read.risks ?? []).map((n) => `- ${n}`).join('\n')}\n\n` +
+        [soundBrief(genre).brief, prompts.hitCraftBrief('lyric')].filter(Boolean).join('\n\n') +
+        `\n\nReturn strict JSON: title, body (the full rewritten lyric), whatChanged (3-5 one-line notes on what you executed).`,
+      temperature: 0.8,
+      maxTokens: 4000,
+    });
+    if (!rewritten?.body) return reply.code(503).send({ error: 'rewrite_failed' });
+
+    await prisma.lyricDraft.update({
+      where: { id: song.lyric.id },
+      data: { title: rewritten.title || song.lyric.title, body: rewritten.body, approved: true },
+    });
+    await prisma.song.update({
+      where: { id: song.id },
+      data: { versionLabel: 'bigger (A&R notes applied)', hitScore: null, viralScore: null },
+    });
+
+    // RE-SING with the rewritten lyric (same shape as regenerate-beat); the
+    // worker auto-masters, then the gate re-scores once the render lands.
+    const dna = soundBrief(genre);
+    const learned = await learnedReferenceBrief(workspaceId, genre);
+    let lyricsForSong = rewritten.body;
+    let styleHints: string[] = [];
+    const enriched = await enrichLyricsForVocals({
+      lyricBody: rewritten.body,
+      languages: song.project.artist.languages,
+      laneSummary: song.project.artist.laneSummary ?? undefined,
+      soundDna: [dna.brief, learned].filter(Boolean).join('\n\n'),
+    });
+    if (enriched) {
+      lyricsForSong = enriched.enrichedLyrics;
+      styleHints = enriched.styleTags;
+    }
+    const prev = song.beats[0]?.provider ?? '';
+    const songEngine = ['suno', 'minimax', 'ace_step'].includes(prev) ? (prev as 'suno' | 'ace_step' | 'minimax') : undefined;
+    const renderCharge = await app.chargeCredits({ workspaceId, key: 'full_song_demo', refTable: 'Song', refId: song.id });
+    if (!renderCharge.ok) return reply.code(402).send({ error: 'insufficient_credits', ...renderCharge });
+    const job = await prisma.providerJob.create({
+      data: { workspaceId, projectId: song.projectId, kind: 'music', provider: songEngine ?? 'suno', status: 'QUEUED', inputJson: { makeItBigger: true, songId: song.id } as never },
+    });
+    await enqueue({
+      queue: app.queues.music,
+      name: 'generate-music',
+      payload: {
+        jobId: job.id, workspaceId, projectId: song.projectId, songId: song.id,
+        input: {
+          genre, bpm: song.project.bpm ?? 103, withVocals: true, withStems: false, songEngine,
+          lyrics: lyricsForSong,
+          artistTone: song.project.artist.vocalTone, languages: song.project.artist.languages,
+          dnaTags: [...(dna.tags ?? []), ...styleHints.slice(0, 3)],
+        },
+      },
+    });
+    void arReadAfterRender(app, workspaceId, [{ songId: song.id, jobId: job.id }]).catch(() => {});
+
+    reply.code(202);
+    return { jobId: job.id, status: 'queued', whatChanged: rewritten.whatChanged ?? [], message: 'A&R notes implemented — re-singing the bigger version. It auto-masters and re-scores when done.' };
   });
 
   app.delete<{ Params: { id: string } }>('/:id', async (req, reply) => {
