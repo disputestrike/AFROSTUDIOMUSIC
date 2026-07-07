@@ -208,10 +208,9 @@ async function generateHooks(ctx: Ctx, count: number, languages?: string[]) {
   // "nothing's happening" feel.
   const result = await generateJson<{ hooks?: Array<{ text: string; language?: string[]; syllablePattern?: string }> }>({
     system: prompts.HOOK_SYSTEM,
-    user: prompts.hookUserPrompt({ artist: project.artist as never, brief: project.briefs[0] as never, count, tasteMemory, trends, soundDna }),
+    user: prompts.hookUserPrompt({ artist: project.artist as never, brief: project.briefs[0] as never, count, tasteMemory, trends, soundDna: soundDna.slice(0, 2600) }),
     temperature: 0.95,
-    maxTokens: 1_800,
-    brain: 'openai',
+    maxTokens: 1_500,
   });
   const refined = await directorRefineHooks({ artist: project.artist as never, brief: project.briefs[0] as never, drafts: (result.hooks ?? []).map((h) => h.text), tasteMemory, trends, soundDna });
 

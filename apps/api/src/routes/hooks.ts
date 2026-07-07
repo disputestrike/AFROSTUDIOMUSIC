@@ -65,12 +65,13 @@ export default async function hooks(app: FastifyInstance) {
       // scores them in a LEAN A&R pass (~10s). Two heavy Claude calls were the
       // 67-104s stall; this is ~25s and the A&R score is reliable.
       type DraftHook = { text: string; language?: string[]; syllablePattern?: string; melodyNotes?: string; callResponse?: boolean };
+      // Claude-first (OpenAI account is quota-exhausted → must not depend on it).
+      // Lean prompt + tokens keep it fast; the lean A&R scorer follows.
       const result = await generateJson<{ hooks?: DraftHook[] }>({
         system: prompts.HOOK_SYSTEM,
-        user: prompts.hookUserPrompt({ artist: project.artist as never, brief: brief as never, count: input.count, tasteMemory, trends, soundDna }),
+        user: prompts.hookUserPrompt({ artist: project.artist as never, brief: brief as never, count: input.count, tasteMemory, trends, soundDna: soundDna.slice(0, 2600) }),
         temperature: 0.95,
-        maxTokens: 1_800,
-        brain: 'openai',
+        maxTokens: 1_500,
       });
       const refined = await directorRefineHooks({
         artist: project.artist as never,
