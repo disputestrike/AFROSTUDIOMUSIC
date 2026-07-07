@@ -17,7 +17,7 @@ export default async function analyze(app: FastifyInstance) {
     { schema: { body: analyzeAudioSchema } },
     async (req, reply) => {
       const { workspaceId } = requireAuth(req);
-      const { url } = analyzeAudioSchema.parse(req.body);
+      const { url, purgeAfter } = analyzeAudioSchema.parse(req.body);
 
       // Same bright-line + SSRF guard as /import: no streaming-catalog hosts,
       // no private/metadata targets. The AI listens to rights-cleared audio only.
@@ -46,7 +46,7 @@ export default async function analyze(app: FastifyInstance) {
       await enqueue({
         queue: app.queues.music,
         name: 'analyze-audio',
-        payload: { jobId: job.id, workspaceId, projectId: project.id, url },
+        payload: { jobId: job.id, workspaceId, projectId: project.id, url , purgeAfter },
       });
 
       reply.code(202);

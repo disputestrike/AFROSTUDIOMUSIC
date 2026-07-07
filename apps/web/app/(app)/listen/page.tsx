@@ -10,6 +10,7 @@ import { useApi } from '@/lib/api';
 import { ReferenceListen } from '@/components/ReferenceListen';
 import { LearnFromLyrics } from '@/components/LearnFromLyrics';
 import { LearnMySound } from '@/components/LearnMySound';
+import { TrainingSession } from '@/components/TrainingSession';
 
 export default function ListenPage() {
   const api = useApi();
@@ -63,6 +64,7 @@ export default function ListenPage() {
       {projectId && <ReferenceListen projectId={projectId} />}
       {projectId && <LearnFromLyrics projectId={projectId} />}
       {projectId && <LearnMySound projectId={projectId} />}
+      {projectId && <TrainingSession projectId={projectId} />}
     </div>
   );
 }

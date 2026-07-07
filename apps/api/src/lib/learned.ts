@@ -205,3 +205,44 @@ export async function snapshotTrend(
     /* duplicate day-snapshot or transient DB error — never worth failing a generation */
   }
 }
+
+/**
+ * VOCABULARY BREADTH — the anti-"same words every song" guardrail.
+ * Mines the workspace's recent lyrics + hooks for over-used content words and
+ * BANS them for the next song, plus an African-storytelling directive:
+ * specific scenes over generic party filler.
+ */
+const STOP_WORDS = new Set(('the a an and or but if of in on at to for with from by as is are was were be been am i you he she it we they my your our their this that these those no not so do did done will would can could go come get got make made one two dey na wey abi sha oya omo eh oh ya yeah la le lo mi wa ni ti si ko ka'.split(' ')));
+export async function overusedWords(workspaceId: string): Promise<string[]> {
+  const [lyrics, hooks] = await Promise.all([
+    prisma.lyricDraft.findMany({ where: { project: { workspaceId } }, orderBy: { createdAt: 'desc' }, take: 25, select: { body: true } }),
+    prisma.hookCandidate.findMany({ where: { project: { workspaceId } }, orderBy: { createdAt: 'desc' }, take: 60, select: { text: true } }),
+  ]);
+  const docs = [...lyrics.map((l) => l.body), ...hooks.map((h) => h.text)].filter(Boolean);
+  if (docs.length < 4) return [];
+  const docFreq = new Map<string, number>();
+  for (const d of docs) {
+    const words = new Set(
+      d.toLowerCase().replace(/\[[^\]]*\]/g, ' ').replace(/[^\p{L}']/gu, ' ').split(/\s+/)
+        .filter((w) => w.length > 3 && !STOP_WORDS.has(w))
+    );
+    for (const w of words) docFreq.set(w, (docFreq.get(w) ?? 0) + 1);
+  }
+  return [...docFreq.entries()]
+    .filter(([, n]) => n / docs.length >= 0.35)
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 18)
+    .map(([w]) => w);
+}
+
+export async function freshnessBrief(workspaceId: string): Promise<string> {
+  const banned = await overusedWords(workspaceId).catch(() => [] as string[]);
+  const always = ['party', 'celebrate', 'vibe', 'shine', 'alert', 'winning', 'blessings'];
+  const banLine = [...new Set([...banned, ...always])].join(', ');
+  return (
+    'FRESHNESS — HARD RULES:\n' +
+    `- BANNED THIS SONG (worn out in this catalog + generic filler): ${banLine}. Find sharper, more specific words.\n` +
+    '- STORYTELLING, THE AFRICAN WAY: every song is a STORY told to somebody — name a real-feeling place, person, moment (a street, a market, a night, an aunty, a promise). Setup → turn → payoff. Proverb-flavored lines beat slogans. Talk TO the listener (call them in), not at them.\n' +
+    '- Own at least 5 images/phrases that could not appear in any other song in this catalog. If a line could be in anybody\'s song, it is filler — cut it.'
+  );
+}

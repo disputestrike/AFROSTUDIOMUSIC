@@ -344,6 +344,8 @@ export const mixerAiSchema = z.object({
 // ---------- Listen / analyze a reference track -----------------------------
 
 export const analyzeAudioSchema = z.object({
+  /** Training session: delete the uploaded audio after learning from it. */
+  purgeAfter: z.boolean().optional(),
   url: z.string().url(), // an uploaded/imported track url the artist has rights to
 });
 

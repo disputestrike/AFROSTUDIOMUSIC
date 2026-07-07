@@ -8,7 +8,8 @@ interface AnalyzePayload {
   jobId: string;
   workspaceId: string;
   projectId: string;
-  url: string;
+  url: string;  /** Training session: delete the uploaded audio after learning from it. */
+  purgeAfter?: boolean;
 }
 
 /**
@@ -114,6 +115,12 @@ export async function processAnalyze(p: AnalyzePayload) {
     // referenceId lets the UI PIN this exact reference for the remake — the song
     // made next must rebuild THIS record's sound, not a lucky-recent one.
     await markSucceeded(p.jobId, { profile, referenceId: reference?.id ?? null });
+    // TRAINING-SESSION PURGE: the lake keeps the learned recipe, never the
+    // recording itself (doctrine: no stored copies of anyone's audio).
+    if (p.purgeAfter) {
+      const { deleteObjectByUrl } = await import('../lib/storage');
+      await deleteObjectByUrl(p.url).catch(() => {});
+    }
   } catch (err) {
     await markFailed(p.jobId, err);
   }

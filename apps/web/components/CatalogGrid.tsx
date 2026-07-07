@@ -60,8 +60,16 @@ export default function CatalogGrid({ initial }: { initial: SongRow[] }) {
   const flash = (m: string) => { setToast(m); setTimeout(() => setToast(''), 3500); };
   const isBusy = (id: string, a: string) => busy === `${id}:${a}`;
 
+  // Inline two-step confirm — native confirm() can be silently suppressed by
+  // the browser ("prevent additional dialogs"), which made Delete LOOK broken.
+  const [armedDelete, setArmedDelete] = useState('');
   async function remove(id: string) {
-    if (!confirm('Delete this song? This cannot be undone.')) return;
+    if (armedDelete !== id) {
+      setArmedDelete(id);
+      setTimeout(() => setArmedDelete((cur) => (cur === id ? '' : cur)), 4000);
+      return;
+    }
+    setArmedDelete('');
     const before = songs;
     setSongs((s) => s.filter((x) => x.id !== id));
     try {
@@ -299,8 +307,8 @@ export default function CatalogGrid({ initial }: { initial: SongRow[] }) {
                   <Action label="Duplicate" icon={<Copy className="h-3.5 w-3.5" />} busy={isBusy(s.id, 'dup')} onClick={() => void duplicate(s)} />
                   <Action label="Rename" icon={<Pencil className="h-3.5 w-3.5" />} onClick={() => void rename(s)} />
                   <Action label="Studio" icon={<Sliders className="h-3.5 w-3.5" />} onClick={() => router.push(`/projects/${s.projectId}`)} />
-                  <button onClick={() => void remove(s.id)} className="rounded-full border border-white/10 bg-white/5 px-2.5 py-1 text-xs text-red-400 hover:bg-red-500/10">
-                    <Trash2 className="inline h-3.5 w-3.5" /> Delete
+                  <button onClick={() => void remove(s.id)} className={`rounded-full border px-2.5 py-1 text-xs ${armedDelete === s.id ? 'border-red-500/60 bg-red-500/20 font-medium text-red-300' : 'border-white/10 bg-white/5 text-red-400 hover:bg-red-500/10'}`}>
+                    <Trash2 className="inline h-3.5 w-3.5" /> {armedDelete === s.id ? 'Really delete?' : 'Delete'}
                   </button>
                 </div>
               )}

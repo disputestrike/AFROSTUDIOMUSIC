@@ -2,7 +2,7 @@
  * Worker-side storage: download URL → bytes, upload bytes → URL.
  * Mirrors apps/api/src/lib/storage.ts so the worker doesn't depend on it.
  */
-import { S3Client, PutObjectCommand } from '@aws-sdk/client-s3';
+import { S3Client, PutObjectCommand, DeleteObjectCommand } from '@aws-sdk/client-s3';
 import { nanoid } from 'nanoid';
 
 const endpoint = process.env.S3_ENDPOINT;
@@ -65,4 +65,16 @@ export async function ingestRemoteFile(opts: {
 }): Promise<string> {
   const bytes = await downloadToBuffer(opts.url);
   return uploadBytes({ workspaceId: opts.workspaceId, kind: opts.kind, bytes, contentType: opts.contentType, ext: opts.ext });
+}
+
+/**
+ * Delete an object we host, by its public URL. Used to PURGE transient
+ * training-session audio after its recipe is extracted — the studio keeps
+ * what it LEARNED, never a copy of someone else's recording.
+ */
+export async function deleteObjectByUrl(url: string): Promise<void> {
+  if (!publicBase || !url.startsWith(publicBase)) return; // only our own objects
+  const key = url.slice(publicBase.length).replace(/^\//, '');
+  if (!key) return;
+  await client().send(new DeleteObjectCommand({ Bucket: bucket, Key: key }));
 }

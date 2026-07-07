@@ -5,7 +5,7 @@ import { generateHooksInputSchema, langSchema } from '@afrohit/shared';
 import { prompts, generateJson, directorRefineHooks, researchTrends, anthropicEnabled, soundBrief } from '@afrohit/ai';
 import { requireAuth } from '../middleware/auth';
 import { memoryContext, recordFeedback } from '../services/artist-memory';
-import { learnedReferenceBrief, learnedLyricCraftBrief, snapshotTrend } from '../lib/learned';
+import { learnedReferenceBrief, learnedLyricCraftBrief, snapshotTrend, freshnessBrief } from '../lib/learned';
 
 export default async function hooks(app: FastifyInstance) {
   app.get<{ Params: { projectId: string } }>(
@@ -51,6 +51,7 @@ export default async function hooks(app: FastifyInstance) {
       // Genre Sound DNA + the artist's LEARNED references + STUDIED lyric craft
       // + HIT-CRAFT — the full data lake behind every hook.
       const soundDna = [
+        await freshnessBrief(workspaceId),
         soundBrief(project.genre).brief,
         await learnedReferenceBrief(workspaceId, project.genre),
         await learnedLyricCraftBrief(workspaceId, project.genre),

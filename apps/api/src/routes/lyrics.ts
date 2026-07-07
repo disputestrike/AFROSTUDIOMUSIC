@@ -5,7 +5,7 @@ import { generateLyricsInputSchema, GENRES } from '@afrohit/shared';
 import { prompts, responsesJson, soundBrief, generateJson } from '@afrohit/ai';
 import { requireAuth } from '../middleware/auth';
 import { learnLyricCraft, findLearnedLyric } from '../lib/lyric-learn';
-import { learnedReferenceBrief, learnedLyricCraftBrief } from '../lib/learned';
+import { learnedReferenceBrief, learnedLyricCraftBrief, freshnessBrief } from '../lib/learned';
 
 export default async function lyrics(app: FastifyInstance) {
   app.get<{ Params: { projectId: string } }>(
@@ -59,6 +59,7 @@ export default async function lyrics(app: FastifyInstance) {
           cleanVersion: input.cleanVersion,
           languageMix: input.languageMix as never,
           soundDna: [
+            await freshnessBrief(workspaceId),
             soundBrief(project.genre).brief,
             await learnedReferenceBrief(workspaceId, project.genre),
             await learnedLyricCraftBrief(workspaceId, project.genre),
@@ -204,6 +205,38 @@ export default async function lyrics(app: FastifyInstance) {
       const learned = await prisma.soundReference.count({ where: { workspaceId, sourceUrl: { startsWith: 'lyric:' } } });
       reply.code(201);
       return { referenceId, craft, alreadyLearned: alreadyLearned ?? false, lyricCraftInLibrary: learned };
+    }
+  );
+
+  /**
+   * TRAINING SESSION — learn WORDS + STORYTELLING from a finished listen.
+   * Takes an analyze job (one chunk of the 1-2h session), pulls the transcript
+   * the studio heard, and studies its CRAFT into the data lake — patterns,
+   * storytelling shape, vocabulary registers. NEVER the words themselves
+   * (stripVerbatim doctrine in lyric-learn.ts); the audio itself was already
+   * purged by the worker. Deduped + charged like every LLM call.
+   */
+  const lfaSchema = z.object({ analyzeJobId: z.string().cuid() });
+  app.post<{ Params: { projectId: string } }>(
+    '/learn-from-analysis',
+    { schema: { body: lfaSchema } },
+    async (req, reply) => {
+      const { workspaceId } = requireAuth(req);
+      await prisma.project.findFirstOrThrow({ where: { id: req.params.projectId, workspaceId } });
+      const { analyzeJobId } = lfaSchema.parse(req.body);
+      const job = await prisma.providerJob.findFirst({ where: { id: analyzeJobId, workspaceId }, select: { status: true, outputJson: true } });
+      if (!job || job.status !== 'SUCCEEDED') return reply.code(400).send({ error: 'analyze_not_ready' });
+      const profile = (job.outputJson as { profile?: { raw?: string; genre?: string } } | null)?.profile;
+      const transcript = /Transcript \(lyrics heard\):\n([\s\S]*?)(?=\nProducer's ear \(audio model description\):|$)/.exec(profile?.raw ?? '')?.[1]?.trim() ?? '';
+      if (transcript.replace(/\s/g, '').length < 60) {
+        return reply.code(200).send({ learned: false, reason: 'no_usable_vocal — instrumental or too little was heard in this chunk' });
+      }
+      const existing = await findLearnedLyric(workspaceId, transcript);
+      if (existing) return { learned: true, alreadyLearned: true, referenceId: existing.id };
+      const charge = await app.chargeCredits({ workspaceId, key: 'brief_polish', refTable: 'Project', refId: req.params.projectId });
+      if (!charge.ok) return reply.code(402).send({ error: 'insufficient_credits', ...charge });
+      const { referenceId, craft } = await learnLyricCraft({ workspaceId, raw: transcript, genreHint: profile?.genre });
+      return { learned: true, referenceId, craftTitle: craft.craftTitle, mode: craft.mode, genre: craft.genre, lessons: craft.craftLessons.slice(0, 2) };
     }
   );
 

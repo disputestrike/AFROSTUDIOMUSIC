@@ -23,11 +23,17 @@ export interface ProjectRow {
 export default function ProjectsList({ initial }: { initial: ProjectRow[] }) {
   const api = useApi();
   const [projects, setProjects] = useState(initial);
+  const [armedDelete, setArmedDelete] = useState('');
   const [toast, setToast] = useState('');
   const flash = (m: string) => { setToast(m); setTimeout(() => setToast(''), 4000); };
 
   async function remove(p: ProjectRow) {
-    if (!confirm(`Delete "${p.title}" and everything in it (${p._count.songs} song${p._count.songs === 1 ? '' : 's'})? This cannot be undone.`)) return;
+    if (armedDelete !== p.id) {
+      setArmedDelete(p.id);
+      setTimeout(() => setArmedDelete((cur) => (cur === p.id ? '' : cur)), 4000);
+      return;
+    }
+    setArmedDelete('');
     const before = projects;
     setProjects((arr) => arr.filter((x) => x.id !== p.id));
     try {
@@ -65,7 +71,7 @@ export default function ProjectsList({ initial }: { initial: ProjectRow[] }) {
                 className="ml-auto rounded-full border border-white/10 bg-white/5 px-2.5 py-1 text-xs text-red-400 opacity-0 transition group-hover:opacity-100 hover:bg-red-500/10"
                 title="Delete project"
               >
-                <Trash2 className="inline h-3.5 w-3.5" /> Delete
+                <Trash2 className="inline h-3.5 w-3.5" /> {armedDelete === p.id ? 'Really delete?' : 'Delete'}
               </button>
             </div>
           </li>
