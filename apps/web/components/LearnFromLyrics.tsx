@@ -9,8 +9,9 @@
  */
 
 import { useState } from 'react';
+import Link from 'next/link';
 import { useApi } from '@/lib/api';
-import { BookOpenText, Loader2, Check } from 'lucide-react';
+import { BookOpenText, Loader2, Check, Rocket } from 'lucide-react';
 
 interface Craft {
   craftTitle: string;
@@ -101,6 +102,17 @@ export function LearnFromLyrics({ projectId }: { projectId: string }) {
               ))}
             </ul>
             <p className="mt-2 text-[11px] text-slate-500">Every new hook and lyric now pulls from these lessons automatically.</p>
+
+            {/* THE BRIDGE: learned → now go make one that OUTDOES it. */}
+            <Link
+              href={`/create?genre=${encodeURIComponent(result.craft.genre || 'afrobeats')}&vibe=${encodeURIComponent(
+                `outdo the style just studied (${result.craft.craftTitle || 'the lesson'}): ${(result.craft.craftLessons ?? []).slice(0, 2).join('; ')}`.slice(0, 280)
+              )}`}
+              className="mt-4 inline-flex items-center gap-2 rounded-full bg-brand-gradient px-5 py-2.5 text-sm font-medium text-ink shadow-glow"
+            >
+              <Rocket className="h-4 w-4" /> Make a song that outdoes this
+            </Link>
+            <p className="mt-1.5 text-[11px] text-slate-500">Opens Create pre-loaded with the lesson — the studio treats it as the floor, not the ceiling.</p>
           </div>
         )}
       </div>

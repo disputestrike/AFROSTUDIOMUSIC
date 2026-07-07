@@ -357,7 +357,7 @@ export const STUDIO_CHAT_TOOLS = [
     type: 'function' as const,
     name: 'learn_lyrics',
     description:
-      'STUDY pasted lyrics into the learning library: extracts the craft (hook mechanics, flow, repetition engine, code-switching, imagery field) — never stores the words. Use when the user pastes lyrics to LEARN FROM (teach the studio a style), not to sing verbatim. Future hooks/lyrics automatically pull from what was learned.',
+      'STUDY pasted lyrics into the learning library: extracts the craft (hook mechanics, flow, repetition engine, code-switching, imagery field) — never stores the words. Use when the user pastes lyrics to LEARN FROM (teach the studio a style), not to sing verbatim. Future hooks/lyrics automatically pull from what was learned. AFTER learning, offer to immediately create a song that applies the lessons and OUTDOES the studied style (create_beat_job or run_drop with the craft genre + a theme built from the lessons).',
     parameters: {
       type: 'object',
       properties: { lyrics: { type: 'string' }, genreHint: { type: 'string' } },

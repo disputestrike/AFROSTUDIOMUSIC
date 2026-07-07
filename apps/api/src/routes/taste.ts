@@ -73,7 +73,7 @@ export default async function taste(app: FastifyInstance) {
         where: { workspaceId },
         orderBy: { createdAt: 'desc' },
         take: 500,
-        select: { genre: true, sourceUrl: true, title: true, createdAt: true, recipe: true },
+        select: { id: true, genre: true, sourceUrl: true, title: true, summary: true, createdAt: true, recipe: true },
       }),
       prisma.materialAsset.groupBy({ by: ['genre', 'role'], where: { workspaceId }, _count: true }),
       Promise.all([
@@ -103,7 +103,12 @@ export default async function taste(app: FastifyInstance) {
       genresByKind[k]![g] = (genresByKind[k]![g] ?? 0) + 1;
     }
     return {
-      soundReferences: { total: refTotal, byKind, genresByKind, latest: refs.slice(0, 5).map((r) => ({ title: r.title, genre: r.genre, kind: kind(r), at: r.createdAt })) },
+      soundReferences: {
+        total: refTotal,
+        byKind,
+        genresByKind,
+        latest: refs.slice(0, 40).map((r) => ({ id: r.id, title: r.title, genre: r.genre, kind: kind(r), summary: (r.summary ?? '').slice(0, 260), at: r.createdAt })),
+      },
       materials: { total: materials.reduce((n, m) => n + m._count, 0), shelf: materials.map((m) => ({ genre: m.genre, role: m.role, count: m._count })) },
       songs: counts[0],
       approvedLyrics: counts[1],
@@ -119,6 +124,17 @@ export default async function taste(app: FastifyInstance) {
         staticLibraries: 'Sound DNA (23 genres + trends enrichment) + hit-craft (8 lyric modes) compiled into every prompt',
       },
     };
+  });
+
+  /**
+   * Admin curation of the lake — a bad lesson or junk reference can be removed
+   * (workspace-scoped; a delete STICKS, same doctrine as everywhere else).
+   */
+  app.delete<{ Params: { refId: string } }>('/references/:refId', async (req, reply) => {
+    const { workspaceId } = requireAuth(req);
+    const gone = await prisma.soundReference.deleteMany({ where: { id: req.params.refId, workspaceId } });
+    if (gone.count === 0) return reply.code(404).send({ error: 'reference_not_found' });
+    return { deleted: true };
   });
 
   app.post(

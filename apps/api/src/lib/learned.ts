@@ -166,7 +166,8 @@ export async function learnedLyricCraftBrief(workspaceId: string, genre?: string
   const picked = [...inGenre.slice(0, 2), ...rest.slice(0, 1)].filter((r) => r.summary);
   if (!picked.length) return '';
   return (
-    'STUDIED LYRIC CRAFT (from lyrics the artist brought to learn from — apply the TECHNIQUES to brand-new words, never reuse phrasing):\n' +
+    'STUDIED LYRIC CRAFT (from lyrics the artist brought to learn from — apply the TECHNIQUES to brand-new words, never reuse phrasing). ' +
+    'THE LESSON IS THE FLOOR, NOT THE CEILING: outdo the studied songs — a sharper hook, a fresher angle, more original imagery than what was studied:\n' +
     picked.map((r) => `• ${r.title ? r.title + ': ' : ''}${r.summary!.slice(0, 700)}`).join('\n')
   );
 }

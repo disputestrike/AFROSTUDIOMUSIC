@@ -6,7 +6,7 @@
  * "Bring my own" is a separate intent that opens the full studio.
  */
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { useApi } from '@/lib/api';
 
@@ -74,6 +74,20 @@ export default function CreatePage() {
   const [stepIdx, setStepIdx] = useState(0);
   const [err, setErr] = useState('');
   const [song, setSong] = useState<{ title: string; hook?: string; score: number | null; url: string; projectId: string } | null>(null);
+
+  // Prefill from links like /create?genre=...&mood=...&bpm=...&vibe=... —
+  // e.g. "Make a song that outdoes this" after learning a lyric on /listen.
+  useEffect(() => {
+    const q = new URLSearchParams(window.location.search);
+    const g = q.get('genre');
+    if (g && GENRES.some((x) => x.value === g)) setGenres([g]);
+    const m = q.get('mood');
+    if (m && MOODS.includes(m)) setMood(m);
+    const b = Number(q.get('bpm'));
+    if (b >= 60 && b <= 180) setBpm(Math.round(b));
+    const v = q.get('vibe');
+    if (v) setVibe(v.slice(0, 300));
+  }, []);
 
   const toggleLang = (l: string) => setLangs((p) => (p.includes(l) ? p.filter((x) => x !== l) : [...p, l]));
   const toggleGenre = (g: string) =>
