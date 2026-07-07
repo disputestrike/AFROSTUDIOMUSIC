@@ -3,6 +3,7 @@ import { anthropicPing, tavilyKey, braveKey, tavilyPing, researchTrends, soundBr
 import { requireAuth } from '../middleware/auth';
 import { freshnessBrief, learnedReferenceBrief, learnedLyricCraftBrief } from '../lib/learned';
 import { lexiconPalette } from '../lib/lexicon';
+import { fuseSoundDna } from '../lib/fuse';
 
 /**
  * AI wiring diagnostics — which providers the API service can actually reach.
@@ -60,7 +61,7 @@ export default async function debug(app: FastifyInstance) {
       { name: 'learnedLyricCraftBrief (lyrics you studied)', text: learnedCraft },
       { name: 'hitCraftBrief (proven hit modes)', text: hitCraft },
     ];
-    const assembled = joinBriefs(parts.map((p) => p.text));
+    const assembled = fuseSoundDna({ freshness, palette, dna, learnedRef, learnedCraft, hitCraft });
 
     return {
       inputs: { genre, mood, languages },

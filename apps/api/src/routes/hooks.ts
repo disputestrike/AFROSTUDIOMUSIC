@@ -7,6 +7,7 @@ import { requireAuth } from '../middleware/auth';
 import { memoryContext, recordFeedback } from '../services/artist-memory';
 import { learnedReferenceBrief, learnedLyricCraftBrief, snapshotTrend, freshnessBrief } from '../lib/learned';
 import { lexiconPalette } from '../lib/lexicon';
+import { fuseSoundDna } from '../lib/fuse';
 
 export default async function hooks(app: FastifyInstance) {
   app.get<{ Params: { projectId: string } }>(
@@ -50,15 +51,17 @@ export default async function hooks(app: FastifyInstance) {
       const trends = trendData?.digest;
       void snapshotTrend(workspaceId, project.genre, trendData);
       // Genre Sound DNA + the artist's LEARNED references + STUDIED lyric craft
-      // + HIT-CRAFT — the full data lake behind every hook.
-      const soundDna = joinBriefs([
-        await freshnessBrief(workspaceId),
-        await lexiconPalette({ workspaceId, mood: (brief as { mood?: string } | undefined)?.mood, rotate: input.count }),
-        soundBrief(project.genre).brief,
-        await learnedReferenceBrief(workspaceId, project.genre),
-        await learnedLyricCraftBrief(workspaceId, project.genre),
-        prompts.hitCraftBrief('hook', (brief as { mood?: string } | undefined)?.mood),
-      ]);
+      // + HIT-CRAFT + the WORD BANK — the full data lake, each layer capped so
+      // ALL of it reaches the writer (not just the first two).
+      const mood = (brief as { mood?: string } | undefined)?.mood;
+      const soundDna = fuseSoundDna({
+        freshness: await freshnessBrief(workspaceId),
+        palette: await lexiconPalette({ workspaceId, mood, rotate: input.count }),
+        dna: soundBrief(project.genre).brief,
+        learnedRef: await learnedReferenceBrief(workspaceId, project.genre),
+        learnedCraft: await learnedLyricCraftBrief(workspaceId, project.genre),
+        hitCraft: prompts.hitCraftBrief('hook', mood),
+      });
 
       // FAST + RELIABLE: OpenAI writes the hooks (~15s, never rate-limited for
       // us, and the word-palette in soundDna gives it the vocab), then Claude
@@ -69,7 +72,7 @@ export default async function hooks(app: FastifyInstance) {
       // Lean prompt + tokens keep it fast; the lean A&R scorer follows.
       const result = await generateJson<{ hooks?: DraftHook[] }>({
         system: prompts.HOOK_SYSTEM,
-        user: prompts.hookUserPrompt({ artist: project.artist as never, brief: brief as never, count: input.count, tasteMemory, trends, soundDna: soundDna.slice(0, 2600) }),
+        user: prompts.hookUserPrompt({ artist: project.artist as never, brief: brief as never, count: input.count, tasteMemory, trends, soundDna }),
         temperature: 0.95,
         maxTokens: 3_500,
       });

@@ -7,6 +7,7 @@ import { requireAuth } from '../middleware/auth';
 import { learnLyricCraft, findLearnedLyric } from '../lib/lyric-learn';
 import { learnedReferenceBrief, learnedLyricCraftBrief, freshnessBrief } from '../lib/learned';
 import { lexiconPalette } from '../lib/lexicon';
+import { fuseSoundDna } from '../lib/fuse';
 
 export default async function lyrics(app: FastifyInstance) {
   app.get<{ Params: { projectId: string } }>(
@@ -59,14 +60,14 @@ export default async function lyrics(app: FastifyInstance) {
           hookText: hook.text,
           cleanVersion: input.cleanVersion,
           languageMix: input.languageMix as never,
-          soundDna: joinBriefs([
-            await freshnessBrief(workspaceId),
-            await lexiconPalette({ workspaceId, languages: project.artist.languages, mood: (project.briefs?.[0] as { mood?: string } | undefined)?.mood, rotate: Date.now() % 97 }),
-            soundBrief(project.genre).brief,
-            await learnedReferenceBrief(workspaceId, project.genre),
-            await learnedLyricCraftBrief(workspaceId, project.genre),
-            prompts.hitCraftBrief('lyric', (project.briefs?.[0] as { mood?: string } | undefined)?.mood),
-          ]),
+          soundDna: fuseSoundDna({
+            freshness: await freshnessBrief(workspaceId),
+            palette: await lexiconPalette({ workspaceId, languages: project.artist.languages, mood: (project.briefs?.[0] as { mood?: string } | undefined)?.mood, rotate: Date.now() % 97 }),
+            dna: soundBrief(project.genre).brief,
+            learnedRef: await learnedReferenceBrief(workspaceId, project.genre),
+            learnedCraft: await learnedLyricCraftBrief(workspaceId, project.genre),
+            hitCraft: prompts.hitCraftBrief('lyric', (project.briefs?.[0] as { mood?: string } | undefined)?.mood),
+          }),
         }),
         temperature: 0.8,
         maxTokens: 3_000,
