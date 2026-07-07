@@ -10,7 +10,7 @@
  */
 import type { FastifyInstance } from 'fastify';
 import { prisma } from '@afrohit/db';
-import { prompts, generateJson, scoreItems, runRightsCheck, canonicalReceiptHash, directorRefineHooks, researchTrends, enrichLyricsForVocals, soundBrief, blendSoundBrief, predictHit } from '@afrohit/ai';
+import { joinBriefs, prompts, generateJson, scoreItems, runRightsCheck, canonicalReceiptHash, directorRefineHooks, researchTrends, enrichLyricsForVocals, soundBrief, blendSoundBrief, predictHit} from '@afrohit/ai';
 import { enqueue } from '../lib/queue';
 import { assertSafeUrl } from '../lib/url-guard';
 import { learnedReferenceBrief, learnedStyleTags, learnedLyricCraftBrief, snapshotTrend, freshnessBrief } from '../lib/learned';
@@ -202,12 +202,12 @@ async function generateHooks(ctx: Ctx, count: number, languages?: string[]) {
   const trendData = await researchTrends({ genre: project.genre }).catch(() => null);
   const trends = trendData?.digest;
   void snapshotTrend(ctx.workspaceId, project.genre, trendData);
-  const soundDna = [hardConstraints(project.genre, languages), await freshnessBrief(ctx.workspaceId), await lexiconPalette({ workspaceId: ctx.workspaceId, languages, mood: (project.briefs[0] as { mood?: string } | undefined)?.mood, rotate: count }), soundBrief(project.genre).brief, await learnedReferenceBrief(ctx.workspaceId, project.genre), await learnedLyricCraftBrief(ctx.workspaceId, project.genre), prompts.hitCraftBrief('hook', (project.briefs[0] as { mood?: string } | undefined)?.mood)].filter(Boolean).join('\n\n');
+  const soundDna = joinBriefs([hardConstraints(project.genre, languages), await freshnessBrief(ctx.workspaceId), await lexiconPalette({ workspaceId: ctx.workspaceId, languages, mood: (project.briefs[0] as { mood?: string } | undefined)?.mood, rotate: count }), soundBrief(project.genre).brief, await learnedReferenceBrief(ctx.workspaceId, project.genre), await learnedLyricCraftBrief(ctx.workspaceId, project.genre), prompts.hitCraftBrief('hook', (project.briefs[0] as { mood?: string } | undefined)?.mood)]);
   const result = await generateJson<{ hooks: Array<{ text: string; language?: string[]; bpm?: number; syllablePattern?: string; melodyNotes?: string; callResponse?: boolean }> }>({
     system: prompts.HOOK_SYSTEM,
     user: prompts.hookUserPrompt({ artist: project.artist as never, brief: project.briefs[0] as never, count, tasteMemory, trends, soundDna }),
     temperature: 0.95,
-    maxTokens: 4_000,
+    maxTokens: 2_000,
   });
 
   // Multi-model A&R: Claude refines + scores GPT's drafts (falls back to drafts).
@@ -219,7 +219,7 @@ async function generateHooks(ctx: Ctx, count: number, languages?: string[]) {
     tasteMemory,
     trends,
     // A&R judges with the hit-craft rubric (what correlates with streams) too.
-    soundDna: [soundDna, prompts.arCraftRubric()].filter(Boolean).join('\n\n'),
+    soundDna: joinBriefs([soundDna, prompts.arCraftRubric()]),
   });
 
   const rows = refined
@@ -327,7 +327,7 @@ async function generateLyrics(ctx: Ctx, hookId: string, cleanVersion: boolean, l
       brief: hook.project.briefs[0] as never,
       hookText: hook.text,
       cleanVersion,
-      soundDna: [hardConstraints(hook.project.genre, languages), await freshnessBrief(ctx.workspaceId), await lexiconPalette({ workspaceId: ctx.workspaceId, languages, mood: (hook.project.briefs[0] as { mood?: string } | undefined)?.mood, rotate: Date.now() % 97 }), soundBrief(hook.project.genre).brief, await learnedReferenceBrief(ctx.workspaceId, hook.project.genre), await learnedLyricCraftBrief(ctx.workspaceId, hook.project.genre), prompts.hitCraftBrief('lyric', (hook.project.briefs[0] as { mood?: string } | undefined)?.mood)].filter(Boolean).join('\n\n'),
+      soundDna: joinBriefs([hardConstraints(hook.project.genre, languages), await freshnessBrief(ctx.workspaceId), await lexiconPalette({ workspaceId: ctx.workspaceId, languages, mood: (hook.project.briefs[0] as { mood?: string } | undefined)?.mood, rotate: Date.now() % 97 }), soundBrief(hook.project.genre).brief, await learnedReferenceBrief(ctx.workspaceId, hook.project.genre), await learnedLyricCraftBrief(ctx.workspaceId, hook.project.genre), prompts.hitCraftBrief('lyric', (hook.project.briefs[0] as { mood?: string } | undefined)?.mood)]),
     }),
     temperature: 0.8,
     maxTokens: 4_000,
@@ -433,7 +433,7 @@ async function createBeatJob(ctx: Ctx, a: { genre: string; fusionGenres?: string
       // The user's SELECTED languages outrank the artist profile's defaults.
       languages: a.languages?.length ? a.languages : project?.artist.languages,
       laneSummary: project?.artist.laneSummary ?? undefined,
-      soundDna: [dna.brief, learned].filter(Boolean).join('\n\n'),
+      soundDna: joinBriefs([dna.brief, learned]),
     });
     if (enriched) {
       lyrics = enriched.enrichedLyrics;

@@ -47,29 +47,55 @@ export async function claudeJson<T>(opts: {
   model?: string;
   maxTokens?: number;
   temperature?: number;
+  /** Hard timeout (ms) so a hung/overloaded call fails fast instead of stalling
+   *  a song the user is waiting on. Default 55s. */
+  timeoutMs?: number;
 }): Promise<T> {
   const key = anthropicKey();
   if (!key) throw new Error('ANTHROPIC_API_KEY missing');
-  const res = await fetch('https://api.anthropic.com/v1/messages', {
-    method: 'POST',
-    headers: {
-      'x-api-key': key,
-      'anthropic-version': '2023-06-01',
-      'content-type': 'application/json',
-    },
-    // NB: Claude 5-family models deprecated `temperature` (sending it → 400).
-    // Omit it; the model's default sampling is fine for A&R judgment.
-    body: JSON.stringify({
-      model: opts.model ?? ANTHROPIC_MODEL(),
-      max_tokens: opts.maxTokens ?? 4_000,
-      system: opts.system,
-      messages: [{ role: 'user', content: opts.user }],
-    }),
-  });
-  if (!res.ok) {
-    throw new Error(`anthropic ${res.status}: ${(await res.text()).slice(0, 300)}`);
+  const timeoutMs = opts.timeoutMs ?? 55_000;
+
+  // Retry once on transient overload/timeout — Claude 529s under load; a hung
+  // call is worse than a fast fallback, so we bound it and try again briefly.
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+    try {
+      const res = await fetch('https://api.anthropic.com/v1/messages', {
+        method: 'POST',
+        headers: {
+          'x-api-key': key,
+          'anthropic-version': '2023-06-01',
+          'content-type': 'application/json',
+        },
+        // NB: Claude 5-family models deprecated `temperature` (sending it → 400).
+        body: JSON.stringify({
+          model: opts.model ?? ANTHROPIC_MODEL(),
+          max_tokens: opts.maxTokens ?? 4_000,
+          system: opts.system,
+          messages: [{ role: 'user', content: opts.user }],
+        }),
+        signal: ctrl.signal,
+      });
+      clearTimeout(timer);
+      if (res.status === 429 || res.status === 529 || res.status >= 500) {
+        if (attempt === 0) { await new Promise((r) => setTimeout(r, 1500)); continue; }
+        throw new Error(`anthropic ${res.status}: ${(await res.text()).slice(0, 200)}`);
+      }
+      if (!res.ok) throw new Error(`anthropic ${res.status}: ${(await res.text()).slice(0, 300)}`);
+      const data = (await res.json()) as { content?: Array<{ type: string; text?: string }> };
+      const text = data.content?.map((c) => c.text ?? '').join('') ?? '';
+      return JSON.parse(extractJson(text)) as T;
+    } catch (e) {
+      clearTimeout(timer);
+      const msg = (e as Error).message;
+      // Abort/timeout or transient → retry once, then let the caller fall back.
+      if (attempt === 0 && /aborted|timeout|ECONNRESET|fetch failed|network/i.test(msg)) {
+        await new Promise((r) => setTimeout(r, 800));
+        continue;
+      }
+      throw e;
+    }
   }
-  const data = (await res.json()) as { content?: Array<{ type: string; text?: string }> };
-  const text = data.content?.map((c) => c.text ?? '').join('') ?? '';
-  return JSON.parse(extractJson(text)) as T;
+  throw new Error('anthropic: exhausted retries');
 }

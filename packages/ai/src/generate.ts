@@ -14,6 +14,31 @@ import { responsesJson } from './providers/text';
 
 export type Brain = 'claude' | 'openai' | 'stub';
 
+/**
+ * Assemble prompt briefs with a HARD total cap. Stacking every brief (sound DNA
+ * + learned refs + lyric craft + hit-craft + freshness + word palette + trends)
+ * made prompts huge → slow calls AND the model choking on unparseable output.
+ * Order the parts by priority; this keeps the most important ones and drops the
+ * overflow so generation stays fast and reliable.
+ */
+export function joinBriefs(parts: Array<string | undefined | null | false>, maxChars = 4200): string {
+  const out: string[] = [];
+  let used = 0;
+  for (const p of parts) {
+    if (!p) continue;
+    const s = String(p).trim();
+    if (!s) continue;
+    if (used + s.length > maxChars) {
+      const room = maxChars - used;
+      if (room > 300) out.push(s.slice(0, room)); // partial keep if meaningful
+      break;
+    }
+    out.push(s);
+    used += s.length + 2;
+  }
+  return out.join('\n\n');
+}
+
 export interface GenerateOptions {
   system: string;
   user: string;

@@ -2,7 +2,7 @@ import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { prisma } from '@afrohit/db';
 import { generateHooksInputSchema, langSchema } from '@afrohit/shared';
-import { prompts, generateJson, directorRefineHooks, researchTrends, anthropicEnabled, soundBrief } from '@afrohit/ai';
+import { joinBriefs, prompts, generateJson, directorRefineHooks, researchTrends, anthropicEnabled, soundBrief} from '@afrohit/ai';
 import { requireAuth } from '../middleware/auth';
 import { memoryContext, recordFeedback } from '../services/artist-memory';
 import { learnedReferenceBrief, learnedLyricCraftBrief, snapshotTrend, freshnessBrief } from '../lib/learned';
@@ -51,14 +51,14 @@ export default async function hooks(app: FastifyInstance) {
       void snapshotTrend(workspaceId, project.genre, trendData);
       // Genre Sound DNA + the artist's LEARNED references + STUDIED lyric craft
       // + HIT-CRAFT — the full data lake behind every hook.
-      const soundDna = [
+      const soundDna = joinBriefs([
         await freshnessBrief(workspaceId),
         await lexiconPalette({ workspaceId, mood: (brief as { mood?: string } | undefined)?.mood, rotate: input.count }),
         soundBrief(project.genre).brief,
         await learnedReferenceBrief(workspaceId, project.genre),
         await learnedLyricCraftBrief(workspaceId, project.genre),
         prompts.hitCraftBrief('hook', (brief as { mood?: string } | undefined)?.mood),
-      ].filter(Boolean).join('\n\n');
+      ]);
 
       const result = await generateJson<{
         hooks: Array<{
@@ -80,7 +80,7 @@ export default async function hooks(app: FastifyInstance) {
           soundDna,
         }),
         temperature: 0.95,
-        maxTokens: 4_000,
+        maxTokens: 2_000,
       });
 
       // Secret sauce — multi-model: GPT wrote the drafts (breadth); now Claude
@@ -94,7 +94,7 @@ export default async function hooks(app: FastifyInstance) {
         tasteMemory,
         trends,
         // A&R judges with the hit-craft rubric (what correlates with streams) too.
-        soundDna: [soundDna, prompts.arCraftRubric()].filter(Boolean).join('\n\n'),
+        soundDna: joinBriefs([soundDna, prompts.arCraftRubric()]),
       });
 
       const langFilter = (arr: string[]) =>

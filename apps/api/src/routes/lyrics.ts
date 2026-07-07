@@ -2,7 +2,7 @@ import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { prisma } from '@afrohit/db';
 import { generateLyricsInputSchema, GENRES } from '@afrohit/shared';
-import { prompts, responsesJson, soundBrief, generateJson } from '@afrohit/ai';
+import { joinBriefs, prompts, responsesJson, soundBrief, generateJson} from '@afrohit/ai';
 import { requireAuth } from '../middleware/auth';
 import { learnLyricCraft, findLearnedLyric } from '../lib/lyric-learn';
 import { learnedReferenceBrief, learnedLyricCraftBrief, freshnessBrief } from '../lib/learned';
@@ -59,14 +59,14 @@ export default async function lyrics(app: FastifyInstance) {
           hookText: hook.text,
           cleanVersion: input.cleanVersion,
           languageMix: input.languageMix as never,
-          soundDna: [
+          soundDna: joinBriefs([
             await freshnessBrief(workspaceId),
             await lexiconPalette({ workspaceId, languages: project.artist.languages, mood: (project.briefs?.[0] as { mood?: string } | undefined)?.mood, rotate: Date.now() % 97 }),
             soundBrief(project.genre).brief,
             await learnedReferenceBrief(workspaceId, project.genre),
             await learnedLyricCraftBrief(workspaceId, project.genre),
             prompts.hitCraftBrief('lyric', (project.briefs?.[0] as { mood?: string } | undefined)?.mood),
-          ].filter(Boolean).join('\n\n'),
+          ]),
         }),
         temperature: 0.8,
         maxOutputTokens: 4_000,

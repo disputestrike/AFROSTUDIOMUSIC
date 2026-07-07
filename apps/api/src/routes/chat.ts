@@ -17,7 +17,7 @@ import type { FastifyInstance } from 'fastify';
 import type { FastifyReply, FastifyRequest } from 'fastify';
 import { prisma } from '@afrohit/db';
 import { chatMessageInputSchema } from '@afrohit/shared';
-import { prompts, chatWithTools } from '@afrohit/ai';
+import { prompts, studioChat } from '@afrohit/ai';
 import { requireAuth } from '../middleware/auth';
 import { runChatTool } from '../services/chat-tools';
 
@@ -229,7 +229,7 @@ export default async function chat(app: FastifyInstance) {
         recentArtifacts,
       });
 
-      const turn = await chatWithTools({
+      const turn = await studioChat({
         tools: prompts.STUDIO_CHAT_TOOLS as never,
         messages: [
           { role: 'system', content: prompts.STUDIO_CHAT_SYSTEM },
@@ -269,7 +269,7 @@ export default async function chat(app: FastifyInstance) {
         }
 
         // Second model turn — let it summarize the tool results for the user.
-        const finalTurn = await chatWithTools({
+        const finalTurn = await studioChat({
           tools: prompts.STUDIO_CHAT_TOOLS as never,
           messages: [
             { role: 'system', content: prompts.STUDIO_CHAT_SYSTEM },
@@ -425,7 +425,7 @@ export default async function chat(app: FastifyInstance) {
         let finalText = '';
         for (let round = 1; round <= maxRounds; round++) {
           send({ type: 'stage', stage: autopilot ? `producing (step ${round})` : 'thinking' });
-          const turn = await chatWithTools({
+          const turn = await studioChat({
             tools: prompts.STUDIO_CHAT_TOOLS as never,
             messages: convo,
             temperature: 0.5,
@@ -470,7 +470,7 @@ export default async function chat(app: FastifyInstance) {
 
           if (!autopilot || round === maxRounds) {
             send({ type: 'stage', stage: 'summarizing' });
-            const fin = await chatWithTools({ tools: prompts.STUDIO_CHAT_TOOLS as never, messages: convo, temperature: 0.5 });
+            const fin = await studioChat({ tools: prompts.STUDIO_CHAT_TOOLS as never, messages: convo, temperature: 0.5 });
             finalText = fin.text ?? finalText;
             break;
           }
