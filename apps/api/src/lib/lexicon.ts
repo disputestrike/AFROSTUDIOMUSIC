@@ -121,7 +121,7 @@ export async function lexiconPalette(opts: {
     });
     if (rows.length < 4) return '';
 
-    const perCat = opts.perCategory ?? 8;
+    const perCat = opts.perCategory ?? 10;
     const rot = Math.abs(Math.floor(opts.rotate ?? 0));
     const byCat = new Map<string, string[]>();
     for (const r of rows) byCat.set(r.category, [...(byCat.get(r.category) ?? []), r.term]);
@@ -137,7 +137,9 @@ export async function lexiconPalette(opts: {
     }
     if (!lines.length) return '';
     return (
-      'WORD PALETTE (authentic terms from the studio word bank — weave a FEW of these in naturally where they fit the story; do NOT force them all, do NOT list them):\n' +
+      'WORD BANK — YOUR VOCABULARY FOR THIS SONG. These are authentic, specific terms from the studio word bank. ' +
+      'REACH FOR THESE instead of generic English filler: work AT LEAST 4-6 of them into the hook and verses where they fit the story naturally (not a list, not forced). ' +
+      'Specific, textured African words are what make the writing feel real — generic words ("baby, money, vibe, party, shine") are the failure to avoid.\n' +
       lines.join('\n')
     );
   } catch {
