@@ -10,7 +10,7 @@
  */
 import type { FastifyInstance } from 'fastify';
 import { prisma } from '@afrohit/db';
-import { joinBriefs, prompts, generateJson, scoreItems, runRightsCheck, canonicalReceiptHash, directorRefineHooks, writeAndScoreHooks, researchTrends, enrichLyricsForVocals, soundBrief, blendSoundBrief, predictHit} from '@afrohit/ai';
+import { joinBriefs, prompts, generateJson, scoreItems, runRightsCheck, canonicalReceiptHash, directorRefineHooks, researchTrends, enrichLyricsForVocals, soundBrief, blendSoundBrief, predictHit} from '@afrohit/ai';
 import { enqueue } from '../lib/queue';
 import { assertSafeUrl } from '../lib/url-guard';
 import { learnedReferenceBrief, learnedStyleTags, learnedLyricCraftBrief, snapshotTrend, freshnessBrief } from '../lib/learned';
@@ -203,21 +203,17 @@ async function generateHooks(ctx: Ctx, count: number, languages?: string[]) {
   const trends = trendData?.digest;
   void snapshotTrend(ctx.workspaceId, project.genre, trendData);
   const soundDna = joinBriefs([hardConstraints(project.genre, languages), await freshnessBrief(ctx.workspaceId), await lexiconPalette({ workspaceId: ctx.workspaceId, languages, mood: (project.briefs[0] as { mood?: string } | undefined)?.mood, rotate: count }), soundBrief(project.genre).brief, await learnedReferenceBrief(ctx.workspaceId, project.genre), await learnedLyricCraftBrief(ctx.workspaceId, project.genre), prompts.hitCraftBrief('hook', (project.briefs[0] as { mood?: string } | undefined)?.mood)]);
-  // FAST PATH: write + A&R-score in ONE Claude call (drop pipeline runs this per
-  // song — the old two-call dance was the biggest source of the slow "nothing
-  // happening" feel). Fallback to GPT-draft → Claude-refine when no Anthropic.
-  const arSoundDna = joinBriefs([soundDna, prompts.arCraftRubric()]);
-  let refined = await writeAndScoreHooks({ artist: project.artist as never, brief: project.briefs[0] as never, count, tasteMemory, trends, soundDna: arSoundDna });
-  let result: { hooks?: Array<{ text: string; language?: string[]; syllablePattern?: string }> } = { hooks: [] };
-  if (!refined) {
-    result = await generateJson<typeof result>({
-      system: prompts.HOOK_SYSTEM,
-      user: prompts.hookUserPrompt({ artist: project.artist as never, brief: project.briefs[0] as never, count, tasteMemory, trends, soundDna }),
-      temperature: 0.95,
-      maxTokens: 2_000,
-    });
-    refined = await directorRefineHooks({ artist: project.artist as never, brief: project.briefs[0] as never, drafts: (result.hooks ?? []).map((h) => h.text), tasteMemory, trends, soundDna: arSoundDna });
-  }
+  // FAST + RELIABLE: OpenAI writes (word-palette gives the vocab), Claude scores
+  // lean. The drop pipeline runs this per song, so speed here is what kills the
+  // "nothing's happening" feel.
+  const result = await generateJson<{ hooks?: Array<{ text: string; language?: string[]; syllablePattern?: string }> }>({
+    system: prompts.HOOK_SYSTEM,
+    user: prompts.hookUserPrompt({ artist: project.artist as never, brief: project.briefs[0] as never, count, tasteMemory, trends, soundDna }),
+    temperature: 0.95,
+    maxTokens: 1_800,
+    brain: 'openai',
+  });
+  const refined = await directorRefineHooks({ artist: project.artist as never, brief: project.briefs[0] as never, drafts: (result.hooks ?? []).map((h) => h.text), tasteMemory, trends, soundDna });
 
   const rows = refined
     ? refined.map((h) => ({

@@ -2,7 +2,7 @@ import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { prisma } from '@afrohit/db';
 import { generateHooksInputSchema, langSchema } from '@afrohit/shared';
-import { joinBriefs, prompts, generateJson, directorRefineHooks, writeAndScoreHooks, researchTrends, anthropicEnabled, soundBrief} from '@afrohit/ai';
+import { joinBriefs, prompts, generateJson, directorRefineHooks, researchTrends, anthropicEnabled, soundBrief} from '@afrohit/ai';
 import { requireAuth } from '../middleware/auth';
 import { memoryContext, recordFeedback } from '../services/artist-memory';
 import { learnedReferenceBrief, learnedLyricCraftBrief, snapshotTrend, freshnessBrief } from '../lib/learned';
@@ -60,38 +60,26 @@ export default async function hooks(app: FastifyInstance) {
         prompts.hitCraftBrief('hook', (brief as { mood?: string } | undefined)?.mood),
       ]);
 
-      // FAST PATH: Claude is the brain, so write + A&R-score in ONE call
-      // (the old GPT-draft → Claude-refine dance was two sequential ~30s Claude
-      // calls = ~67s and the second often timed out → director:none).
-      const arSoundDna = joinBriefs([soundDna, prompts.arCraftRubric()]);
-      let refined = await writeAndScoreHooks({
+      // FAST + RELIABLE: OpenAI writes the hooks (~15s, never rate-limited for
+      // us, and the word-palette in soundDna gives it the vocab), then Claude
+      // scores them in a LEAN A&R pass (~10s). Two heavy Claude calls were the
+      // 67-104s stall; this is ~25s and the A&R score is reliable.
+      type DraftHook = { text: string; language?: string[]; syllablePattern?: string; melodyNotes?: string; callResponse?: boolean };
+      const result = await generateJson<{ hooks?: DraftHook[] }>({
+        system: prompts.HOOK_SYSTEM,
+        user: prompts.hookUserPrompt({ artist: project.artist as never, brief: brief as never, count: input.count, tasteMemory, trends, soundDna }),
+        temperature: 0.95,
+        maxTokens: 1_800,
+        brain: 'openai',
+      });
+      const refined = await directorRefineHooks({
         artist: project.artist as never,
         brief: brief as never,
-        count: input.count,
+        drafts: (result.hooks ?? []).map((h) => h.text),
         tasteMemory,
         trends,
-        soundDna: arSoundDna,
+        soundDna,
       });
-
-      // FALLBACK: no Anthropic (or it failed) → GPT drafts, then optional refine.
-      type DraftHook = { text: string; language?: string[]; syllablePattern?: string; melodyNotes?: string; callResponse?: boolean };
-      let result: { hooks?: DraftHook[] } = { hooks: [] };
-      if (!refined) {
-        result = await generateJson<typeof result>({
-          system: prompts.HOOK_SYSTEM,
-          user: prompts.hookUserPrompt({ artist: project.artist as never, brief: brief as never, count: input.count, tasteMemory, trends, soundDna }),
-          temperature: 0.95,
-          maxTokens: 2_000,
-        });
-        refined = await directorRefineHooks({
-          artist: project.artist as never,
-          brief: brief as never,
-          drafts: (result.hooks ?? []).map((h) => h.text),
-          tasteMemory,
-          trends,
-          soundDna: arSoundDna,
-        });
-      }
 
       const langFilter = (arr: string[]) =>
         arr.filter(

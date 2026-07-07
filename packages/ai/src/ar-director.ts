@@ -87,11 +87,17 @@ export async function directorRefineHooks(opts: {
   }
   if (!anthropicEnabled()) return null;
   try {
+    // LEAN scoring pass — the full 7-dimension + rewrite prompt generated ~4k
+    // tokens and timed out (~55s). This keeps the SAME A&R judgment but emits a
+    // compact result (score/viral/reason), so it's ~3x faster and never stalls.
+    const rubric =
+      'You are a ruthless Afrobeats A&R. Score each draft hook 0-10 for HIT potential (weighted to virality: undeniable hook + first-8-seconds + a 5-15s loopable TikTok moment matter most; kill generic filler like "we dey vibe/shine/energy"). ' +
+      'Return ONLY JSON {"hooks":[{"text","language":["pcm"],"score":8.2,"viralScore":8,"reason":"one line","needsNativeReview":false}]} — keep each hook\'s text, add the scores, rank best-first. Do NOT rewrite the hooks, do NOT add dimension breakdowns.';
     const out = await claudeJson<{ hooks: ARHook[] }>({
-      system: AR_DIRECTOR_SYSTEM,
-      user: arDirectorUserPrompt(opts),
-      temperature: 0.4,
-      maxTokens: 4_000,
+      system: rubric,
+      user: JSON.stringify({ genre_lane: (opts.soundDna || '').slice(0, 600), languages: opts.artist.languages, draft_hooks: opts.drafts }),
+      maxTokens: 1_400,
+      timeoutMs: 35_000,
     });
     const hooks = (out.hooks ?? []).filter((h) => h && typeof h.text === 'string');
     return hooks.length ? hooks : null;
