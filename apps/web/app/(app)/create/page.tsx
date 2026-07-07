@@ -65,7 +65,7 @@ export default function CreatePage() {
   const [langs, setLangs] = useState<string[]>(['pcm', 'en']);
   const [vibe, setVibe] = useState('');
   const [influence, setInfluence] = useState('');
-  const [engine, setEngine] = useState<'suno' | 'ace_step' | 'minimax'>('suno');
+  const [engine, setEngine] = useState<'suno' | 'ace_step' | 'minimax'>('minimax');
 
   // Three ways in: describe it / bring your own lyrics / listen & recreate.
   const [path, setPath] = useState<'song' | 'lyrics' | 'mumble'>('song');

@@ -46,10 +46,12 @@ export async function processMusic(p: MusicPayload) {
     // Replicate key). Otherwise the configured instrumental beat engine.
     const wantsVocals = !!(p.input.withVocals && p.input.lyrics);
     // FULL-SONG ENGINE: prefer Suno V5 (the strongest full-production model) when a
-    // Suno key is configured — this is the single biggest quality lever. Falls back
-    // to ACE-Step gracefully when Suno isn't available, so nothing breaks without it.
-    let engine = p.input.songEngine ?? (sunoKey() ? 'suno' : 'ace_step');
-    if (engine === 'suno' && !sunoKey()) engine = 'ace_step';
+    // Engine ladder for SUNG songs: Suno (best, needs SUNO_API_KEY) → MiniMax
+    // (strong, on the workspace Replicate key) → ACE-Step (last resort). MiniMax
+    // is the default fallback because ACE-Step's vocals were the "whack singing"
+    // — MiniMax music-2.6 is markedly better for Afrobeats vocals.
+    let engine = p.input.songEngine ?? (sunoKey() ? 'suno' : 'minimax');
+    if (engine === 'suno' && !sunoKey()) engine = 'minimax';
     // Suno uses its OWN key (SUNO_API_KEY), never the workspace's Replicate key.
     const engineKey = engine === 'suno' ? undefined : ws?.musicApiKey ?? undefined;
     let adapter = wantsVocals
