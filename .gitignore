@@ -27,3 +27,7 @@ tmp/
 .vscode/*
 !.vscode/settings.json
 !.vscode/extensions.json
+
+# derived lexicon dump (regenerate via npm run lexicon:dump)
+packages/db/seed/lexicon-all.json
+packages/db/seed/generated/
