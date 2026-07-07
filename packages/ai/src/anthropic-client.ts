@@ -121,6 +121,29 @@ function parseJsonLoose<T>(raw: string): T {
   }
 }
 
+/** Diagnostic: return Claude's RAW text + whether it parses, without the
+ *  fallback chain — so we can see what actually breaks a generation. */
+export async function claudeRaw(opts: { system: string; user: string; maxTokens?: number }): Promise<{ ok: boolean; status?: number; rawLength: number; rawPreview: string; parseOk: boolean; parseError?: string; parsedBodyLen?: number }> {
+  const key = anthropicKey();
+  if (!key) return { ok: false, rawLength: 0, rawPreview: '', parseOk: false, parseError: 'no key' };
+  try {
+    const res = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: { 'x-api-key': key, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' },
+      body: JSON.stringify({ model: ANTHROPIC_MODEL(), max_tokens: opts.maxTokens ?? 4000, system: opts.system, messages: [{ role: 'user', content: opts.user }] }),
+    });
+    if (!res.ok) return { ok: false, status: res.status, rawLength: 0, rawPreview: (await res.text()).slice(0, 200), parseOk: false };
+    const data = (await res.json()) as { content?: Array<{ type: string; text?: string }>; stop_reason?: string };
+    const text = data.content?.map((c) => c.text ?? '').join('') ?? '';
+    let parseOk = false, parseError: string | undefined, parsedBodyLen: number | undefined;
+    try { const p = parseJsonLoose<{ body?: string }>(extractJson(text)); parseOk = true; parsedBodyLen = (p?.body ?? '').length; }
+    catch (e) { parseError = (e as Error).message.slice(0, 120); }
+    return { ok: true, status: res.status, rawLength: text.length, rawPreview: text.slice(0, 400), parseOk, parseError, parsedBodyLen, ...(data.stop_reason ? { stopReason: data.stop_reason } as never : {}) };
+  } catch (e) {
+    return { ok: false, rawLength: 0, rawPreview: (e as Error).message.slice(0, 150), parseOk: false };
+  }
+}
+
 export async function claudeJson<T>(opts: {
   system: string;
   user: string;

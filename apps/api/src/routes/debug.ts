@@ -1,5 +1,5 @@
 import type { FastifyInstance } from 'fastify';
-import { anthropicPing, tavilyKey, braveKey, tavilyPing, researchTrends, soundBrief, prompts, joinBriefs } from '@afrohit/ai';
+import { anthropicPing, tavilyKey, braveKey, tavilyPing, researchTrends, soundBrief, prompts, joinBriefs, claudeRaw } from '@afrohit/ai';
 import { requireAuth } from '../middleware/auth';
 import { freshnessBrief, learnedReferenceBrief, learnedLyricCraftBrief } from '../lib/learned';
 import { lexiconPalette } from '../lib/lexicon';
@@ -35,6 +35,20 @@ export default async function debug(app: FastifyInstance) {
    *
    *   GET /debug/generation-context?genre=afrobeats&mood=love&languages=pcm,en
    */
+  // RAW lyric diagnostic — what Claude ACTUALLY returns for a lyric, unparsed.
+  app.get<{ Querystring: { genre?: string } }>('/lyric-raw', async (req) => {
+    const genre = req.query.genre || 'afrobeats';
+    const user = prompts.lyricUserPrompt({
+      artist: { stageName: 'Test', laneSummary: 'afro', languages: ['pcm', 'en'], vocalTone: ['smooth'] } as never,
+      brief: { mood: 'love' } as never,
+      hookText: 'Under Lagos light, your smile dey my mind',
+      cleanVersion: true,
+      soundDna: (soundBrief(genre).brief ?? '').slice(0, 1500),
+    });
+    const r1 = await claudeRaw({ system: prompts.LYRIC_SYSTEM, user, maxTokens: 4500 });
+    return { attempt: r1 };
+  });
+
   app.get<{ Querystring: { genre?: string; mood?: string; languages?: string } }>('/generation-context', async (req) => {
     const { workspaceId } = requireAuth(req);
     const genre = req.query.genre || 'afrobeats';
