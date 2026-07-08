@@ -3,7 +3,7 @@ import { prisma } from '@afrohit/db';
 import { dropBatchSchema } from '@afrohit/shared';
 import { requireAuth } from '../middleware/auth';
 import { runChatTool } from '../services/chat-tools';
-import { arReadAfterRender } from '../lib/ar-read';
+import { willItBlowGate } from '../lib/will-it-blow';
 
 /**
  * The Drop Machine — batch song factory.
@@ -153,8 +153,10 @@ export async function runDropPipeline(app: FastifyInstance, ctx: DropCtx, input:
     },
   });
 
-  // THE A&R GATE — no song is done until the Will-it-hit engine has read it.
-  // Detached: waits for each render to land, then scores + stores the read on
-  // the song (catalog shows it without clicking; "Make it bigger" implements it).
-  void arReadAfterRender(app, ctx.workspaceId, drops).catch(() => {});
+  // THE WILL-IT-BLOW GATE — no song ships until it's run through Will-it-hit, and
+  // if it won't blow the studio AUTO-APPLIES the A&R's own recommendations (rewrite
+  // + re-sing + re-master), re-scores, and KEEPS THE BEST version. Detached; waits
+  // for each render, scores, improves below the bar. (WILL_IT_BLOW_MAX_PASSES=0
+  // reverts to score-only.)
+  void willItBlowGate(app, ctx.workspaceId, drops).catch(() => {});
 }
