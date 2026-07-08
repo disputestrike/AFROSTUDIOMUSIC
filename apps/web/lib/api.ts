@@ -9,9 +9,18 @@
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:4000';
 
 async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
+  // Only declare a JSON content-type when we're ACTUALLY sending a JSON body.
+  // A body-less request (every del(), some gets) that still says
+  // `content-type: application/json` trips Fastify's empty-body guard with
+  // `400 FST_ERR_CTP_EMPTY_JSON_BODY` — which silently broke EVERY delete in the
+  // app (song/project/lexicon/lake all 400'd before the row was ever touched).
+  const hasBody = init?.body != null;
   const res = await fetch(`${API_URL}/api/v1${path}`, {
     ...init,
-    headers: { 'content-type': 'application/json', ...(init?.headers ?? {}) },
+    headers: {
+      ...(hasBody ? { 'content-type': 'application/json' } : {}),
+      ...(init?.headers ?? {}),
+    },
     cache: 'no-store',
   });
   if (!res.ok) {
