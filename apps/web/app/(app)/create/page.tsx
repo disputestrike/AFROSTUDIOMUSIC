@@ -176,7 +176,13 @@ export default function CreatePage() {
         if (j.status === 'SUCCEEDED') { item = j.outputJson?.drop?.[0]; break; }
         if (j.status === 'FAILED') throw new Error('Could not write the song — try again.');
       }
-      if (!item?.jobId) throw new Error(item?.error === 'insufficient_credits' ? 'Daily limit reached — try again tomorrow.' : item?.error || 'Could not start production.');
+      if (!item?.jobId) {
+        // The daily cap is the usual culprit — say so plainly instead of a vague
+        // "couldn't start" (which reads as "broken" when it's just the budget).
+        const e = item?.error ?? '';
+        const capped = !e || /credit|cap|limit|quota|daily/i.test(e);
+        throw new Error(capped ? 'Daily generation limit reached — it resets at midnight UTC (or raise the cap).' : e);
+      }
       setStepIdx(3);
       // Poll for the rendered audio. Real sung renders take 3-12 min (best-of-N +
       // the provider's rate limit), so wait up to ~12 min — then hand off calmly to
