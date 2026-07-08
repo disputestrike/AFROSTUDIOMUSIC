@@ -11,6 +11,50 @@
  *
  * Activate: set AUDD_API_TOKEN (audd.io). Without it, Zap degrades gracefully.
  */
+import { generateJson } from './generate';
+
+export interface SongCraft {
+  genre: string;
+  craft: string[];
+  vibe: string;
+  whatToLearn: string;
+}
+
+/**
+ * Extract the UNCOPYRIGHTABLE CRAFT of an identified/charting song from its
+ * METADATA ONLY (never its lyrics or recording) — production techniques, groove,
+ * arrangement, hook mechanics, what makes this LANE/era work. The artist is a
+ * LANE reference, never to clone. Shared by the Zap button (routes/zap.ts) and the
+ * autonomous Zap Radar cron so both learn identically. Returns null on failure.
+ */
+export async function extractSongCraft(song: {
+  title: string;
+  artist?: string;
+  genre?: string;
+  releaseDate?: string;
+}): Promise<SongCraft | null> {
+  const out = await generateJson<SongCraft>({
+    system:
+      `You are an A&R / producer studying the CRAFT of records. From a song's METADATA ONLY (title, artist, genre, era — NEVER its lyrics or recording), extract the UNCOPYRIGHTABLE craft worth studying: production techniques, groove/pocket, arrangement moves, hook mechanics, energy, what makes this LANE and era of record work. The artist is a LANE REFERENCE ONLY — never to clone, copy melodies/lyrics, or name in any output. Return facts a producer would study to make THEIR OWN fresh record better, not the song itself. Strict JSON only.`,
+    user:
+      `Song: "${song.title}" by ${song.artist ?? 'unknown'}${song.genre ? ` (${song.genre})` : ''}${song.releaseDate ? `, released ${song.releaseDate}` : ''}.\n` +
+      `Return JSON: { "genre": normalized genre, "craft": [4-6 uncopyrightable production/writing techniques of this lane], "vibe": one line, "whatToLearn": one line on what to apply to OUR songs in this lane }.`,
+    temperature: 0.6,
+    maxTokens: 900,
+  }).catch(() => null);
+  return out?.craft?.length ? out : null;
+}
+
+/** Chart items arrive as "N. Title — Artist (genre)". Pull out title + artist.
+ * Shared by the Zap Radar cron (worker) and the manual radar endpoint (api). */
+export function parseTrendSong(sourceTitle: string): { title: string; artist?: string } | null {
+  const s = sourceTitle.replace(/^\s*\d+[.)]\s*/, '').trim();
+  const parts = s.split(/\s+[—–-]\s+/);
+  const title = (parts[0] || '').trim();
+  const artist = parts[1] ? parts[1].replace(/\s*\([^)]*\)\s*$/, '').trim() : undefined;
+  if (!title || title.length < 2) return null;
+  return { title: title.slice(0, 160), artist: artist ? artist.slice(0, 120) : undefined };
+}
 
 export interface SongMatch {
   title: string;

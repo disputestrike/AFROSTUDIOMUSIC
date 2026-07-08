@@ -11,7 +11,7 @@
  * Both are best-effort per workspace — one failing artist never blocks the rest.
  */
 import { prisma } from '@afrohit/db';
-import { prompts, responsesJson, scoreItems } from '@afrohit/ai';
+import { prompts, responsesJson, scoreItems, researchTrends, extractSongCraft, parseTrendSong } from '@afrohit/ai';
 import { debitCredits } from '../lib/credits';
 import { jobDoneEmail, morningDropEmail, releaseRadarEmail, sendEmail } from '../lib/email';
 
@@ -146,6 +146,65 @@ export async function processReleaseRadar() {
       await sendEmail({ to, ...tpl });
     } catch (err) {
       console.error(`[release-radar] failed for workspace ${workspaceId}:`, err);
+    }
+  }
+}
+
+/**
+ * ZAP RADAR (daily, off-peak) — Zap runs on its own: pull the CURRENT charts
+ * (keyless via Apple most-played — no AudD key needed for this; that's only for
+ * fingerprinting audio you play at it), and for each NEW trending song learn its
+ * uncopyrightable CRAFT into the lake. So training keeps compounding 24/7 even
+ * when nobody's looking. Doctrine-clean: charts are METADATA (titles/artists),
+ * the learn is craft/facts (artist as LANE, never a copy), no recording touched.
+ * Tightly capped so it never runs up the budget or interferes with anything.
+ */
+const RADAR_GENRES = ['afrobeats', 'amapiano', 'afro_fusion', 'afro_pop', 'street_pop'];
+const RADAR_MAX_PER_RUN = Number(process.env.ZAP_RADAR_MAX ?? 6);
+
+export async function processZapRadar() {
+  const workspaces = await prisma.workspace.findMany({
+    where: { suspendedAt: null, deletedAt: null },
+    select: { id: true },
+    take: 50,
+  });
+  for (const ws of workspaces) {
+    let learned = 0;
+    try {
+      for (const genre of RADAR_GENRES) {
+        if (learned >= RADAR_MAX_PER_RUN) break;
+        const trends = await researchTrends({ genre }).catch(() => null);
+        const songs = (trends?.sources ?? [])
+          .map((s) => parseTrendSong(s.title))
+          .filter(Boolean) as Array<{ title: string; artist?: string }>;
+        for (const song of songs) {
+          if (learned >= RADAR_MAX_PER_RUN) break;
+          const marker = `zap:${`${song.artist ?? ''}-${song.title}`.toLowerCase().replace(/[^a-z0-9]+/g, '-').slice(0, 80)}`;
+          const exists = await prisma.soundReference.findFirst({ where: { workspaceId: ws.id, sourceUrl: marker }, select: { id: true } });
+          if (exists) continue; // already zapped — free, no re-learn
+          // Budget guard — a cheap debit; if the daily cap is hit, stop this run.
+          const charge = await debitCredits({ workspaceId: ws.id, key: 'brief_polish', reasonSuffix: 'zap_radar' });
+          if (!charge.ok) { learned = RADAR_MAX_PER_RUN; break; }
+          const craft = await extractSongCraft({ title: song.title, artist: song.artist, genre });
+          if (!craft?.craft?.length) continue;
+          await prisma.soundReference
+            .create({
+              data: {
+                workspaceId: ws.id,
+                genre,
+                sourceUrl: marker,
+                title: `Zap radar · ${genre} lane — "${song.title}" (${song.artist ?? '—'})`,
+                recipe: { source: 'zap', radar: true, title: song.title, artist: song.artist, genre, craft: craft.craft, vibe: craft.vibe } as never,
+                summary: (craft.whatToLearn || craft.vibe || '').slice(0, 400),
+              },
+            })
+            .catch(() => {});
+          learned++;
+        }
+      }
+      console.log(`[zap-radar] ws ${ws.id}: learned ${learned} new trending song(s) into the lake`);
+    } catch (err) {
+      console.error(`[zap-radar] failed for ws ${ws.id}:`, err);
     }
   }
 }

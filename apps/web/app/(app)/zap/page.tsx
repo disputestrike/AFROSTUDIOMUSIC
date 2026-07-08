@@ -7,7 +7,7 @@
  */
 import { useEffect, useRef, useState } from 'react';
 import { useApi } from '@/lib/api';
-import { Mic, Square, Loader2, Sparkles, ExternalLink, GraduationCap, Check, Upload } from 'lucide-react';
+import { Mic, Square, Loader2, Sparkles, ExternalLink, GraduationCap, Check, Upload, Radar } from 'lucide-react';
 
 interface Match {
   title: string;
@@ -30,6 +30,8 @@ export default function ZapPage() {
   const [secs, setSecs] = useState(0);
   const [learn, setLearn] = useState<'idle' | 'learning' | 'done'>('idle');
   const [learned, setLearned] = useState<{ craft?: string[]; whatToLearn?: string } | null>(null);
+  const [radar, setRadar] = useState<'idle' | 'running'>('idle');
+  const [radarMsg, setRadarMsg] = useState('');
 
   const mediaRef = useRef<MediaRecorder | null>(null);
   const chunksRef = useRef<Blob[]>([]);
@@ -109,12 +111,35 @@ export default function ZapPage() {
 
   const busy = phase === 'listening' || phase === 'identifying';
 
+  async function runRadar() {
+    setRadar('running');
+    setRadarMsg('');
+    try {
+      const r = await api.post<{ learned: number }>('/zap/radar', {});
+      setRadarMsg(r.learned ? `Learned ${r.learned} new trending song${r.learned === 1 ? '' : 's'} into your lake ✓` : 'Your lake is already up to date with the charts ✓');
+    } catch {
+      setRadarMsg('Radar hit a snag — try again in a bit.');
+    } finally {
+      setRadar('idle');
+    }
+  }
+
   return (
     <div className="mx-auto max-w-lg px-4 py-10 sm:px-6">
       <h1 className="font-display text-3xl">Zap</h1>
       <p className="mt-1 text-sm text-slate-400">
         Play a song near your mic. Zap finds it, plays it, and <span className="text-slate-200">learns its craft</span> into your training — so your songs get better. It studies the lane, never copies the record.
       </p>
+
+      {/* Autonomous radar — runs daily on its own; tap to top up now. */}
+      <div className="mt-3">
+        <button onClick={() => void runRadar()} disabled={radar === 'running'} className="inline-flex items-center gap-1.5 rounded-full border border-white/10 bg-white/5 px-3 py-1.5 text-xs text-slate-300 hover:bg-white/10 disabled:opacity-60">
+          {radar === 'running' ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Radar className="h-3.5 w-3.5 text-afrobrand-400" />}
+          {radar === 'running' ? 'Scanning the charts…' : 'Run radar — learn today’s trending'}
+        </button>
+        {radarMsg && <span className="ml-2 text-xs text-emerald-300">{radarMsg}</span>}
+        <p className="mt-1 text-[11px] text-slate-500">Zap also runs on its own daily (03:00 UTC), quietly filling your lake with what’s charting — no keys needed for this.</p>
+      </div>
 
       {/* The button */}
       <div className="mt-8 flex flex-col items-center">

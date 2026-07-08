@@ -9,7 +9,7 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { prisma } from '@afrohit/db';
-import { recognizeSong, generateJson } from '@afrohit/ai';
+import { recognizeSong, extractSongCraft, parseTrendSong, researchTrends } from '@afrohit/ai';
 import { requireAuth } from '../middleware/auth';
 import { publicUrlFor, assertOwnedKey } from '../lib/storage';
 
@@ -67,15 +67,7 @@ export default async function zap(app: FastifyInstance) {
     const charge = await app.chargeCredits({ workspaceId, key: 'analyze_audio' });
     if (!charge.ok) return reply.code(402).send({ error: 'insufficient_credits', ...charge });
 
-    const craft = await generateJson<{ genre: string; craft: string[]; vibe: string; whatToLearn: string }>({
-      system:
-        `You are an A&R / producer studying the CRAFT of records. From a song's METADATA ONLY (title, artist, genre, era — NEVER its lyrics or recording), extract the UNCOPYRIGHTABLE craft worth studying: production techniques, groove/pocket, arrangement moves, hook mechanics, energy, what makes this LANE and era of record work. The artist is a LANE REFERENCE ONLY — never to clone, copy melodies/lyrics, or name in any output. Return facts a producer would study to make THEIR OWN fresh record better, not the song itself. Strict JSON only.`,
-      user:
-        `Song: "${m.title}" by ${m.artist ?? 'unknown'}${m.genre ? ` (${m.genre})` : ''}${m.releaseDate ? `, released ${m.releaseDate}` : ''}.\n` +
-        `Return JSON: { "genre": normalized genre, "craft": [4-6 uncopyrightable production/writing techniques of this lane], "vibe": one line, "whatToLearn": one line on what to apply to OUR songs in this lane }.`,
-      temperature: 0.6,
-      maxTokens: 900,
-    });
+    const craft = await extractSongCraft({ title: m.title, artist: m.artist, genre: m.genre, releaseDate: m.releaseDate });
     if (!craft?.craft?.length) return reply.code(503).send({ error: 'learn_failed', message: 'Could not extract craft — try again.' });
 
     const genre = normGenre(craft.genre || m.genre);
@@ -93,5 +85,45 @@ export default async function zap(app: FastifyInstance) {
       .create({ data: { workspaceId, name: 'zap.learn', properties: { title: m.title, genre } as never } })
       .catch(() => {});
     return { learned: true, referenceId: ref.id, genre, craft: craft.craft, vibe: craft.vibe, whatToLearn: craft.whatToLearn };
+  });
+
+  /** RADAR NOW — run Zap on its own, on demand: pull the charts and learn the
+   * craft of new trending songs into the lake. Same thing the daily cron does; this
+   * lets the artist top up the lake instantly (capped). Keyless (Apple charts). */
+  app.post('/radar', async (req, reply) => {
+    const { workspaceId } = requireAuth(req);
+    const GENRES = ['afrobeats', 'amapiano', 'afro_fusion', 'afro_pop', 'street_pop'];
+    const MAX = 6;
+    let learned = 0;
+    const added: Array<{ genre: string; title: string; artist?: string }> = [];
+    for (const genre of GENRES) {
+      if (learned >= MAX) break;
+      const trends = await researchTrends({ genre }).catch(() => null);
+      const songs = ((trends?.sources ?? []).map((s) => parseTrendSong(s.title)).filter(Boolean) as Array<{ title: string; artist?: string }>);
+      for (const song of songs) {
+        if (learned >= MAX) break;
+        const marker = `zap:${`${song.artist ?? ''}-${song.title}`.toLowerCase().replace(/[^a-z0-9]+/g, '-').slice(0, 80)}`;
+        if (await prisma.soundReference.findFirst({ where: { workspaceId, sourceUrl: marker }, select: { id: true } })) continue;
+        const charge = await app.chargeCredits({ workspaceId, key: 'brief_polish' });
+        if (!charge.ok) { learned = MAX; break; }
+        const craft = await extractSongCraft({ title: song.title, artist: song.artist, genre });
+        if (!craft?.craft?.length) continue;
+        await prisma.soundReference
+          .create({
+            data: {
+              workspaceId,
+              genre,
+              sourceUrl: marker,
+              title: `Zap radar · ${genre} lane — "${song.title}" (${song.artist ?? '—'})`,
+              recipe: { source: 'zap', radar: true, title: song.title, artist: song.artist, genre, craft: craft.craft, vibe: craft.vibe } as never,
+              summary: (craft.whatToLearn || craft.vibe || '').slice(0, 400),
+            },
+          })
+          .catch(() => {});
+        learned++;
+        added.push({ genre, title: song.title, artist: song.artist });
+      }
+    }
+    return { learned, added };
   });
 }

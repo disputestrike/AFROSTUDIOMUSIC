@@ -18,7 +18,7 @@ import { processVideo } from './processors/video';
 import { processMix } from './processors/mix';
 import { processMaster } from './processors/master';
 import { processExport } from './processors/export';
-import { notifyJobDone, processMorningDrop, processReleaseRadar } from './processors/cron';
+import { notifyJobDone, processMorningDrop, processReleaseRadar, processZapRadar } from './processors/cron';
 
 const log = pino({ level: process.env.LOG_LEVEL ?? 'info' });
 
@@ -85,6 +85,7 @@ const workers = [
   makeWorker('cron', async (job: { data: never; name: string }) => {
     if (job.name === 'morning-drop') await processMorningDrop();
     else if (job.name === 'release-radar') await processReleaseRadar();
+    else if (job.name === 'zap-radar') await processZapRadar();
   }),
 ];
 
@@ -105,7 +106,15 @@ async function registerCron() {
     removeOnComplete: { count: 10 },
     removeOnFail: { count: 10 },
   });
-  log.info('cron registered: morning-drop daily 05:00 UTC, release-radar Mon 07:00 UTC');
+  // Zap Radar — daily 03:00 UTC (off-peak, before the morning drop): pull the
+  // charts and learn the craft of new trending songs into the lake. Autonomous,
+  // capped, keyless, non-interfering.
+  await cronQueue.add('zap-radar', {}, {
+    repeat: { pattern: '0 3 * * *' },
+    removeOnComplete: { count: 10 },
+    removeOnFail: { count: 10 },
+  });
+  log.info('cron registered: zap-radar 03:00 UTC, morning-drop 05:00 UTC, release-radar Mon 07:00 UTC');
 }
 
 registerCron().catch((err) => log.error({ err }, 'cron registration failed'));
