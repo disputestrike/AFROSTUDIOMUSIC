@@ -1,8 +1,8 @@
 import { prisma } from '@afrohit/db';
-import { analyzeAudio } from '@afrohit/ai';
+import { analyzeAudio, separateStems } from '@afrohit/ai';
 import { analysisCoverage, unknownAnalysis } from '@afrohit/shared';
 import { markFailed, markRunning, markSucceeded } from '../lib/jobs';
-import { measureAudio, dspAvailable } from '../lib/dsp';
+import { measureAudio, dspAvailable, type StemInputs } from '../lib/dsp';
 import { ffmpegAvailable, extractClip, measureAudioQuality } from '../lib/ffmpeg';
 import { downloadToBuffer, uploadBytes } from '../lib/storage';
 
@@ -69,7 +69,22 @@ export async function processAnalyze(p: AnalyzePayload) {
     // original (not the mono preview clip) so the groove facts describe the record.
     let measured = unknownAnalysis('engine-unavailable');
     try {
-      if (await dspAvailable()) measured = await measureAudio(p.url);
+      if (await dspAvailable()) {
+        // Stems let log-drum/shaker/kick/clap run at full confidence (kick->drums,
+        // log-drum->bass — the only clean disambiguation). Gated behind DSP_STEMS=1
+        // because Demucs on Replicate adds cost+latency; best-effort, full-mix on fail.
+        let stems: StemInputs | undefined;
+        if (process.env.DSP_STEMS === '1') {
+          try {
+            const sep = await separateStems({ audioUrl: p.url, mode: 'full', apiKey: ws?.musicApiKey ?? undefined });
+            const byRole = (r: string) => sep.stems.find((s) => s.role === r)?.url;
+            stems = { bass: byRole('bass'), drums: byRole('drums'), other: byRole('other'), vocals: byRole('vocals') };
+          } catch (e) {
+            console.warn('[analyze] stem separation failed, full-mix DSP:', (e as Error)?.message);
+          }
+        }
+        measured = await measureAudio(p.url, stems);
+      }
     } catch (err) {
       console.warn('[analyze] DSP measure failed:', (err as Error)?.message);
     }

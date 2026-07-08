@@ -56,6 +56,7 @@ export interface MeasuredAnalysis {
 
   // Arrangement
   sectionBoundaries: Measured<number[]>; // seconds
+  energyCurve: Measured<number[]>; // normalized loudness/RMS over time (drives firstDrop/intro)
   firstDropAtS: Measured<number>;
   introLengthBars: Measured<number>;
 
@@ -84,7 +85,7 @@ export const ANALYSIS_FEATURE_KEYS = [
   'durationS', 'tempoBpm', 'key', 'mode', 'timeSignature',
   'swingRatio', 'microtiming', 'syncopationIndex', 'fourOnFloor',
   'lowEndProfile', 'logDrumLikelihood', 'shakerContinuity', 'kickDensity', 'clapBackbeat', 'hatRollPresence', 'harmonicRichness',
-  'sectionBoundaries', 'firstDropAtS', 'introLengthBars',
+  'sectionBoundaries', 'energyCurve', 'firstDropAtS', 'introLengthBars',
   'vocalPresenceRatio', 'sungVsSpoken', 'adLibDensity',
 ] as const;
 
@@ -108,7 +109,7 @@ export function unknownAnalysis(method = 'engine-unavailable'): MeasuredAnalysis
     durationS: u(), tempoBpm: u(), key: u(), mode: u(), timeSignature: u(),
     swingRatio: u(), microtiming: u(), syncopationIndex: u(), fourOnFloor: u(),
     lowEndProfile: u(), logDrumLikelihood: u(), shakerContinuity: u(), kickDensity: u(), clapBackbeat: u(), hatRollPresence: u(), harmonicRichness: u(),
-    sectionBoundaries: u(), firstDropAtS: u(), introLengthBars: u(),
+    sectionBoundaries: u(), energyCurve: u(), firstDropAtS: u(), introLengthBars: u(),
     vocalPresenceRatio: u(), sungVsSpoken: u(), adLibDensity: u(),
     engineOk: false, analyzedAt: null,
   };

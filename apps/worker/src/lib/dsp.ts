@@ -70,19 +70,54 @@ function extFromUrl(url: string): string {
   }
 }
 
-/**
- * Measure a rendered track. `input` is a URL (R2/http) or an already-loaded Buffer.
- * Always resolves — an honest all-'unknown' analysis on any failure.
- */
-export async function measureAudio(input: string | Buffer): Promise<MeasuredAnalysis> {
-  const dir = await mkdtemp(join(tmpdir(), 'afrohit-dsp-'));
-  const ext = typeof input === 'string' ? extFromUrl(input) : '.mp3';
-  const audioPath = join(dir, `audio${ext}`);
-  try {
-    const buf = typeof input === 'string' ? await downloadToBuffer(input) : input;
-    await writeFile(audioPath, buf);
+/** Demucs stems (URLs or local paths) — let the stem-dependent detectors (log-drum,
+ * shaker, kick, clap) run at full confidence instead of the full-mix fallback. */
+export interface StemInputs {
+  bass?: string;
+  drums?: string;
+  other?: string;
+  vocals?: string;
+}
 
-    const stdout = await runPython([scriptPath(), audioPath]);
+/**
+ * Measure a rendered track. `input` is a URL (R2/http) or an already-loaded Buffer;
+ * `stems` are optional Demucs outputs (URLs or local paths). Always resolves — an
+ * honest all-'unknown' analysis on any failure.
+ */
+export async function measureAudio(input: string | Buffer, stems?: StemInputs): Promise<MeasuredAnalysis> {
+  const dir = await mkdtemp(join(tmpdir(), 'afrohit-dsp-'));
+  const isUrl = typeof input === 'string' && /^https?:\/\//.test(input);
+  const isLocalPath = typeof input === 'string' && !isUrl;
+  try {
+    let audioPath: string;
+    if (isLocalPath) {
+      audioPath = input as string; // acceptance harness passes local wav paths directly
+    } else {
+      const ext = typeof input === 'string' ? extFromUrl(input) : '.mp3';
+      audioPath = join(dir, `audio${ext}`);
+      const buf = typeof input === 'string' ? await downloadToBuffer(input) : input;
+      await writeFile(audioPath, buf);
+    }
+
+    // Materialize any provided stems locally (a stem may already be a local path —
+    // pass it through unchanged; a URL gets downloaded). Best-effort per stem.
+    const args = [scriptPath(), audioPath];
+    for (const role of ['bass', 'drums', 'other', 'vocals'] as const) {
+      const src = stems?.[role];
+      if (!src) continue;
+      try {
+        let stemPath = src;
+        if (/^https?:\/\//.test(src)) {
+          stemPath = join(dir, `${role}${extFromUrl(src)}`);
+          await writeFile(stemPath, await downloadToBuffer(src));
+        }
+        args.push(`--${role}`, stemPath);
+      } catch (e) {
+        console.warn(`[dsp] stem ${role} unavailable, using full-mix fallback:`, (e as Error).message);
+      }
+    }
+
+    const stdout = await runPython(args);
     const line = stdout.trim().split('\n').filter(Boolean).pop();
     if (!line) return unknownAnalysis('engine:no-output');
 

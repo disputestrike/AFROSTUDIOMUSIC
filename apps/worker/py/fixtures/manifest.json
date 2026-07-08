@@ -1,0 +1,14 @@
+[
+  {
+    "id": "EXAMPLE-replace-me",
+    "_README": "Phase 0 acceptance fixtures. LEGAL (AfroHit HARD rule): every file MUST be audio Benjamin owns or has licensed — NO YouTube/Spotify rips. Audio + stems live in this folder and are GITIGNORED; only this manifest.json is committed. Need 9 real rows: 3 amapiano + 3 afrobeats + 3 house. Delete this EXAMPLE row.",
+    "_HOWTO_STEMS": "Pre-separate stems ONCE offline with Demucs (htdemucs, 4-stem) so the harness never hits Replicate: `python3 -m demucs -n htdemucs path/to/song.wav` → produces bass.wav/drums.wav/other.wav/vocals.wav. Put paths (relative to this folder, or absolute) in bassStem/drumsStem/otherStem.",
+    "path": "amapiano-01.wav",
+    "genre": "amapiano",
+    "expectTempoBpm": 112,
+    "fourOnFloor": true,
+    "bassStem": "stems/amapiano-01/bass.wav",
+    "drumsStem": "stems/amapiano-01/drums.wav",
+    "otherStem": "stems/amapiano-01/other.wav"
+  }
+]

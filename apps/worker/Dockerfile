@@ -11,10 +11,15 @@ RUN apt-get update \
   && apt-get install -y --no-install-recommends ffmpeg openssl ca-certificates python3 python3-pip libsndfile1 \
   && rm -rf /var/lib/apt/lists/*
 
-# The DSP stack. Pinned + numpy<2.1 for numba/librosa compat. --break-system-packages
-# is required on Debian bookworm (PEP 668); this image is single-purpose so it's safe.
+# The DSP stack ("the ear"). Pinned: numpy<2.1 + numba/llvmlite pinned so a numpy-2
+# pull can never sneak in. scikit-learn = KMeans for sectionBoundaries' Laplacian
+# clustering; pyloudnorm = momentary-LUFS energyCurve (soft-required, RMS fallback).
+# --break-system-packages is required on Debian bookworm (PEP 668); single-purpose
+# image so it's safe. All have manylinux wheels (no gcc / build-essential needed).
 RUN pip3 install --break-system-packages --no-cache-dir \
-  numpy==1.26.4 scipy==1.13.1 soundfile==0.12.1 librosa==0.10.2.post1
+  numpy==1.26.4 scipy==1.13.1 soundfile==0.12.1 \
+  llvmlite==0.43.0 numba==0.60.0 librosa==0.10.2.post1 \
+  scikit-learn==1.5.1 pyloudnorm==0.1.1
 
 RUN npm install -g pnpm@9.12.0
 
