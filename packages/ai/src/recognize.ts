@@ -18,6 +18,10 @@ export interface SongCraft {
   craft: string[];
   vibe: string;
   whatToLearn: string;
+  /** Lane-match hints so "Make in this lane" nails the same style, not defaults. */
+  suggestedBpm?: number;
+  mood?: string;
+  languages?: string[];
 }
 
 /**
@@ -38,7 +42,15 @@ export async function extractSongCraft(song: {
       `You are an A&R / producer studying the CRAFT of records. From a song's METADATA ONLY (title, artist, genre, era — NEVER its lyrics or recording), extract the UNCOPYRIGHTABLE craft worth studying: production techniques, groove/pocket, arrangement moves, hook mechanics, energy, what makes this LANE and era of record work. The artist is a LANE REFERENCE ONLY — never to clone, copy melodies/lyrics, or name in any output. Return facts a producer would study to make THEIR OWN fresh record better, not the song itself. Strict JSON only.`,
     user:
       `Song: "${song.title}" by ${song.artist ?? 'unknown'}${song.genre ? ` (${song.genre})` : ''}${song.releaseDate ? `, released ${song.releaseDate}` : ''}.\n` +
-      `Return JSON: { "genre": normalized genre, "craft": [4-6 uncopyrightable production/writing techniques of this lane], "vibe": one line, "whatToLearn": one line on what to apply to OUR songs in this lane }.`,
+      `Return JSON: {\n` +
+      `  "genre": normalized genre,\n` +
+      `  "craft": [4-6 uncopyrightable production/writing techniques of this lane],\n` +
+      `  "vibe": one line,\n` +
+      `  "whatToLearn": one line on what to apply to OUR songs in this lane,\n` +
+      `  "suggestedBpm": the typical tempo of this song's lane (60-180),\n` +
+      `  "mood": ONE of [confident, love, heartbreak, party, vibey, spiritual, hustle, nostalgic, sexy, triumphant, luxury, lifestyle, family],\n` +
+      `  "languages": the languages this lane typically sings in, as codes from [pcm, en, yo, ig, ha, fr, pt, sw, zu, twi] (e.g. Asake -> ["yo","pcm","en"])\n` +
+      `}.`,
     temperature: 0.6,
     maxTokens: 900,
   }).catch(() => null);

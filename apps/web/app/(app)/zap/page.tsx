@@ -14,6 +14,8 @@ interface ZapHist {
   id: string;
   genre: string | null;
   bpm?: number | null;
+  mood?: string | null;
+  languages?: string[] | null;
   songTitle: string | null;
   artist: string | null;
   vibe: string | null;
@@ -43,7 +45,7 @@ export default function ZapPage() {
   const [err, setErr] = useState('');
   const [secs, setSecs] = useState(0);
   const [learn, setLearn] = useState<'idle' | 'learning' | 'done'>('idle');
-  const [learned, setLearned] = useState<{ craft?: string[]; whatToLearn?: string; genre?: string } | null>(null);
+  const [learned, setLearned] = useState<{ craft?: string[]; whatToLearn?: string; genre?: string; bpm?: number | null; mood?: string | null; languages?: string[] | null } | null>(null);
   const [radar, setRadar] = useState<'idle' | 'running'>('idle');
   const [radarMsg, setRadarMsg] = useState('');
 
@@ -63,15 +65,17 @@ export default function ZapPage() {
    * (genre, tempo, language, the artist as a LANE cue) and it STARTS MAKING
    * immediately (produce=1). Same lane/style; fresh beat, name, lyrics. The artist
    * only steers the vibe via influence — never copied or named in the record. */
-  function makeInLane(h: { genre: string | null; bpm?: number | null; artist?: string | null; whatToLearn: string | null; vibe: string | null }) {
+  function makeInLane(h: { genre: string | null; bpm?: number | null; mood?: string | null; languages?: string[] | null; artist?: string | null; whatToLearn: string | null; vibe: string | null }) {
     const genre = h.genre || 'afrobeats';
     const params = new URLSearchParams({
       genre,
       produce: '1',
-      languages: 'pcm,en',
+      // Match the lane's actual languages/mood when Zap captured them, else afro default.
+      languages: h.languages?.length ? h.languages.join(',') : 'pcm,en',
       vibe: (h.whatToLearn || h.vibe || `a fresh ${genre.replace(/_/g, ' ')} record`).slice(0, 240),
     });
     if (h.bpm) params.set('bpm', String(h.bpm));
+    if (h.mood) params.set('mood', h.mood);
     if (h.artist) params.set('influence', h.artist);
     router.push(`/create?${params.toString()}`);
   }
@@ -136,7 +140,7 @@ export default function ZapPage() {
     if (!match) return;
     setLearn('learning');
     try {
-      const r = await api.post<{ craft?: string[]; whatToLearn?: string; genre?: string }>('/zap/learn', {
+      const r = await api.post<{ craft?: string[]; whatToLearn?: string; genre?: string; bpm?: number | null; mood?: string | null; languages?: string[] | null }>('/zap/learn', {
         title: match.title, artist: match.artist, genre: match.genre, album: match.album, releaseDate: match.releaseDate, isrc: match.isrc,
       });
       setLearned(r);
@@ -238,7 +242,7 @@ export default function ZapPage() {
                   </ul>
                 ) : null}
                 <button
-                  onClick={() => makeInLane({ genre: learned.genre || match.genre || null, artist: match.artist, whatToLearn: learned.whatToLearn || null, vibe: null })}
+                  onClick={() => makeInLane({ genre: learned.genre || match.genre || null, artist: match.artist, bpm: learned.bpm, mood: learned.mood, languages: learned.languages, whatToLearn: learned.whatToLearn || null, vibe: null })}
                   className="mt-3 inline-flex items-center gap-1.5 rounded-full bg-brand-gradient px-4 py-2 text-sm font-medium text-ink shadow-glow"
                 >
                   <Wand2 className="h-4 w-4" /> Make a song in this lane →

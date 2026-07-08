@@ -77,14 +77,14 @@ export default async function zap(app: FastifyInstance) {
         genre,
         sourceUrl: marker,
         title: `Zap · ${(m.genre || genre || 'song')} lane — "${m.title}" (${m.artist ?? '—'})`,
-        recipe: { source: 'zap', title: m.title, artist: m.artist, genre, album: m.album, releaseDate: m.releaseDate, craft: craft.craft, vibe: craft.vibe } as never,
+        recipe: { source: 'zap', title: m.title, artist: m.artist, genre, album: m.album, releaseDate: m.releaseDate, craft: craft.craft, vibe: craft.vibe, bpm: craft.suggestedBpm, mood: craft.mood, languages: craft.languages } as never,
         summary: (craft.whatToLearn || craft.vibe || '').slice(0, 400),
       },
     });
     void prisma.analyticsEvent
       .create({ data: { workspaceId, name: 'zap.learn', properties: { title: m.title, genre } as never } })
       .catch(() => {});
-    return { learned: true, referenceId: ref.id, genre, craft: craft.craft, vibe: craft.vibe, whatToLearn: craft.whatToLearn };
+    return { learned: true, referenceId: ref.id, genre, craft: craft.craft, vibe: craft.vibe, whatToLearn: craft.whatToLearn, bpm: craft.suggestedBpm ?? null, mood: craft.mood ?? null, languages: craft.languages ?? null };
   });
 
   /** HISTORY — everything you've Zapped (button + radar), newest first, so you can
@@ -98,13 +98,16 @@ export default async function zap(app: FastifyInstance) {
       select: { id: true, genre: true, summary: true, recipe: true, createdAt: true },
     });
     return rows.map((r) => {
-      const rec = (r.recipe ?? {}) as { title?: string; artist?: string; vibe?: string; craft?: string[]; radar?: boolean };
+      const rec = (r.recipe ?? {}) as { title?: string; artist?: string; vibe?: string; craft?: string[]; radar?: boolean; bpm?: number; mood?: string; languages?: string[] };
       return {
         id: r.id,
         genre: r.genre,
-        // Everything "Make in this lane" needs to auto-produce without a form:
-        // the genre's home tempo + the artist as a LANE cue (never named in the song).
-        bpm: soundBrief(r.genre).typicalBpm ?? 103,
+        // Everything "Make in this lane" needs to auto-produce in the SAME style:
+        // the lane's tempo, mood, languages + the artist as a LANE cue (never named
+        // in the song). Falls back to the genre's home tempo when a hint is missing.
+        bpm: rec.bpm ?? soundBrief(r.genre).typicalBpm ?? 103,
+        mood: rec.mood ?? null,
+        languages: rec.languages ?? null,
         songTitle: rec.title ?? null,
         artist: rec.artist ?? null,
         vibe: rec.vibe ?? null,
@@ -149,7 +152,7 @@ export default async function zap(app: FastifyInstance) {
               genre,
               sourceUrl: marker,
               title: `Zap radar · ${genre} lane — "${song.title}" (${song.artist ?? '—'})`,
-              recipe: { source: 'zap', radar: true, title: song.title, artist: song.artist, genre, craft: craft.craft, vibe: craft.vibe } as never,
+              recipe: { source: 'zap', radar: true, title: song.title, artist: song.artist, genre, craft: craft.craft, vibe: craft.vibe, bpm: craft.suggestedBpm, mood: craft.mood, languages: craft.languages } as never,
               summary: (craft.whatToLearn || craft.vibe || '').slice(0, 400),
             },
           })
