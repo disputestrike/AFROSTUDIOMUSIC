@@ -33,7 +33,11 @@ REFERENCE LINKS: If the user pastes a URL to a song/audio they have the rights t
 
 HOOK CHOICE: After generate_hooks, PRESENT the hooks to the user (numbered, with scores) and let THEM pick which one to use — do not silently auto-approve the top one in normal chat. If the user names or numbers a hook, approve_hook THAT exact one. The user can also EDIT a hook's wording before approving — respect their edited text. (Only in autopilot mode do you auto-pick the highest-scored hook and keep going.)
 
+REGENERATE = SHARPEN, NOT RESTART: When the user asks to "regenerate", "make these better", "sharper", "improve/tighten these", or "another take" on hooks that ALREADY exist (WORKSPACE_CONTEXT.hooks is non-empty), call generate_hooks with refineFrom set to those hooks' TEXT (hooks[].text). That returns clearly-better versions in the SAME concept/theme/lane/hook-shape/language-mix — weak lines fixed, imagery deepened, hook tightened — NOT a random new set. Only OMIT refineFrom (a fresh, blind generation) when there are no hooks yet, or the user explicitly asks for a NEW/different concept, direction, mood, or topic.
+
 KEEP IT FOCUSED (the user finds 20 of everything overwhelming): default to ~8 hooks, not 20 (they can ask for more). ONE request makes at most ONE song. NEVER call create_beat_job more than once for a single ask, and never make a song per hook. If the user wants several songs at once, use run_drop with an explicit count. In normal chat, after generating hooks, STOP and let the user choose — only move on to lyrics/beat once they've picked a hook or said "go".
+
+MATERIAL BEATS = LET AI RUN IT: when the user wants "the exact beat", a beat from real material, or the material layer, call make_material_beat — it FORGES the missing kit (drums, talking drum, log drum, bass, African percussion, chords) and ASSEMBLES automatically. NEVER make the user run forge then assemble by hand, and never ask them which instruments — pick the right kit for the genre yourself (that's your job). Prefer make_material_beat over forge_materials + assemble_beat.
 
 You will receive the user's workspace, current project, artist DNA, recent artifacts, credit balance, and a DATA LAKE summary in WORKSPACE_CONTEXT. Use them.
 
@@ -109,6 +113,7 @@ export const STUDIO_CHAT_TOOLS = [
       properties: { languages: { type: 'array', items: { type: 'string' }, description: 'HARD constraint: ONLY these language codes (pcm/en/yo/ig/ha/...) may appear in the writing' },
         count: { type: 'integer', minimum: 1, maximum: 50, default: 8 },
         excludeIds: { type: 'array', items: { type: 'string' } },
+        refineFrom: { type: 'array', items: { type: 'string' }, description: 'REFINE/REGENERATE MODE: the TEXT of the CURRENT hooks (from WORKSPACE_CONTEXT.hooks[].text). Pass these to get SHARPER versions in the SAME concept/theme/lane/hook-shape/language-mix — keep what works, fix the weak lines, no verbatim repeats, no drift to a new idea. OMIT for a fresh first generation or when the user explicitly wants a NEW/different concept.' },
       },
       required: ['count'],
     },
@@ -337,6 +342,20 @@ export const STUDIO_CHAT_TOOLS = [
     description:
       "Show the DATA LAKE — everything the artist has TRAINED/taught the studio: counts by kind (heard songs, lyric craft, trends, self-training), top genres, the most recent learnings, and exactly WHERE each kind feeds generation. Call this when the user asks 'what have I taught you / what have you learned / what's in the data lake / did my training work / how does my training help my songs'. A dataLake summary is already in WORKSPACE_CONTEXT for quick answers; call this for the detailed breakdown.",
     parameters: { type: 'object', properties: {} },
+  },
+  {
+    type: 'function' as const,
+    name: 'make_material_beat',
+    description:
+      "AI-AUTOMATIC 'exact beat' from real owned loops: it FORGES whatever the genre's kit is missing (drums, talking drum, log drum, bass, African percussion, chords) AND then ASSEMBLES the beat — all by itself, no manual forge-then-assemble. Use this whenever the user wants a beat from real material / 'the exact beat' / the material layer (instead of a hallucinated text-to-audio beat). ALWAYS prefer this over calling forge_materials and assemble_beat separately.",
+    parameters: {
+      type: 'object',
+      properties: {
+        genre: { type: 'string', description: 'defaults to the project genre' },
+        bpm: { type: 'integer', description: 'defaults to the project/genre bpm' },
+        vibe: { type: 'string', description: 'optional mood/energy for the arrangement' },
+      },
+    },
   },
   {
     type: 'function' as const,

@@ -8,12 +8,14 @@ import { getSoundDNA, generateJson } from '@afrohit/ai';
  *   claudeArrangement() Claude authors the build for THIS material (validated)
  */
 
-export const MATERIAL_GAINS: Record<string, number> = { drums: 1.0, log_drum: 1.05, bass: 0.95, percussion: 0.8, chords: 0.7 };
+export const MATERIAL_GAINS: Record<string, number> = { drums: 1.0, log_drum: 1.05, bass: 0.95, talking_drum: 0.85, percussion: 0.8, chords: 0.7 };
 export const MELODIC_ROLES = new Set(['chords', 'bass', 'log_drum']);
 
 export function kitRolesFor(genre: string): string[] {
   if (/amapiano/.test(genre)) return ['log_drum', 'drums', 'percussion', 'chords'];
-  if (/afro|street_pop|highlife|gospel/.test(genre)) return ['drums', 'percussion', 'bass', 'chords'];
+  // Afro genres get the real African hand-drums — the talking drum (gángan) is the
+  // signature "side drum" that was missing, on top of the shekere/agogo perc bed.
+  if (/afro|street_pop|highlife|gospel/.test(genre)) return ['drums', 'talking_drum', 'percussion', 'bass', 'chords'];
   if (/drill|trap|hip_hop/.test(genre)) return ['drums', 'bass', 'chords'];
   if (/house|edm/.test(genre)) return ['drums', 'percussion', 'bass', 'chords'];
   return ['drums', 'percussion', 'bass', 'chords'];

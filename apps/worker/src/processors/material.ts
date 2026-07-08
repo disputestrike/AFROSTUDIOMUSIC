@@ -18,15 +18,20 @@ import { join } from 'node:path';
  *           Deterministic: the exact beat, not a hallucination.
  */
 
-// Role → forge prompt. ISOLATION is everything: one instrument group per loop,
-// dry, no melody bleeding in — this is what makes the material arrangeable.
-// Melodic roles are forged IN KEY so separately-forged loops fit together.
+// Role → forge prompt. ISOLATION keeps one instrument group per loop (so it's
+// arrangeable), but NOT lifeless: the old prompts said "completely dry" and asked
+// for bare "kick snare hats" / "shakers woodblock", which is exactly why the loops
+// sounded dull and thin. These ask for CHARACTER — punch, swing, human timing,
+// warmth and a little natural room — plus the real African hand-drums (talking
+// drum, shekere, agogo) so Afro beats have their signature texture. Melodic roles
+// are forged IN KEY so separately-forged loops fit together.
 const FORGE_PROMPTS: Record<string, (genre: string, bpm: number, key?: string) => string> = {
-  drums: (g, b) => `solo drum kit groove loop for ${g.replace(/_/g, ' ')}, ${b} bpm, tight kick snare and hi-hats only, completely dry, no melody, no bass, no vocals, seamless loop`,
-  log_drum: (g, b, k) => `solo amapiano log drum bassline loop${k ? ` in ${k}` : ''}, ${b} bpm, deep woody log drum only, completely dry, no other instruments, no vocals, seamless loop`,
-  bass: (g, b, k) => `solo bassline loop for ${g.replace(/_/g, ' ')}${k ? ` in ${k}` : ''}, ${b} bpm, warm round sub bass only, no drums, no melody, no vocals, seamless loop`,
-  percussion: (g, b) => `solo percussion bed loop for ${g.replace(/_/g, ' ')}, ${b} bpm, shakers congas and woodblock only, no kick, no snare, no melody, no vocals, seamless loop`,
-  chords: (g, b, k) => `solo warm chord bed loop for ${g.replace(/_/g, ' ')}${k ? ` in ${k}` : ''}, ${b} bpm, soft keys or guitar chords only, no drums, no bass, no vocals, seamless loop`,
+  drums: (g, b) => `solo ${g.replace(/_/g, ' ')} drum groove, ${b} bpm — punchy tuned kick, crisp snare and rimshots, lively swung hi-hats with ghost notes, a real human pocket and a little room so it breathes; drums only, no melody, no bass, no vocals, seamless loop`,
+  talking_drum: (g, b) => `solo Nigerian talking drum (gángan / dùndún) groove for ${g.replace(/_/g, ' ')}, ${b} bpm — expressive pitch-bending talking-drum phrases with call-and-response, warm resonant hand-played skin tone; talking drum only, no drum kit, no melody, no vocals, seamless loop`,
+  log_drum: (g, b, k) => `solo amapiano log drum bassline${k ? ` in ${k}` : ''}, ${b} bpm — deep round woody log drum with real punch, bounce and tuneful glides, a little air around it; log drum only, no other instruments, no vocals, seamless loop`,
+  bass: (g, b, k) => `solo ${g.replace(/_/g, ' ')} bassline${k ? ` in ${k}` : ''}, ${b} bpm — warm round sub-bass with genuine groove and movement, fingered feel sitting in the pocket; bass only, no drums, no melody, no vocals, seamless loop`,
+  percussion: (g, b) => `solo African percussion bed for ${g.replace(/_/g, ' ')}, ${b} bpm — interlocking shekere, agogo bells, congas and shaker with organic groove, space and human timing; percussion only, no kick, no snare, no melody, no vocals, seamless loop`,
+  chords: (g, b, k) => `solo ${g.replace(/_/g, ' ')} chord bed${k ? ` in ${k}` : ''}, ${b} bpm — warm rich keys or clean guitar chords with gentle movement, emotive and musical with natural space; chords only, no drums, no bass, no vocals, seamless loop`,
 };
 const MELODIC_ROLES = new Set(['log_drum', 'bass', 'chords']);
 

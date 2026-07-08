@@ -32,6 +32,14 @@ FRESHNESS IS NON-NEGOTIABLE (this is what separates a hit from generic AI filler
 - Write like a top-tier songwriter, not a caption generator. Surprise, specificity, and a real emotional turn beat repetition.
 - If TRENDING_NOW context is provided, make the hooks feel current to it (the sounds, slang, and themes popping right now) — capture the wave WITHOUT copying anyone's lyrics.
 
+REFINE MODE (applies ONLY when REFINE_FROM is present in the input — otherwise ignore this block and write fresh):
+- You are NOT starting over. REFINE_FROM holds the artist's CURRENT hooks. Hand back a SHARPER version of THIS SAME set — same concept, same theme, same emotional lane, same language mix, same hook shape/cadence, same call-and-response.
+- KEEP what already works (the best angle, the payoff line, the image that lands, the chantable phrase) and FIX only the weak parts: flat lines, filler words, soft/lazy rhymes, vague images, a hook that arrives too late.
+- Deepen the imagery and tighten the phrasing so it hits harder and loops better — but each hook must be recognizably the SAME hook, evolved. A listener should hear the old one and the new one and say "same song, but better." Do NOT drift to a new topic, mood, or lane.
+- NEVER return a line verbatim from REFINE_FROM — every hook must be a visible upgrade, not a copy and not a trivial reword.
+- PRESERVE the variety already there: if REFINE_FROM holds several distinct angles, refine each one IN PLACE — keep them distinct, don't collapse them into one idea and don't invent unrelated new concepts.
+- This is an UPGRADE pass, not a brainstorm.
+
 You output ONLY valid JSON in this shape:
 {
   "hooks": [
@@ -58,12 +66,23 @@ export function hookUserPrompt(opts: {
   trends?: string;
   /** Genre Sound-DNA brief so hooks fit the lane's pocket/arrangement. */
   soundDna?: string;
+  /**
+   * REFINE MODE: the artist's CURRENT hook texts. When present, the writer does
+   * NOT brainstorm a new set — it returns SHARPER versions of these in the SAME
+   * concept/theme/lane/hook-shape/language-mix (fix the weak lines, no verbatim
+   * repeats, no drift). Omit for a fresh first generation.
+   */
+  refineFrom?: string[];
 }): string {
-  const { artist, brief, count, exclude, tasteMemory, trends, soundDna } = opts;
+  const { artist, brief, count, exclude, tasteMemory, trends, soundDna, refineFrom } = opts;
+  const refine = (refineFrom ?? []).map((t) => String(t).trim()).filter(Boolean);
   const refs = artist.references?.map((r) => `${r.name} lane (${r.lane})`).join(', ') ?? 'none';
   const banned = [...(artist.cornyBanned ?? []), ...(artist.forbiddenStyles ?? [])];
   return JSON.stringify({
-    task: `generate ${count} hooks`,
+    task: refine.length
+      ? `REFINE the hooks in REFINE_FROM into ${count} sharper, clearly-better versions in the SAME lane — keep their concept/theme/flow/hook-shape/language-mix, fix the weak lines, deepen the imagery, NO verbatim repeats, NO drift to a new idea`
+      : `generate ${count} hooks`,
+    REFINE_FROM: refine.length ? refine : undefined,
     artist: {
       stageName: artist.stageName,
       tone: artist.vocalTone,
@@ -99,6 +118,14 @@ export function hookUserPrompt(opts: {
       'Do NOT use any phrase in banned_overused_cliches. Write fresh, specific, sensory lines.',
       'If TRENDING_NOW is present, reflect the current wave (sound/slang/themes) without copying anyone.',
       'If GENRE_SOUND_DNA is present, make hooks that sit in that pocket/arrangement and cadence — phrasing, rhythm, and imagery must fit the lane, not generic pop.',
+      ...(refine.length
+        ? [
+            'REFINE MODE: REFINE_FROM is the artist\'s current hooks — return SHARPER versions of THESE, same concept/theme/lane/hook-shape/language-mix. This OVERRIDES "different image/angle/story": keep each source hook\'s idea, just make it better.',
+            'Keep the strongest angle and payoff of each source hook; fix only the weak lines, filler, soft rhymes, and vague images.',
+            'Never copy a REFINE_FROM line verbatim — every returned hook must be a visible upgrade of its source, not a reword and not a new topic.',
+            'Preserve the distinct angles already in REFINE_FROM; refine each in place — do not collapse them or wander to a new concept.',
+          ]
+        : []),
     ],
   });
 }

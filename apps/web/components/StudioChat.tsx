@@ -24,7 +24,7 @@ interface ThreadRow {
 
 const QUICK_ACTIONS: Array<{ label: string; icon: React.ReactNode; prompt: string }> = [
   { label: 'Continue', icon: <Play className="h-3.5 w-3.5" />, prompt: 'Continue to the next step.' },
-  { label: 'Regenerate', icon: <RotateCcw className="h-3.5 w-3.5" />, prompt: 'Regenerate that — give me fresh options.' },
+  { label: 'Regenerate', icon: <RotateCcw className="h-3.5 w-3.5" />, prompt: 'Regenerate the current hooks — sharper versions in the SAME lane and concept. Keep what works, fix the weak lines, deepen the imagery, and tighten it. Do NOT switch to a different idea or start over.' },
 ];
 
 // SpeechRecognition is vendor-prefixed on some browsers.

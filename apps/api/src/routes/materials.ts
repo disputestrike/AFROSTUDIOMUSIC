@@ -6,6 +6,7 @@ import { getSoundDNA } from '@afrohit/ai';
 import { requireAuth } from '../middleware/auth';
 import { enqueue } from '../lib/queue';
 import { kitRolesFor, homeKeyFor, pickMaterial, claudeArrangement } from '../lib/material-plan';
+import { autoMaterialBeat } from '../lib/material-auto';
 
 /**
  * THE MATERIAL LAYER API — real, owned loops the AI arranges into exact beats.
@@ -39,7 +40,7 @@ export default async function materials(app: FastifyInstance) {
     genre: genreSchema,
     bpm: z.number().int().min(60).max(180).optional(),
     keySignature: z.string().max(24).optional(),
-    roles: z.array(z.enum(['drums', 'log_drum', 'bass', 'percussion', 'chords'])).max(5).optional(),
+    roles: z.array(z.enum(['drums', 'log_drum', 'bass', 'talking_drum', 'percussion', 'chords'])).max(6).optional(),
   });
   app.post('/forge', { schema: { body: forgeSchema } }, async (req, reply) => {
     const { workspaceId } = requireAuth(req);
@@ -84,6 +85,29 @@ export default async function materials(app: FastifyInstance) {
     keySignature: z.string().max(24).optional(),
     vibe: z.string().max(200).optional(),
   });
+  /**
+   * AUTO — "let AI run it." One action: forge whatever the genre's kit is missing
+   * near this bpm, then assemble the exact beat automatically. No manual forge-then-
+   * assemble. Returns 'assembling' if the shelf was stocked, else 'forging' (a
+   * detached waiter assembles once the loops land).
+   */
+  const autoSchema = z.object({
+    projectId: z.string().cuid(),
+    songId: z.string().cuid().optional(),
+    genre: genreSchema,
+    bpm: z.number().int().min(60).max(180).optional(),
+    keySignature: z.string().max(24).optional(),
+    vibe: z.string().max(200).optional(),
+  });
+  app.post('/auto', { schema: { body: autoSchema } }, async (req, reply) => {
+    const { workspaceId } = requireAuth(req);
+    const input = autoSchema.parse(req.body);
+    await prisma.project.findFirstOrThrow({ where: { id: input.projectId, workspaceId } });
+    const result = await autoMaterialBeat(app, workspaceId, input);
+    reply.code(202);
+    return result;
+  });
+
   app.post('/assemble', { schema: { body: assembleSchema } }, async (req, reply) => {
     const { workspaceId } = requireAuth(req);
     const input = assembleSchema.parse(req.body);

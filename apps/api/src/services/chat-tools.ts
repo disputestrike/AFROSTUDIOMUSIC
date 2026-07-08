@@ -19,6 +19,7 @@ import { dataLakeReport } from '../lib/data-lake';
 import { lexiconPalette } from '../lib/lexicon';
 import { fuseSoundDna } from '../lib/fuse';
 import { kitRolesFor, homeKeyFor, pickMaterial, claudeArrangement } from '../lib/material-plan';
+import { autoMaterialBeat } from '../lib/material-auto';
 import { memoryContext, recordFeedback } from './artist-memory';
 
 type Ctx = {
@@ -67,7 +68,7 @@ export async function runChatTool(args: Ctx & { name: string; args: Record<strin
     case 'polish_brief':
       return polishBrief(ctx, String(a.rawIdea ?? ''));
     case 'generate_hooks':
-      return generateHooks(ctx, Number(a.count ?? 8), a.languages as string[] | undefined);
+      return generateHooks(ctx, Number(a.count ?? 8), a.languages as string[] | undefined, a.refineFrom as string[] | undefined);
     case 'score_hooks':
       return scoreHooks(ctx, (a.hookIds as string[]) ?? []);
     case 'approve_hook':
@@ -112,6 +113,8 @@ export async function runChatTool(args: Ctx & { name: string; args: Record<strin
       return forgeMaterialsTool(ctx, a as never);
     case 'assemble_beat':
       return assembleBeatTool(ctx, a as never);
+    case 'make_material_beat':
+      return makeMaterialBeatTool(ctx, a as never);
     case 'separate_stems':
       return separateStemsTool(ctx, a.songId ? String(a.songId) : undefined, a.mode === 'full' ? 'full' : 'instrumental');
     case 'learn_lyrics':
@@ -190,8 +193,13 @@ async function polishBrief(ctx: Ctx, rawIdea: string) {
   return { briefId: brief.id, polished };
 }
 
-async function generateHooks(ctx: Ctx, count: number, languages?: string[]) {
+async function generateHooks(ctx: Ctx, count: number, languages?: string[], refineFrom?: string[]) {
   if (!ctx.projectId) return { error: 'no_project_in_thread' };
+  // REFINE MODE: when the user hits "Regenerate" on hooks that already exist, the
+  // chat model passes their TEXT here. The writer then sharpens THESE in the same
+  // lane instead of brainstorming an unrelated set. Cap + clean so a huge/garbage
+  // payload can't blow the prompt; empty ⇒ fresh first generation (unchanged).
+  const refine = (refineFrom ?? []).map((t) => String(t).trim()).filter(Boolean).slice(0, 12);
   const project = await prisma.project.findFirstOrThrow({
     where: { id: ctx.projectId, workspaceId: ctx.workspaceId },
     include: { artist: true, briefs: { orderBy: { createdAt: 'desc' }, take: 1 } },
@@ -213,7 +221,7 @@ async function generateHooks(ctx: Ctx, count: number, languages?: string[]) {
   // "nothing's happening" feel.
   const result = await generateJson<{ hooks?: Array<{ text: string; language?: string[]; syllablePattern?: string }> }>({
     system: prompts.HOOK_SYSTEM,
-    user: prompts.hookUserPrompt({ artist: project.artist as never, brief: project.briefs[0] as never, count, tasteMemory, trends, soundDna }),
+    user: prompts.hookUserPrompt({ artist: project.artist as never, brief: project.briefs[0] as never, count, tasteMemory, trends, soundDna, refineFrom: refine.length ? refine : undefined }),
     temperature: 0.95,
     maxTokens: 3_500,
   });
@@ -883,6 +891,19 @@ async function assembleBeatTool(ctx: Ctx, a: { genre: string; bpm?: number; keyS
     arrangement: sections ? sections.map((s) => `${s.name}:${s.bars}bars[${s.roles.join('+')}]`) : 'classic template',
     note: 'Assembling the EXACT beat from real material — deterministic layers, real placement.',
   };
+}
+
+/** AI-AUTOMATIC material beat: forge the missing kit + assemble in one action. */
+async function makeMaterialBeatTool(ctx: Ctx, a: { genre?: string; bpm?: number; vibe?: string; songId?: string }) {
+  if (!ctx.projectId) return { error: 'no_project_in_thread' };
+  const project = await prisma.project.findFirstOrThrow({ where: { id: ctx.projectId, workspaceId: ctx.workspaceId } });
+  return autoMaterialBeat(ctx.app, ctx.workspaceId, {
+    projectId: ctx.projectId,
+    genre: a.genre ?? project.genre,
+    bpm: a.bpm ?? project.bpm ?? undefined,
+    vibe: a.vibe,
+    songId: a.songId,
+  });
 }
 
 async function setReleaseRightsTool(ctx: Ctx, a: { songId: string; splitSheet?: Array<{ name: string; role: string; share: number }>; nativeReviewOk?: boolean }) {
