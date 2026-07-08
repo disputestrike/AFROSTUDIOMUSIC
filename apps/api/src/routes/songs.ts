@@ -36,14 +36,18 @@ export default async function songs(app: FastifyInstance) {
   app.get('/', async (req) => {
     const { workspaceId } = requireAuth(req);
     const rows = await prisma.song.findMany({
-      // Only songs that have REAL audio (a rendered beat/mix/master). Lyric-only
-      // shells — a hook approved or a take whose render failed / never ran — are
-      // NOT songs yet; they clutter the catalog and read as "wasted". They reappear
-      // automatically the moment a render lands. (Benjamin: "if there's no beat, it
-      // shouldn't be here.")
+      // Show songs that have REAL audio (rendered beat/mix/master) OR were just
+      // created and are still rendering (< 20 min) — so a fresh song is NEVER
+      // invisible while it cooks. OLD lyric-only shells (>20 min, render failed /
+      // never ran) stay hidden so they don't clutter or read as "wasted".
       where: {
         workspaceId,
-        OR: [{ beats: { some: {} } }, { mixes: { some: {} } }, { masters: { some: {} } }],
+        OR: [
+          { beats: { some: {} } },
+          { mixes: { some: {} } },
+          { masters: { some: {} } },
+          { createdAt: { gte: new Date(Date.now() - 20 * 60 * 1000) } },
+        ],
       },
       orderBy: { createdAt: 'desc' },
       take: 100,
