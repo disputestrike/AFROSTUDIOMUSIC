@@ -276,7 +276,7 @@ export default function CatalogGrid({ initial }: { initial: SongRow[] }) {
             <div className="aspect-square w-full bg-slate-800">
               {s.coverUrl ? (
                 // eslint-disable-next-line @next/next/no-img-element
-                <img src={s.coverUrl} alt={s.title} className="h-full w-full object-cover" />
+                <img src={s.coverUrl} alt={s.title} loading="lazy" decoding="async" className="h-full w-full object-cover" />
               ) : (
                 <div className="flex h-full items-center justify-center font-display text-5xl text-slate-700">♪</div>
               )}
