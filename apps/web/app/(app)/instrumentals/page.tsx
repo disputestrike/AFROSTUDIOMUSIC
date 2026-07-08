@@ -91,7 +91,7 @@ export default function InstrumentalsPage() {
                   {[m.bpm ? `${m.bpm} bpm` : null, m.keySignature].filter(Boolean).join(' · ')}
                 </span>
               </div>
-              <audio controls className="w-full" src={m.url} />
+              <audio controls preload="none" className="w-full" src={m.url} />
               <div className="mt-2.5 flex flex-wrap gap-2">
                 <button
                   onClick={() => void reuse(m.id)}

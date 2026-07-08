@@ -292,7 +292,7 @@ export default function CatalogGrid({ initial }: { initial: SongRow[] }) {
                 {s.artist} · {s.genre.replace('_', ' ')}{s.bpm ? ` · ${s.bpm} bpm` : ''}{s.stemCount ? ` · ${s.stemCount} stems` : ''}
               </div>
               {s.audioUrl ? (
-                <audio controls className="mt-3 w-full" src={s.audioUrl} />
+                <audio controls preload="none" className="mt-3 w-full" src={s.audioUrl} />
               ) : (
                 <div className="mt-3 text-xs text-slate-600">No audio rendered yet.</div>
               )}

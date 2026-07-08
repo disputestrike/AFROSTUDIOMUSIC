@@ -97,7 +97,7 @@ export default function AlbumsPage() {
                   <div className="truncate text-sm text-slate-200">
                     {s.title} {s.isAnchor && <span className="ml-1 rounded-full bg-afrobrand-500/15 px-2 py-0.5 text-[10px] text-afrobrand-300">ANCHOR — the sound</span>}
                   </div>
-                  {s.audioUrl ? <audio controls className="mt-1.5 w-full" src={s.audioUrl} /> : <div className="mt-1 text-xs text-slate-600">rendering…</div>}
+                  {s.audioUrl ? <audio controls preload="none" className="mt-1.5 w-full" src={s.audioUrl} /> : <div className="mt-1 text-xs text-slate-600">rendering…</div>}
                 </div>
                 <button onClick={() => router.push(`/projects/${s.projectId}`)} className="shrink-0 rounded-full border border-white/10 bg-white/5 px-3 py-1.5 text-xs text-slate-300 hover:bg-white/10">Studio</button>
               </li>

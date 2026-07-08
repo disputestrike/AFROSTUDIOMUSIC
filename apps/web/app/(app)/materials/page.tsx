@@ -234,7 +234,7 @@ export default function MaterialsPage() {
           {beatUrl && (
             <div className="mt-3">
               <div className="text-xs text-emerald-400">Your exact beat — assembled from the shelf:</div>
-              <audio controls src={beatUrl} className="mt-1.5 w-full" />
+              <audio controls preload="none" src={beatUrl} className="mt-1.5 w-full" />
             </div>
           )}
         </div>
