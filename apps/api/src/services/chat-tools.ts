@@ -283,6 +283,12 @@ async function approveHook(ctx: Ctx, hookId: string) {
     where: { id: hookId, project: { workspaceId: ctx.workspaceId } },
     include: { project: { select: { artistId: true } } },
   });
+  // IDEMPOTENT — approving an already-approved hook must NOT spawn a duplicate
+  // song. Repeated approves (a user tap + the model also calling approve_hook, or
+  // a re-run) were a real source of empty lyric-only shells in the catalog.
+  if (hook.songId) {
+    return { hookId, songId: hook.songId, alreadyApproved: true };
+  }
   const song = await prisma.song.create({
     data: {
       workspaceId: ctx.workspaceId,

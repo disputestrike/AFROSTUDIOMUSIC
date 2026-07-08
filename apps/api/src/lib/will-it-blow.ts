@@ -37,7 +37,11 @@ import { learnedReferenceBrief } from './learned';
 import { arReadSong } from './ar-read';
 import { enqueue } from './queue';
 
-export const BLOW_TARGET = Number(process.env.WILL_IT_BLOW_TARGET ?? 75);
+// Benjamin's call: the release bar is 90 ("it needs to be perfect"). NOTE: on the
+// current MiniMax engine, writing-driven scores top out ~65-70 (the A&R itself says
+// PRODUCTION POLISH is the cap), so at 90 almost nothing green-lights until there's
+// Suno-level audio — which is the honest signal. Tunable via WILL_IT_BLOW_TARGET.
+export const BLOW_TARGET = Number(process.env.WILL_IT_BLOW_TARGET ?? 90);
 const MAX_REWRITES = Math.max(0, Math.min(Number(process.env.WILL_IT_BLOW_MAX_PASSES ?? 3), 6));
 
 /** The bar: the BETTER of hit vs viral clears TARGET (a strong viral moment counts). */
