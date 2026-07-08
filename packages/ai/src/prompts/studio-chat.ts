@@ -35,7 +35,12 @@ HOOK CHOICE: After generate_hooks, PRESENT the hooks to the user (numbered, with
 
 KEEP IT FOCUSED (the user finds 20 of everything overwhelming): default to ~8 hooks, not 20 (they can ask for more). ONE request makes at most ONE song. NEVER call create_beat_job more than once for a single ask, and never make a song per hook. If the user wants several songs at once, use run_drop with an explicit count. In normal chat, after generating hooks, STOP and let the user choose — only move on to lyrics/beat once they've picked a hook or said "go".
 
-You will receive the user's workspace, current project, artist DNA, recent artifacts, and credit balance in WORKSPACE_CONTEXT. Use them.
+You will receive the user's workspace, current project, artist DNA, recent artifacts, credit balance, and a DATA LAKE summary in WORKSPACE_CONTEXT. Use them.
+
+DATA LAKE — YOU ARE CONNECTED TO EVERYTHING THE ARTIST HAS TAUGHT YOU. WORKSPACE_CONTEXT.dataLake shows it: totalReferences, byKind {heardSongs, lyricCraft, trendSnapshots, selfTraining}, topGenres, sampleTraits, lastLearnedAt. This is workspace-wide and REAL — it persists across sessions and projects. So even in a brand-new chat, if dataLake.totalReferences > 0 the artist HAS trained you.
+- NEVER say "no learning has happened", "I can't see the data lake", or "nothing has been stored". If dataLake shows references, speak to them by number and genre (e.g. "you've trained me on 30 heard songs — 23 afrobeats, 4 amapiano — plus 22 lyric-craft studies").
+- This lake is NOT passive notes: it AUTOMATICALLY feeds every song you make. Heard/trained songs go into learnedReferenceBrief (the hook/lyric/arranger prompts) AND learnedStyleTags (the MUSIC MODEL itself — the actual drums/groove/bass). Lyric-craft studies feed the writers (patterns only, never words). So when the artist asks "what happens now / how does my training help", the honest answer is: the NEXT song you make in a trained genre already rebuilds that sound — they don't have to do anything to "apply" it.
+- To answer "what have I taught you?" or "show my data lake" in detail, call show_data_lake — it returns the counts, recent learnings, and exactly where each kind feeds generation.
 
 IMPORTANT — cross-turn IDs: WORKSPACE_CONTEXT contains real IDs — hooks[] (each with id, text, score, approved), latestLyric.id, latestSong.id. When you call score_hooks, approve_hook, generate_lyrics, render_demo_vocal, run_rights_check, etc., ALWAYS pass the actual IDs from WORKSPACE_CONTEXT. Never invent IDs. If hooks already have scores, you don't need to score them again — just pick the best by score.`;
 
@@ -320,6 +325,13 @@ export const STUDIO_CHAT_TOOLS = [
       type: 'object',
       properties: { songId: { type: 'string', description: 'defaults to the latest song in the project' } },
     },
+  },
+  {
+    type: 'function' as const,
+    name: 'show_data_lake',
+    description:
+      "Show the DATA LAKE — everything the artist has TRAINED/taught the studio: counts by kind (heard songs, lyric craft, trends, self-training), top genres, the most recent learnings, and exactly WHERE each kind feeds generation. Call this when the user asks 'what have I taught you / what have you learned / what's in the data lake / did my training work / how does my training help my songs'. A dataLake summary is already in WORKSPACE_CONTEXT for quick answers; call this for the detailed breakdown.",
+    parameters: { type: 'object', properties: {} },
   },
   {
     type: 'function' as const,

@@ -20,6 +20,7 @@ import { chatMessageInputSchema } from '@afrohit/shared';
 import { prompts, studioChat } from '@afrohit/ai';
 import { requireAuth } from '../middleware/auth';
 import { runChatTool } from '../services/chat-tools';
+import { dataLakeSummary } from '../lib/data-lake';
 
 /**
  * Per-request generation guard. The model can emit several tool calls in one turn
@@ -227,6 +228,11 @@ export default async function chat(app: FastifyInstance) {
         latestLyric: state.latestLyric,
         latestSong: state.latestSong,
         recentArtifacts,
+        // The DATA LAKE — everything the artist has TRAINED the studio on
+        // (heard songs, lyric craft, trends, self-training). Workspace-wide, so
+        // even a brand-new project's chat knows what's been learned. This is why
+        // the chat must NEVER say "nothing has been learned".
+        dataLake: await dataLakeSummary(workspaceId),
       });
 
       const turn = await studioChat({
@@ -405,6 +411,8 @@ export default async function chat(app: FastifyInstance) {
           hooks: state.hooks,
           latestLyric: state.latestLyric,
           latestSong: state.latestSong,
+          // The DATA LAKE — workspace-wide learnings (see /messages above).
+          dataLake: await dataLakeSummary(workspaceId),
         });
         const autopilot = body.autopilot === true;
         const baseMessages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }> = [

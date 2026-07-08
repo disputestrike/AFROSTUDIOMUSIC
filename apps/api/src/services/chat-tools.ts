@@ -15,6 +15,7 @@ import { enqueue } from '../lib/queue';
 import { assertSafeUrl } from '../lib/url-guard';
 import { learnedReferenceBrief, learnedStyleTags, learnedLyricCraftBrief, snapshotTrend, freshnessBrief } from '../lib/learned';
 import { learnLyricCraft, findLearnedLyric } from '../lib/lyric-learn';
+import { dataLakeReport } from '../lib/data-lake';
 import { lexiconPalette } from '../lib/lexicon';
 import { fuseSoundDna } from '../lib/fuse';
 import { kitRolesFor, homeKeyFor, pickMaterial, claudeArrangement } from '../lib/material-plan';
@@ -115,6 +116,8 @@ export async function runChatTool(args: Ctx & { name: string; args: Record<strin
       return separateStemsTool(ctx, a.songId ? String(a.songId) : undefined, a.mode === 'full' ? 'full' : 'instrumental');
     case 'learn_lyrics':
       return learnLyricsTool(ctx, String(a.lyrics ?? ''), a.genreHint ? String(a.genreHint) : undefined);
+    case 'show_data_lake':
+      return dataLakeReport(ctx.workspaceId);
     default:
       return { error: `unknown_tool:${name}` };
   }
