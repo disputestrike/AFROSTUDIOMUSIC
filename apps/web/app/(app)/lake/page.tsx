@@ -11,8 +11,9 @@
 
 import { useCallback, useEffect, useState } from 'react';
 import Link from 'next/link';
+import { useRouter } from 'next/navigation';
 import { useApi } from '@/lib/api';
-import { Database, Trash2, Loader2, Music2, BookOpenText, TrendingUp, Sparkles } from 'lucide-react';
+import { Database, Trash2, Loader2, Music2, BookOpenText, TrendingUp, Sparkles, Radar, Wand2 } from 'lucide-react';
 
 interface LakeRow { id: string; title: string | null; genre: string | null; kind: string; summary: string; at: string }
 interface Lake {
@@ -36,10 +37,12 @@ const KIND_META: Record<string, { label: string; icon: React.ReactNode; hint: st
   lyricCraft: { label: 'Lyric craft', icon: <BookOpenText className="h-4 w-4" />, hint: 'studied lessons — patterns, never words' },
   trendSnapshots: { label: 'Trend snapshots', icon: <TrendingUp className="h-4 w-4" />, hint: 'daily what-is-popping digests' },
   selfTraining: { label: 'Self-training', icon: <Sparkles className="h-4 w-4" />, hint: 'the studio learning from its own QC-passed renders' },
+  zapped: { label: 'Zapped', icon: <Radar className="h-4 w-4" />, hint: 'songs you Zapped + the daily radar — the craft of what’s charting, as reference lanes' },
 };
 
 export default function LakePage() {
   const api = useApi();
+  const router = useRouter();
   const [lake, setLake] = useState<Lake | null>(null);
   const [err, setErr] = useState('');
   const [deleting, setDeleting] = useState<string>('');
@@ -153,6 +156,13 @@ export default function LakePage() {
                     <div className="truncate text-sm text-slate-200">{r.title || '(untitled)'} {r.genre && <span className="text-xs text-slate-500">· {r.genre.replace(/_/g, ' ')}</span>}</div>
                     {r.summary && <div className="mt-0.5 line-clamp-2 text-xs text-slate-500">{r.summary}</div>}
                   </div>
+                  <button
+                    onClick={() => router.push(`/create?genre=${encodeURIComponent(r.genre || 'afrobeats')}&vibe=${encodeURIComponent((r.summary || `in the lane of ${r.title || 'this reference'}`).slice(0, 240))}`)}
+                    title="Make a fresh song in this lane (never a copy)"
+                    className="inline-flex shrink-0 items-center gap-1 rounded-full border border-afrobrand-500/40 bg-afrobrand-500/10 px-2.5 py-1 text-xs text-afrobrand-300 hover:bg-afrobrand-500/20"
+                  >
+                    <Wand2 className="h-3.5 w-3.5" /> Make in this lane
+                  </button>
                   <button
                     onClick={() => void remove(r.id)}
                     disabled={!!deleting}

@@ -6,8 +6,19 @@
  * learn the CRAFT (never the recording), and only play the official preview.
  */
 import { useEffect, useRef, useState } from 'react';
+import { useRouter } from 'next/navigation';
 import { useApi } from '@/lib/api';
-import { Mic, Square, Loader2, Sparkles, ExternalLink, GraduationCap, Check, Upload, Radar } from 'lucide-react';
+import { Mic, Square, Loader2, Sparkles, ExternalLink, GraduationCap, Check, Upload, Radar, Wand2, History } from 'lucide-react';
+
+interface ZapHist {
+  id: string;
+  genre: string | null;
+  songTitle: string | null;
+  artist: string | null;
+  vibe: string | null;
+  whatToLearn: string | null;
+  viaRadar: boolean;
+}
 
 interface Match {
   title: string;
@@ -24,12 +35,14 @@ const MAX_SECS = 12;
 
 export default function ZapPage() {
   const api = useApi();
+  const router = useRouter();
+  const [history, setHistory] = useState<ZapHist[]>([]);
   const [phase, setPhase] = useState<'idle' | 'listening' | 'identifying' | 'result' | 'nomatch' | 'error'>('idle');
   const [match, setMatch] = useState<Match | null>(null);
   const [err, setErr] = useState('');
   const [secs, setSecs] = useState(0);
   const [learn, setLearn] = useState<'idle' | 'learning' | 'done'>('idle');
-  const [learned, setLearned] = useState<{ craft?: string[]; whatToLearn?: string } | null>(null);
+  const [learned, setLearned] = useState<{ craft?: string[]; whatToLearn?: string; genre?: string } | null>(null);
   const [radar, setRadar] = useState<'idle' | 'running'>('idle');
   const [radarMsg, setRadarMsg] = useState('');
 
@@ -38,6 +51,20 @@ export default function ZapPage() {
   const streamRef = useRef<MediaStream | null>(null);
 
   useEffect(() => () => streamRef.current?.getTracks().forEach((t) => t.stop()), []);
+
+  async function loadHistory() {
+    try { setHistory(await api.get<ZapHist[]>('/zap/history')); } catch { /* ignore */ }
+  }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => { void loadHistory(); }, []);
+
+  /** Make a FRESH song in the lane of something you Zapped — the craft/vibe, never
+   * the artist's name or a copy (that stays in the influence, not the record). */
+  function makeInLane(h: { genre: string | null; whatToLearn: string | null; vibe: string | null }) {
+    const genre = h.genre || 'afrobeats';
+    const vibe = (h.whatToLearn || h.vibe || `in the lane of the current ${genre} sound`).slice(0, 240);
+    router.push(`/create?genre=${encodeURIComponent(genre)}&vibe=${encodeURIComponent(vibe)}`);
+  }
 
   async function identify(blob: Blob) {
     setPhase('identifying');
@@ -99,11 +126,12 @@ export default function ZapPage() {
     if (!match) return;
     setLearn('learning');
     try {
-      const r = await api.post<{ craft?: string[]; whatToLearn?: string }>('/zap/learn', {
+      const r = await api.post<{ craft?: string[]; whatToLearn?: string; genre?: string }>('/zap/learn', {
         title: match.title, artist: match.artist, genre: match.genre, album: match.album, releaseDate: match.releaseDate, isrc: match.isrc,
       });
       setLearned(r);
       setLearn('done');
+      void loadHistory();
     } catch {
       setLearn('idle');
     }
@@ -117,6 +145,7 @@ export default function ZapPage() {
     try {
       const r = await api.post<{ learned: number }>('/zap/radar', {});
       setRadarMsg(r.learned ? `Learned ${r.learned} new trending song${r.learned === 1 ? '' : 's'} into your lake ✓` : 'Your lake is already up to date with the charts ✓');
+      void loadHistory();
     } catch {
       setRadarMsg('Radar hit a snag — try again in a bit.');
     } finally {
@@ -198,6 +227,12 @@ export default function ZapPage() {
                     {learned.craft.slice(0, 5).map((c, i) => <li key={i} className="flex gap-1.5"><span className="text-afrobrand-400">•</span>{c}</li>)}
                   </ul>
                 ) : null}
+                <button
+                  onClick={() => makeInLane({ genre: learned.genre || match.genre || null, whatToLearn: learned.whatToLearn || null, vibe: null })}
+                  className="mt-3 inline-flex items-center gap-1.5 rounded-full bg-brand-gradient px-4 py-2 text-sm font-medium text-ink shadow-glow"
+                >
+                  <Wand2 className="h-4 w-4" /> Make a song in this lane →
+                </button>
               </div>
             ) : (
               <button onClick={() => void doLearn()} disabled={learn === 'learning'} className="inline-flex items-center gap-1.5 rounded-full bg-brand-gradient px-4 py-2 text-sm font-medium text-ink shadow-glow disabled:opacity-60">
@@ -207,6 +242,31 @@ export default function ZapPage() {
             )}
             <p className="mt-2 text-[11px] text-slate-500">Studies the lane’s craft (production, groove, hook mechanics) as reference — never copies the song or its lyrics.</p>
           </div>
+        </div>
+      )}
+
+      {/* Your zaps — what you've learned, and make a fresh song in any lane. */}
+      {history.length > 0 && (
+        <div className="mt-10">
+          <div className="mb-2 flex items-center gap-2 text-sm font-medium text-slate-200"><History className="h-4 w-4 text-afrobrand-400" /> Your zaps <span className="text-xs font-normal text-slate-500">({history.length})</span></div>
+          <ul className="space-y-1.5">
+            {history.map((h) => (
+              <li key={h.id} className="flex items-center gap-2 rounded-xl border border-white/10 bg-white/5 p-2.5">
+                <div className="min-w-0 flex-1">
+                  <div className="truncate text-sm text-slate-200">{h.songTitle || 'Learned lane'}{h.artist ? <span className="text-slate-500"> · {h.artist}</span> : ''}</div>
+                  <div className="truncate text-[11px] text-slate-500">{(h.genre || '—').replace(/_/g, ' ')}{h.viaRadar ? ' · via radar' : ''}{h.whatToLearn ? ` · ${h.whatToLearn}` : ''}</div>
+                </div>
+                <button
+                  onClick={() => makeInLane(h)}
+                  title="Make a fresh song in this lane"
+                  className="inline-flex shrink-0 items-center gap-1 rounded-full border border-afrobrand-500/40 bg-afrobrand-500/10 px-2.5 py-1 text-xs text-afrobrand-300 hover:bg-afrobrand-500/20"
+                >
+                  <Wand2 className="h-3.5 w-3.5" /> Make in this lane
+                </button>
+              </li>
+            ))}
+          </ul>
+          <p className="mt-2 text-[11px] text-slate-500">Every zap feeds your training — new songs in these lanes already pull from them. “Make in this lane” starts a fresh original (never a copy).</p>
         </div>
       )}
     </div>

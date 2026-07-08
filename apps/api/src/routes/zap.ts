@@ -87,6 +87,32 @@ export default async function zap(app: FastifyInstance) {
     return { learned: true, referenceId: ref.id, genre, craft: craft.craft, vibe: craft.vibe, whatToLearn: craft.whatToLearn };
   });
 
+  /** HISTORY — everything you've Zapped (button + radar), newest first, so you can
+   * SEE what you've learned and make a fresh song in any of those lanes. */
+  app.get('/history', async (req) => {
+    const { workspaceId } = requireAuth(req);
+    const rows = await prisma.soundReference.findMany({
+      where: { workspaceId, sourceUrl: { startsWith: 'zap:' } },
+      orderBy: { createdAt: 'desc' },
+      take: 60,
+      select: { id: true, genre: true, summary: true, recipe: true, createdAt: true },
+    });
+    return rows.map((r) => {
+      const rec = (r.recipe ?? {}) as { title?: string; artist?: string; vibe?: string; craft?: string[]; radar?: boolean };
+      return {
+        id: r.id,
+        genre: r.genre,
+        songTitle: rec.title ?? null,
+        artist: rec.artist ?? null,
+        vibe: rec.vibe ?? null,
+        whatToLearn: r.summary ?? null,
+        craft: rec.craft ?? [],
+        viaRadar: !!rec.radar,
+        at: r.createdAt,
+      };
+    });
+  });
+
   /** RADAR NOW — run Zap on its own, on demand: pull the charts and learn the
    * craft of new trending songs into the lake. Same thing the daily cron does; this
    * lets the artist top up the lake instantly (capped). Keyless (Apple charts). */
