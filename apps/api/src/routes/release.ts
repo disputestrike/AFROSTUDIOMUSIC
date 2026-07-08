@@ -3,6 +3,7 @@ import { prisma } from '@afrohit/db';
 import { rightsInputSchema } from '@afrohit/shared';
 import { requireAuth } from '../middleware/auth';
 import { distributeRelease } from '../lib/distribution';
+import { BLOW_TARGET } from '../lib/will-it-blow';
 
 /**
  * The rights spine — what turns a folder of files into a bankable release.
@@ -21,11 +22,15 @@ type Split = { name: string; role: string; share: number };
 const REVIEW_LANGS = ['yo', 'ig', 'ha'];
 
 function greenLight(
-  song: { lyricId: string | null; isrc: string | null; splitSheet: unknown; nativeReviewOk: boolean; hitScore?: number | null },
+  song: { lyricId: string | null; isrc: string | null; splitSheet: unknown; nativeReviewOk: boolean; hitScore?: number | null; viralScore?: number | null },
   hasAudio: boolean,
   hasCover: boolean,
   languages: string[]
 ) {
+  // Benjamin's doctrine: no song releases until it's been run through Will-it-hit
+  // AND scored ABOVE the bar (BLOW_TARGET). The Will-it-blow gate auto-climbs the
+  // score after render; this is the hard release gate that enforces it.
+  const arScore = Math.max(song.hitScore ?? 0, song.viralScore ?? 0);
   const splits = (Array.isArray(song.splitSheet) ? song.splitSheet : []) as Split[];
   const shareSum = splits.reduce((s, x) => s + (Number(x?.share) || 0), 0);
   const needsReview = languages.some((l) => REVIEW_LANGS.includes(l.toLowerCase()));
@@ -41,13 +46,18 @@ function greenLight(
       detail: needsReview ? (song.nativeReviewOk ? 'signed off' : `needed (${languages.filter((l) => REVIEW_LANGS.includes(l.toLowerCase())).join('/')})`) : 'n/a (English/Pidgin)',
     },
     { name: 'Rights-clean (no rips/samples)', ok: true, detail: 'original generation / cleared' },
-    // THE A&R GATE (Benjamin): no song releases without a Will-it-hit read.
-    // The read must EXIST to green-light; the score itself is advisory (his
-    // ear decides), but he sees it here before anything ships.
+    // THE A&R GATE (Benjamin): a song must score ABOVE the bar to release. The
+    // Will-it-blow gate auto-improves toward this; a song below it stays blocked
+    // until "Make it bigger" (or the gate) lifts it over the line.
     {
-      name: 'A&R read (Will it hit?)',
-      ok: song.hitScore != null,
-      detail: song.hitScore != null ? `hit ${song.hitScore}/100` : 'not read yet — run "Will it hit?" or "Make it bigger"',
+      name: `Will it hit? — score ≥ ${BLOW_TARGET}`,
+      ok: song.hitScore != null && arScore >= BLOW_TARGET,
+      detail:
+        song.hitScore == null
+          ? 'not read yet — run "Will it hit?"'
+          : arScore >= BLOW_TARGET
+            ? `${arScore}/100 ✓`
+            : `${arScore}/100 — needs ${BLOW_TARGET}+ (run "Make it bigger")`,
     },
   ];
   return { ready: checks.every((c) => c.ok), checks, needsReview };
@@ -72,7 +82,7 @@ async function assignUpc(workspaceId: string): Promise<string> {
   return `0${String(n).padStart(11, '0')}`; // placeholder barcode
 }
 
-async function statusFor(song: { id: string; title: string; isrc: string | null; upc: string | null; splitSheet: unknown; releaseReady: boolean; lyricId: string | null; projectId: string; nativeReviewOk: boolean; hitScore?: number | null }) {
+async function statusFor(song: { id: string; title: string; isrc: string | null; upc: string | null; splitSheet: unknown; releaseReady: boolean; lyricId: string | null; projectId: string; nativeReviewOk: boolean; hitScore?: number | null; viralScore?: number | null }) {
   const [master, mix, cover, languages] = await Promise.all([
     prisma.master.findFirst({ where: { songId: song.id } }),
     prisma.mix.findFirst({ where: { songId: song.id } }),
@@ -183,7 +193,7 @@ export default async function release(app: FastifyInstance) {
         prisma.imageAsset.findFirst({ where: { projectId: song.projectId, kind: 'cover' } }),
         languagesForProject(song.projectId),
       ]);
-      const gl = greenLight({ lyricId: song.lyricId, isrc, splitSheet: splits, nativeReviewOk, hitScore: song.hitScore }, !!(master || mix), !!cover, languages);
+      const gl = greenLight({ lyricId: song.lyricId, isrc, splitSheet: splits, nativeReviewOk, hitScore: song.hitScore, viralScore: song.viralScore }, !!(master || mix), !!cover, languages);
 
       const updated = await prisma.song.update({
         where: { id: song.id },
