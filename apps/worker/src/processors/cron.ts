@@ -174,9 +174,14 @@ export async function processZapRadar() {
       for (const genre of RADAR_GENRES) {
         if (learned >= RADAR_MAX_PER_RUN) break;
         const trends = await researchTrends({ genre }).catch(() => null);
-        const songs = (trends?.sources ?? [])
+        // ONLY learn from real SONG charts (Apple most-played / YouTube). When those
+        // have no chart for a genre, researchTrends falls back to web/news — those
+        // are ARTICLE HEADLINES, not songs, and would poison the lake. Skip them.
+        if (!trends || (trends.source !== 'apple_charts' && trends.source !== 'youtube')) continue;
+        const songs = (trends.sources ?? [])
           .map((s) => parseTrendSong(s.title))
-          .filter(Boolean) as Array<{ title: string; artist?: string }>;
+          // A real chart entry has an artist ("Title — Artist"); headlines don't.
+          .filter((x): x is { title: string; artist: string } => !!x?.artist);
         for (const song of songs) {
           if (learned >= RADAR_MAX_PER_RUN) break;
           const marker = `zap:${`${song.artist ?? ''}-${song.title}`.toLowerCase().replace(/[^a-z0-9]+/g, '-').slice(0, 80)}`;

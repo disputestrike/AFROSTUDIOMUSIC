@@ -21,11 +21,11 @@ export default async function taste(app: FastifyInstance) {
   app.get('/sound-profile', async (req) => {
     const { workspaceId } = requireAuth(req);
     const refs = await prisma.soundReference.findMany({
-      // "MY sound" = heard/uploaded songs only — lyric-craft studies and trend
-      // snapshots live in the same lake but are NOT the artist's sound.
+      // "MY sound" = heard/uploaded songs only — lyric-craft, trend snapshots, and
+      // Zap'd reference-lanes live in the same lake but are NOT the artist's sound.
       where: {
         workspaceId,
-        NOT: [{ sourceUrl: { startsWith: 'lyric:' } }, { sourceUrl: { startsWith: 'trend:' } }],
+        NOT: [{ sourceUrl: { startsWith: 'lyric:' } }, { sourceUrl: { startsWith: 'trend:' } }, { sourceUrl: { startsWith: 'zap:' } }],
       },
       orderBy: { createdAt: 'desc' },
       take: 100,
@@ -65,10 +65,11 @@ export default async function taste(app: FastifyInstance) {
     // Exact totals come from COUNT queries (a take-N page would silently freeze
     // the numbers as the lake grows); the page below only feeds the per-genre
     // breakdown + latest list.
-    const [refTotal, lyricCraftN, trendN, generatedN, refs, materials, counts] = await Promise.all([
+    const [refTotal, lyricCraftN, trendN, zapN, generatedN, refs, materials, counts] = await Promise.all([
       prisma.soundReference.count({ where: { workspaceId } }),
       prisma.soundReference.count({ where: { workspaceId, sourceUrl: { startsWith: 'lyric:' } } }),
       prisma.soundReference.count({ where: { workspaceId, sourceUrl: { startsWith: 'trend:' } } }),
+      prisma.soundReference.count({ where: { workspaceId, sourceUrl: { startsWith: 'zap:' } } }),
       prisma.soundReference.count({ where: { workspaceId, recipe: { path: ['source'], equals: 'generated' } } }),
       prisma.soundReference.findMany({
         where: { workspaceId },
@@ -88,13 +89,15 @@ export default async function taste(app: FastifyInstance) {
     const kind = (r: { sourceUrl: string; recipe: unknown }) =>
       r.sourceUrl.startsWith('lyric:') ? 'lyricCraft'
       : r.sourceUrl.startsWith('trend:') ? 'trendSnapshots'
+      : r.sourceUrl.startsWith('zap:') ? 'zapped'
       : ((r.recipe ?? {}) as { source?: string }).source === 'generated' ? 'selfTraining'
       : 'heardSongs';
     const byKind = {
-      heardSongs: Math.max(0, refTotal - lyricCraftN - trendN - generatedN),
+      heardSongs: Math.max(0, refTotal - lyricCraftN - trendN - zapN - generatedN),
       lyricCraft: lyricCraftN,
       trendSnapshots: trendN,
       selfTraining: generatedN,
+      zapped: zapN,
     };
     const genresByKind: Record<string, Record<string, number>> = {};
     for (const r of refs) {

@@ -99,7 +99,12 @@ export default async function zap(app: FastifyInstance) {
     for (const genre of GENRES) {
       if (learned >= MAX) break;
       const trends = await researchTrends({ genre }).catch(() => null);
-      const songs = ((trends?.sources ?? []).map((s) => parseTrendSong(s.title)).filter(Boolean) as Array<{ title: string; artist?: string }>);
+      // Only real SONG charts (Apple most-played / YouTube) — never web/news
+      // article headlines, which aren't songs and would poison the lake.
+      if (!trends || (trends.source !== 'apple_charts' && trends.source !== 'youtube')) continue;
+      const songs = (trends.sources ?? [])
+        .map((s) => parseTrendSong(s.title))
+        .filter((x): x is { title: string; artist: string } => !!x?.artist);
       for (const song of songs) {
         if (learned >= MAX) break;
         const marker = `zap:${`${song.artist ?? ''}-${song.title}`.toLowerCase().replace(/[^a-z0-9]+/g, '-').slice(0, 80)}`;
