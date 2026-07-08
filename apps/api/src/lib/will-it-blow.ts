@@ -62,7 +62,8 @@ export type ImproveError = (typeof IMPROVE_ERRORS)[number];
 export async function improveSongOnce(
   app: FastifyInstance,
   workspaceId: string,
-  songId: string
+  songId: string,
+  opts?: { delayMs?: number }
 ): Promise<ImproveResult | { error: ImproveError }> {
   const song = await prisma.song.findFirst({
     where: { id: songId, workspaceId },
@@ -130,6 +131,10 @@ export async function improveSongOnce(
   await enqueue({
     queue: app.queues.music,
     name: 'generate-music',
+    // The automatic gate passes a small delay so its background re-sings queue
+    // BEHIND fresh user-initiated renders — the quality loop must never make
+    // someone waiting on the Create page sit longer. The manual button omits it.
+    ...(opts?.delayMs ? { delayMs: opts.delayMs } : {}),
     payload: {
       jobId: job.id, workspaceId, projectId: song.projectId, songId,
       input: {
@@ -201,7 +206,8 @@ async function runGateForSong(app: FastifyInstance, workspaceId: string, songId:
     let passes = 0;
     while (!blows(pred.hitScore, pred.viralScore) && passes < MAX_PASSES) {
       passes++;
-      const imp = await improveSongOnce(app, workspaceId, songId);
+      // 45s delay: the gate's re-sing yields to any fresh user render in the queue.
+      const imp = await improveSongOnce(app, workspaceId, songId, { delayMs: 45_000 });
       if ('error' in imp) break; // out of credits / no lyric / A&R down → keep best, stop cleanly
       if (!(await waitForJob(imp.jobId))) break; // re-sing failed → keep best
       const p2 = await arReadSong(app, workspaceId, songId);

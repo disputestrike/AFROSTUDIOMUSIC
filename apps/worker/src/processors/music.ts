@@ -114,7 +114,12 @@ export async function processMusic(p: MusicPayload) {
           setTimeout(() => resolve({ status: 'failed', error: 'render timed out after 12 minutes' } as GenResult), HARD_TIMEOUT_MS)
         ),
       ]);
-    const N = Math.max(1, Math.min(Number(p.input.candidates ?? process.env.BEST_OF_N ?? 2), 4));
+    // Default to ONE render. best-of-2 doubled every render AND hammered the
+    // Replicate burst limit (BURST 1) — so songs took 6-12 min and the Create
+    // page's poll window timed out ("Still rendering"). With the engine (MiniMax)
+    // + mastering (afro_stream_-9) fixed, one take is reliably good; best-of-N is
+    // a quality lever the operator can re-enable via BEST_OF_N when not in a hurry.
+    const N = Math.max(1, Math.min(Number(p.input.candidates ?? process.env.BEST_OF_N ?? 1), 4));
     // STAGGER the candidate STARTS by ~15s (Replicate's prediction-creation slot
     // refills at ≈6/min): the renders still overlap so wall-clock ≈ one render +
     // (N-1)·15s, but no two creates collide on the BURST-1 limit. This is what

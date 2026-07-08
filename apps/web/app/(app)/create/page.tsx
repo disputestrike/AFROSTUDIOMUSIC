@@ -74,7 +74,7 @@ export default function CreatePage() {
   const [deconBusy, setDeconBusy] = useState(false);
   const [deconTitle, setDeconTitle] = useState('');
 
-  const [phase, setPhase] = useState<'form' | 'producing' | 'done' | 'error'>('form');
+  const [phase, setPhase] = useState<'form' | 'producing' | 'done' | 'finishing' | 'error'>('form');
   const [stepIdx, setStepIdx] = useState(0);
   const [err, setErr] = useState('');
   const [song, setSong] = useState<{ title: string; hook?: string; score: number | null; url: string; projectId: string } | null>(null);
@@ -155,7 +155,8 @@ export default function CreatePage() {
         { theme, count: 1, genre, fusionGenres: fusion.length ? fusion : undefined, mood, bpm, withVocals: true, songEngine: engine, influence: influence.trim() || undefined, languages: langs }
       );
       let item: { jobId?: string; hookText?: string; score: number | null; error?: string } | undefined;
-      for (let i = 0; i < 60; i++) {
+      // Hooks + lyrics run on Claude and can be slow under load — wait up to ~8 min.
+      for (let i = 0; i < 96; i++) {
         await sleep(5000);
         if (i === 10) setStepIdx(2); // hooks done-ish → writing lyrics
         const j = await api.get<{ status: string; outputJson?: { drop?: Array<typeof item> } }>(`/jobs/${started.jobId}`);
@@ -164,9 +165,11 @@ export default function CreatePage() {
       }
       if (!item?.jobId) throw new Error(item?.error === 'insufficient_credits' ? 'Daily limit reached — try again tomorrow.' : item?.error || 'Could not start production.');
       setStepIdx(3);
-      // Poll for the rendered audio.
+      // Poll for the rendered audio. Real sung renders take 3-12 min (best-of-N +
+      // the provider's rate limit), so wait up to ~12 min — then hand off calmly to
+      // the Catalog rather than showing a scary error for a song that IS finishing.
       let url: string | null = null;
-      for (let i = 0; i < 60; i++) {
+      for (let i = 0; i < 144; i++) {
         await sleep(5000);
         const job = await api.get<{ status: string }>(`/jobs/${item.jobId}`);
         if (job.status === 'SUCCEEDED') {
@@ -176,7 +179,13 @@ export default function CreatePage() {
         }
         if (job.status === 'FAILED') throw new Error('The render failed — try again.');
       }
-      if (!url) throw new Error('Still rendering — check the studio in a minute.');
+      if (!url) {
+        // Not a failure — the render is just still cooking. Send them to the
+        // Catalog where it lands, instead of the red "Couldn't finish that one".
+        setSong({ title, hook: item.hookText, score: item.score, url: '', projectId: project.id });
+        setPhase('finishing');
+        return;
+      }
       setSong({ title, hook: item.hookText, score: item.score, url, projectId: project.id });
       setPhase('done');
     } catch (e) {
@@ -243,7 +252,7 @@ export default function CreatePage() {
         vibePrompt: [`${mood} energy`, decon.vocalDirection, fusion.length ? `genre fusion: ${genreLabel}` : null].filter(Boolean).join('. '),
       });
       let url: string | null = null;
-      for (let i = 0; i < 60; i++) {
+      for (let i = 0; i < 144; i++) {
         await sleep(5000);
         const job = await api.get<{ status: string }>(`/jobs/${r.jobId}`);
         if (job.status === 'SUCCEEDED') {
@@ -253,7 +262,11 @@ export default function CreatePage() {
         }
         if (job.status === 'FAILED') throw new Error('The render failed — try again or switch engine.');
       }
-      if (!url) throw new Error('Still rendering — check the studio in a minute.');
+      if (!url) {
+        setSong({ title, hook: decon.hookLine ?? undefined, score: null, url: '', projectId: project.id });
+        setPhase('finishing');
+        return;
+      }
       setSong({ title, hook: decon.hookLine ?? undefined, score: null, url, projectId: project.id });
       setPhase('done');
     } catch (e) {
@@ -306,6 +319,34 @@ export default function CreatePage() {
             </button>
             <button onClick={() => router.push(`/projects/${song.projectId}`)} className="rounded-full border border-white/15 bg-white/5 px-5 py-2.5 text-sm hover:bg-white/10">
               🎬 Cover, mix, clip &amp; release →
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // ---- Still finishing (render outran our wait, but it IS being made) ----
+  if (phase === 'finishing' && song) {
+    return (
+      <div className="mx-auto max-w-lg px-6 py-14 text-center">
+        <div className="rounded-3xl border-gradient glass p-6 shadow-card">
+          <div className="mx-auto flex aspect-square w-full max-w-xs items-center justify-center rounded-2xl bg-brand-gradient text-ink shadow-glow">
+            <span className="font-display text-5xl animate-pulse">♪</span>
+          </div>
+          <h1 className="mt-5 font-display text-2xl">“{song.title}” is still cooking</h1>
+          <p className="mt-2 text-sm text-slate-400">
+            The song is taking a little longer to render. It’s not lost — it finishes in the background and lands in your Catalog in a minute or two, fully mastered.
+          </p>
+          <div className="mt-6 flex flex-wrap justify-center gap-3">
+            <button onClick={() => router.push('/catalog')} className="rounded-full bg-brand-gradient px-5 py-2.5 text-sm font-medium text-ink shadow-glow">
+              🎧 See it in my Catalog →
+            </button>
+            <button onClick={() => router.push(`/projects/${song.projectId}`)} className="rounded-full border border-white/15 bg-white/5 px-5 py-2.5 text-sm hover:bg-white/10">
+              Open this project
+            </button>
+            <button onClick={() => { setSong(null); setPhase('form'); }} className="rounded-full border border-white/15 bg-white/5 px-5 py-2.5 text-sm hover:bg-white/10">
+              ✨ Make another
             </button>
           </div>
         </div>
