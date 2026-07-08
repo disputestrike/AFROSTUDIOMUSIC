@@ -1,6 +1,8 @@
 import { prisma } from '@afrohit/db';
 import { analyzeAudio } from '@afrohit/ai';
+import { analysisCoverage, unknownAnalysis } from '@afrohit/shared';
 import { markFailed, markRunning, markSucceeded } from '../lib/jobs';
+import { measureAudio, dspAvailable } from '../lib/dsp';
 import { ffmpegAvailable, extractClip, measureAudioQuality } from '../lib/ffmpeg';
 import { downloadToBuffer, uploadBytes } from '../lib/storage';
 
@@ -59,6 +61,21 @@ export async function processAnalyze(p: AnalyzePayload) {
       metrics,
     });
 
+    // THE EAR (Phase 0): measure real musical facts — tempo/key/groove/spectral —
+    // to sit ALONGSIDE the LLM's inferred recipe, each carrying provenance so a
+    // later Lane score only ever trusts what was truly measured. Failure-tolerant:
+    // if the DSP engine isn't in this image yet it returns an honest all-'unknown'
+    // analysis (engineOk:false) and never blocks the learn. Measures the full
+    // original (not the mono preview clip) so the groove facts describe the record.
+    let measured = unknownAnalysis('engine-unavailable');
+    try {
+      if (await dspAvailable()) measured = await measureAudio(p.url);
+    } catch (err) {
+      console.warn('[analyze] DSP measure failed:', (err as Error)?.message);
+    }
+    const coverage = analysisCoverage(measured);
+    console.log(`[analyze] ear: engineOk=${measured.engineOk} measured=${coverage.measured}/${coverage.total} tempo=${JSON.stringify(measured.tempoBpm?.value)}`);
+
     // Normalize the model's free-text genre ("Afro Fusion") to our enum key
     // ("afro_fusion") so the learn library aggregates cleanly per genre instead
     // of splitting counts across label variants. Unknown genres fall back to the
@@ -92,7 +109,9 @@ export async function processAnalyze(p: AnalyzePayload) {
           genre: learnedGenre,
           sourceUrl: p.url,
           title: profile.vibe?.slice(0, 120) ?? null,
-          recipe: profile as never,
+          // Store the measured DSP facts alongside the inferred recipe (additive key)
+          // so the lake / later Lane phases can read what was actually heard.
+          recipe: { ...(profile as unknown as Record<string, unknown>), measured } as never,
           summary: profile.learnedRecipe || profile.suggestedVibePrompt || null,
         },
       })
@@ -114,7 +133,7 @@ export async function processAnalyze(p: AnalyzePayload) {
       .catch((err) => console.warn('[analyze] taste event write failed:', (err as Error)?.message));
     // referenceId lets the UI PIN this exact reference for the remake — the song
     // made next must rebuild THIS record's sound, not a lucky-recent one.
-    await markSucceeded(p.jobId, { profile, referenceId: reference?.id ?? null });
+    await markSucceeded(p.jobId, { profile, referenceId: reference?.id ?? null, measured, coverage });
     // TRAINING-SESSION PURGE: the lake keeps the learned recipe, never the
     // recording itself (doctrine: no stored copies of anyone's audio).
     if (p.purgeAfter) {

@@ -5,9 +5,16 @@
 FROM node:20-bookworm-slim
 
 # ffmpeg = mix/master; openssl + ca-certificates = Prisma engine + TLS
+# python3 + libsndfile1 = "the ear" (Phase 0 audio measurement via librosa);
+# ffmpeg doubles as librosa's audioread backend so mp3/m4a decode without extra deps.
 RUN apt-get update \
-  && apt-get install -y --no-install-recommends ffmpeg openssl ca-certificates \
+  && apt-get install -y --no-install-recommends ffmpeg openssl ca-certificates python3 python3-pip libsndfile1 \
   && rm -rf /var/lib/apt/lists/*
+
+# The DSP stack. Pinned + numpy<2.1 for numba/librosa compat. --break-system-packages
+# is required on Debian bookworm (PEP 668); this image is single-purpose so it's safe.
+RUN pip3 install --break-system-packages --no-cache-dir \
+  numpy==1.26.4 scipy==1.13.1 soundfile==0.12.1 librosa==0.10.2.post1
 
 RUN npm install -g pnpm@9.12.0
 
