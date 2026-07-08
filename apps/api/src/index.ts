@@ -40,6 +40,7 @@ import reviews from './routes/reviews';
 import songs from './routes/songs';
 import albums from './routes/albums';
 import materials from './routes/materials';
+import instrumentals from './routes/instrumentals';
 import lexicon from './routes/lexicon';
 import uploads from './routes/uploads';
 import mixer from './routes/mixer';
@@ -121,6 +122,7 @@ async function bootstrap() {
       await api.register(songs, { prefix: '/songs' });
       await api.register(albums, { prefix: '/albums' });
       await api.register(materials, { prefix: '/materials' });
+      await api.register(instrumentals, { prefix: '/instrumentals' });
       await api.register(lexicon, { prefix: '/lexicon' });
       await api.register(uploads, { prefix: '/uploads' });
       await api.register(settings, { prefix: '/settings' });

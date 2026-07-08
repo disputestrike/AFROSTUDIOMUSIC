@@ -10,6 +10,7 @@ const LINKS = [
   { href: '/projects', label: 'Projects' },
   { href: '/catalog', label: 'Catalog' },
   { href: '/materials', label: 'Materials' },
+  { href: '/instrumentals', label: 'Instrumentals' },
   { href: '/lake', label: 'Data Lake' },
   { href: '/lexicon', label: 'Word Bank' },
   { href: '/albums', label: 'Albums' },

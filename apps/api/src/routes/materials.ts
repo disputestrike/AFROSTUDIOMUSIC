@@ -21,7 +21,7 @@ export default async function materials(app: FastifyInstance) {
   app.get<{ Querystring: { genre?: string } }>('/', async (req) => {
     const { workspaceId } = requireAuth(req);
     const rows = await prisma.materialAsset.findMany({
-      where: { workspaceId, ...(req.query.genre ? { genre: req.query.genre } : {}) },
+      where: { workspaceId, role: { not: 'instrumental' }, ...(req.query.genre ? { genre: req.query.genre } : {}) },
       orderBy: { createdAt: 'desc' },
       take: 200,
     });
