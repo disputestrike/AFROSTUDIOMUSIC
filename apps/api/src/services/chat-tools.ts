@@ -639,7 +639,21 @@ async function rightsCheck(ctx: Ctx, songId: string) {
 async function createReleaseKit(ctx: Ctx, songId: string) {
   const song = await prisma.song.findFirstOrThrow({
     where: { id: songId, workspaceId: ctx.workspaceId },
+    include: {
+      masters: { take: 1 },
+      mixes: { take: 1 },
+      beats: { take: 1 },
+    },
   });
+  // NEVER bundle a "release" for a song with no rendered audio — that's how
+  // autopilot ended up marking a song RELEASED with audioUrl:null and telling the
+  // user "release complete" when nothing had rendered. Require real audio first.
+  if (!song.masters.length && !song.mixes.length && !song.beats.length) {
+    return {
+      error: 'not_rendered',
+      message: 'The song has no audio yet — it is still rendering. Wait for the beat/master to finish, then bundle the release.',
+    };
+  }
   const charge = await ctx.app.chargeCredits({ workspaceId: ctx.workspaceId, key: 'release_export' });
   if (!charge.ok) return { error: 'insufficient_credits', ...charge };
   const job = await prisma.providerJob.create({

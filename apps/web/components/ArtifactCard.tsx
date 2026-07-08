@@ -61,13 +61,105 @@ export function ArtifactCard({ toolName, output, onAction }: Props) {
       return <RightsResult o={o as never} />;
     case 'request_approval':
       return <ApprovalRequest gate={String((o as { gate: string }).gate)} note={String((o as { note?: string }).note ?? '')} />;
+    case 'predict_hit':
+      return <HitScoreCard o={o as never} />;
+    case 'list_catalog':
+    case 'list_beats':
+      return <CatalogList o={o as never} label={toolName === 'list_beats' ? 'beats' : 'songs'} />;
+    case 'show_data_lake':
+      return <DataLakeCard o={o as never} />;
+    case 'run_drop':
+      return <DropSummary o={o as never} />;
+    // Everything else: a quiet confirmation chip. The model's own message already
+    // explains what happened — NEVER dump raw tool JSON into the chat (that was the
+    // "why is it showing json" bug).
     default:
-      return (
-        <pre className="overflow-x-auto rounded-xl bg-black/40 p-3 text-xs text-slate-300">
-          {JSON.stringify(o, null, 2)}
-        </pre>
-      );
+      return <DoneChip label={PRETTY[toolName] ?? 'Done'} />;
   }
+}
+
+const PRETTY: Record<string, string> = {
+  master_song: 'Master queued',
+  make_snippet: 'Snippet queued',
+  analyze_audio: 'Listening to the track…',
+  separate_stems: 'Stems queued',
+  forge_materials: 'Forging loops',
+  assemble_beat: 'Assembling the beat',
+  learn_lyrics: 'Learned the craft',
+  set_release_rights: 'Rights updated',
+  reject_hook: 'Hook rejected',
+};
+
+function DoneChip({ label }: { label: string }) {
+  return (
+    <div className="flex items-center gap-2 text-xs text-slate-400">
+      <CheckCircle2 className="h-3.5 w-3.5 text-emerald-400" /> {label}
+    </div>
+  );
+}
+
+function HitScoreCard({ o }: { o: { hitScore?: number; viralScore?: number; verdict?: string; toMakeItBigger?: string[] } }) {
+  const hit = o.hitScore ?? 0;
+  const viral = o.viralScore ?? 0;
+  const best = Math.max(hit, viral);
+  const tone = best >= 70 ? 'text-emerald-300' : best >= 50 ? 'text-amber-300' : 'text-red-300';
+  return (
+    <div className="text-sm">
+      <div className="mb-1 flex items-center gap-2 font-medium text-slate-200"><ShieldCheck className="h-4 w-4 text-afrobrand-400" /> Will it hit?</div>
+      <div className={`flex gap-4 font-semibold ${tone}`}><span>Hit {hit}/100</span><span>🔥 Viral {viral}/100</span></div>
+      {o.verdict && <p className="mt-1 text-xs text-slate-400">{o.verdict}</p>}
+      {o.toMakeItBigger?.length ? (
+        <ul className="mt-2 space-y-0.5 text-xs text-slate-300">
+          {o.toMakeItBigger.slice(0, 3).map((n, i) => (
+            <li key={i} className="flex gap-1.5"><span className="shrink-0 text-afrobrand-400">→</span><span>{n}</span></li>
+          ))}
+        </ul>
+      ) : null}
+    </div>
+  );
+}
+
+function CatalogList({ o, label }: { o: { count?: number; songs?: Array<{ title?: string; status?: string; audioUrl?: string | null }>; beats?: Array<{ title?: string; provider?: string }> }; label: string }) {
+  const rows = (o.songs ?? o.beats ?? []) as Array<{ title?: string; status?: string; audioUrl?: string | null; provider?: string }>;
+  return (
+    <div className="text-sm">
+      <div className="mb-1 flex items-center gap-2 font-medium text-slate-200"><ListMusic className="h-4 w-4 text-afrobrand-400" /> {o.count ?? rows.length} {label}</div>
+      <ul className="space-y-0.5 text-xs text-slate-300">
+        {rows.slice(0, 6).map((s, i) => (
+          <li key={i} className="flex items-center gap-2 truncate">
+            <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${s.audioUrl ? 'bg-emerald-400' : 'bg-slate-600'}`} />
+            <span className="truncate">{(s.title || 'Untitled').slice(0, 46)}</span>
+            <span className="ml-auto shrink-0 text-slate-500">{s.status ?? s.provider ?? ''}</span>
+          </li>
+        ))}
+        {rows.length > 6 && <li className="text-slate-500">+{rows.length - 6} more</li>}
+      </ul>
+    </div>
+  );
+}
+
+function DataLakeCard({ o }: { o: { totalReferences?: number; byKind?: Record<string, number> } }) {
+  const k = o.byKind ?? {};
+  return (
+    <div className="text-sm">
+      <div className="mb-1 flex items-center gap-2 font-medium text-slate-200"><FileText className="h-4 w-4 text-afrobrand-400" /> Data lake — {o.totalReferences ?? 0} references</div>
+      <div className="text-xs text-slate-400">{k.heardSongs ?? 0} heard · {k.lyricCraft ?? 0} lyric-craft · {k.trendSnapshots ?? 0} trends · {k.selfTraining ?? 0} self-training</div>
+    </div>
+  );
+}
+
+function DropSummary({ o }: { o: { drop?: Array<{ hookText?: string; score?: number | null }> } }) {
+  const d = o.drop ?? [];
+  return (
+    <div className="text-sm">
+      <div className="mb-1 flex items-center gap-2 font-medium text-slate-200"><ListMusic className="h-4 w-4 text-afrobrand-400" /> Drop — {d.length} take{d.length === 1 ? '' : 's'}</div>
+      <ul className="space-y-0.5 text-xs text-slate-300">
+        {d.slice(0, 4).map((t, i) => (
+          <li key={i} className="truncate">{(t.hookText || '').slice(0, 50)} {typeof t.score === 'number' && <span className="text-afrobrand-300">({t.score.toFixed(1)})</span>}</li>
+        ))}
+      </ul>
+    </div>
+  );
 }
 
 type HookItem = { id: string; text: string; score?: number | null; viralScore?: number | null; tiktokMoment?: string | null };

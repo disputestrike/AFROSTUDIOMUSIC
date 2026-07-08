@@ -29,7 +29,13 @@ import { arReadSong } from './ar-read';
 import { enqueue } from './queue';
 
 const TARGET = Number(process.env.WILL_IT_BLOW_TARGET ?? 70);
-const MAX_PASSES = Math.max(0, Math.min(Number(process.env.WILL_IT_BLOW_MAX_PASSES ?? 1), 3));
+// DEFAULT SCORE-ONLY (0 passes). The auto-improve re-sing doubles render volume,
+// and on the owner's burst-limited Replicate account that flooded the queue and
+// left songs stuck 20-30 min. So by default the gate SCORES every song (the
+// Will-it-hit read every song asked for) but does NOT auto-re-sing. Turn the
+// auto-improve back on with WILL_IT_BLOW_MAX_PASSES=1 once there's render capacity
+// (a Suno key or a higher Replicate tier). "Make it bigger" is still manual anytime.
+const MAX_PASSES = Math.max(0, Math.min(Number(process.env.WILL_IT_BLOW_MAX_PASSES ?? 0), 3));
 
 /** The bar: the BETTER of hit vs viral clears TARGET (a strong viral moment counts). */
 const bestOf = (hit?: number | null, viral?: number | null) => Math.max(hit ?? 0, viral ?? 0);

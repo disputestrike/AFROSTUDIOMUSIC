@@ -60,7 +60,12 @@ AUTOPILOT MODE IS ON. Produce the whole song end to end WITHOUT asking the user 
 7. generate_video_storyboard
 8. run_rights_check on the song
 9. create_release_kit to bundle it
-Auto-decide everything a producer would: pick the top hook, write a strong cover-art prompt, use sensible defaults. Do NOT stop to ask for confirmation. Media (beat/vocal/cover/video) render in the background — queue them and move on. Only stop early if the rights check fails or a step returns an error you cannot work around. When the release is bundled (or everything is queued + rights cleared), give ONE final summary of the finished release and stop.`;
+Auto-decide everything a producer would: pick the top hook, write a strong cover-art prompt, use sensible defaults. Do NOT stop to ask for confirmation. Media (beat/vocal/cover/video) render in the background — queue them and move on. Only stop early if the rights check fails or a step returns an error you cannot work around.
+
+HONESTY ABOUT THE RENDER (critical): the full sung song renders in the BACKGROUND and takes several MINUTES. It is NOT done the instant you call create_beat_job. So:
+- NEVER claim "release complete", "your song is ready", or that there's a finished record before the render + master have actually landed.
+- If create_release_kit or master_song returns \`not_rendered\` / "nothing to master", that means the audio isn't ready YET — do NOT retry it in a loop. Say the song is still rendering and the release will be ready once it finishes, then STOP.
+- Your final summary should be honest: list what's queued vs done. If the render hasn't landed, tell the user it's still cooking and will appear in their Catalog — never a fake "🎉 released".`;
 
 /**
  * Tool definitions for Responses API tool-calling.

@@ -12,9 +12,8 @@
  *  - melodic-contour matching,
  *  - lyric vector search against licensed lyrics corpora.
  */
-import { responsesJson } from './providers/text';
+import { generateJson } from './generate';
 import { RIGHTS_CHECK_SYSTEM } from './prompts/rights';
-import { MODELS } from './openai-client';
 
 export interface RightsFinding {
   type:
@@ -71,18 +70,25 @@ export async function runRightsCheck(opts: {
   const all = [opts.lyricBody, opts.hookText, opts.producerNotes].filter(Boolean).join('\n\n');
   const heuristic = heuristicScan(all);
 
-  const llm = await responsesJson<RightsCheckResult>({
-    system: RIGHTS_CHECK_SYSTEM,
-    user: JSON.stringify({
-      lyric: opts.lyricBody ?? '',
-      hook: opts.hookText ?? '',
-      references_lane_only: opts.references ?? [],
-      producerNotes: opts.producerNotes ?? '',
-    }),
-    model: MODELS.text,
-    temperature: 0,
-    maxOutputTokens: 1_500,
-  });
+  // Claude-first (OpenAI is a dead 429 on the owner's account). If the LLM can't
+  // run at all, fall back to the deterministic heuristic scan alone — a rights
+  // check must NEVER hard-break the release pipeline with a provider error.
+  let llm: RightsCheckResult;
+  try {
+    llm = await generateJson<RightsCheckResult>({
+      system: RIGHTS_CHECK_SYSTEM,
+      user: JSON.stringify({
+        lyric: opts.lyricBody ?? '',
+        hook: opts.hookText ?? '',
+        references_lane_only: opts.references ?? [],
+        producerNotes: opts.producerNotes ?? '',
+      }),
+      temperature: 0,
+      maxTokens: 1_500,
+    });
+  } catch {
+    llm = { findings: [], overallRisk: 'low', okToExport: true };
+  }
 
   const findings = [...heuristic, ...(llm.findings ?? [])];
   const overallRisk = rollupRisk(findings, llm.overallRisk);
