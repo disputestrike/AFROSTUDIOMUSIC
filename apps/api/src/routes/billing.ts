@@ -60,7 +60,7 @@ export default async function billing(app: FastifyInstance) {
     const { workspaceId } = requireAuth(req);
     const { isInternalMode } = await import('../middleware/auth');
     if (isInternalMode()) {
-      const cap = Number(process.env.MAX_DAILY_GENERATIONS ?? 300);
+      const cap = Number(process.env.MAX_DAILY_GENERATIONS ?? 1000);
       const since = new Date();
       since.setUTCHours(0, 0, 0, 0);
       const usedToday = await prisma.creditLedger.count({

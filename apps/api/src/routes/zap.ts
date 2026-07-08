@@ -119,6 +119,43 @@ export default async function zap(app: FastifyInstance) {
     });
   });
 
+  /** LANE BRIEF — the exact params to reproduce a reference's LANE (genre, tempo,
+   * MOOD, LANGUAGES, influence, vibe). Backfills older zaps that were learned before
+   * we captured languages/mood/bpm — so e.g. an Asake song enforces YORUBA, not a
+   * default. This is what "Make in this lane" calls so the language/style is right. */
+  app.post('/lane-brief', async (req, reply) => {
+    const { referenceId } = z.object({ referenceId: z.string().min(6) }).parse(req.body);
+    const { workspaceId } = requireAuth(req);
+    const ref = await prisma.soundReference.findFirst({ where: { id: referenceId, workspaceId } });
+    if (!ref) return reply.code(404).send({ error: 'reference_not_found' });
+    let rec = (ref.recipe ?? {}) as { title?: string; artist?: string; genre?: string; bpm?: number; mood?: string; languages?: string[]; vibe?: string; craft?: string[] };
+    const genre = ref.genre ?? rec.genre ?? 'afrobeats';
+    // BACKFILL missing lane facts (old zaps) by deriving from the song's metadata,
+    // then PERSIST so it's a one-time cost — the artist's real language sticks.
+    if ((!rec.languages || !rec.languages.length || !rec.mood || !rec.bpm) && rec.title) {
+      const craft = await extractSongCraft({ title: rec.title, artist: rec.artist, genre });
+      if (craft) {
+        rec = {
+          ...rec,
+          languages: rec.languages?.length ? rec.languages : craft.languages,
+          mood: rec.mood ?? craft.mood,
+          bpm: rec.bpm ?? craft.suggestedBpm,
+          craft: rec.craft?.length ? rec.craft : craft.craft,
+          vibe: rec.vibe ?? craft.vibe,
+        };
+        await prisma.soundReference.update({ where: { id: ref.id }, data: { recipe: rec as never } }).catch(() => {});
+      }
+    }
+    return {
+      genre,
+      bpm: rec.bpm ?? soundBrief(genre).typicalBpm ?? 103,
+      mood: rec.mood ?? null,
+      languages: rec.languages?.length ? rec.languages : ['pcm', 'en'],
+      influence: rec.artist ?? null,
+      vibe: (ref.summary || rec.vibe || `a fresh original in the ${genre.replace(/_/g, ' ')} lane`).slice(0, 240),
+    };
+  });
+
   /** RADAR NOW — run Zap on its own, on demand: pull the charts and learn the
    * craft of new trending songs into the lake. Same thing the daily cron does; this
    * lets the artist top up the lake instantly (capped). Keyless (Apple charts). */

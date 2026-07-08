@@ -40,7 +40,7 @@ export const creditsPlugin = fp(async function (app) {
     // BUT a hard daily generation cap still applies so a runaway loop, a batch,
     // or a bot can never drain the operator's provider card. Set MAX_DAILY_GENERATIONS.
     if (isInternalMode()) {
-      const cap = Number(process.env.MAX_DAILY_GENERATIONS ?? 300);
+      const cap = Number(process.env.MAX_DAILY_GENERATIONS ?? 1000);
       if (cap > 0) {
         const since = new Date();
         since.setUTCHours(0, 0, 0, 0);

@@ -45,7 +45,7 @@ export default function ZapPage() {
   const [err, setErr] = useState('');
   const [secs, setSecs] = useState(0);
   const [learn, setLearn] = useState<'idle' | 'learning' | 'done'>('idle');
-  const [learned, setLearned] = useState<{ craft?: string[]; whatToLearn?: string; genre?: string; bpm?: number | null; mood?: string | null; languages?: string[] | null } | null>(null);
+  const [learned, setLearned] = useState<{ referenceId?: string; craft?: string[]; whatToLearn?: string; genre?: string; bpm?: number | null; mood?: string | null; languages?: string[] | null } | null>(null);
   const [radar, setRadar] = useState<'idle' | 'running'>('idle');
   const [radarMsg, setRadarMsg] = useState('');
 
@@ -65,18 +65,27 @@ export default function ZapPage() {
    * (genre, tempo, language, the artist as a LANE cue) and it STARTS MAKING
    * immediately (produce=1). Same lane/style; fresh beat, name, lyrics. The artist
    * only steers the vibe via influence — never copied or named in the record. */
-  function makeInLane(h: { genre: string | null; bpm?: number | null; mood?: string | null; languages?: string[] | null; artist?: string | null; whatToLearn: string | null; vibe: string | null }) {
-    const genre = h.genre || 'afrobeats';
-    const params = new URLSearchParams({
-      genre,
-      produce: '1',
-      // Match the lane's actual languages/mood when Zap captured them, else afro default.
-      languages: h.languages?.length ? h.languages.join(',') : 'pcm,en',
-      vibe: (h.whatToLearn || h.vibe || `a fresh ${genre.replace(/_/g, ' ')} record`).slice(0, 240),
-    });
-    if (h.bpm) params.set('bpm', String(h.bpm));
-    if (h.mood) params.set('mood', h.mood);
-    if (h.artist) params.set('influence', h.artist);
+  const [preparing, setPreparing] = useState('');
+  async function makeInLane(opts: { referenceId?: string; genre?: string | null; bpm?: number | null; mood?: string | null; languages?: string[] | null; artist?: string | null; whatToLearn?: string | null; vibe?: string | null }) {
+    let genre = opts.genre || 'afrobeats';
+    let bpm = opts.bpm ?? null;
+    let mood = opts.mood ?? null;
+    let languages = opts.languages ?? null;
+    let influence = opts.artist ?? null;
+    let vibe = opts.whatToLearn || opts.vibe || `a fresh ${genre.replace(/_/g, ' ')} record`;
+    // The lane-brief is the source of truth: it backfills the reference's REAL
+    // language/mood/tempo (e.g. Asake -> Yoruba) so the produced song matches the lane.
+    if (opts.referenceId) {
+      setPreparing(opts.referenceId);
+      try {
+        const b = await api.post<{ genre: string; bpm: number; mood: string | null; languages: string[]; influence: string | null; vibe: string }>('/zap/lane-brief', { referenceId: opts.referenceId });
+        genre = b.genre || genre; bpm = b.bpm ?? bpm; mood = b.mood ?? mood; languages = b.languages?.length ? b.languages : languages; influence = b.influence ?? influence; vibe = b.vibe || vibe;
+      } catch { /* fall back to what we have */ } finally { setPreparing(''); }
+    }
+    const params = new URLSearchParams({ genre, produce: '1', languages: (languages?.length ? languages : ['pcm', 'en']).join(','), vibe: vibe.slice(0, 240) });
+    if (bpm) params.set('bpm', String(bpm));
+    if (mood) params.set('mood', mood);
+    if (influence) params.set('influence', influence);
     router.push(`/create?${params.toString()}`);
   }
 
@@ -140,7 +149,7 @@ export default function ZapPage() {
     if (!match) return;
     setLearn('learning');
     try {
-      const r = await api.post<{ craft?: string[]; whatToLearn?: string; genre?: string; bpm?: number | null; mood?: string | null; languages?: string[] | null }>('/zap/learn', {
+      const r = await api.post<{ referenceId?: string; craft?: string[]; whatToLearn?: string; genre?: string; bpm?: number | null; mood?: string | null; languages?: string[] | null }>('/zap/learn', {
         title: match.title, artist: match.artist, genre: match.genre, album: match.album, releaseDate: match.releaseDate, isrc: match.isrc,
       });
       setLearned(r);
@@ -242,7 +251,7 @@ export default function ZapPage() {
                   </ul>
                 ) : null}
                 <button
-                  onClick={() => makeInLane({ genre: learned.genre || match.genre || null, artist: match.artist, bpm: learned.bpm, mood: learned.mood, languages: learned.languages, whatToLearn: learned.whatToLearn || null, vibe: null })}
+                  onClick={() => void makeInLane({ referenceId: learned.referenceId, genre: learned.genre || match.genre || null, artist: match.artist, bpm: learned.bpm, mood: learned.mood, languages: learned.languages, whatToLearn: learned.whatToLearn || null, vibe: null })}
                   className="mt-3 inline-flex items-center gap-1.5 rounded-full bg-brand-gradient px-4 py-2 text-sm font-medium text-ink shadow-glow"
                 >
                   <Wand2 className="h-4 w-4" /> Make a song in this lane →
@@ -271,11 +280,12 @@ export default function ZapPage() {
                   <div className="truncate text-[11px] text-slate-500">{(h.genre || '—').replace(/_/g, ' ')}{h.viaRadar ? ' · via radar' : ''}{h.whatToLearn ? ` · ${h.whatToLearn}` : ''}</div>
                 </div>
                 <button
-                  onClick={() => makeInLane(h)}
+                  onClick={() => void makeInLane({ ...h, referenceId: h.id })}
+                  disabled={preparing === h.id}
                   title="Make a fresh song in this lane"
-                  className="inline-flex shrink-0 items-center gap-1 rounded-full border border-afrobrand-500/40 bg-afrobrand-500/10 px-2.5 py-1 text-xs text-afrobrand-300 hover:bg-afrobrand-500/20"
+                  className="inline-flex shrink-0 items-center gap-1 rounded-full border border-afrobrand-500/40 bg-afrobrand-500/10 px-2.5 py-1 text-xs text-afrobrand-300 hover:bg-afrobrand-500/20 disabled:opacity-60"
                 >
-                  <Wand2 className="h-3.5 w-3.5" /> Make in this lane
+                  {preparing === h.id ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Wand2 className="h-3.5 w-3.5" />} Make in this lane
                 </button>
               </li>
             ))}

@@ -75,21 +75,24 @@ export function musicTags(dna: SoundDNA, mood?: string): string[] {
   const enr = getEnrichment(dna.genre);
   const tags = dedupe([
     dna.displayName,
+    // SIGNATURE INSTRUMENTS LEAD — they're what makes the genre recognizable and
+    // exactly what was going missing (e.g. amapiano LOG DRUM, shakers, talking
+    // drum). Front-loaded + prominent so the model actually renders them.
+    ...dna.instrumentation.signature.slice(0, 3).map((x) => `prominent ${shorten(x, 40)}`),
+    ...dna.instrumentation.percussion.slice(0, 3).map((x) => shorten(x, 30)),
+    shorten(dna.instrumentation.bass, 34),
     ...dna.signatureElements.slice(0, 2).map((x) => shorten(x, 40)),
     // Current trending sound tokens (2026) so the model reflects what's charting.
-    ...(enr?.freshTokens ?? []).slice(0, 2).map((x) => shorten(x, 40)),
-    ...dna.instrumentation.signature.slice(0, 3).map((x) => shorten(x, 36)),
-    ...dna.instrumentation.percussion.slice(0, 2).map((x) => shorten(x, 28)),
-    shorten(dna.instrumentation.bass, 32),
+    ...(enr?.freshTokens ?? []).slice(0, 1).map((x) => shorten(x, 40)),
     shorten(dna.groove.feel, 36),
     dna.modalFlavor ? shorten(dna.modalFlavor, 32) : undefined,
     mood?.trim() ? `${mood.trim()} mood` : undefined,
-  ]).slice(0, 11);
+  ]).slice(0, 12);
   // Hard cap the joined length so we never blow the model's style budget.
   const out: string[] = [];
   let len = 0;
   for (const t of tags) {
-    if (len + t.length + 2 > 320) break;
+    if (len + t.length + 2 > 380) break;
     out.push(t);
     len += t.length + 2;
   }

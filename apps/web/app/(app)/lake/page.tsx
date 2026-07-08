@@ -46,6 +46,30 @@ export default function LakePage() {
   const [lake, setLake] = useState<Lake | null>(null);
   const [err, setErr] = useState('');
   const [deleting, setDeleting] = useState<string>('');
+  const [preparing, setPreparing] = useState<string>('');
+
+  // Make a fresh song in this reference's LANE — starts producing immediately, with
+  // the reference's real genre/tempo/mood/LANGUAGES (backfilled by /zap/lane-brief).
+  async function makeInLane(r: LakeRow) {
+    setPreparing(r.id);
+    const p: Record<string, string> = {
+      genre: r.genre || 'afrobeats',
+      produce: '1',
+      languages: 'pcm,en',
+      vibe: (r.summary || `a fresh original in the lane of ${r.title || 'this reference'}`).slice(0, 240),
+    };
+    try {
+      const b = await api.post<{ genre: string; bpm: number; mood: string | null; languages: string[]; influence: string | null; vibe: string }>('/zap/lane-brief', { referenceId: r.id });
+      p.genre = b.genre || p.genre;
+      p.languages = (b.languages?.length ? b.languages : ['pcm', 'en']).join(',');
+      p.vibe = (b.vibe || p.vibe).slice(0, 240);
+      if (b.bpm) p.bpm = String(b.bpm);
+      if (b.mood) p.mood = b.mood;
+      if (b.influence) p.influence = b.influence;
+    } catch { /* fall back to genre/vibe defaults */ }
+    setPreparing('');
+    router.push(`/create?${new URLSearchParams(p).toString()}`);
+  }
 
   const load = useCallback(async () => {
     try {
@@ -157,11 +181,12 @@ export default function LakePage() {
                     {r.summary && <div className="mt-0.5 line-clamp-2 text-xs text-slate-500">{r.summary}</div>}
                   </div>
                   <button
-                    onClick={() => router.push(`/create?genre=${encodeURIComponent(r.genre || 'afrobeats')}&languages=pcm,en&produce=1&vibe=${encodeURIComponent((r.summary || `a fresh original in the lane of ${r.title || 'this reference'}`).slice(0, 240))}`)}
+                    onClick={() => void makeInLane(r)}
+                    disabled={preparing === r.id}
                     title="Make a fresh song in this lane — starts making immediately (never a copy)"
-                    className="inline-flex shrink-0 items-center gap-1 rounded-full border border-afrobrand-500/40 bg-afrobrand-500/10 px-2.5 py-1 text-xs text-afrobrand-300 hover:bg-afrobrand-500/20"
+                    className="inline-flex shrink-0 items-center gap-1 rounded-full border border-afrobrand-500/40 bg-afrobrand-500/10 px-2.5 py-1 text-xs text-afrobrand-300 hover:bg-afrobrand-500/20 disabled:opacity-60"
                   >
-                    <Wand2 className="h-3.5 w-3.5" /> Make in this lane
+                    {preparing === r.id ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Wand2 className="h-3.5 w-3.5" />} Make in this lane
                   </button>
                   <button
                     onClick={() => void remove(r.id)}
