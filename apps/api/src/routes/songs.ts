@@ -112,6 +112,49 @@ export default async function songs(app: FastifyInstance) {
     return { ...song, coverUrl: cover?.url ?? null };
   });
 
+  // ---- SUNO BRIDGE: everything you need to generate this song in your own Suno
+  // account (clean rights, top-tier audio), then bring it back to master + score.
+  app.get<{ Params: { id: string } }>('/:id/suno-export', async (req, reply) => {
+    const { workspaceId } = requireAuth(req);
+    const song = await prisma.song.findFirst({
+      where: { id: req.params.id, workspaceId },
+      include: {
+        project: { include: { artist: true } },
+        lyric: true,
+        hooks: { where: { approved: true }, orderBy: { createdAt: 'desc' }, take: 1 },
+      },
+    });
+    if (!song) return reply.code(404).send({ error: 'song_not_found' });
+    const genre = song.project.genre;
+    const bpm = song.project.bpm ?? undefined;
+    const langs = (song.project.artist.languages ?? []) as string[];
+    const brief = soundBrief(genre);
+    // Suno's "Style of Music" field — genre + tempo + the genre's signature
+    // production tokens + the artist lane. Concise; Suno weights the front.
+    const stylePrompt = [
+      genre.replace(/_/g, ' '),
+      bpm ? `${bpm} bpm` : null,
+      langs.length ? `${langs.join('/')} vocals` : null,
+      ...(brief.tags ?? []).slice(0, 8),
+      song.project.artist.vocalTone?.length ? song.project.artist.vocalTone.slice(0, 3).join(', ') : null,
+      song.project.artist.laneSummary ? `lane: ${song.project.artist.laneSummary}` : null,
+    ]
+      .filter(Boolean)
+      .join(', ')
+      .slice(0, 380);
+    // The lyric body already carries [Verse]/[Chorus] structure and is clean (the
+    // ad-lib/stage-direction layer is only added at render time), so it's Suno-ready.
+    const lyricsForSuno = (song.lyric?.cleanVersion || song.lyric?.body || '').trim();
+    return {
+      songId: song.id,
+      title: song.lyric?.title || song.title,
+      stylePrompt,
+      lyricsForSuno,
+      hasLyrics: lyricsForSuno.length > 0,
+      tips: 'In Suno: Create → Custom Mode → turn "Instrumental" OFF → paste Style + Lyrics → Create. Download the WAV, then use "Bring it back from Suno" here to master + score it — your account, your rights.',
+    };
+  });
+
   // ---- General edit (rename / version / status) — "not one-shot" ----
   const patchSchema = z.object({
     title: z.string().min(1).max(200).optional(),

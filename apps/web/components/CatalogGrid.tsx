@@ -3,7 +3,8 @@
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { useApi } from '@/lib/api';
-import { Trash2, Download, Wand2, FileText, Copy, Recycle, Pencil, Sliders, X, Loader2, Music2, Layers, TrendingUp, RefreshCw, Mic, Disc3 } from 'lucide-react';
+import { Trash2, Download, Wand2, FileText, Copy, Recycle, Pencil, Sliders, X, Loader2, Music2, Layers, TrendingUp, RefreshCw, Mic, Disc3, Sparkles } from 'lucide-react';
+import { SunoBridge } from './SunoBridge';
 
 interface HitPrediction {
   hitScore: number;
@@ -57,6 +58,7 @@ export default function CatalogGrid({ initial }: { initial: SongRow[] }) {
   const [editing, setEditing] = useState<{ id: string; lyricId?: string; title: string; body: string; versions?: LyricVer[] } | null>(null);
   const [downloads, setDownloads] = useState<{ id: string; files: DownloadFile[] } | null>(null);
   const [hit, setHit] = useState<{ title: string; p: HitPrediction } | null>(null);
+  const [suno, setSuno] = useState<{ songId: string; projectId: string } | null>(null);
 
   const flash = (m: string) => { setToast(m); setTimeout(() => setToast(''), 3500); };
   const isBusy = (id: string, a: string) => busy === `${id}:${a}`;
@@ -304,6 +306,13 @@ export default function CatalogGrid({ initial }: { initial: SongRow[] }) {
                 <Action label={s.hitScore != null ? `A&R ${s.hitScore}/100` : 'Will it hit?'} icon={<TrendingUp className="h-3.5 w-3.5" />} busy={isBusy(s.id, 'hit')} onClick={() => void willItHit(s)} />
                 {s.hitScore != null && <Action label="🚀 Make it bigger" busy={isBusy(s.id, 'bigger')} onClick={() => void makeItBigger(s)} />}
                 <Action label="Re-master" icon={<Wand2 className="h-3.5 w-3.5" />} busy={isBusy(s.id, 'master')} onClick={() => void remaster(s)} />
+                <button
+                  onClick={() => setSuno({ songId: s.id, projectId: s.projectId })}
+                  title="Generate this in your own Suno account (best audio, your rights), then bring it back to master + score"
+                  className="inline-flex items-center gap-1 rounded-full border border-afrobrand-500/40 bg-afrobrand-500/10 px-2.5 py-1 text-xs text-afrobrand-300 hover:bg-afrobrand-500/20"
+                >
+                  <Sparkles className="h-3.5 w-3.5" /> Take to Suno
+                </button>
                 <button onClick={() => setOpenId(openId === s.id ? null : s.id)} className="rounded-full border border-white/10 bg-white/5 px-2.5 py-1 text-xs text-slate-300 hover:bg-white/10">
                   {openId === s.id ? 'Less' : 'More'}
                 </button>
@@ -423,6 +432,15 @@ export default function CatalogGrid({ initial }: { initial: SongRow[] }) {
             </ul>
           )}
         </Modal>
+      )}
+
+      {suno && (
+        <SunoBridge
+          songId={suno.songId}
+          projectId={suno.projectId}
+          onClose={() => setSuno(null)}
+          onDone={() => flash('Suno file received — mastering + scoring. It updates here in ~1 min.')}
+        />
       )}
     </div>
   );

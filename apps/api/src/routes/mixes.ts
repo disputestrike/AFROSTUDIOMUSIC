@@ -4,6 +4,7 @@ import { createMasterInputSchema, createMixInputSchema, attachSongUploadSchema }
 import { requireAuth } from '../middleware/auth';
 import { enqueue } from '../lib/queue';
 import { publicUrlFor, assertOwnedKey } from '../lib/storage';
+import { arReadAfterRender } from '../lib/ar-read';
 
 export default async function mixes(app: FastifyInstance) {
   app.post<{ Params: { projectId: string } }>(
@@ -170,8 +171,14 @@ export default async function mixes(app: FastifyInstance) {
           songId,
           mixId: mix.id,
           preset: input.masterPreset,
+          finished: true, // an uploaded song is already a finished master → conform
         },
       });
+
+      // Finish the pipeline: once the master lands, run Will-it-hit so an uploaded
+      // Suno song gets scored just like a generated one (catalog shows it; the
+      // release gate can act on it).
+      void arReadAfterRender(app, workspaceId, [{ songId, jobId: job.id }]).catch(() => {});
 
       reply.code(202);
       return { mix, songId, mastered: true, jobId: job.id };

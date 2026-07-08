@@ -283,7 +283,9 @@ export const attachSongUploadSchema = z.object({
   key: z.string().min(4),
   songId: z.string().cuid().optional(),
   title: z.string().max(120).optional(),
-  masterPreset: z.enum(MASTER_PRESETS).default('streaming_lufs_-14'),
+  // An uploaded finished song (Suno, or bring-your-own) → conform to COMPETITIVE
+  // Afro loudness (~-9) light-touch, not the quieter -14 with a full chain.
+  masterPreset: z.enum(MASTER_PRESETS).default('afro_stream_-9'),
   autoMaster: z.boolean().default(true),
 });
 

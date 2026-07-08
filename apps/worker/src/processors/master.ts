@@ -10,6 +10,10 @@ interface MasterPayload {
   songId: string;
   mixId?: string;
   preset: string;
+  /** The source is ALREADY a finished master (an uploaded song — Suno, or any
+   * bring-your-own master): conform loudness + peak only, don't re-EQ/comp it
+   * ("mastering a master" dulls it). */
+  finished?: boolean;
 }
 
 /**
@@ -31,7 +35,10 @@ export async function processMaster(p: MasterPayload) {
         });
 
     const mixBytes = await downloadToBuffer(mix.url);
-    const { wav, mp3 } = await ffmpegMaster({ mix: mixBytes, preset: p.preset });
+    // 'uploaded' mixes are the artist's OWN finished master (Suno, or a bring-your-
+    // own song) → conform light-touch. Also honor an explicit finished flag.
+    const finished = p.finished || mix.preset === 'uploaded';
+    const { wav, mp3 } = await ffmpegMaster({ mix: mixBytes, preset: p.preset, finished });
 
     const [wavUrl, mp3Url] = await Promise.all([
       uploadBytes({ workspaceId: p.workspaceId, kind: 'masters', bytes: wav, contentType: 'audio/wav', ext: 'wav' }),
