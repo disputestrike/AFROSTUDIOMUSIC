@@ -168,13 +168,20 @@ def analyze(audio_path, stems):
         iso_beats = beat_times
 
     # ---------- band-split onset streams (drums stem, else full mix) ----------
-    def onset_times_in_band(sig, sig_sr, lo, hi, delta=0.12):
+    # ENERGY-FLUX onsets (half-wave-rectified diff of the band RMS envelope). NOT
+    # librosa.onset.onset_strength — its mel-spectrogram flux collapses to ~0 on a
+    # heavily band-limited signal (a 30-120Hz bandpass lands in 1-2 mel bins), so it
+    # silently misses kicks. Energy-flux works on both narrowband sub-kicks and HF hats.
+    def onset_times_in_band(sig, sig_sr, lo, hi, delta=0.15, wait_ms=58):
         try:
-            b = sos_band(sig, sig_sr, lo, hi)
-            env = librosa.onset.onset_strength(y=b.astype(np.float32), sr=sig_sr, hop_length=HOP, aggregate=np.median)
-            env = env / (env.max() + 1e-9)
-            peaks = librosa.util.peak_pick(env, pre_max=3, post_max=3, pre_avg=3, post_avg=5, delta=delta, wait=5)
-            return librosa.frames_to_time(peaks, sr=sig_sr, hop_length=HOP), env
+            b = sos_band(sig, sig_sr, lo, hi).astype(np.float32)
+            rms = librosa.feature.rms(y=b, hop_length=HOP, frame_length=512)[0]
+            rms = rms / (rms.max() + 1e-9)
+            flux = np.maximum(0.0, np.diff(rms, prepend=rms[0]))
+            flux = flux / (flux.max() + 1e-9)
+            wait = max(1, int(wait_ms / 1000.0 * sig_sr / HOP))
+            peaks = librosa.util.peak_pick(flux, pre_max=10, post_max=10, pre_avg=10, post_avg=10, delta=delta, wait=wait)
+            return librosa.frames_to_time(peaks, sr=sig_sr, hop_length=HOP), flux
         except Exception as e:
             log(f"[onset-band {lo}-{hi}] {e}")
             return np.array([]), np.array([])
@@ -280,31 +287,20 @@ def analyze(audio_path, stems):
         if not grid_ok or len(kick_t) < 8:
             return UNK("fourOnFloor:no-grid-or-kicks")
         w = 0.12 * sigma_beat
-        occupied = [1 if np.any(np.abs(kick_t - bt) <= w) else 0 for bt in beat_times]
-        beat_hit = float(np.mean(occupied))
-        # 16-slot bar histogram; quarter slots {0,4,8,12}
-        occ_bar = np.zeros(16)
-        counts = np.zeros(16)
-        nbar = max(1, int(n_beats // 4))
-        for bar in range(nbar):
-            bstart = beat_times[bar * 4]
-            bend = beat_times[min(bar * 4 + 4, n_beats - 1)]
-            barlen = bend - bstart
-            if barlen <= 0:
-                continue
-            present = set()
-            for kt in kick_t:
-                if bstart <= kt < bend:
-                    slot = int(((kt - bstart) / barlen) * 16) % 16
-                    present.add(slot)
-            for s in range(16):
-                counts[s] += 1
-                if s in present:
-                    occ_bar[s] += 1
-        occ_q = np.array([occ_bar[s] / (counts[s] + 1e-9) for s in (0, 4, 8, 12)])
-        is4 = bool(occ_q.min() >= 0.75 and beat_hit >= 0.9)
-        conf = grid_conf * max(0.0, min(1.0, (occ_q.min() - 0.5) / 0.4)) if is4 else grid_conf * 0.7
-        return M(is4, conf, f"kick quarter-slot occupancy min={occ_q.min():.2f} beatHit={beat_hit:.2f}")
+        occupied = np.array([1.0 if np.any(np.abs(kick_t - bt) <= w) else 0.0 for bt in beat_times])
+        beat_hit = float(occupied.mean())  # fraction of beats carrying a kick — the robust signal
+        # Corroborate with beat-IN-BAR occupancy (index mod 4): a true four-on-floor
+        # fills ALL four positions (phase-invariant — no fragile 16th-slot mapping); a
+        # broken/syncopated kick (typical afrobeats) leaves a position under-occupied.
+        pos_occ = []
+        for pos in range(4):
+            idxs = [i for i in range(n_beats) if i % 4 == pos]
+            if idxs:
+                pos_occ.append(float(np.mean([occupied[i] for i in idxs])))
+        pos_min = min(pos_occ) if pos_occ else 0.0
+        is4 = bool(beat_hit >= 0.85 and pos_min >= 0.6)
+        conf = grid_conf * max(0.0, min(1.0, (beat_hit - 0.5) / 0.4)) if is4 else grid_conf * 0.7
+        return M(is4, conf, f"kick beatHitRate={beat_hit:.2f} posMin={pos_min:.2f}")
     out["fourOnFloor"] = safe(_four_on_floor, "fourOnFloor")
 
     # ---------- microtiming (signed ms behind/ahead; grid-independent) ----------
@@ -543,12 +539,21 @@ def analyze(audio_path, stems):
     def _kick_density():
         if not grid_ok or len(kick_t) < 4:
             return UNK("kickDensity:no-grid-or-kicks")
-        bass_on = onset_times_in_band(bass_y, sr, 40, 150)[0] if bass_q >= 1.0 else np.array([])
-        kept = [kt for kt in kick_t if not (len(bass_on) and np.min(np.abs(bass_on - kt)) < 0.03)]
+        # Log-drum-vs-kick suppression ONLY matters on the full-mix fallback (both live
+        # 30-150Hz). With a real drums stem the kick is already isolated (log drum ->
+        # bass stem), and a real kick often lands ON a bassline note — suppressing then
+        # would wrongly halve the count. So suppress only when we lack a drums stem.
+        if drums_q < 1.0 and bass_q >= 1.0:
+            bass_on = onset_times_in_band(bass_y, sr, 40, 150)[0]
+            kept = [kt for kt in kick_t if not (len(bass_on) and np.min(np.abs(bass_on - kt)) < 0.03)]
+            note = "full-mix, bass-onset suppressed"
+        else:
+            kept = list(kick_t)
+            note = "drums-stem (trusted, no suppression)"
         barlen = sigma_beat * 4
         val = len(kept) / max(1.0, dur / barlen)
         conf = grid_conf * drums_q * 0.8
-        return M(round(val, 2), conf, "30-150Hz percussive onsets/bar (bass-onset suppressed)")
+        return M(round(val, 2), conf, f"30-150Hz percussive onsets/bar ({note})")
     out["kickDensity"] = safe(_kick_density, "kickDensity")
 
     # ---------- clapBackbeat (alternation strength; phase-capped) ----------
