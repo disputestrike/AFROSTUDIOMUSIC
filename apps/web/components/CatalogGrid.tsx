@@ -3,7 +3,7 @@
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { useApi } from '@/lib/api';
-import { Trash2, Download, Wand2, FileText, Copy, Recycle, Pencil, Sliders, X, Loader2, Music2, Layers, TrendingUp, RefreshCw, Mic, Disc3, Sparkles } from 'lucide-react';
+import { Trash2, Download, Wand2, FileText, Copy, Recycle, Pencil, Sliders, X, Loader2, Music2, Layers, TrendingUp, RefreshCw, Mic, Disc3, Sparkles, GitCompare } from 'lucide-react';
 import { SunoBridge } from './SunoBridge';
 
 interface HitPrediction {
@@ -47,6 +47,13 @@ const STATUS_LABEL: Record<string, string> = {
 
 type DownloadFile = { label: string; url: string; kind: string; dl?: string };
 type LyricVer = { body: string; title: string | null; at: string; label?: string };
+interface VersionsResp {
+  songId: string;
+  versionLabel: string | null;
+  hasBigger: boolean;
+  audioVersions: Array<{ label: string; url: string; at: string }>;
+  lyricVersions: Array<{ label: string; title: string | null; body: string; at: string | null }>;
+}
 
 export default function CatalogGrid({ initial }: { initial: SongRow[] }) {
   const api = useApi();
@@ -59,6 +66,18 @@ export default function CatalogGrid({ initial }: { initial: SongRow[] }) {
   const [downloads, setDownloads] = useState<{ id: string; files: DownloadFile[] } | null>(null);
   const [hit, setHit] = useState<{ title: string; p: HitPrediction } | null>(null);
   const [suno, setSuno] = useState<{ songId: string; projectId: string } | null>(null);
+  const [compare, setCompare] = useState<{ title: string; loading: boolean; data?: VersionsResp } | null>(null);
+
+  async function openCompare(s: SongRow) {
+    setCompare({ title: s.title, loading: true });
+    try {
+      const data = await api.get<VersionsResp>(`/songs/${s.id}/versions`);
+      setCompare({ title: s.title, loading: false, data });
+    } catch (e) {
+      flash((e as Error).message || 'Could not load versions');
+      setCompare(null);
+    }
+  }
 
   const flash = (m: string) => { setToast(m); setTimeout(() => setToast(''), 3500); };
   const isBusy = (id: string, a: string) => busy === `${id}:${a}`;
@@ -305,6 +324,7 @@ export default function CatalogGrid({ initial }: { initial: SongRow[] }) {
                 <Action label="Lyrics" icon={<FileText className="h-3.5 w-3.5" />} busy={isBusy(s.id, 'lyrics')} onClick={() => void openLyrics(s)} />
                 <Action label={s.hitScore != null ? `A&R ${s.hitScore}/100` : 'Will it hit?'} icon={<TrendingUp className="h-3.5 w-3.5" />} busy={isBusy(s.id, 'hit')} onClick={() => void willItHit(s)} />
                 {s.hitScore != null && <Action label="🚀 Make it bigger" busy={isBusy(s.id, 'bigger')} onClick={() => void makeItBigger(s)} />}
+                {/bigger/i.test(s.versionLabel ?? '') && <Action label="⤢ Compare versions" icon={<GitCompare className="h-3.5 w-3.5" />} onClick={() => void openCompare(s)} />}
                 <Action label="Re-master" icon={<Wand2 className="h-3.5 w-3.5" />} busy={isBusy(s.id, 'master')} onClick={() => void remaster(s)} />
                 <button
                   onClick={() => setSuno({ songId: s.id, projectId: s.projectId })}
@@ -441,6 +461,50 @@ export default function CatalogGrid({ initial }: { initial: SongRow[] }) {
           onClose={() => setSuno(null)}
           onDone={() => flash('Suno file received — mastering + scoring. It updates here in ~1 min.')}
         />
+      )}
+
+      {compare && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4" onClick={() => setCompare(null)}>
+          <div className="max-h-[85vh] w-full max-w-3xl overflow-y-auto rounded-2xl border border-white/10 bg-slate-950 p-5" onClick={(e) => e.stopPropagation()}>
+            <div className="mb-3 flex items-center justify-between">
+              <div className="flex items-center gap-2 font-display text-lg"><GitCompare className="h-4 w-4 text-afrobrand-400" /> Compare — {compare.title}</div>
+              <button onClick={() => setCompare(null)} className="rounded-lg p-1 text-slate-400 hover:bg-white/10"><X className="h-4 w-4" /></button>
+            </div>
+            {compare.loading ? (
+              <div className="flex items-center gap-2 py-8 text-sm text-slate-400"><Loader2 className="h-4 w-4 animate-spin" /> Loading versions…</div>
+            ) : (
+              <>
+                <p className="mb-3 text-xs text-slate-500">The original and each “bigger” take, side by side — play them, read them, and pick the one you like. Nothing was lost; the originals were just hidden behind the newest.</p>
+                {/* Audio takes */}
+                <div className="mb-4">
+                  <div className="mb-1.5 text-xs font-medium uppercase tracking-wide text-slate-400">Audio</div>
+                  <div className="grid gap-2 sm:grid-cols-2">
+                    {compare.data?.audioVersions.map((a, i) => (
+                      <div key={i} className={`rounded-xl border p-2.5 ${a.label.includes('Original') ? 'border-white/10 bg-white/5' : 'border-afrobrand-500/30 bg-afrobrand-500/5'}`}>
+                        <div className="mb-1 text-xs font-medium text-slate-200">{a.label}</div>
+                        <audio controls preload="none" src={a.url} className="w-full" />
+                      </div>
+                    ))}
+                    {!compare.data?.audioVersions.length && <div className="text-xs text-slate-500">No audio takes found.</div>}
+                  </div>
+                </div>
+                {/* Lyric takes */}
+                <div>
+                  <div className="mb-1.5 text-xs font-medium uppercase tracking-wide text-slate-400">Lyrics</div>
+                  <div className="grid gap-2 sm:grid-cols-2">
+                    {compare.data?.lyricVersions.map((l, i) => (
+                      <div key={i} className={`rounded-xl border p-2.5 ${/original/i.test(l.label) ? 'border-white/10 bg-white/5' : 'border-afrobrand-500/30 bg-afrobrand-500/5'}`}>
+                        <div className="mb-1 text-xs font-medium text-slate-200">{l.label}{l.title ? ` · ${l.title}` : ''}</div>
+                        <pre className="max-h-56 overflow-y-auto whitespace-pre-wrap text-xs leading-relaxed text-slate-300">{l.body}</pre>
+                      </div>
+                    ))}
+                    {(compare.data?.lyricVersions.length ?? 0) < 2 && <div className="text-xs text-slate-500">Only one lyric take is on record (the original text may predate version history — the audio original above is still here).</div>}
+                  </div>
+                </div>
+              </>
+            )}
+          </div>
+        </div>
       )}
     </div>
   );

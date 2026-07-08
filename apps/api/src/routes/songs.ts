@@ -243,6 +243,45 @@ export default async function songs(app: FastifyInstance) {
     return { lyric: updated, needsRegeneration, revertedTo: target.label ?? `version ${idx + 1}` };
   });
 
+  // ---- VERSIONS: original vs bigger, side by side, so the artist can A/B them.
+  // "Make it bigger" re-sings (new beat + master) and rewrites the lyric (the old
+  // one snapshotted). Nothing is deleted — the originals were just hidden behind the
+  // "freshest" view. This surfaces every audio take + every lyric take together. ----
+  app.get<{ Params: { id: string } }>('/:id/versions', async (req, reply) => {
+    const { workspaceId } = requireAuth(req);
+    const song = await prisma.song.findFirst({
+      where: { id: req.params.id, workspaceId },
+      include: {
+        masters: { orderBy: { createdAt: 'asc' } },
+        beats: { orderBy: { createdAt: 'asc' } },
+        lyric: { select: { body: true, title: true, versions: true } },
+      },
+    });
+    if (!song) return reply.code(404).send({ error: 'song_not_found' });
+
+    // Audio takes, oldest→newest: prefer masters (the deliverable); fall back to
+    // beats if a take never mastered. Drop consecutive duplicate URLs (a promoted
+    // master re-points the same file).
+    const rows = (song.masters.length ? song.masters : song.beats).map((m) => ({ url: m.url, at: m.createdAt }));
+    const audio = rows.filter((r, i) => i === 0 || r.url !== rows[i - 1]!.url);
+    const audioVersions = audio.map((a, i) => ({
+      label: audio.length === 1 ? 'Version' : i === audio.length - 1 ? 'Bigger (current)' : i === 0 ? 'Original' : `Take ${i + 1}`,
+      url: a.url,
+      at: a.at,
+    }));
+
+    // Lyric takes: the current (bigger) body first, then the snapshot history
+    // (the earliest is auto-labelled "original").
+    const hist = readVersions(song.lyric?.versions);
+    const lyricVersions = [
+      { label: 'Bigger (current)', title: song.lyric?.title ?? song.title, body: song.lyric?.body ?? '', at: null as string | null },
+      ...hist.map((v) => ({ label: v.label ?? 'earlier take', title: v.title, body: v.body, at: v.at })),
+    ].filter((v) => v.body?.trim());
+
+    const hasBigger = /bigger/i.test(song.versionLabel ?? '') || audioVersions.length > 1 || lyricVersions.length > 1;
+    return { songId: song.id, versionLabel: song.versionLabel, hasBigger, audioVersions, lyricVersions };
+  });
+
   // ---- Download manifest (audio + stems + cover + lyrics) ----
   app.get<{ Params: { id: string } }>('/:id/download', async (req, reply) => {
     const { workspaceId } = requireAuth(req);
