@@ -59,14 +59,26 @@ export async function processMusic(p: MusicPayload) {
       : musicAdapter(ws?.musicProvider ?? undefined, ws?.musicApiKey ?? undefined);
     type GenResult = Awaited<ReturnType<typeof adapter.generate>>;
 
-    // Run generate + poll-to-terminal for ONE candidate.
+    // minimax/suno DELIVER a finished, loudness-maximised master (they ship hot on
+    // purpose); ace_step/replicate/musicgen are rawer. The auto-master conforms a
+    // finished engine light-touch (loudness + true-peak only) instead of running
+    // the full EQ/glue-comp chain on top, and the self-training gate treats their
+    // always-hot ("clipping") raw QC differently from a genuinely broken take.
+    const finished = adapter.name === 'minimax' || adapter.name === 'suno';
+
+    // Run generate + poll-to-terminal for ONE candidate. Cap by ELAPSED TIME, not
+    // a fixed attempt count: at minimax's 5s poll interval a "25 attempts" cap gave
+    // only ~125s, but minimax music-2.6 renders take 60-180s — so the SLOWER of two
+    // best-of-N takes was still 'running' at the cap and got dropped, silently
+    // degrading best-of-2 to best-of-1. Poll up to 10 min (< the 12-min withTimeout
+    // race below, which still covers a socket that never resolves or rejects).
     const generateOne = async (): Promise<GenResult> => {
+      const pollDeadline = Date.now() + 10 * 60 * 1000;
       let r = await adapter.generate(p.input);
-      let attempts = 0;
       while (r.status === 'queued' || r.status === 'running') {
         if (!adapter.poll || !r.externalId) break;
+        if (Date.now() >= pollDeadline) break;
         await new Promise((res) => setTimeout(res, r.pollAfterMs ?? 8_000));
-        if (++attempts > 25) break;
         r = await adapter.poll(r.externalId);
       }
       return r;
@@ -167,7 +179,17 @@ export async function processMusic(p: MusicPayload) {
     // the actual production directives that produced it + the measured result.
     // Uploads still outrank these at retrieval (they're the artist's true sound);
     // failures and weak takes never enter the library.
-    if (wantsVocals && quality?.verdict === 'pass') {
+    // MiniMax/Suno raw renders ALWAYS trip 'clipping' (they ship hot) → verdict
+    // 'fail', so a pass-only gate would never learn from the default engine. A
+    // clip-ONLY finished-engine take is genuinely good — the auto-master tames that
+    // peak — so it should feed the library; anything else wrong (too_quiet /
+    // squashed / flat / short) still stays out.
+    const clipOnlyFinished =
+      finished &&
+      quality?.verdict === 'fail' &&
+      (quality.flags ?? []).length === 1 &&
+      quality.flags?.[0] === 'clipping';
+    if (wantsVocals && (quality?.verdict === 'pass' || clipOnlyFinished)) {
       // Dedupe: at most ONE self-training row per workspace+genre per day —
       // otherwise generated rows flood the library and bury the artist's real
       // uploads at retrieval.
@@ -194,7 +216,7 @@ export async function processMusic(p: MusicPayload) {
               vibePrompt: (p.input.vibePrompt ?? '').slice(0, 500),
               qc: quality,
             } as never,
-            summary: `Generated ${p.input.genre ?? ''} record that passed QC (${Math.round(quality.loudnessRangeLra ?? 0)}LU range, crest ${quality.crestFactorDb ?? '—'}dB) on ${adapter.name}: ${(p.input.dnaTags ?? []).slice(0, 6).join(', ')}`,
+            summary: `Generated ${p.input.genre ?? ''} record (${Math.round(quality?.loudnessRangeLra ?? 0)}LU range, crest ${quality?.crestFactorDb ?? '—'}dB) on ${adapter.name}: ${(p.input.dnaTags ?? []).slice(0, 6).join(', ')}`,
           },
         })
         .catch((err) => console.warn('[music] self-training reference write failed:', (err as Error)?.message));
@@ -235,12 +257,17 @@ export async function processMusic(p: MusicPayload) {
     if (wantsVocals && !placeholder && p.songId) {
       try {
         if (await ffmpegAvailable()) {
-          const preset = 'streaming_lufs_-14';
+          // Finished engines (minimax/suno) already deliver a competitive, loud
+          // master — conform it to ~-9 LUFS (commercial Afro loudness) light-touch,
+          // don't master it DOWN to -14 with a full EQ/comp chain (that made the
+          // catalog ~5 dB quieter and duller than the raw beat the Create page
+          // plays — the "sounds weak" complaint). Raw engines keep the -14 chain.
+          const preset = finished ? 'afro_stream_-9' : 'streaming_lufs_-14';
           const mixRow = await prisma.mix.create({
             data: { projectId: p.projectId, songId: p.songId, preset: 'source', url: ingestedMain, notes: 'Master source (auto, from render)', approved: true },
           });
           const srcBytes = await downloadToBuffer(ingestedMain);
-          const { wav, mp3 } = await ffmpegMaster({ mix: srcBytes, preset });
+          const { wav, mp3 } = await ffmpegMaster({ mix: srcBytes, preset, finished });
           const [wavUrl, mp3Url] = await Promise.all([
             uploadBytes({ workspaceId: p.workspaceId, kind: 'masters', bytes: wav, contentType: 'audio/wav', ext: 'wav' }),
             uploadBytes({ workspaceId: p.workspaceId, kind: 'masters', bytes: mp3, contentType: 'audio/mpeg', ext: 'mp3' }),

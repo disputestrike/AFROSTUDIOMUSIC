@@ -308,6 +308,10 @@ export const MIX_PRESETS: Record<string, MixPreset> = {
 /** LUFS targets per master preset. */
 export const MASTER_TARGETS: Record<string, { lufs: number; tp: number }> = {
   'streaming_lufs_-14': { lufs: -14, tp: -1.0 },
+  // Competitive Afrobeats/Afropop delivery — loud like commercial records
+  // (~-8 to -10 LUFS) but a -1.0 dBTP ceiling so it stays safe on lossy transcode
+  // (unlike club_-9's -0.3). This is the auto-master target for FINISHED engines.
+  'afro_stream_-9': { lufs: -9, tp: -1.0 },
   'club_-9': { lufs: -9, tp: -0.3 },
   'reels_-16': { lufs: -16, tp: -1.0 },
   'cd_-9': { lufs: -9, tp: -0.3 },
@@ -335,6 +339,23 @@ export function masterChain(target: { lufs: number; tp: number }): string {
     'acompressor=threshold=-16dB:ratio=2:attack=20:release=200:makeup=1.5', // glue
     `loudnorm=I=${target.lufs}:TP=${target.tp}:LRA=11`,
     `alimiter=level=false:limit=${tpLinear}`, // true-peak brickwall ceiling
+  ].join(',');
+}
+
+/**
+ * Light-touch CONFORM for engines that already hand back a FINISHED, loudness-
+ * maximised master (MiniMax/Suno). It only conforms loudness to target and puts a
+ * true-peak ceiling on the inter-sample overshoot these models ship with — NO EQ
+ * and NO glue compression, because re-EQing + re-compressing an already-balanced,
+ * already-limited master ("mastering a master") recolours it and dulls the
+ * transients. LRA is set high so loudnorm does NOT compress the engine's own
+ * dynamics — we're taming the +1 dBTP peak and matching loudness, nothing else.
+ */
+export function conformChain(target: { lufs: number; tp: number }): string {
+  const tpLinear = Math.pow(10, target.tp / 20).toFixed(4);
+  return [
+    `loudnorm=I=${target.lufs}:TP=${target.tp}:LRA=20`,
+    `alimiter=level=false:limit=${tpLinear}`, // true-peak ceiling on the provider's hot render
   ].join(',');
 }
 
@@ -468,6 +489,13 @@ export async function mixdownConsole(tracks: ConsoleTrack[]): Promise<Buffer> {
 export async function master(opts: {
   mix: Buffer;
   preset: string;
+  /**
+   * The source is ALREADY a finished, loudness-maximised master (MiniMax/Suno):
+   * conform loudness + true-peak only (conformChain) instead of the full EQ/glue-
+   * comp masterChain, which would recolour and dull it. Raw mixes/engines and the
+   * user Re-master path omit this flag and keep the full chain they need.
+   */
+  finished?: boolean;
 }): Promise<{ wav: Buffer; mp3: Buffer }> {
   const target = MASTER_TARGETS[opts.preset] ?? MASTER_TARGETS['streaming_lufs_-14']!;
   const dir = await mkdtemp(join(tmpdir(), 'afrohit-master-'));
@@ -476,7 +504,7 @@ export async function master(opts: {
     const wavPath = join(dir, 'master.wav');
     const mp3Path = join(dir, 'master.mp3');
     await writeFile(inPath, opts.mix);
-    const filter = masterChain(target);
+    const filter = opts.finished ? conformChain(target) : masterChain(target);
     await runFfmpeg(['-i', inPath, '-af', filter, '-ar', '44100', '-ac', '2', wavPath]);
     await runFfmpeg(['-i', wavPath, '-codec:a', 'libmp3lame', '-b:a', '320k', mp3Path]);
     return { wav: await readFile(wavPath), mp3: await readFile(mp3Path) };

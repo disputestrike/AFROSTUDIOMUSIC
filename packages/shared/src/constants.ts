@@ -110,6 +110,7 @@ export type ImageProvider = (typeof IMAGE_PROVIDERS)[number];
 export const MIX_PRESETS = ['radio', 'club', 'tiktok', 'youtube', 'acapella', 'instrumental'] as const;
 export const MASTER_PRESETS = [
   'streaming_lufs_-14',
+  'afro_stream_-9', // competitive Afrobeats/Afropop loudness (~-9 LUFS, -1 dBTP safe)
   'club_-9',
   'reels_-16',
   'cd_-9',
