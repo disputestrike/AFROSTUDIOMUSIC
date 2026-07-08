@@ -143,7 +143,7 @@ function DataLakeCard({ o }: { o: { totalReferences?: number; byKind?: Record<st
   return (
     <div className="text-sm">
       <div className="mb-1 flex items-center gap-2 font-medium text-slate-200"><FileText className="h-4 w-4 text-afrobrand-400" /> Data lake — {o.totalReferences ?? 0} references</div>
-      <div className="text-xs text-slate-400">{k.heardSongs ?? 0} heard · {k.lyricCraft ?? 0} lyric-craft · {k.trendSnapshots ?? 0} trends · {k.selfTraining ?? 0} self-training</div>
+      <div className="text-xs text-slate-400">{k.heardSongs ?? 0} heard · {k.lyricCraft ?? 0} lyric-craft · {k.trendSnapshots ?? 0} trends · {k.selfTraining ?? 0} self-training{k.zapped ? ` · ${k.zapped} zapped` : ''}</div>
     </div>
   );
 }

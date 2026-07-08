@@ -42,6 +42,7 @@ import albums from './routes/albums';
 import materials from './routes/materials';
 import instrumentals from './routes/instrumentals';
 import lexicon from './routes/lexicon';
+import zap from './routes/zap';
 import uploads from './routes/uploads';
 import mixer from './routes/mixer';
 import settings from './routes/settings';
@@ -124,6 +125,7 @@ async function bootstrap() {
       await api.register(materials, { prefix: '/materials' });
       await api.register(instrumentals, { prefix: '/instrumentals' });
       await api.register(lexicon, { prefix: '/lexicon' });
+      await api.register(zap, { prefix: '/zap' });
       await api.register(uploads, { prefix: '/uploads' });
       await api.register(settings, { prefix: '/settings' });
       await api.register(publicRoutes, { prefix: '/public' });

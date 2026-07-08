@@ -8,6 +8,7 @@ export * from './embeddings';
 export * from './ar-director';
 export * from './tavily';
 export * from './analyze';
+export * from './recognize';
 export * from './vocal-arranger';
 export * from './sound-dna';
 export * from './generate';

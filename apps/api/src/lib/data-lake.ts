@@ -30,11 +30,13 @@ export const LAKE_ORCHESTRATION = {
     'Trend snapshots → the hook writer + A&R director, so what you make stays current.',
   selfTraining:
     'Your own QC-passed songs re-enter the lake (max 1 per brief; your real trained references always outrank them).',
+  zapped:
+    'Songs you Zapped (Shazam layer) → the uncopyrightable CRAFT of that lane/era (production, groove, hook mechanics) feeds the writers as a REFERENCE LANE — never a copy of the song or its lyrics.',
 } as const;
 
 export interface DataLakeSummary {
   totalReferences: number;
-  byKind: { heardSongs: number; lyricCraft: number; trendSnapshots: number; selfTraining: number };
+  byKind: { heardSongs: number; lyricCraft: number; trendSnapshots: number; selfTraining: number; zapped: number };
   /** Top genres among the artist's HEARD/trained sound (not lyric/trend rows). */
   topGenres: Array<{ genre: string; count: number }>;
   /** A few real trait lines so the chat can quote what it actually learned. */
@@ -47,15 +49,16 @@ export interface DataLakeSummary {
  * cheap (4 counts + one small read) so it doesn't slow the chat down.
  */
 export async function dataLakeSummary(workspaceId: string): Promise<DataLakeSummary> {
-  const [total, lyricCraftN, trendN, generatedN, recent] = await Promise.all([
+  const [total, lyricCraftN, trendN, zapN, generatedN, recent] = await Promise.all([
     prisma.soundReference.count({ where: { workspaceId } }),
     prisma.soundReference.count({ where: { workspaceId, sourceUrl: { startsWith: 'lyric:' } } }),
     prisma.soundReference.count({ where: { workspaceId, sourceUrl: { startsWith: 'trend:' } } }),
+    prisma.soundReference.count({ where: { workspaceId, sourceUrl: { startsWith: 'zap:' } } }),
     prisma.soundReference.count({ where: { workspaceId, recipe: { path: ['source'], equals: 'generated' } } }),
     prisma.soundReference.findMany({
-      // "MY sound" = heard/trained rows only (lyric-craft + trends live in the
-      // same table but aren't the artist's sound).
-      where: { workspaceId, NOT: [{ sourceUrl: { startsWith: 'lyric:' } }, { sourceUrl: { startsWith: 'trend:' } }] },
+      // "MY sound" = heard/trained rows only. Lyric-craft, trends, and Zap'd
+      // reference-lanes live in the same table but aren't the artist's own sound.
+      where: { workspaceId, NOT: [{ sourceUrl: { startsWith: 'lyric:' } }, { sourceUrl: { startsWith: 'trend:' } }, { sourceUrl: { startsWith: 'zap:' } }] },
       orderBy: { createdAt: 'desc' },
       take: 50,
       select: { genre: true, summary: true, recipe: true, createdAt: true },
@@ -84,10 +87,11 @@ export async function dataLakeSummary(workspaceId: string): Promise<DataLakeSumm
   return {
     totalReferences: total,
     byKind: {
-      heardSongs: Math.max(0, total - lyricCraftN - trendN - generatedN),
+      heardSongs: Math.max(0, total - lyricCraftN - trendN - zapN - generatedN),
       lyricCraft: lyricCraftN,
       trendSnapshots: trendN,
       selfTraining: generatedN,
+      zapped: zapN,
     },
     topGenres,
     sampleTraits,
@@ -115,9 +119,11 @@ export async function dataLakeReport(workspaceId: string) {
       ? 'lyricCraft'
       : r.sourceUrl.startsWith('trend:')
         ? 'trendSnapshots'
-        : ((r.recipe ?? {}) as { source?: string }).source === 'generated'
-          ? 'selfTraining'
-          : 'heardSongs';
+        : r.sourceUrl.startsWith('zap:')
+          ? 'zapped'
+          : ((r.recipe ?? {}) as { source?: string }).source === 'generated'
+            ? 'selfTraining'
+            : 'heardSongs';
   return {
     ...summary,
     recentLearnings: recent.map((r) => ({
