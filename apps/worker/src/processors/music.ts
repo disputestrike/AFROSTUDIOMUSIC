@@ -66,15 +66,31 @@ export async function processMusic(p: MusicPayload) {
     // always-hot ("clipping") raw QC differently from a genuinely broken take.
     const finished = adapter.name === 'minimax' || adapter.name === 'suno';
 
-    // Run generate + poll-to-terminal for ONE candidate. Cap by ELAPSED TIME, not
-    // a fixed attempt count: at minimax's 5s poll interval a "25 attempts" cap gave
-    // only ~125s, but minimax music-2.6 renders take 60-180s — so the SLOWER of two
-    // best-of-N takes was still 'running' at the cap and got dropped, silently
-    // degrading best-of-2 to best-of-1. Poll up to 10 min (< the 12-min withTimeout
+    // Run generate + poll-to-terminal for ONE candidate. Cap polling by ELAPSED
+    // TIME, not a fixed attempt count: at minimax's 5s poll interval a "25 attempts"
+    // cap gave only ~125s, but minimax music-2.6 renders take 60-180s, so a slow
+    // render could be dropped mid-flight. Poll up to 10 min (< the 12-min withTimeout
     // race below, which still covers a socket that never resolves or rejects).
+    // (Note: the observed best-of-1 was the burst-limit 429 handled below, not this.)
     const generateOne = async (): Promise<GenResult> => {
       const pollDeadline = Date.now() + 10 * 60 * 1000;
       let r = await adapter.generate(p.input);
+      // Replicate's prediction-CREATION endpoint is burst-limited on this account
+      // (≈6/min, BURST 1). Best-of-N fires N creates near-simultaneously, so the
+      // loser of the burst comes back failed with a 429/throttle and the candidate
+      // is silently dropped (best-of-2 → best-of-1 — proven live, not the poll cap).
+      // Retry the CREATE a few times with backoff; the staggered starts below plus
+      // this retry give every candidate its own creation slot.
+      let createTries = 0;
+      while (
+        r.status === 'failed' &&
+        createTries < 4 &&
+        /429|throttl|rate.?limit|too many/i.test(r.error ?? '')
+      ) {
+        await new Promise((res) => setTimeout(res, (createTries + 1) * 15_000));
+        createTries++;
+        r = await adapter.generate(p.input);
+      }
       while (r.status === 'queued' || r.status === 'running') {
         if (!adapter.poll || !r.externalId) break;
         if (Date.now() >= pollDeadline) break;
@@ -99,9 +115,20 @@ export async function processMusic(p: MusicPayload) {
         ),
       ]);
     const N = Math.max(1, Math.min(Number(p.input.candidates ?? process.env.BEST_OF_N ?? 2), 4));
+    // STAGGER the candidate STARTS by ~15s (Replicate's prediction-creation slot
+    // refills at ≈6/min): the renders still overlap so wall-clock ≈ one render +
+    // (N-1)·15s, but no two creates collide on the BURST-1 limit. This is what
+    // actually restores best-of-2 — the earlier "rendered: 1 of 2" was the 2nd
+    // create being 429'd, not the poll cap. Env STAGGER override for other accounts.
+    const STAGGER_MS = Math.max(0, Number(process.env.RENDER_STAGGER_MS ?? 15_000));
     const settled = await Promise.all(
-      Array.from({ length: N }, () =>
-        withTimeout(generateOne()).catch((e) => ({ status: 'failed', error: String((e as Error)?.message ?? e) }) as GenResult)
+      Array.from({ length: N }, (_v, i) =>
+        (async () => {
+          if (i > 0 && STAGGER_MS) await new Promise((res) => setTimeout(res, i * STAGGER_MS));
+          return withTimeout(generateOne()).catch(
+            (e) => ({ status: 'failed', error: String((e as Error)?.message ?? e) }) as GenResult
+          );
+        })()
       )
     );
     const ok = settled.filter((r) => r.status === 'succeeded' && r.output);
