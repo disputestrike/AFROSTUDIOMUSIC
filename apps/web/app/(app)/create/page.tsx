@@ -169,13 +169,21 @@ export default function CreatePage() {
       );
       let item: { jobId?: string; hookText?: string; score: number | null; error?: string } | undefined;
       // Hooks + lyrics run on Claude and can be slow under load — wait up to ~8 min.
+      // RESILIENT POLL: a single fetch that fails (phone backgrounded the tab, wifi↔
+      // cellular switch, brief network blip) must NOT kill the whole thing — the work
+      // keeps running server-side. Retry; only give up after ~2 min of solid failures.
+      let dropFailed = false;
+      let netFails = 0;
       for (let i = 0; i < 96; i++) {
         await sleep(5000);
         if (i === 10) setStepIdx(2); // hooks done-ish → writing lyrics
-        const j = await api.get<{ status: string; outputJson?: { drop?: Array<typeof item> } }>(`/jobs/${started.jobId}`);
+        let j: { status: string; outputJson?: { drop?: Array<typeof item> } };
+        try { j = await api.get(`/jobs/${started.jobId}`); netFails = 0; }
+        catch { if (++netFails >= 24) break; continue; }
         if (j.status === 'SUCCEEDED') { item = j.outputJson?.drop?.[0]; break; }
-        if (j.status === 'FAILED') throw new Error('Could not write the song — try again.');
+        if (j.status === 'FAILED') { dropFailed = true; break; }
       }
+      if (dropFailed) throw new Error('Could not write the song — try again.');
       if (!item?.jobId) {
         // The daily cap is the usual culprit — say so plainly instead of a vague
         // "couldn't start" (which reads as "broken" when it's just the budget).
@@ -188,16 +196,23 @@ export default function CreatePage() {
       // the provider's rate limit), so wait up to ~12 min — then hand off calmly to
       // the Catalog rather than showing a scary error for a song that IS finishing.
       let url: string | null = null;
+      let renderFailed = false;
+      netFails = 0;
       for (let i = 0; i < 144; i++) {
         await sleep(5000);
-        const job = await api.get<{ status: string }>(`/jobs/${item.jobId}`);
+        let job: { status: string };
+        try { job = await api.get(`/jobs/${item.jobId}`); netFails = 0; }
+        catch { if (++netFails >= 24) break; continue; } // network blip → retry, render keeps going
         if (job.status === 'SUCCEEDED') {
-          const beats = await api.get<Array<{ url: string; createdAt: string }>>(`/projects/${project.id}/beats`);
-          url = beats.sort((a, b) => +new Date(b.createdAt) - +new Date(a.createdAt))[0]?.url ?? null;
+          try {
+            const beats = await api.get<Array<{ url: string; createdAt: string }>>(`/projects/${project.id}/beats`);
+            url = beats.sort((a, b) => +new Date(b.createdAt) - +new Date(a.createdAt))[0]?.url ?? null;
+          } catch { /* beats fetch blip — fall through to the calm Catalog hand-off */ }
           break;
         }
-        if (job.status === 'FAILED') throw new Error('The render failed — try again.');
+        if (job.status === 'FAILED') { renderFailed = true; break; }
       }
+      if (renderFailed) throw new Error('The render failed — try again.');
       if (!url) {
         // Not a failure — the render is just still cooking. Send them to the
         // Catalog where it lands, instead of the red "Couldn't finish that one".
@@ -273,16 +288,23 @@ export default function CreatePage() {
         vibePrompt: [`${mood} energy`, decon?.vocalDirection, fusion.length ? `genre fusion: ${genreLabel}` : null].filter(Boolean).join('. '),
       });
       let url: string | null = null;
+      let renderFailed = false;
+      let netFails = 0;
       for (let i = 0; i < 144; i++) {
         await sleep(5000);
-        const job = await api.get<{ status: string }>(`/jobs/${r.jobId}`);
+        let job: { status: string };
+        try { job = await api.get(`/jobs/${r.jobId}`); netFails = 0; }
+        catch { if (++netFails >= 24) break; continue; } // network blip → retry, render keeps going
         if (job.status === 'SUCCEEDED') {
-          const beats = await api.get<Array<{ url: string; createdAt: string }>>(`/projects/${project.id}/beats`);
-          url = beats.sort((a, b) => +new Date(b.createdAt) - +new Date(a.createdAt))[0]?.url ?? null;
+          try {
+            const beats = await api.get<Array<{ url: string; createdAt: string }>>(`/projects/${project.id}/beats`);
+            url = beats.sort((a, b) => +new Date(b.createdAt) - +new Date(a.createdAt))[0]?.url ?? null;
+          } catch { /* beats fetch blip — fall through to the calm Catalog hand-off */ }
           break;
         }
-        if (job.status === 'FAILED') throw new Error('The render failed — try again or switch engine.');
+        if (job.status === 'FAILED') { renderFailed = true; break; }
       }
+      if (renderFailed) throw new Error('The render failed — try again or switch engine.');
       if (!url) {
         setSong({ title, hook: decon?.hookLine ?? undefined, score: null, url: '', projectId: project.id });
         setPhase('finishing');
