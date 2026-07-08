@@ -226,7 +226,9 @@ export default function CreatePage() {
 
   /** FROM-LYRICS step 2: sing EXACTLY these words over a produced record. */
   async function createFromLyrics() {
-    if (!decon || lyricsText.trim().length < 20) return;
+    // Sing needs LYRICS, not a successful deconstruct — the analyze step can fail
+    // (daily cap, malformed JSON) and used to leave this (and the button) dead.
+    if (lyricsText.trim().length < 20) return;
     setErr('');
     try {
       const pf = await api.get<{ ok: boolean; mode: string }>('/billing/preflight').catch(() => ({ ok: true, mode: 'unknown' }));
@@ -235,7 +237,7 @@ export default function CreatePage() {
     setPhase('producing');
     setStepIdx(0);
     try {
-      const title = (deconTitle || decon.title || 'My lyrics').slice(0, 100);
+      const title = (deconTitle || decon?.title || 'My lyrics').slice(0, 100);
       const project = await api.post<{ id: string }>('/projects', { title, genre, bpm });
       const attached = await api.post<{ songId: string }>(`/projects/${project.id}/lyrics/attach`, { title, body: lyricsText.trim() });
       setStepIdx(3); // straight to singing — the words are already written
@@ -249,7 +251,7 @@ export default function CreatePage() {
         withVocals: true,
         lyrics: lyricsText.trim(),
         songEngine: engine,
-        vibePrompt: [`${mood} energy`, decon.vocalDirection, fusion.length ? `genre fusion: ${genreLabel}` : null].filter(Boolean).join('. '),
+        vibePrompt: [`${mood} energy`, decon?.vocalDirection, fusion.length ? `genre fusion: ${genreLabel}` : null].filter(Boolean).join('. '),
       });
       let url: string | null = null;
       for (let i = 0; i < 144; i++) {
@@ -263,11 +265,11 @@ export default function CreatePage() {
         if (job.status === 'FAILED') throw new Error('The render failed — try again or switch engine.');
       }
       if (!url) {
-        setSong({ title, hook: decon.hookLine ?? undefined, score: null, url: '', projectId: project.id });
+        setSong({ title, hook: decon?.hookLine ?? undefined, score: null, url: '', projectId: project.id });
         setPhase('finishing');
         return;
       }
-      setSong({ title, hook: decon.hookLine ?? undefined, score: null, url, projectId: project.id });
+      setSong({ title, hook: decon?.hookLine ?? undefined, score: null, url, projectId: project.id });
       setPhase('done');
     } catch (e) {
       setErr((e as Error).message);
@@ -511,7 +513,7 @@ export default function CreatePage() {
         ) : (
           <button
             onClick={() => void createFromLyrics()}
-            disabled={!decon}
+            disabled={lyricsText.trim().length < 20}
             title={!decon ? 'Deconstruct your lyrics first' : undefined}
             className="rounded-full bg-brand-gradient px-6 py-3 font-medium text-ink shadow-glow disabled:opacity-50"
           >

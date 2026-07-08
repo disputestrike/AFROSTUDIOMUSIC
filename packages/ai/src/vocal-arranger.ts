@@ -28,7 +28,7 @@ Rules:
 - SECTION-AWARE ENERGY SHAPING — each section must FEEL different: [Intro] hums/mumbles, sparse; [Verse] restrained, conversational, room to breathe; [Pre-Hook] rising urgency, tighter phrasing; [Hook] full stack, doubled, maximum energy; [Bridge] strip back, breathy, intimate; [Outro] echoes of the hook dissolving into hums. Mark the energy inline (e.g. "(soft, hazy)", "(urgent)", "(full power)").
 - TRACK-LEVEL COHERENCE: the whole song is ONE performance by ONE artist in one session — motifs from the intro mumble should RETURN as the hook's melody; the outro should echo what the intro promised. Never a collection of disconnected parts.
 - ONE consistent LEAD voice throughout the whole song — same singer, same tone. Doubles, harmonies and ad-libs SUPPORT that single lead; never switch to a different-sounding lead mid-song.
-- Cue Afro DRUM ROLLS / percussion fills right BEFORE the hook, each verse and the chorus — mark them inline (e.g. "(drum roll)", "(perc fill — build up)") so the record lifts into each section.
+- MANDATORY: cue an Afro DRUM ROLL / percussion fill at EVERY section boundary — right before each verse, before the bridge, and before every hook/chorus (never before [Intro]). Put it on its own line under the section tag, e.g. "(drum roll — build into the hook)" / "(tom fill)" — so a fresh set of drums ANNOUNCES each new part and the record lifts into it.
 - Keep it singable and on-theme. Do NOT invent a different song or add whole new verses.
 - Respect any languages given; if unsure of a native phrase, prefer Pidgin/English rather than risk wrong tone.
 

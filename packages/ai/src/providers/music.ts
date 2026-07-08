@@ -52,7 +52,7 @@ function composeStyleTags(
     input.artistTone?.length ? `${opts.tonePrefix ?? ''}${input.artistTone.join(', ')}` : null,
     // Afro production feel — the fills/rolls that make Afro records lift. Only
     // for Afro-family genres; on pop/rock/EDM it just wastes prompt budget.
-    isAfro ? 'Afro drum rolls and percussion fills leading into the hook, verses and chorus' : null,
+    isAfro ? 'Afro drum rolls, tom fills and percussion buildups leading into every section — a fill announces each new verse, the bridge and every hook' : null,
     hasDna ? null : opts.fallbackLiteral,
   ].filter(Boolean) as string[];
   // Case-insensitive dedupe on token prefixes — kills "energetic"×3 repeats.
@@ -131,12 +131,19 @@ class SunoAdapter implements MusicProviderAdapter {
   ): Promise<ProviderJobResult<MusicGenerationOutput>> {
     const key = this.apiKey || sunoKey();
     if (!key) return { status: 'failed', error: 'SUNO_API_KEY missing' };
+    // P0 FIX: this used to hardcode instrumental:true and NEVER send the words, so
+    // every Suno-routed SUNG take came back with zero vocals ("it doesn't sing").
+    // When we have lyrics, tell Suno to SING them: instrumental:false + prompt=the
+    // lyrics (sanitized the same way MiniMax needs — section tags + singable ad-libs
+    // kept, stage directions stripped so Suno doesn't sing "drum roll").
+    const wantsVocals = !!input.lyrics?.trim();
     const body = {
       customMode: true,
-      instrumental: true,
+      instrumental: !wantsVocals,
+      ...(wantsVocals ? { prompt: cleanLyricsForMinimax(input.lyrics!).slice(0, 3000) } : {}),
       model: process.env.SUNO_MODEL ?? 'V5',
       style: this.composeStyle(input).slice(0, 900),
-      title: (input.vibePrompt?.slice(0, 60) || `${input.genre ?? 'Afro'} beat`).slice(0, 80),
+      title: (input.vibePrompt?.slice(0, 60) || `${input.genre ?? 'Afro'} ${wantsVocals ? 'song' : 'beat'}`).slice(0, 80),
       callBackUrl: process.env.SUNO_CALLBACK_URL ?? 'https://afrohitstudio.app/api/suno/callback',
     };
     const res = await fetch(`${this.base}/api/v1/generate`, {
@@ -178,10 +185,13 @@ class SunoAdapter implements MusicProviderAdapter {
   }
 
   private composeStyle(input: MusicGenerationInput): string {
-    // No hardcoded genre — honor the SELECTED genre + its Sound DNA.
+    // No hardcoded genre — honor the SELECTED genre + its Sound DNA. Lyric-aware
+    // fallback: when Suno is SINGING, ask for a strong lead vocal, not "instrumental".
+    const wantsVocals = !!input.lyrics?.trim();
     return composeStyleTags(input, {
-      fallbackLiteral:
-        'catchy, modern, punchy drums, warm bass, melodic, instrumental, radio-ready, leave space for a lead vocal',
+      fallbackLiteral: wantsVocals
+        ? 'catchy, modern, punchy drums, warm bass, melodic, strong emotive lead vocal, radio-ready'
+        : 'catchy, modern, punchy drums, warm bass, melodic, instrumental, radio-ready, leave space for a lead vocal',
     }).join(', ');
   }
 }

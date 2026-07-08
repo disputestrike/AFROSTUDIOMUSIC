@@ -47,7 +47,9 @@ export async function processStems(p: StemsPayload) {
     // MATERIAL HARVEST: the artist's own non-vocal stems join the material
     // library — real, owned audio the arranger can place into future beats.
     const project = await prisma.project.findUnique({ where: { id: p.projectId }, select: { genre: true } });
-    const ROLE_MAP: Record<string, string> = { drums: 'drums', bass: 'bass', other: 'chords', instrumental: 'other' };
+    // A stripped full INSTRUMENTAL is filed under its own 'instrumental' role (was
+    // 'other', which orphaned it) so the Instrumental Library can find + reuse it.
+    const ROLE_MAP: Record<string, string> = { drums: 'drums', bass: 'bass', other: 'chords', instrumental: 'instrumental' };
     await Promise.all(
       ingested
         .filter((s) => s.role !== 'vocals')
