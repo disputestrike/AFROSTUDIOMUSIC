@@ -157,8 +157,8 @@ export default function LakePage() {
                     {r.summary && <div className="mt-0.5 line-clamp-2 text-xs text-slate-500">{r.summary}</div>}
                   </div>
                   <button
-                    onClick={() => router.push(`/create?genre=${encodeURIComponent(r.genre || 'afrobeats')}&vibe=${encodeURIComponent((r.summary || `in the lane of ${r.title || 'this reference'}`).slice(0, 240))}`)}
-                    title="Make a fresh song in this lane (never a copy)"
+                    onClick={() => router.push(`/create?genre=${encodeURIComponent(r.genre || 'afrobeats')}&languages=pcm,en&produce=1&vibe=${encodeURIComponent((r.summary || `a fresh original in the lane of ${r.title || 'this reference'}`).slice(0, 240))}`)}
+                    title="Make a fresh song in this lane — starts making immediately (never a copy)"
                     className="inline-flex shrink-0 items-center gap-1 rounded-full border border-afrobrand-500/40 bg-afrobrand-500/10 px-2.5 py-1 text-xs text-afrobrand-300 hover:bg-afrobrand-500/20"
                   >
                     <Wand2 className="h-3.5 w-3.5" /> Make in this lane

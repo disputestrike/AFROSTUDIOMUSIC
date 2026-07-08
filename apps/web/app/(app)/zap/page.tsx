@@ -13,6 +13,7 @@ import { Mic, Square, Loader2, Sparkles, ExternalLink, GraduationCap, Check, Upl
 interface ZapHist {
   id: string;
   genre: string | null;
+  bpm?: number | null;
   songTitle: string | null;
   artist: string | null;
   vibe: string | null;
@@ -58,12 +59,21 @@ export default function ZapPage() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => { void loadHistory(); }, []);
 
-  /** Make a FRESH song in the lane of something you Zapped — the craft/vibe, never
-   * the artist's name or a copy (that stays in the influence, not the record). */
-  function makeInLane(h: { genre: string | null; whatToLearn: string | null; vibe: string | null }) {
+  /** Make a FRESH song in the lane of something you Zapped — everything pre-picked
+   * (genre, tempo, language, the artist as a LANE cue) and it STARTS MAKING
+   * immediately (produce=1). Same lane/style; fresh beat, name, lyrics. The artist
+   * only steers the vibe via influence — never copied or named in the record. */
+  function makeInLane(h: { genre: string | null; bpm?: number | null; artist?: string | null; whatToLearn: string | null; vibe: string | null }) {
     const genre = h.genre || 'afrobeats';
-    const vibe = (h.whatToLearn || h.vibe || `in the lane of the current ${genre} sound`).slice(0, 240);
-    router.push(`/create?genre=${encodeURIComponent(genre)}&vibe=${encodeURIComponent(vibe)}`);
+    const params = new URLSearchParams({
+      genre,
+      produce: '1',
+      languages: 'pcm,en',
+      vibe: (h.whatToLearn || h.vibe || `a fresh ${genre.replace(/_/g, ' ')} record`).slice(0, 240),
+    });
+    if (h.bpm) params.set('bpm', String(h.bpm));
+    if (h.artist) params.set('influence', h.artist);
+    router.push(`/create?${params.toString()}`);
   }
 
   async function identify(blob: Blob) {
@@ -228,7 +238,7 @@ export default function ZapPage() {
                   </ul>
                 ) : null}
                 <button
-                  onClick={() => makeInLane({ genre: learned.genre || match.genre || null, whatToLearn: learned.whatToLearn || null, vibe: null })}
+                  onClick={() => makeInLane({ genre: learned.genre || match.genre || null, artist: match.artist, whatToLearn: learned.whatToLearn || null, vibe: null })}
                   className="mt-3 inline-flex items-center gap-1.5 rounded-full bg-brand-gradient px-4 py-2 text-sm font-medium text-ink shadow-glow"
                 >
                   <Wand2 className="h-4 w-4" /> Make a song in this lane →

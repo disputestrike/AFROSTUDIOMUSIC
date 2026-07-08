@@ -74,7 +74,11 @@ export default function CreatePage() {
   const [deconBusy, setDeconBusy] = useState(false);
   const [deconTitle, setDeconTitle] = useState('');
 
-  const [phase, setPhase] = useState<'form' | 'producing' | 'done' | 'finishing' | 'error'>('form');
+  // With ?produce=1 we start in 'producing' immediately — never flash the form
+  // (the user asked to make a song, e.g. "Make in this lane" from Zap/Lake).
+  const [phase, setPhase] = useState<'form' | 'producing' | 'done' | 'finishing' | 'error'>(() =>
+    typeof window !== 'undefined' && new URLSearchParams(window.location.search).get('produce') === '1' ? 'producing' : 'form'
+  );
   const [stepIdx, setStepIdx] = useState(0);
   const [err, setErr] = useState('');
   const [song, setSong] = useState<{ title: string; hook?: string; score: number | null; url: string; projectId: string } | null>(null);
@@ -94,6 +98,13 @@ export default function CreatePage() {
     if (b >= 60 && b <= 180) setBpm(Math.round(b));
     const v = q.get('vibe');
     if (v) setVibe(v.slice(0, 300));
+    const inf = q.get('influence');
+    if (inf) setInfluence(inf.slice(0, 100));
+    const lg = q.get('languages');
+    if (lg) {
+      const arr = lg.split(',').map((s) => s.trim()).filter((x) => LANGS.some((l) => l.value === x));
+      if (arr.length) setLangs(arr);
+    }
     if (q.get('produce') === '1') setAutoProduce(true);
     // Clean the URL so a refresh doesn't re-fire the auto-create.
     if (q.toString()) window.history.replaceState(null, '', '/create');
@@ -102,7 +113,9 @@ export default function CreatePage() {
   // Fire the create ONCE, after the prefills above have applied (state is set
   // by the time this effect runs). createSong reads the now-current genre/vibe.
   useEffect(() => {
-    if (autoProduce && phase === 'form') {
+    // Fire once autoProduce is set. Phase may already be 'producing' (we start
+    // there on ?produce=1 to skip the form flash), so don't gate on phase==='form'.
+    if (autoProduce) {
       setAutoProduce(false);
       void createSong();
     }

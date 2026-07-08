@@ -9,7 +9,7 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { prisma } from '@afrohit/db';
-import { recognizeSong, extractSongCraft, parseTrendSong, researchTrends } from '@afrohit/ai';
+import { recognizeSong, extractSongCraft, parseTrendSong, researchTrends, soundBrief } from '@afrohit/ai';
 import { requireAuth } from '../middleware/auth';
 import { publicUrlFor, assertOwnedKey } from '../lib/storage';
 
@@ -102,6 +102,9 @@ export default async function zap(app: FastifyInstance) {
       return {
         id: r.id,
         genre: r.genre,
+        // Everything "Make in this lane" needs to auto-produce without a form:
+        // the genre's home tempo + the artist as a LANE cue (never named in the song).
+        bpm: soundBrief(r.genre).typicalBpm ?? 103,
         songTitle: rec.title ?? null,
         artist: rec.artist ?? null,
         vibe: rec.vibe ?? null,
