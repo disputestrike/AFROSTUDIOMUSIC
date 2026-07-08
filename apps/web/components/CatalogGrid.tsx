@@ -45,6 +45,7 @@ const STATUS_LABEL: Record<string, string> = {
 };
 
 type DownloadFile = { label: string; url: string; kind: string; dl?: string };
+type LyricVer = { body: string; title: string | null; at: string; label?: string };
 
 export default function CatalogGrid({ initial }: { initial: SongRow[] }) {
   const api = useApi();
@@ -53,7 +54,7 @@ export default function CatalogGrid({ initial }: { initial: SongRow[] }) {
   const [openId, setOpenId] = useState<string | null>(null);
   const [busy, setBusy] = useState<string>(''); // `${id}:${action}`
   const [toast, setToast] = useState<string>('');
-  const [editing, setEditing] = useState<{ id: string; lyricId?: string; title: string; body: string } | null>(null);
+  const [editing, setEditing] = useState<{ id: string; lyricId?: string; title: string; body: string; versions?: LyricVer[] } | null>(null);
   const [downloads, setDownloads] = useState<{ id: string; files: DownloadFile[] } | null>(null);
   const [hit, setHit] = useState<{ title: string; p: HitPrediction } | null>(null);
 
@@ -210,9 +211,21 @@ export default function CatalogGrid({ initial }: { initial: SongRow[] }) {
   async function openLyrics(s: SongRow) {
     setBusy(`${s.id}:lyrics`);
     try {
-      const r = await api.get<{ lyric: { id: string; title?: string; body: string } | null }>(`/songs/${s.id}/lyrics`);
-      setEditing({ id: s.id, lyricId: r.lyric?.id, title: r.lyric?.title ?? s.title, body: r.lyric?.body ?? '' });
+      const r = await api.get<{ lyric: { id: string; title?: string; body: string; versions?: LyricVer[] } | null }>(`/songs/${s.id}/lyrics`);
+      setEditing({ id: s.id, lyricId: r.lyric?.id, title: r.lyric?.title ?? s.title, body: r.lyric?.body ?? '', versions: r.lyric?.versions ?? [] });
     } catch (e) { flash((e as Error).message || 'Could not load lyrics'); }
+    finally { setBusy(''); }
+  }
+
+  // Revert the lyric to a saved prior take — the original is never lost.
+  async function revertLyric(index: number) {
+    if (!editing) return;
+    setBusy(`${editing.id}:revert`);
+    try {
+      const r = await api.post<{ lyric: { title?: string; body: string; versions?: LyricVer[] }; needsRegeneration?: boolean; revertedTo?: string }>(`/songs/${editing.id}/lyrics/revert`, { index });
+      setEditing({ ...editing, title: r.lyric.title ?? editing.title, body: r.lyric.body, versions: r.lyric.versions ?? [] });
+      flash(`Reverted to ${r.revertedTo ?? 'that take'}.${r.needsRegeneration ? ' Use “Re-sing” to hear it.' : ''}`);
+    } catch (e) { flash((e as Error).message || 'Revert failed'); }
     finally { setBusy(''); }
   }
 
@@ -333,7 +346,31 @@ export default function CatalogGrid({ initial }: { initial: SongRow[] }) {
             className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 font-mono text-xs leading-relaxed"
             placeholder="[Hook]…"
           />
-          <p className="mt-3 text-[11px] text-slate-500">Editing the words? “Save &amp; re-sing” re-records the vocal with your new lyrics and makes it the current version. “Save only” keeps the text edit without re-rendering.</p>
+          {editing.versions && editing.versions.length > 0 && (
+            <div className="mt-3 rounded-lg border border-white/10 bg-black/20 p-2.5">
+              <div className="mb-1.5 flex items-center gap-1.5 text-[11px] font-medium text-slate-300">
+                <RefreshCw className="h-3 w-3 text-afrobrand-400" /> Version history — your original is always here
+              </div>
+              <ul className="space-y-1">
+                {editing.versions.map((v, i) => (
+                  <li key={i} className="flex items-center gap-2 text-[11px]">
+                    <span className={`rounded-full px-1.5 py-0.5 ${v.label === 'original' ? 'bg-emerald-500/15 text-emerald-300' : 'bg-white/5 text-slate-400'}`}>
+                      {v.label ?? `take ${editing.versions!.length - i}`}
+                    </span>
+                    <span className="truncate text-slate-500">{v.body.replace(/\[[^\]]*\]/g, '').replace(/\s+/g, ' ').trim().slice(0, 54)}…</span>
+                    <button
+                      onClick={() => void revertLyric(i)}
+                      disabled={isBusy(editing.id, 'revert')}
+                      className="ml-auto shrink-0 rounded-full border border-white/15 px-2 py-0.5 text-[11px] text-slate-300 hover:bg-white/10 disabled:opacity-50"
+                    >
+                      {isBusy(editing.id, 'revert') ? '…' : 'Revert'}
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+          <p className="mt-3 text-[11px] text-slate-500">Editing the words? “Save &amp; re-sing” re-records the vocal with your new lyrics and makes it the current version. “Save only” keeps the text edit without re-rendering. Every rewrite keeps your previous take above — “Revert” restores it (then Re-sing to hear it).</p>
           <div className="mt-2 flex flex-wrap justify-end gap-2">
             <button onClick={() => setEditing(null)} className="rounded-full border border-white/15 px-4 py-2 text-sm">Cancel</button>
             <button onClick={() => void saveLyrics(false)} disabled={isBusy(editing.id, 'savelyrics')} className="rounded-full border border-white/15 px-4 py-2 text-sm">

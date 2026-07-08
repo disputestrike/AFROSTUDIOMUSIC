@@ -36,6 +36,7 @@ import {
 import { learnedReferenceBrief } from './learned';
 import { arReadSong } from './ar-read';
 import { enqueue } from './queue';
+import { snapshotLyricVersion } from './lyric-versions';
 
 // Benjamin's call: the release bar is 90 ("it needs to be perfect"). NOTE: on the
 // current MiniMax engine, writing-driven scores top out ~65-70 (the A&R itself says
@@ -132,6 +133,9 @@ async function resing(
   opts?: { delayMs?: number }
 ): Promise<string | null> {
   if (!song.lyric) return null;
+  // Preserve the CURRENT lyric before overwriting it — the artist must always be
+  // able to revert to the original (sometimes it's the better take).
+  await snapshotLyricVersion(song.lyric.id, 'before make-it-bigger');
   await prisma.lyricDraft.update({ where: { id: song.lyric.id }, data: { title: title || song.lyric.title, body, approved: true } });
   await prisma.song.update({ where: { id: song.id }, data: { versionLabel: 'bigger (A&R notes applied)', hitScore: null, viralScore: null } });
   const charge = await app.chargeCredits({ workspaceId, key: 'full_song_demo', refTable: 'Song', refId: song.id });

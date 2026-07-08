@@ -7,6 +7,7 @@ import { enqueue } from '../lib/queue';
 import { learnedReferenceBrief } from '../lib/learned';
 import { arReadSong, arReadAfterRender } from '../lib/ar-read';
 import { improveSongOnce } from '../lib/will-it-blow';
+import { snapshotLyricVersion, readVersions } from '../lib/lyric-versions';
 import { recordFeedback } from '../services/artist-memory';
 
 /** Freshest playable audio for a song: the most RECENT of master/mix/beat by
@@ -165,8 +166,34 @@ export default async function songs(app: FastifyInstance) {
       await prisma.song.update({ where: { id: song.id }, data: { lyricId: created.id } });
       return { lyric: created, needsRegeneration };
     }
+    // Keep the current version before a manual overwrite too — original + every
+    // edit stay recoverable.
+    await snapshotLyricVersion(lyricId, 'before edit');
     const updated = await prisma.lyricDraft.update({ where: { id: lyricId }, data: body });
     return { lyric: updated, needsRegeneration };
+  });
+
+  // ---- Lyric version history: revert to the ORIGINAL (or any prior take) ----
+  // Every rewrite (make-it-bigger, the will-it-blow gate, manual edits) snapshots
+  // the current lyric first, so nothing is ever lost. This restores a chosen one.
+  app.post<{ Params: { id: string }; Body: { index?: number } }>('/:id/lyrics/revert', async (req, reply) => {
+    const { workspaceId } = requireAuth(req);
+    const song = await prisma.song.findFirst({ where: { id: req.params.id, workspaceId }, include: { lyric: true } });
+    if (!song) return reply.code(404).send({ error: 'song_not_found' });
+    const lyric = song.lyric ?? (await prisma.lyricDraft.findFirst({ where: { projectId: song.projectId }, orderBy: { createdAt: 'desc' } }));
+    if (!lyric) return reply.code(404).send({ error: 'no_lyric' });
+    const versions = readVersions(lyric.versions);
+    const idx = Math.max(0, Number(req.body?.index ?? 0));
+    const target = versions[idx];
+    if (!target) return reply.code(400).send({ error: 'no_such_version', have: versions.length });
+    // Snapshot the CURRENT first, so reverting is itself reversible.
+    await snapshotLyricVersion(lyric.id, 'before revert');
+    const updated = await prisma.lyricDraft.update({
+      where: { id: lyric.id },
+      data: { body: target.body, title: target.title ?? undefined, cleanVersion: target.cleanVersion ?? undefined },
+    });
+    const needsRegeneration = (await prisma.beatAsset.count({ where: { songId: song.id, provider: { not: 'upload' } } })) > 0;
+    return { lyric: updated, needsRegeneration, revertedTo: target.label ?? `version ${idx + 1}` };
   });
 
   // ---- Download manifest (audio + stems + cover + lyrics) ----
