@@ -47,6 +47,10 @@ export const LANGUAGES = {
   st: 'Sesotho',
   tn: 'Setswana',
   tsotsitaal: 'Tsotsitaal (SA street)',
+  ln: 'Lingala',
+  wo: 'Wolof',
+  bm: 'Bambara',
+  nouchi: 'Nouchi (Ivorian street)',
 } as const;
 export type LanguageCode = keyof typeof LANGUAGES;
 

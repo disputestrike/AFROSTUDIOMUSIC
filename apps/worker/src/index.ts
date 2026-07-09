@@ -22,7 +22,7 @@ import { notifyJobDone, processMorningDrop, processReleaseRadar, processZapRadar
 import { processDeepMeasure } from './processors/deep-measure';
 import { processTransform } from './processors/transform';
 import { processSynthMaterial } from './processors/synth-material';
-import { processNightlyCompound, processMeasureBackfill, processMineLexicon } from './processors/compound';
+import { processNightlyCompound, processMeasureBackfill, processMineLexicon, processLexiconResearch } from './processors/compound';
 
 const log = pino({ level: process.env.LOG_LEVEL ?? 'info' });
 
@@ -71,6 +71,7 @@ const workers = [
     else if (job.name === 'nightly-compound') await processNightlyCompound();
     else if (job.name === 'measure-backfill') await processMeasureBackfill();
     else if (job.name === 'mine-lexicon') await processMineLexicon();
+    else if (job.name === 'lexicon-research') await processLexiconResearch();
     else await processMusic(job.data as never);
   }),
   makeWorker('voice', async (job: { data: never; name: string }) => {
@@ -99,6 +100,7 @@ const workers = [
     else if (job.name === 'nightly-compound') await processNightlyCompound();
     else if (job.name === 'measure-backfill') await processMeasureBackfill();
     else if (job.name === 'mine-lexicon') await processMineLexicon();
+    else if (job.name === 'lexicon-research') await processLexiconResearch();
   }),
 ];
 

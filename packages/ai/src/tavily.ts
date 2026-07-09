@@ -232,3 +232,19 @@ export async function researchTrends(opts: {
     (await tryNewsRss(genre, region))
   );
 }
+
+/** Generic Tavily search → [{title,url,content}]. Empty (never throws) without a key. */
+export async function tavilySearchRaw(query: string, maxResults = 4): Promise<Array<{ title: string; url: string; content: string }>> {
+  const key = tavilyKey();
+  if (!key) return [];
+  try {
+    const res = await fetch('https://api.tavily.com/search', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ api_key: key, query, search_depth: 'basic', max_results: maxResults, include_answer: false }),
+    });
+    if (!res.ok) return [];
+    const data = (await res.json()) as { results?: Array<{ title?: string; url?: string; content?: string }> };
+    return (data.results ?? []).map((r) => ({ title: r.title ?? '', url: r.url ?? '', content: (r.content ?? '').slice(0, 2500) }));
+  } catch { return []; }
+}
