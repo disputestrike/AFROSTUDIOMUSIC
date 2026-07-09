@@ -164,7 +164,9 @@ export async function processLexiconResearch(opts?: { queries?: number }): Promi
     let inserted = 0;
     for (const { lang, cat } of picked) {
       const name = (LANGUAGES as Record<string, string>)[lang] ?? lang;
-      const results = await tavilySearchRaw(`${name} ${REGION_HINT[lang] ?? ''} ${cat} words phrases slang meanings glossary`, 4);
+      const q = `${name} language ${cat === 'slang' ? 'slang dictionary' : cat + ' words phrases'} english meaning ${REGION_HINT[lang] ?? ''}`;
+      const results = await tavilySearchRaw(q, 5);
+      console.log(`[lexicon-research] ${lang}:${cat} results=${results.length}`);
       if (!results.length) continue;
       const corpus = results.map((r) => `${r.title}\n${r.content}`).join('\n---\n').slice(0, 6000);
       const out = await generateJson<{ entries: Array<{ term: string; meaning: string; example?: string; register?: string }> }>({
@@ -265,14 +267,18 @@ export async function processGlossPass(opts?: { limit?: number }): Promise<void>
     const byLang = new Map<string, typeof rows>();
     for (const r of rows) { const a = byLang.get(r.language) ?? []; a.push(r); byLang.set(r.language, a); }
     let done = 0;
-    for (const [lang, entries] of byLang) {
+    for (const [lang, entriesAll] of byLang) {
+      // token math that fits: <=22 terms per call (0/80 last night = truncation)
+      for (let ci = 0; ci < entriesAll.length; ci += 22) {
+        const entries = entriesAll.slice(ci, ci + 22);
       const name = (LANGUAGES as Record<string, string>)[lang] ?? lang;
       const out = await generateJson<{ glosses: Array<{ term: string; meaning: string; category?: string; register?: string }> }>({
         system: `You are a ${name} lexicographer. For each REAL ${name} term below, give a short plain-English meaning IN YOUR OWN WORDS, a category from [${MINE_CATS.join('|')}|general], and register [casual|chant|poetic|sacred|flex]. If you don't confidently know a term, OMIT it. Return {"glosses":[...]}.`,
         user: entries.map((e) => e.term).join('\n'),
-        maxTokens: 1800,
+        maxTokens: 1400,
       }).catch(() => ({ glosses: [] as Array<{ term: string; meaning: string; category?: string; register?: string }> }));
       const map = new Map(out.glosses?.map((g) => [g.term.toLowerCase(), g] as const) ?? []);
+      if (!map.size) console.log(`[gloss] ${lang}: model returned 0 for a ${entries.length}-term batch`);
       for (const e of entries) {
         const g = map.get(e.term.toLowerCase());
         if (!g?.meaning) continue;
@@ -281,6 +287,7 @@ export async function processGlossPass(opts?: { limit?: number }): Promise<void>
           data: { meaning: g.meaning.slice(0, 300), category: g.category && g.category !== 'general' ? g.category : e.category, register: g.register ?? e.register, tags: e.tags.filter((t) => t !== 'unglossed') },
         }).catch(() => undefined);
         done++;
+      }
       }
     }
     console.log(`[gloss] glossed=${done}/${rows.length}`);
