@@ -28,11 +28,31 @@ Rules:
 - SECTION-AWARE ENERGY SHAPING — each section must FEEL different: [Intro] hums/mumbles, sparse; [Verse] restrained, conversational, room to breathe; [Pre-Hook] rising urgency, tighter phrasing; [Hook] full stack, doubled, maximum energy; [Bridge] strip back, breathy, intimate; [Outro] echoes of the hook dissolving into hums. Mark the energy inline (e.g. "(soft, hazy)", "(urgent)", "(full power)").
 - TRACK-LEVEL COHERENCE: the whole song is ONE performance by ONE artist in one session — motifs from the intro mumble should RETURN as the hook's melody; the outro should echo what the intro promised. Never a collection of disconnected parts.
 - ONE consistent LEAD voice throughout the whole song — same singer, same tone. Doubles, harmonies and ad-libs SUPPORT that single lead; never switch to a different-sounding lead mid-song.
-- MANDATORY: cue an Afro DRUM ROLL / percussion fill at EVERY section boundary — right before each verse, before the bridge, and before every hook/chorus (never before [Intro]). Put it on its own line under the section tag, e.g. "(drum roll — build into the hook)" / "(tom fill)" — so a fresh set of drums ANNOUNCES each new part and the record lifts into it.
+- HARD BAN — production words NEVER appear in the lyric text, not even in parentheses (singer engines SING parentheticals): "log drum", "shaker", "shekere", "808", "amapiano", "BPM", "percussion", "drum roll", "tom fill", "bassline", "the drop", "hi-hat", "snare". The GENRE_SOUND_DNA/context inputs describe the BEAT ONLY — never quote their words. Section lift is expressed through VOCAL energy cues only ("(rise)", "(full power)", "(strip back)"); the drums announce sections via styleTags — ALWAYS include "drum fill into every hook and section change" in styleTags instead of writing it in the lyric.
 - Keep it singable and on-theme. Do NOT invent a different song or add whole new verses.
-- Respect any languages given; if unsure of a native phrase, prefer Pidgin/English rather than risk wrong tone.
+- LANGUAGE IS A HARD CONTRACT: keep every line in ITS ORIGINAL LANGUAGE — never translate, never drift. Ad-libs/textures must come from the SONG'S OWN languages: isiZulu/isiXhosa/SA township: "yebo!", "haibo", "eish", "hhayi bo", "woza", "sho", "aweh", "eita", "sharp sharp"; Swahili: "eeh", "twende", "sawa"; Lingala: "eh mama", "malamu"; Wolof: "waaw", "dégg naa"; Kreyòl: "anmwey", "cheri"; Patois: "yow", "big up". Naija flavor ONLY when pcm/yo/ig/ha are among the song's languages. If unsure of a native phrase, use a NON-LEXICAL texture (hum, "eh-eh", vowel run) — NEVER substitute Pidgin or English for a native line.
 
 Return ONLY JSON: {"enrichedLyrics": string, "styleTags": string[]}. styleTags describe the vocal PRODUCTION for the generator, e.g. ["layered vocals","doubled lead","background harmonies on the hook","lively ad-libs","hums and vocal textures between phrases","breathy intimate verses","call and response","behind-the-beat phrasing","energetic performance"].`;
+
+const JARGON = /(log[\s-]?drums?|shakers?|shekere|808s?|\bbpm\b|drum\s?(?:rolls?|fills?)|tom\s?fills?|percussion|hi-?hats?|snares?|bass\s?line|four[\s-]on[\s-]the[\s-]floor|\bthe\s+drop\b)/gi;
+
+/** Belt-and-braces: strip production vocabulary from SUNG text. Bracketed
+ *  [Section] headers are preserved; any parenthetical containing jargon is
+ *  removed whole (engines sing parentheticals); bare jargon words are excised. */
+export function scrubProductionJargon(body: string): string {
+  return body
+    .split('\n')
+    .map((line) => {
+      if (/^\s*\[[^\]]+\]\s*$/.test(line)) return line; // section header — engine cue, allowed
+      let out = line.replace(/\(([^)]*)\)/g, (m, inner) => (JARGON.test(inner) ? '' : m));
+      JARGON.lastIndex = 0;
+      out = out.replace(JARGON, '').replace(/\s{2,}/g, ' ').replace(/\(\s*\)/g, '').trimEnd();
+      JARGON.lastIndex = 0;
+      return out;
+    })
+    .filter((l, i, arr) => !(l.trim() === '' && (arr[i - 1] ?? '').trim() === ''))
+    .join('\n');
+}
 
 export async function enrichLyricsForVocals(opts: {
   lyricBody: string;
@@ -43,7 +63,7 @@ export async function enrichLyricsForVocals(opts: {
   soundDna?: string;
 }): Promise<EnrichedVocal | null> {
   try {
-    const out = await generateJson<EnrichedVocal>({
+    const out0 = await generateJson<EnrichedVocal>({
       system: ARRANGER_SYSTEM,
       user: [
         `LANGUAGES: ${opts.languages?.join(', ') || 'english, pidgin'}`,
@@ -57,6 +77,9 @@ export async function enrichLyricsForVocals(opts: {
       temperature: 0.7,
       maxTokens: 3_000,
     });
+    const out: EnrichedVocal | null = out0
+      ? { ...out0, enrichedLyrics: scrubProductionJargon(out0.enrichedLyrics ?? ''), styleTags: [...new Set([...(out0.styleTags ?? []), 'drum fill into every hook and section change'])] }
+      : out0;
     if (!out?.enrichedLyrics) return null;
     return { enrichedLyrics: out.enrichedLyrics, styleTags: out.styleTags ?? [] };
   } catch {
