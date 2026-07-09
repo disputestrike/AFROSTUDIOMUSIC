@@ -33,14 +33,14 @@ export function SongChat({ songId, onNewVersion }: { songId: string; onNewVersio
         for (let i = 0; i < 90; i++) {
           await new Promise((res) => setTimeout(res, 4000));
           try {
-            const j = await api.get<{ status: string; outputJson?: { url?: string; label?: string; note?: string } }>(`/jobs/${r.jobId}`);
+            const j = await api.get<{ status: string; errorJson?: { message?: string } | null; outputJson?: { url?: string; label?: string; note?: string } }>(`/jobs/${r.jobId}`);
             if (j.status === 'SUCCEEDED') {
               const url = j.outputJson?.url;
               setMsgs((m) => [...m.slice(0, -1), { who: 'song', text: `Done — ${j.outputJson?.label ?? r.dispatched}. This is the new current version (revert lives in Versions).`, audioUrl: url }]);
               onNewVersion?.();
               break;
             }
-            if (j.status === 'FAILED') { setMsgs((m) => [...m.slice(0, -1), { who: 'song', text: 'That edit failed — try a different instruction.' }]); break; }
+            if (j.status === 'FAILED') { setMsgs((m) => [...m.slice(0, -1), { who: 'song', text: `That edit failed — ${j.errorJson?.message ?? 'no reason recorded'}.` }]); break; }
           } catch { /* blip — keep polling */ }
         }
       }

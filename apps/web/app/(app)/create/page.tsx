@@ -86,9 +86,9 @@ export default function CreatePage() {
       try {
         for (let i = 0; i < 200; i++) {
           const id = renderJobId ?? dropJobId; if (!id) break;
-          let j: { status: string; error?: string | null; outputJson?: { drop?: Array<{ jobId?: string; projectId?: string; title?: string; hookText?: string; score: number | null }> } };
+          let j: { status: string; error?: string | null; errorJson?: { message?: string } | null; outputJson?: { drop?: Array<{ jobId?: string; projectId?: string; title?: string; hookText?: string; score: number | null }> } };
           try { j = await api.get(`/jobs/${id}`); } catch { await sleep(6000); continue; }
-          if (j.status === 'FAILED') { setErr(`That render failed — ${j.error ?? 'no reason recorded'}. Start another take.`); setPhase('error'); clearProduce(); return; }
+          if (j.status === 'FAILED') { setErr(`That render failed — ${j.errorJson?.message ?? j.error ?? 'no reason recorded'}. Start another take.`); setPhase('error'); clearProduce(); return; }
           if (j.status === 'SUCCEEDED') {
             if (!renderJobId && dropJobId) {
               const item = j.outputJson?.drop?.[0];
@@ -263,8 +263,8 @@ export default function CreatePage() {
       netFails = 0;
       for (let i = 0; i < 144; i++) {
         await sleep(5000);
-        let job: { status: string; error?: string | null };
-        try { job = await api.get(`/jobs/${item.jobId}`); lastJobError = job.error ?? lastJobError; netFails = 0; }
+        let job: { status: string; error?: string | null; errorJson?: { message?: string } | null };
+        try { job = await api.get(`/jobs/${item.jobId}`); lastJobError = job.errorJson?.message ?? job.error ?? lastJobError; netFails = 0; }
         catch { if (++netFails >= 24) break; continue; } // network blip → retry, render keeps going
         if (job.status === 'SUCCEEDED') {
           try {
@@ -358,8 +358,8 @@ export default function CreatePage() {
       let netFails = 0;
       for (let i = 0; i < 144; i++) {
         await sleep(5000);
-        let job: { status: string; error?: string | null };
-        try { job = await api.get(`/jobs/${r.jobId}`); lastJobError = job.error ?? lastJobError; netFails = 0; }
+        let job: { status: string; error?: string | null; errorJson?: { message?: string } | null };
+        try { job = await api.get(`/jobs/${r.jobId}`); lastJobError = job.errorJson?.message ?? job.error ?? lastJobError; netFails = 0; }
         catch { if (++netFails >= 24) break; continue; } // network blip → retry, render keeps going
         if (job.status === 'SUCCEEDED') {
           try {

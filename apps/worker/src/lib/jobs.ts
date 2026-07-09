@@ -25,7 +25,7 @@ export async function markFailed(jobId: string, err: unknown) {
     data: {
       status: JobStatus.FAILED,
       finishedAt: new Date(),
-      errorJson: { message: String((err as Error)?.message ?? err) } as never,
+      errorJson: { message: (String((err as Error)?.message ?? err ?? '').trim() || 'unknown failure (no message)') .slice(0, 800) } as never,
     },
   });
 }
