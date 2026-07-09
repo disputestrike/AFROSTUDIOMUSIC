@@ -2,7 +2,7 @@
 /** TALK TO YOUR SONG — chat-driven editing. "add a fill at 1:20" / "1.1x faster"
  *  / "lay warm keys over it" / "cut 0:45 to 1:00" -> one op -> a NEW VERSION
  *  that auto-plays right here, with one-tap revert living in Versions. */
-import { useEffect, useState } from 'react';
+import { useRef, useEffect, useState } from 'react';
 import { useApi } from '../lib/api';
 
 interface Msg { who: 'you' | 'song'; text: string; audioUrl?: string }
@@ -10,6 +10,14 @@ interface Msg { who: 'you' | 'song'; text: string; audioUrl?: string }
 export function SongChat({ songId, onNewVersion }: { songId: string; onNewVersion?: () => void }) {
   const api = useApi();
   const [msgs, setMsgs] = useState<Msg[]>([]);
+  // GPT/Claude-style stick-to-bottom: newest message auto-scrolls into view,
+  // but never yanks the user down while they're scrolled up reading.
+  const listRef = useRef<HTMLDivElement>(null);
+  const stickRef = useRef(true);
+  useEffect(() => {
+    if (!stickRef.current) return;
+    requestAnimationFrame(() => listRef.current?.scrollTo({ top: listRef.current.scrollHeight, behavior: 'smooth' }));
+  });
   const [input, setInput] = useState('');
   const [busy, setBusy] = useState(false);
   const [sections, setSections] = useState<Array<{ index: number; label: string; startS: number; endS: number }>>([]);
@@ -66,7 +74,7 @@ export function SongChat({ songId, onNewVersion }: { songId: string; onNewVersio
           ))}
         </div>
       )}
-      <div className="max-h-56 space-y-2 overflow-y-auto">
+      <div ref={listRef} onScroll={(e) => { const el = e.currentTarget; stickRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 60; }} className="max-h-96 space-y-2 overflow-y-auto">
         {msgs.map((m, i) => (
           <div key={i} className={m.who === 'you' ? 'text-right' : ''}>
             <span className={`inline-block max-w-[85%] rounded px-2 py-1 text-xs ${m.who === 'you' ? 'bg-sky-900/50 text-sky-100' : 'bg-slate-800 text-slate-200'}`}>{m.text}</span>
