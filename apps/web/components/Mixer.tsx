@@ -27,7 +27,56 @@ interface Track {
 
 type Status = { kind: 'idle' | 'loading' | 'ai' | 'rendering' | 'done' | 'error'; msg?: string };
 
+function RecordVocalButton({ projectId, onDone }: { projectId: string; onDone: () => void }) {
+  const api = useApi();
+  const [rec, setRec] = useState<MediaRecorder | null>(null);
+  const [secs, setSecs] = useState(0);
+  const [status, setStatus] = useState('');
+  useEffect(() => {
+    if (!rec) return;
+    const t = setInterval(() => setSecs((x) => x + 1), 1000);
+    return () => clearInterval(t);
+  }, [rec]);
+  async function toggle() {
+    if (rec) { rec.stop(); return; }
+    setStatus('');
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const chunks: BlobPart[] = [];
+      const r = new MediaRecorder(stream);
+      r.ondataavailable = (e) => { if (e.data.size) chunks.push(e.data); };
+      r.onstop = async () => {
+        stream.getTracks().forEach((tr) => tr.stop());
+        setRec(null);
+        const dur = secs || 1;
+        setSecs(0);
+        setStatus('Uploading your take…');
+        try {
+          const blob = new Blob(chunks, { type: 'audio/webm' });
+          const { key } = await api.uploadAudioDirect(blob, 'vocal');
+          await api.post(`/projects/${projectId}/vocals/upload`, { key, role: 'lead', durationS: dur });
+          setStatus('Vocal on the desk — it is now the lead on your latest song.');
+          onDone();
+        } catch (e) { setStatus((e as Error).message); }
+      };
+      r.start();
+      setRec(r);
+    } catch { setStatus('Mic unavailable — allow microphone access in your browser.'); }
+  }
+  return (
+    <>
+    <div className="mb-2 flex items-center justify-between"><span className="text-xs font-semibold text-slate-300">Your voice on this record</span><RecordVocalButton projectId={projectId} onDone={() => setVocalBump((x) => x + 1)} /></div>
+    <span className="flex items-center gap-2">
+      <button onClick={toggle} className={`rounded px-3 py-1 text-xs font-medium ${rec ? 'bg-red-600 text-white' : 'bg-slate-800 text-slate-200 hover:bg-slate-700'}`}>
+        {rec ? `■ Stop (0:${String(secs).padStart(2, '0')})` : '● Record vocal'}
+      </button>
+      {status && <span className="text-[11px] text-slate-400">{status}</span>}
+    </span>
+  );
+}
+
 export function Mixer({ projectId }: { projectId: string }) {
+  const [vocalBump, setVocalBump] = useState(0);
   const api = useApi();
   const [songId, setSongId] = useState<string | null>(null);
   const [tracks, setTracks] = useState<Track[]>([]);
@@ -47,7 +96,7 @@ export function Mixer({ projectId }: { projectId: string }) {
     } catch (e) {
       setStatus({ kind: 'error', msg: (e as Error).message });
     }
-  }, [api, projectId]);
+  }, [api, projectId, vocalBump]);
 
   useEffect(() => {
     if (open && status.kind === 'loading') void load();
@@ -271,5 +320,6 @@ function Knob({
       <input type="range" min={min} max={max} step={step} value={value} onChange={(e) => onChange(Number(e.target.value))} className="h-1 flex-1 accent-afrobrand-500" />
       <span className="w-8 shrink-0 text-right tabular-nums text-slate-300">{fmt ? fmt(value) : `${value}${unit ?? ''}`}</span>
     </label>
+  </>
   );
 }

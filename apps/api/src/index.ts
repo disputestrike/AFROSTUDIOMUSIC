@@ -64,6 +64,27 @@ const app = Fastify({
   },
 });
 
+// LAUNCH GUARDRAIL — dependency-free per-IP rate limit (token window). Real
+// per-plan quotas ride the credit system; this stops abuse and runaway loops.
+{
+  const WINDOW_MS = 60_000;
+  const LIMIT = parseInt(process.env.RATE_LIMIT_PER_MIN ?? '240', 10) || 240;
+  const hits = new Map<string, { n: number; reset: number }>();
+  app.addHook('onRequest', async (req, reply) => {
+    const path = req.url.split('?')[0] ?? '';
+    if (path === '/health' || path.startsWith('/docs')) return;
+    const now = Date.now();
+    const key = req.ip || 'unknown';
+    const cur = hits.get(key);
+    if (!cur || cur.reset < now) { hits.set(key, { n: 1, reset: now + WINDOW_MS }); return; }
+    cur.n++;
+    if (cur.n > LIMIT) {
+      reply.code(429).send({ error: 'rate_limited', retryInS: Math.ceil((cur.reset - now) / 1000) });
+    }
+  });
+  setInterval(() => { const now = Date.now(); for (const [k, v] of hits) if (v.reset < now) hits.delete(k); }, WINDOW_MS).unref();
+}
+
 app.setValidatorCompiler(validatorCompiler);
 app.setSerializerCompiler(serializerCompiler);
 

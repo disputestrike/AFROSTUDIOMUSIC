@@ -9,7 +9,7 @@ import { prisma } from '@afrohit/db';
 import { isInternalMode, requireAuth } from '../middleware/auth';
 import { enqueue, QUEUES, type QueueName } from '../lib/queue';
 
-async function requireAdmin(req: FastifyRequest): Promise<void> {
+export async function requireAdmin(req: FastifyRequest): Promise<void> {
   const { userId } = requireAuth(req);
   // Internal single-tenant mode: the one resolved user IS the operator.
   if (isInternalMode()) return;
