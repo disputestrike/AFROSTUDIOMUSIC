@@ -106,6 +106,18 @@ export default async function adjust(app: FastifyInstance) {
   // TALK TO YOUR SONG — the chat editor. One instruction -> ONE typed op ->
   // executed (existing routes via inject, timeline ops via the song-edit job)
   // -> a NEW VERSION that auto-plays and reverts in one tap. The differentiator.
+  // section map for the Arrange strip (same math the chat brain sees)
+  app.get<{ Params: { id: string } }>('/:id/sections', async (req, reply) => {
+    const { workspaceId } = requireAuth(req);
+    const song = await prisma.song.findFirst({ where: { id: req.params.id, workspaceId }, include: { beats: { orderBy: { createdAt: 'desc' }, take: 1 } } });
+    if (!song) return reply.code(404).send({ error: 'song_not_found' });
+    const m = ((song.beats[0]?.meta ?? {}) as { measured?: { durationS?: { value?: number }; sectionBoundaries?: { value?: number[] } } }).measured;
+    const dur = m?.durationS?.value ?? 0;
+    const bs = (m?.sectionBoundaries?.value ?? []).filter((t) => t > 2 && t < dur - 2);
+    const edges = [0, ...bs, dur];
+    return { sections: dur ? edges.slice(0, -1).map((s0, i) => ({ index: i + 1, label: `S${i + 1}`, startS: Math.round(s0), endS: Math.round(edges[i + 1]!) })) : [] };
+  });
+
   app.post<{ Params: { id: string }; Body: { message: string } }>('/:id/chat', async (req, reply) => {
     const { workspaceId } = requireAuth(req);
     const message = String((req.body as { message?: string })?.message ?? '').slice(0, 500);
@@ -141,6 +153,7 @@ SECTION MAP: ${sectionMap || 'not measured yet'}.\nParse the artist's instructio
 - {"kind":"duplicate_section","index":3}                     // Arrange: repeat a section right after itself
 - {"kind":"stem_fx","stem":"vocals|drums|bass|other","fx":"reverb|eq_low|eq_high|gain","amount":0-1}  // fx on ONE stem only
 - {"kind":"vocal_drop","fromS":45,"toS":60}                  // silence ONLY the vocal in a region (open a verse)
+- {"kind":"resing_section","index":3}                        // re-play a section: FRESH beat under the ORIGINAL vocal
 If nothing fits, op:null and coach them in reply (mixer, versions, adjust exist). Return {"reply","op"} ONLY.`,
       user: message,
       maxTokens: 400,
@@ -170,7 +183,7 @@ If nothing fits, op:null and coach them in reply (mixer, versions, adjust exist)
     const job = await prisma.providerJob.create({
       data: { workspaceId, projectId: song.projectId, kind: 'music', provider: 'song-chat', status: 'QUEUED', inputJson: { songId: song.id, op } as never },
     });
-    await enqueue({ queue: app.queues.music, name: 'song-edit', payload: { jobId: job.id, workspaceId, projectId: song.projectId, songId: song.id, sourceUrl, genre: song.project?.genre, durationS, boundaries: bounds, op } });
+    await enqueue({ queue: app.queues.music, name: 'song-edit', payload: { jobId: job.id, workspaceId, projectId: song.projectId, songId: song.id, sourceUrl, genre: song.project?.genre, durationS, bpm, boundaries: bounds, op } });
     reply.code(202);
     return { reply: plan.reply, dispatched: op.kind, jobId: job.id };
   });

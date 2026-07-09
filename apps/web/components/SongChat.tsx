@@ -2,7 +2,7 @@
 /** TALK TO YOUR SONG — chat-driven editing. "add a fill at 1:20" / "1.1x faster"
  *  / "lay warm keys over it" / "cut 0:45 to 1:00" -> one op -> a NEW VERSION
  *  that auto-plays right here, with one-tap revert living in Versions. */
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useApi } from '../lib/api';
 
 interface Msg { who: 'you' | 'song'; text: string; audioUrl?: string }
@@ -12,6 +12,12 @@ export function SongChat({ songId, onNewVersion }: { songId: string; onNewVersio
   const [msgs, setMsgs] = useState<Msg[]>([]);
   const [input, setInput] = useState('');
   const [busy, setBusy] = useState(false);
+  const [sections, setSections] = useState<Array<{ index: number; label: string; startS: number; endS: number }>>([]);
+  useEffect(() => {
+    api.get<{ sections: typeof sections }>(`/songs/${songId}/sections`).then((r) => setSections(r.sections)).catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [songId]);
+  function tellSong(text: string) { setInput(text); }
 
   async function send() {
     const text = input.trim();
@@ -47,6 +53,19 @@ export function SongChat({ songId, onNewVersion }: { songId: string; onNewVersio
   return (
     <div className="mt-3 rounded border border-slate-800 bg-slate-950/60 p-3">
       <div className="mb-2 text-xs font-semibold text-slate-300">Talk to this song <span className="font-normal text-slate-500">— “add a fill at 1:20” · “move the hook earlier” · “reverb only on the vocal” · “open the vocal 0:45–1:00”</span></div>
+      {sections.length > 1 && (
+        <div className="mb-2 flex flex-wrap gap-1">
+          {sections.map((sec) => (
+            <span key={sec.index} className="flex items-center gap-1 rounded border border-slate-800 bg-slate-900 px-1.5 py-0.5 text-[10px] text-slate-300">
+              <b>{sec.label}</b> {Math.floor(sec.startS / 60)}:{String(sec.startS % 60).padStart(2, '0')}
+              <button title="move earlier" onClick={() => tellSong(`move section ${sec.index} to position ${Math.max(1, sec.index - 1)}`)} className="text-slate-500 hover:text-slate-200">◀</button>
+              <button title="move later" onClick={() => tellSong(`move section ${sec.index} to position ${Math.min(sections.length, sec.index + 1)}`)} className="text-slate-500 hover:text-slate-200">▶</button>
+              <button title="duplicate" onClick={() => tellSong(`duplicate section ${sec.index}`)} className="text-slate-500 hover:text-slate-200">⧉</button>
+              <button title="fresh beat under this section's vocal" onClick={() => tellSong(`re-play section ${sec.index} with a fresh beat`)} className="text-slate-500 hover:text-slate-200">↻</button>
+            </span>
+          ))}
+        </div>
+      )}
       <div className="max-h-56 space-y-2 overflow-y-auto">
         {msgs.map((m, i) => (
           <div key={i} className={m.who === 'you' ? 'text-right' : ''}>

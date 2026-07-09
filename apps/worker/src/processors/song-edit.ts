@@ -13,6 +13,7 @@ import { mixBuffers, runFfmpeg } from '../lib/ffmpeg';
 import { markRunning, markSucceeded, markFailed } from '../lib/jobs';
 import { melodyLayer } from './own-engine';
 import { separateStems } from '@afrohit/ai';
+import { processAssembleBeat } from './material';
 import { mkdtemp, writeFile, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -24,11 +25,12 @@ export type SongEditOp =
   | { kind: 'move_section'; fromIndex: number; toIndex: number }
   | { kind: 'duplicate_section'; index: number }
   | { kind: 'stem_fx'; stem: 'vocals' | 'drums' | 'bass' | 'other'; fx: 'reverb' | 'eq_low' | 'eq_high' | 'gain'; amount?: number }
-  | { kind: 'vocal_drop'; fromS: number; toS: number };
+  | { kind: 'vocal_drop'; fromS: number; toS: number }
+  | { kind: 'resing_section'; index: number };
 
 export interface SongEditPayload {
   jobId: string; workspaceId: string; projectId: string; songId: string;
-  sourceUrl: string; genre?: string | null; durationS?: number; boundaries?: number[]; op: SongEditOp;
+  sourceUrl: string; genre?: string | null; durationS?: number; bpm?: number | null; boundaries?: number[]; op: SongEditOp;
 }
 
 /** Trim out [fromS, toS) and butt-join the remainder (concat demuxer, WAV). */
@@ -85,12 +87,24 @@ async function concatSlices(input: Buffer, order: Array<{ s: number; e: number }
       await runFfmpeg(['-i', inPath, '-ss', String(order[i]!.s), '-t', String(Math.max(0.2, order[i]!.e - order[i]!.s)), '-ac', '2', '-ar', '44100', f]);
       files.push(f);
     }
-    const list = join(dir, 'list.txt');
-    await writeFile(list, files.map((f) => `file '${f}'`).join('\n') + '\n');
     const out = join(dir, 'out.wav');
-    await runFfmpeg(['-f', 'concat', '-safe', '0', '-i', list, '-c', 'copy', out]);
+    await crossfadeJoin(files, out);
     return await readFile(out);
   } finally { await rm(dir, { recursive: true, force: true }).catch(() => {}); }
+}
+
+/** Join WAV parts with short equal-power crossfades (v3: no clicky seams). */
+async function crossfadeJoin(files: string[], outPath: string, fadeS = 0.12): Promise<void> {
+  if (files.length === 1) { await runFfmpeg(['-i', files[0]!, '-c', 'copy', outPath]); return; }
+  const inputs = files.flatMap((f) => ['-i', f]);
+  let chain = '';
+  let prev = '[0:a]';
+  for (let i = 1; i < files.length; i++) {
+    const lbl = i === files.length - 1 ? '[a]' : `[x${i}]`;
+    chain += `${prev}[${i}:a]acrossfade=d=${fadeS}:c1=tri:c2=tri${lbl};`;
+    prev = lbl;
+  }
+  await runFfmpeg([...inputs, '-filter_complex', chain.slice(0, -1), '-map', '[a]', '-ac', '2', '-ar', '44100', outPath]);
 }
 
 const FX_CHAIN: Record<string, (amt: number) => string> = {
@@ -179,6 +193,51 @@ export async function processSongEdit(p: SongEditPayload): Promise<void> {
       if (!(toS > fromS)) throw new Error('vocal_drop needs from < to');
       out = await stemSurgery(p.sourceUrl, 'vocals', `volume=enable='between(t,${fromS},${toS})':volume=0`);
       label = `vocal open ${fromS.toFixed(0)}–${toS.toFixed(0)}s`;
+    } else if (p.op.kind === 'resing_section') {
+      // V3: RE-PLAY one section — a FRESH owned beat under the ORIGINAL vocal.
+      // (True new-vocal re-sing activates when an engine exposes section vocals;
+      // this variant is real today and labeled exactly for what it is.)
+      const segs = segmentsFrom(p.durationS ?? 180, p.boundaries);
+      const i = p.op.index - 1;
+      if (i < 0 || i >= segs.length) throw new Error(`sections are S1–S${segs.length}`);
+      const bpm = p.bpm ?? 112;
+      const secPerBar = (60 / bpm) * 4;
+      const seg = segs[i]!;
+      const segLen = seg.e - seg.s;
+      const bars = Math.max(2, Math.round(segLen / secPerBar));
+      // stems: vocal + instrumental bed
+      const res = await separateStems({ audioUrl: p.sourceUrl, mode: 'full' });
+      const byRole = new Map(res.stems.map((st) => [st.role.toLowerCase(), st.url]));
+      const vocalUrl = byRole.get('vocals') ?? byRole.get('vocal');
+      const instrUrl = res.instrumentalUrl ?? byRole.get('instrumental');
+      if (!vocalUrl || !instrUrl) throw new Error('separator returned no vocal/instrumental pair');
+      // fresh owned section
+      const rows = await prisma.materialAsset.findMany({ where: { workspaceId: p.workspaceId, genre: p.genre ?? undefined, role: { in: ['log_drum', 'drums', 'percussion', 'bass', 'chords'] } }, orderBy: { createdAt: 'desc' }, take: 40 });
+      const picks: typeof rows = [];
+      for (const role of ['log_drum', 'drums', 'percussion', 'bass', 'chords']) { const r0 = rows.find((r) => r.role === role); if (r0) picks.push(r0); }
+      if (picks.length < 2) throw new Error('kit too thin for a section re-play — the nightly forge stocks it');
+      const child = await prisma.providerJob.create({ data: { workspaceId: p.workspaceId, projectId: p.projectId, kind: 'music', provider: 'material', status: 'QUEUED', inputJson: { resingChild: p.jobId } as never } });
+      await processAssembleBeat({ jobId: child.id, workspaceId: p.workspaceId, projectId: p.projectId, songId: p.songId, bpm, genre: p.genre ?? 'afrobeats', picks, sections: [{ name: `S${p.op.index}`, bars, roles: picks.map((x) => x.role) }] } as never);
+      const done = await prisma.providerJob.findUnique({ where: { id: child.id }, select: { status: true, outputJson: true } });
+      const newUrl = ((done?.outputJson ?? {}) as { url?: string }).url;
+      if (done?.status !== 'SUCCEEDED' || !newUrl) throw new Error('section assembly failed (see child job)');
+      // splice instrumental: [0,s) + new(exact len) + [e,dur)
+      const dir = await mkdtemp(join(tmpdir(), 'resing-'));
+      try {
+        const instrP = join(dir, 'instr.wav'); const secP = join(dir, 'sec.wav'); const secFit = join(dir, 'fit.wav');
+        await writeFile(instrP, await downloadToBuffer(instrUrl));
+        await writeFile(secP, await downloadToBuffer(newUrl));
+        await runFfmpeg(['-i', secP, '-t', String(Math.max(1, segLen)), '-af', 'apad', '-ac', '2', '-ar', '44100', secFit]);
+        const a = join(dir, 'a.wav'); const c = join(dir, 'c.wav'); const outI = join(dir, 'outI.wav');
+        await runFfmpeg(['-i', instrP, '-t', String(Math.max(0.2, seg.s)), '-ac', '2', '-ar', '44100', a]);
+        await runFfmpeg(['-i', instrP, '-ss', String(seg.e), '-ac', '2', '-ar', '44100', c]);
+        const parts = [ ...(seg.s > 0.3 ? [a] : []), secFit, ...(seg.e < (p.durationS ?? 180) - 0.3 ? [c] : []) ];
+        await crossfadeJoin(parts, outI);
+        const instrNew = await readFile(outI);
+        const vox = await downloadToBuffer(vocalUrl);
+        out = await mixBuffers(instrNew, vox, 1.0);
+        label = `S${p.op.index} re-played — fresh beat under your original vocal`;
+      } finally { await rm(dir, { recursive: true, force: true }).catch(() => {}); }
     } else {
       // add_layer — MusicGen conditioned on THIS song, mixed under it (fail-closed:
       // if the layer can't render, the edit fails honestly rather than faking it).
