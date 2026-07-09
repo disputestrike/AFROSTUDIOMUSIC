@@ -2,10 +2,16 @@ import { S3Client, PutObjectCommand, GetObjectCommand } from '@aws-sdk/client-s3
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { nanoid } from 'nanoid';
 
-const endpoint = process.env.S3_ENDPOINT;
+// Storage config accepts BOTH naming schemes: the app's canonical S3_* vars and
+// Cloudflare R2's natural R2_* names (R2_S3_API_URL / R2_ACCESS_KEY_ID / ...),
+// so pasting R2 credentials under their own names Just Works. S3_* wins if both set.
+const endpoint =
+  process.env.S3_ENDPOINT ??
+  process.env.R2_S3_API_URL ??
+  (process.env.R2_ACCOUNT_ID ? `https://${process.env.R2_ACCOUNT_ID}.r2.cloudflarestorage.com` : undefined);
 const region = process.env.S3_REGION ?? 'auto';
-const bucket = process.env.S3_BUCKET ?? 'afrohit-studio';
-const publicBase = process.env.S3_PUBLIC_BASE_URL;
+const bucket = process.env.S3_BUCKET ?? process.env.R2_BUCKET ?? 'afrohit-studio';
+const publicBase = process.env.S3_PUBLIC_BASE_URL ?? process.env.R2_PUBLIC_URL;
 
 let _client: S3Client | null = null;
 function client(): S3Client {
@@ -15,8 +21,8 @@ function client(): S3Client {
     endpoint,
     forcePathStyle: !!endpoint, // MinIO + R2 need this
     credentials: {
-      accessKeyId: process.env.S3_ACCESS_KEY ?? '',
-      secretAccessKey: process.env.S3_SECRET_KEY ?? '',
+      accessKeyId: process.env.S3_ACCESS_KEY ?? process.env.R2_ACCESS_KEY_ID ?? '',
+      secretAccessKey: process.env.S3_SECRET_KEY ?? process.env.R2_SECRET_ACCESS_KEY ?? '',
     },
   });
   return _client;
