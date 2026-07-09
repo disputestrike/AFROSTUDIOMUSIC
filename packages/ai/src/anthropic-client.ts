@@ -16,8 +16,25 @@ export function anthropicEnabled(): boolean {
   return !!anthropicKey();
 }
 
+/**
+ * THE BRAIN. Fable 5 (Mythos-class, launched 2026-06-09) is Anthropic's most
+ * capable generally-available model — the quality ceiling for hooks/lyrics/A&R.
+ * NOTE: a deploy env var OVERRIDES this default. If Railway still carries an
+ * old ANTHROPIC_MODEL (e.g. claude-3-5-sonnet-20241022 from a stale
+ * .env.example), the app silently runs the old brain — delete or update it.
+ */
 export const ANTHROPIC_MODEL = (): string =>
-  process.env.ANTHROPIC_MODEL ?? 'claude-sonnet-5';
+  process.env.ANTHROPIC_MODEL ?? 'claude-fable-5';
+
+/**
+ * Fable 5 ships with safety classifiers that can decline a request: the API
+ * returns HTTP 200 with stop_reason "refusal" (not an error). Anthropic's
+ * documented pattern is to retry the request on Claude Opus 4.8. This is rare
+ * (<5% of sessions, and our prompts are songwriting) but unhandled it would
+ * surface as a mystery empty/failed generation.
+ */
+export const ANTHROPIC_FALLBACK_MODEL = (): string =>
+  process.env.ANTHROPIC_FALLBACK_MODEL ?? 'claude-opus-4-8';
 
 /** Diagnostic: make a tiny real call and surface the exact error (model, auth…). */
 export async function anthropicPing(): Promise<{ ok: boolean; model: string; error?: string }> {
@@ -187,7 +204,16 @@ export async function claudeJson<T>(opts: {
         throw new Error(`anthropic ${res.status}: ${(await res.text()).slice(0, 200)}`);
       }
       if (!res.ok) throw new Error(`anthropic ${res.status}: ${(await res.text()).slice(0, 300)}`);
-      const data = (await res.json()) as { content?: Array<{ type: string; text?: string }> };
+      const data = (await res.json()) as { content?: Array<{ type: string; text?: string }>; stop_reason?: string };
+      // Fable-5 classifier refusal: HTTP 200 + stop_reason "refusal", no usable
+      // body. Retry ONCE on the documented fallback (Opus 4.8) instead of
+      // surfacing a fake parse failure. Guard prevents infinite recursion.
+      if (data.stop_reason === 'refusal') {
+        const current = opts.model ?? ANTHROPIC_MODEL();
+        const fb = ANTHROPIC_FALLBACK_MODEL();
+        if (current !== fb) return claudeJson<T>({ ...opts, model: fb });
+        throw new Error('anthropic: refusal on fallback model too');
+      }
       const text = data.content?.map((c) => c.text ?? '').join('') ?? '';
       return parseJsonLoose<T>(extractJson(text));
     } catch (e) {

@@ -25,7 +25,7 @@ github.com/disputestrike/AFROSTUDIOMUSIC). Exit codes recorded. No secret values
 - Web: Next.js 15.5 (App Router). API: Fastify 5 (+helmet, cors, rate-limit 240/min, swagger at /docs). Worker: BullMQ + system ffmpeg (Railway nixpacks).
 - DB: Prisma 5.22 / Postgres (Railway), deployed via `prisma db push`. Redis: BullMQ queues (music, voice, image, video, master, export).
 - Storage: Cloudflare R2 via S3 client. Payments: PayPal (plans + webhook). Email: Resend. Observability: Sentry + PostHog (env-gated).
-- AI: Claude-first `generateJson` (claude-sonnet-5) with OpenAI fallback; music engines suno/ace_step/minimax/replicate-musicgen/eleven/stable_audio/mubert/stub behind one adapter interface (packages/ai/src/providers/music.ts:624).
+- AI: Claude-first `generateJson` (claude-fable-5, refusal-fallback claude-opus-4-8) with OpenAI fallback; music engines suno/ace_step/minimax/replicate-musicgen/eleven/stable_audio/mubert/stub behind one adapter interface (packages/ai/src/providers/music.ts:624).
 
 ## The intelligence layer (what makes it alive)
 

@@ -7,7 +7,7 @@
  * OpenAI chatWithTools so the route is a drop-in swap. Falls back to OpenAI in
  * the caller when no Anthropic key is set.
  */
-import { anthropicKey, anthropicEnabled, ANTHROPIC_MODEL } from './anthropic-client';
+import { anthropicKey, anthropicEnabled, ANTHROPIC_MODEL, ANTHROPIC_FALLBACK_MODEL } from './anthropic-client';
 import { chatWithTools, type ChatMessage, type ChatTurn } from './providers/text';
 
 export { anthropicEnabled as claudeChatAvailable };
@@ -102,7 +102,15 @@ export async function chatWithToolsClaude(opts: {
     });
     clearTimeout(timer);
     if (!res.ok) throw new Error(`anthropic-chat ${res.status}: ${(await res.text()).slice(0, 250)}`);
-    const data = (await res.json()) as { content?: Array<{ type: string; text?: string; id?: string; name?: string; input?: Record<string, unknown> }> };
+    const data = (await res.json()) as { content?: Array<{ type: string; text?: string; id?: string; name?: string; input?: Record<string, unknown> }>; stop_reason?: string };
+    // Fable-5 classifier refusal (200 + stop_reason "refusal") → retry once on
+    // the documented fallback model so Studio Chat never dead-airs the user.
+    if (data.stop_reason === 'refusal') {
+      const current = opts.model ?? ANTHROPIC_MODEL();
+      const fb = ANTHROPIC_FALLBACK_MODEL();
+      if (current !== fb) { clearTimeout(timer); return chatWithToolsClaude({ ...opts, model: fb }); }
+      throw new Error('anthropic-chat: refusal on fallback model too');
+    }
     const content = data.content ?? [];
     const text = content.filter((c) => c.type === 'text').map((c) => c.text ?? '').join('').trim();
     const toolCalls = content
