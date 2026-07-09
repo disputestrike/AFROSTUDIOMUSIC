@@ -137,6 +137,12 @@ async function registerCron() {
   const zapPattern = `0 */${Math.max(1, Math.floor(24 / zapRuns))} * * *`;
   await cronQueue.removeRepeatable('zap-radar', { pattern: '0 3 * * *' }).catch(() => undefined);
   await cronQueue.add('nightly-compound', {}, { repeat: { pattern: '45 2 * * *' } });
+  // ZERO-TAP: run the compound suite ~90s after EVERY deploy too (once per day —
+  // the dated jobId dedupes). Uploads get measured, the bank grows, profiles
+  // count themselves. Nobody presses anything, ever.
+  await cronQueue
+    .add('nightly-compound', {}, { jobId: `boot-compound-${new Date().toISOString().slice(0, 10)}`, delay: 90_000, removeOnComplete: true, removeOnFail: true })
+    .catch(() => undefined);
   await cronQueue.add('zap-radar', {}, {
     repeat: { pattern: zapPattern },
     removeOnComplete: { count: 10 },
@@ -178,6 +184,9 @@ void (async () => {
     const { dspAvailable, logdrumCalibrationStatus } = await import('./lib/dsp');
     if (!(await dspAvailable())) { log.warn('logdrum: DSP engine unavailable — the ear cannot run (lane scoring disabled)'); return; }
     const cal = await logdrumCalibrationStatus();
+    log.info(
+      `capabilities: eleven=${!!process.env.ELEVENLABS_API_KEY} replicate=${!!process.env.REPLICATE_API_TOKEN} tavily=${!!process.env.TAVILY_API_KEY} suno=${!!process.env.SUNO_API_KEY} anthropic=${!!(process.env.ANTHROPIC_API_KEY || process.env.CLAUDE_API_KEY)}`
+    );
     if (cal.calibrated) log.info(`logdrum: CALIBRATED (margin ${cal.separationMargin}, on ${cal.calibratedOn ?? 'reference-tracks'}) — included in lane scoring${cal.calibratedOn === 'synthetic-archetypes' ? '; drop 9 real rights-clean tracks + run eval-ear.ts to upgrade to real-audio calibration' : ''}`);
     else log.warn(`logdrum: UNCALIBRATED (${cal.reason}) — excluded from lane scoring until eval-ear.ts passes on real reference tracks`);
   } catch (err) {

@@ -31,6 +31,7 @@ export default async function debug(app: FastifyInstance) {
       anthropic,
       openai,
       audd: { configured: !!process.env.AUDD_API_TOKEN }, // Zap song ID needs this
+      eleven: { configured: !!process.env.ELEVENLABS_API_KEY }, // voice clone + ElevenLabs Music engine
       tavily: { configured: !!tavilyKey(), ...tavily },
       braveConfigured: !!braveKey(),
       trends: trend ? { ok: true, source: trend.source, sample: trend.digest.slice(0, 120) } : { ok: false },
