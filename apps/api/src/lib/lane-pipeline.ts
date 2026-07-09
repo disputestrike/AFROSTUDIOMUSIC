@@ -29,7 +29,12 @@ export function laneDna(genre: string | null | undefined, opts?: { mood?: string
   const dna = opts?.fusionGenres?.length
     ? blendSoundBrief([g, ...opts.fusionGenres], opts?.mood)
     : soundBrief(g, opts?.mood);
-  return dna as unknown as LaneDna;
+  // THE CHOKE POINT (post-phantom autopsy): signature instruments + a 2-tag
+  // craft core are fused HERE, inside laneDna itself — they can never silently
+  // detach again. Hard budget: 9 tags max so genre/language signals never drown.
+  const sig = genreSignature(g);
+  const fused = [...new Set([...sig.tags, CRAFT_TAGS[0], CRAFT_TAGS[2], ...(((dna as { tags?: string[] }).tags) ?? [])])].slice(0, 9);
+  return { ...(dna as object), tags: fused } as unknown as LaneDna;
 }
 
 /** Just the DNA brief string (the most common need — hooks/lyrics/A&R/etc.). */

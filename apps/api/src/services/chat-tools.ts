@@ -519,7 +519,7 @@ async function createBeatJob(ctx: Ctx, a: { genre: string; fusionGenres?: string
         // never a clone and never named. Goes to the music model as a style cue.
         // ANTI-SOUP: vibe stays short (vibe + influence only); styleHints ride
         // as tags on dnaTags where terse tokens belong.
-        vibePrompt: [a.vibePrompt, a.influence ? `in the vibe/lane of ${a.influence} (capture the feel, not a copy)` : null].filter(Boolean).join(', ') || undefined,
+        vibePrompt: [`LANGUAGES: strictly ${(a.languages ?? []).join('/') || 'en'} — never drift into Pidgin unless pcm is listed.`, [a.vibePrompt].filter(Boolean).join(' '), a.influence ? `in the vibe/lane of ${a.influence} (capture the feel, not a copy)` : null].filter(Boolean).join(', ') || undefined,
         durationS: a.durationS ?? blueprint?.totalDurationS ?? (a.withVocals ? 150 : 60),
         withStems: a.withStems ?? !a.withVocals,
         withVocals: a.withVocals ?? false,
