@@ -28,6 +28,8 @@ export function AdjustSong({ songId, onDispatched }: { songId: string; onDispatc
   const [laneOverride, setLaneOverride] = useState('');
   const [busy, setBusy] = useState<string>('');
   const [msg, setMsg] = useState('');
+  const [tempo, setTempo] = useState('1.0');
+  const [semis, setSemis] = useState('0');
 
   async function getPlan() {
     setBusy('plan'); setMsg('');
@@ -44,6 +46,20 @@ export function AdjustSong({ songId, onDispatched }: { songId: string; onDispatc
       const r = await api.post<{ dispatched: string; next: string }>(`/songs/${songId}/adjust/execute`, { route, targetLane: laneOverride || undefined });
       setMsg(`Dispatched ${r.dispatched}. ${r.next}`);
       onDispatched?.();
+    } catch (e) { setMsg((e as Error).message); }
+    setBusy('');
+  }
+
+  async function transform() {
+    setBusy('transform'); setMsg('');
+    try {
+      const body: { tempo?: number; semitones?: number } = {};
+      const t = parseFloat(tempo); const st = parseInt(semis, 10);
+      if (!Number.isNaN(t) && Math.abs(t - 1) > 0.001) body.tempo = Math.min(1.5, Math.max(0.5, t));
+      if (!Number.isNaN(st) && st !== 0) body.semitones = Math.min(6, Math.max(-6, st));
+      if (!body.tempo && !body.semitones) { setMsg('Set a speed other than 1.0 and/or a key shift.'); setBusy(''); return; }
+      const r = await api.post<{ note: string }>(`/songs/${songId}/transform`, body);
+      setMsg(r.note); onDispatched?.();
     } catch (e) { setMsg((e as Error).message); }
     setBusy('');
   }
@@ -78,6 +94,18 @@ export function AdjustSong({ songId, onDispatched }: { songId: string; onDispatc
           ))}
         </div>
       )}
+      <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-slate-800 pt-3">
+        <span className="text-xs font-semibold text-slate-300">Speed &amp; key</span>
+        <label className="flex items-center gap-1 text-[11px] text-slate-400">speed×
+          <input value={tempo} onChange={(e) => setTempo(e.target.value)} className="w-16 rounded border border-slate-700 bg-slate-950 px-2 py-1 text-xs" />
+        </label>
+        <label className="flex items-center gap-1 text-[11px] text-slate-400">key±st
+          <input value={semis} onChange={(e) => setSemis(e.target.value)} className="w-14 rounded border border-slate-700 bg-slate-950 px-2 py-1 text-xs" />
+        </label>
+        <button onClick={transform} disabled={busy !== ''} className="rounded bg-slate-800 px-3 py-1 text-xs text-slate-200 hover:bg-slate-700 disabled:opacity-50">
+          {busy === 'transform' ? 'Rendering…' : 'Apply (new version, free)'}
+        </button>
+      </div>
       {msg && <p className="mt-2 text-[11px] text-slate-400">{msg}</p>}
     </div>
   );

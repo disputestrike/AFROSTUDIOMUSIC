@@ -20,6 +20,7 @@ import { processMaster } from './processors/master';
 import { processExport } from './processors/export';
 import { notifyJobDone, processMorningDrop, processReleaseRadar, processZapRadar } from './processors/cron';
 import { processDeepMeasure } from './processors/deep-measure';
+import { processTransform } from './processors/transform';
 import { processSynthMaterial } from './processors/synth-material';
 import { processNightlyCompound, processMeasureBackfill, processMineLexicon } from './processors/compound';
 
@@ -65,6 +66,7 @@ const workers = [
     else if (job.name === 'forge-material') await processForgeMaterial(job.data as never);
     else if (job.name === 'assemble-beat') await processAssembleBeat(job.data as never);
     else if (job.name === 'deep-measure') await processDeepMeasure(job.data as never);
+    else if (job.name === 'transform') await processTransform(job.data as never);
     else if (job.name === 'synth-material') await processSynthMaterial(job.data as never);
     else if (job.name === 'nightly-compound') await processNightlyCompound();
     else if (job.name === 'measure-backfill') await processMeasureBackfill();

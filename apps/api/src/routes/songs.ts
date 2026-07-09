@@ -417,6 +417,30 @@ export default async function songs(app: FastifyInstance) {
   });
 
   // ---- Master / re-master on demand (song-first) ----
+  // TRANSFORM — change speed and/or key of the CURRENT take, appended as a new
+  // version (Compare/revert already handles it). Pure ffmpeg: no credits charged.
+  const transformSchema = z.object({
+    tempo: z.number().min(0.5).max(1.5).optional(),
+    semitones: z.number().int().min(-6).max(6).optional(),
+  }).refine((b) => (b.tempo && Math.abs(b.tempo - 1) > 0.001) || b.semitones, { message: 'set tempo and/or semitones' });
+  app.post<{ Params: { id: string } }>('/:id/transform', { schema: { body: transformSchema } }, async (req, reply) => {
+    const { workspaceId } = requireAuth(req);
+    const input = transformSchema.parse(req.body);
+    const song = await prisma.song.findFirst({
+      where: { id: req.params.id, workspaceId },
+      include: { masters: { orderBy: { createdAt: 'desc' }, take: 1 }, beats: { orderBy: { createdAt: 'desc' }, take: 1 } },
+    });
+    if (!song) return reply.code(404).send({ error: 'song_not_found' });
+    const sourceUrl = song.masters[0]?.url ?? song.beats[0]?.url;
+    if (!sourceUrl) return reply.code(400).send({ error: 'no_audio_yet', message: 'Render the song first, then transform it.' });
+    const job = await prisma.providerJob.create({
+      data: { workspaceId, projectId: song.projectId, kind: 'music', provider: 'internal', status: 'QUEUED', inputJson: { transform: true, songId: song.id, ...input } as never },
+    });
+    await enqueue({ queue: app.queues.music, name: 'transform', payload: { jobId: job.id, workspaceId, projectId: song.projectId, songId: song.id, sourceUrl, ...input } });
+    reply.code(202);
+    return { jobId: job.id, status: 'queued', note: 'New version lands in Compare Versions in seconds; revert anytime.' };
+  });
+
   app.post<{ Params: { id: string }; Body: { preset?: string } }>('/:id/master', async (req, reply) => {
     const { workspaceId } = requireAuth(req);
     const preset = (req.body?.preset as string) || 'streaming_lufs_-14';

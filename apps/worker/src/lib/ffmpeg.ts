@@ -573,3 +573,33 @@ export async function buildSnippet(opts: {
     await rm(dir, { recursive: true, force: true });
   }
 }
+
+/** Tempo/pitch transform on a finished record. tempo is a speed multiplier
+ *  (0.5–1.5, pitch-preserving via atempo); semitones shifts pitch (−6..+6)
+ *  using asetrate + a compensating atempo so DURATION follows only `tempo`.
+ *  Output: 44.1k stereo WAV (master-grade, ready to re-master). */
+export async function transformAudio(input: Buffer, opts: { tempo?: number; semitones?: number }): Promise<Buffer> {
+  const tempo = Math.min(1.5, Math.max(0.5, opts.tempo ?? 1));
+  const semis = Math.min(6, Math.max(-6, opts.semitones ?? 0));
+  const dir = await mkdtemp(join(tmpdir(), 'xform-'));
+  const inPath = join(dir, 'in');
+  const outPath = join(dir, 'out.wav');
+  try {
+    await writeFile(inPath, input);
+    const sr = 44100;
+    const pitch = Math.pow(2, semis / 12);
+    const filters: string[] = [];
+    if (semis !== 0) filters.push(`asetrate=${Math.round(sr * pitch)}`, `aresample=${sr}`);
+    // net speed after the pitch trick must equal `tempo` → compensate by tempo/pitch,
+    // chaining atempo stages to stay inside ffmpeg's 0.5–2.0 per-stage bounds.
+    let net = tempo / (semis !== 0 ? pitch : 1);
+    while (net < 0.5) { filters.push('atempo=0.5'); net /= 0.5; }
+    while (net > 2.0) { filters.push('atempo=2.0'); net /= 2.0; }
+    if (Math.abs(net - 1) > 0.001) filters.push(`atempo=${net.toFixed(4)}`);
+    const af = filters.length ? filters.join(',') : 'anull';
+    await runFfmpeg(['-i', inPath, '-af', af, '-ac', '2', '-ar', String(sr), outPath]);
+    return await readFile(outPath);
+  } finally {
+    await rm(dir, { recursive: true, force: true }).catch(() => {});
+  }
+}
