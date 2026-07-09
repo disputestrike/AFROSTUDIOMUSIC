@@ -7,7 +7,7 @@ import { probeDurationS, measureAudioQuality, ffmpegAvailable, master as ffmpegM
 import { assessLaneCompliance, loadLaneProfile } from '../lib/lane-assess';
 import { overlayFills } from '../lib/fills';
 import { measureAudio, dspAvailable } from '../lib/dsp';
-import { planFills, scoreLaneCompliance, type LaneComplianceScore, type MeasuredAnalysis } from '@afrohit/shared';
+import { planFills, scoreLaneCompliance, engineAdequacy, type LaneComplianceScore, type MeasuredAnalysis } from '@afrohit/shared';
 
 /** Minimum measured coverage before a lane score is allowed to influence ranking. */
 const MIN_COVERAGE_FOR_RANKING = 0.5;
@@ -279,6 +279,11 @@ export async function processMusic(p: MusicPayload) {
             laneCoverage: winnerLane?.coverage ?? null,
             failedCritical: winnerLane?.failedCritical ?? [],
             rankedBy,
+            // §11 — if a DRAFT engine produced a low-lane take, name the ENGINE as the
+            // limit so the user never thinks they wrote a bad brief.
+            engineNote: (!engineAdequacy(adapter.name, p.input.genre ?? '').adequate && (winnerLane?.overall ?? 100) < 60)
+              ? engineAdequacy(adapter.name, p.input.genre ?? '').note
+              : undefined,
           },
           qc: quality
             ? { ...quality, durationS: durationS || quality.durationS }

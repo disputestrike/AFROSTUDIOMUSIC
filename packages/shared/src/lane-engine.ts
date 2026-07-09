@@ -35,3 +35,19 @@ export function recommendEngine(genre: string, opts: { sunoAvailable: boolean })
     lift: 'Set SUNO_API_KEY on the worker to render every song on Suno V5 — the biggest single quality lever.',
   };
 }
+
+// DRAFT engines can't reliably perform signature-heavy lanes (no prompt teaches
+// MusicGen/ACE-Step the amapiano log drum). When one of these rendered a low-scoring
+// take, the ceiling is the BAND, not the brief — say so, never blame the user.
+const DRAFT_ENGINES = new Set(['ace_step', 'musicgen']);
+
+export function engineAdequacy(engine: string | undefined | null, genre: string): { adequate: boolean; note?: string } {
+  const e = (engine ?? '').toLowerCase();
+  if (DRAFT_ENGINES.has(e)) {
+    return {
+      adequate: false,
+      note: `Engine "${e}" is a DRAFT engine and cannot reliably perform ${genre.replace(/_/g, ' ')} (especially its signature rhythm). A low lane score here reflects the ENGINE's limit, not your brief — set SUNO_API_KEY (Suno V5) or use MiniMax.`,
+    };
+  }
+  return { adequate: true };
+}
