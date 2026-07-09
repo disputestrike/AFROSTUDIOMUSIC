@@ -39,6 +39,9 @@ function getSpeechRecognition(): SR | null {
 export default function StudioChat({ projectId }: { projectId?: string }) {
   const api = useApi();
   const [threadId, setThreadId] = useState<string | null>(null);
+  const listRef = useRef<HTMLDivElement>(null);
+  const stickRef = useRef(true);
+  useEffect(() => { if (stickRef.current) requestAnimationFrame(() => listRef.current?.scrollTo({ top: listRef.current.scrollHeight, behavior: 'smooth' })); });
   const [threads, setThreads] = useState<ThreadRow[]>([]);
   const [messages, setMessages] = useState<Message[]>([]);
   const [draft, setDraft] = useState('');
@@ -228,7 +231,7 @@ export default function StudioChat({ projectId }: { projectId?: string }) {
           <Plus className="h-4 w-4" /> New session
         </button>
         <div className="px-3 pb-1 text-[11px] font-medium uppercase tracking-widest text-slate-500">History</div>
-        <div className="flex-1 overflow-y-auto px-2 pb-3">
+        <div ref={listRef} onScroll={(e) => { const el = e.currentTarget; stickRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 60; }} className="flex-1 overflow-y-auto px-2 pb-3">
           {threads.length === 0 && <div className="px-2 py-3 text-xs text-slate-600">No sessions yet.</div>}
           {threads.map((t) => (
             <div
