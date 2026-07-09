@@ -16,6 +16,9 @@ export interface LakeParts {
   learnedCraft?: string;// lyrics the artist studied
   hitCraft?: string;    // proven hit-mode craft (verbose → capped)
   extra?: string;       // any caller-specific brief (e.g. hard constraints) — leads
+  // PHASE 4 — the Lane pipeline. MEASURED truth leads the brief:
+  repair?: string;      // Phase-3 steering addendum for a regen (the strongest signal — leads)
+  laneTargets?: string; // Phase-1 measured lane fingerprint (what this lane actually IS)
 }
 
 const cap = (s: string | undefined, n: number) => (s ? s.slice(0, n) : '');
@@ -29,7 +32,11 @@ const cap = (s: string | undefined, n: number) => (s ? s.slice(0, n) : '');
 export function fuseSoundDna(p: LakeParts, maxTotal = 11000): string {
   // Order: constraints → freshness → WORD BANK → genre DNA → learned → craft →
   // hit modes. Word bank sits high so it always survives and leads word choice.
+  // Repair steering + measured lane targets lead — they are the measured TRUTH about
+  // the lane and the concrete fixes for this take, so they must never be truncated out.
   const parts = [
+    cap(p.repair, 900),
+    cap(p.laneTargets, 900),
     cap(p.extra, 900),
     cap(p.freshness, 800),
     cap(p.palette, 1400), // the vocabulary — generous

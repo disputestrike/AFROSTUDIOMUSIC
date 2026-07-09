@@ -7,6 +7,7 @@ import { requireAuth } from '../middleware/auth';
 import { learnLyricCraft, findLearnedLyric } from '../lib/lyric-learn';
 import { learnedReferenceBrief, learnedLyricCraftBrief, freshnessBrief } from '../lib/learned';
 import { lexiconPalette } from '../lib/lexicon';
+import { laneContext } from '../lib/lane-context';
 import { fuseSoundDna } from '../lib/fuse';
 
 export default async function lyrics(app: FastifyInstance) {
@@ -60,6 +61,7 @@ export default async function lyrics(app: FastifyInstance) {
         languageMix: input.languageMix as never,
         languages: reqLangs,
         soundDna: fuseSoundDna({
+          ...(await laneContext(workspaceId, project.genre, hook.songId)),
           freshness: await freshnessBrief(workspaceId),
           palette: await lexiconPalette({ workspaceId, languages: reqLangs.length ? reqLangs : project.artist.languages, mood: lmood, rotate: Date.now() % 97 }),
           dna: soundBrief(project.genre).brief,

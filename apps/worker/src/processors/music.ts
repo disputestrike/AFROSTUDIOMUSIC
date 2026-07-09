@@ -4,6 +4,7 @@ import type { MusicGenerationInput } from '@afrohit/ai';
 import { markFailed, markRunning, markSucceeded } from '../lib/jobs';
 import { ingestRemoteFile, downloadToBuffer, uploadBytes } from '../lib/storage';
 import { probeDurationS, measureAudioQuality, ffmpegAvailable, master as ffmpegMaster, MASTER_TARGETS, type AudioQuality } from '../lib/ffmpeg';
+import { assessLaneCompliance } from '../lib/lane-assess';
 
 interface MusicPayload {
   jobId: string;
@@ -314,6 +315,13 @@ export async function processMusic(p: MusicPayload) {
       } catch (err) {
         console.warn('[music] auto-master failed (render still usable):', (err as Error)?.message);
       }
+    }
+
+    // PHASE 4 — close the lane loop: measure this take, score it against its lane,
+    // and store the repair steering on the beat so the next regen is pushed back
+    // in-lane. Gated (LANE_ASSESS=1 + ear available); a no-op otherwise, never fatal.
+    if (!placeholder) {
+      await assessLaneCompliance({ workspaceId: p.workspaceId, genre: p.input.genre, beatId: beat.id, audioUrl: masteredUrl ?? ingestedMain });
     }
 
     await markSucceeded(

@@ -17,6 +17,7 @@ import { learnedReferenceBrief, learnedStyleTags, learnedLyricCraftBrief, snapsh
 import { learnLyricCraft, findLearnedLyric } from '../lib/lyric-learn';
 import { dataLakeReport } from '../lib/data-lake';
 import { lexiconPalette } from '../lib/lexicon';
+import { laneContext } from '../lib/lane-context';
 import { fuseSoundDna } from '../lib/fuse';
 import { kitRolesFor, homeKeyFor, pickMaterial, claudeArrangement } from '../lib/material-plan';
 import { autoMaterialBeat } from '../lib/material-auto';
@@ -215,7 +216,8 @@ async function generateHooks(ctx: Ctx, count: number, languages?: string[], refi
   const trends = trendData?.digest;
   void snapshotTrend(ctx.workspaceId, project.genre, trendData);
   const hmood = (project.briefs[0] as { mood?: string } | undefined)?.mood;
-  const soundDna = fuseSoundDna({ extra: hardConstraints(project.genre, languages), freshness: await freshnessBrief(ctx.workspaceId), palette: await lexiconPalette({ workspaceId: ctx.workspaceId, languages, mood: hmood, rotate: count }), dna: soundBrief(project.genre).brief, learnedRef: await learnedReferenceBrief(ctx.workspaceId, project.genre), learnedCraft: await learnedLyricCraftBrief(ctx.workspaceId, project.genre), hitCraft: prompts.hitCraftBrief('hook', hmood) });
+  const hookLane = await laneContext(ctx.workspaceId, project.genre);
+  const soundDna = fuseSoundDna({ laneTargets: hookLane.laneTargets, extra: hardConstraints(project.genre, languages), freshness: await freshnessBrief(ctx.workspaceId), palette: await lexiconPalette({ workspaceId: ctx.workspaceId, languages, mood: hmood, rotate: count }), dna: soundBrief(project.genre).brief, learnedRef: await learnedReferenceBrief(ctx.workspaceId, project.genre), learnedCraft: await learnedLyricCraftBrief(ctx.workspaceId, project.genre), hitCraft: prompts.hitCraftBrief('hook', hmood) });
   // FAST + RELIABLE: OpenAI writes (word-palette gives the vocab), Claude scores
   // lean. The drop pipeline runs this per song, so speed here is what kills the
   // "nothing's happening" feel.
@@ -472,6 +474,14 @@ async function createBeatJob(ctx: Ctx, a: { genre: string; fusionGenres?: string
     }
   }
 
+  // PHASE 4 — Lane pipeline. Pull the measured lane context; on a REGEN of a take
+  // that drifted, its stored repair steering (Phase 3) becomes concrete style
+  // directives that push the render back in-lane. Empty on a fresh gen — additive.
+  const lane = await laneContext(ctx.workspaceId, a.genre, songId);
+  const laneSteer = lane.repair
+    ? lane.repair.split('\n').filter((l) => l.startsWith('- ')).map((l) => l.slice(2).trim()).slice(0, 3)
+    : [];
+
   const charge = await ctx.app.chargeCredits({
     workspaceId: ctx.workspaceId,
     key: a.withVocals || a.withStems ? 'full_song_demo' : 'beat_idea_short_30s',
@@ -506,7 +516,7 @@ async function createBeatJob(ctx: Ctx, a: { genre: string; fusionGenres?: string
         withStems: a.withStems ?? !a.withVocals,
         withVocals: a.withVocals ?? false,
         songEngine: a.songEngine,
-        dnaTags: [...dnaTags, ...styleHints.slice(0, 3)],
+        dnaTags: [...dnaTags, ...styleHints.slice(0, 3), ...laneSteer],
         languages: a.languages?.length ? a.languages : undefined,
         lyrics,
       },
