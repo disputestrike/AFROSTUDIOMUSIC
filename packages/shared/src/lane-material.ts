@@ -93,10 +93,16 @@ export function planFills(bpm: number, durationS: number, boundaries?: number[] 
   if (!bpm || bpm <= 0 || !durationS || durationS <= 0) return [];
   const secPerBar = (60 / bpm) * 4;
   if (boundaries && boundaries.length) {
-    // A fill in the bar leading into each section boundary (skip the very start/end).
-    return boundaries
+    // A fill leading into each section boundary PLUS the Afro pulse: one every
+    // 16 bars regardless (Benjamin's law — 'you always hear them'), deduped.
+    const placed: FillPlacement[] = boundaries
       .filter((b) => b > secPerBar && b < durationS - 0.25)
       .map((b) => ({ atS: Math.max(0, b - secPerBar), label: `into section @${b.toFixed(1)}s` }));
+    for (let bar = 16; bar * secPerBar < durationS - secPerBar; bar += 16) {
+      const at = bar * secPerBar - secPerBar;
+      if (!placed.some((f) => Math.abs(f.atS - at) < secPerBar)) placed.push({ atS: at, label: `16-bar pulse @bar ${bar}` });
+    }
+    return placed.sort((a, b) => a.atS - b.atS);
   }
   const out: FillPlacement[] = [];
   for (let bar = barsPerFill; bar * secPerBar < durationS - secPerBar; bar += barsPerFill) {

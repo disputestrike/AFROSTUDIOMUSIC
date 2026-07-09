@@ -765,7 +765,22 @@ def analyze(audio_path, stems):
     out["sungVsSpoken"] = safe(_sung_vs_spoken, "sungVsSpoken")
 
     # ---------- HONESTLY UNKNOWN (per honesty law — proxies that can't measure their claim) ----------
-    out["harmonicRichness"] = UNK("v1:chroma-proxy-overcounts-nonchord-tones(needs-human-harmony-validation)")
+    def _keys_presence():
+        # SUSTAINED HARMONIC MID-BAND PRESENCE (piano/keys/pads/guitar bed).
+        # HPSS harmonic component, 200-2000 Hz energy share x frame-to-frame
+        # continuity. Measures PRESENCE of sustained pitched harmony (what
+        # "amapiano without piano" lacks) - NOT chord complexity.
+        y_h, _yp = librosa.effects.hpss(y)
+        S = np.abs(librosa.stft(y_h, hop_length=HOP_SPEC))
+        freqs = librosa.fft_frequencies(sr=sr)
+        band = (freqs >= 200) & (freqs <= 2000)
+        band_e = S[band].sum(axis=0)
+        tot_e = S.sum(axis=0) + 1e-9
+        ratio = float(np.clip(np.median(band_e / tot_e) * 2.2, 0, 1))
+        b = band_e + 1e-9
+        cont = float(np.clip(np.median(np.minimum(b[1:], b[:-1]) / np.maximum(b[1:], b[:-1])), 0, 1))
+        return M(round(0.55 * ratio + 0.45 * cont, 3), 0.6, "hpss-midband(200-2k)-sustained-energy v1")
+    out["harmonicRichness"] = safe(_keys_presence, "keysPresence")
     out["hatRollPresence"] = UNK("v1:roll-vs-fast-hat-indistinguishable(needs-calibration)")
     out["adLibDensity"] = UNK("permanent-v1:demucs-vocal-stem-mixes-lead+backing")
 

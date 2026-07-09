@@ -50,6 +50,10 @@ function repairFor(d: DimensionScore, lane: string): { direction: Repair['direct
       return d.target.dominant === 'true'
         ? { direction: 'add', target: 'four-on-floor', instruction: `Add a FOUR-ON-FLOOR kick — a kick on EVERY beat (the lane's foundation).` }
         : { direction: 'remove', target: 'broken kick', instruction: `Drop the four-on-floor — the lane uses a broken/syncopated kick pattern.` };
+    case 'harmonicRichness':
+      return { direction: below ? 'add' : 'decrease', target: numTarget, instruction: below
+        ? `Add the sustained KEYS bed the ${lane} lane demands — jazzy piano/rhodes chords holding under the groove (amapiano without piano is not amapiano).`
+        : `Thin the keys/pads — the harmonic bed is heavier than the lane (${numTarget}).` };
     case 'logDrumLikelihood':
       return { direction: below ? 'add' : 'decrease', target: numTarget, instruction: below
         ? `Add the ${lane} LOG-DRUM signature: a pitched sub-bass that GLIDES (portamento) between notes, re-articulated across the bar — it's missing or too weak.`

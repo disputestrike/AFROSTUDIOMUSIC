@@ -17,6 +17,7 @@ import { generateJson, tavilySearchRaw } from '@afrohit/ai';
 import { LANGUAGES } from '@afrohit/shared';
 import { enqueueJob } from '../lib/enqueue';
 import { assessLaneCompliance } from '../lib/lane-assess';
+import { processSynthMaterial } from './synth-material';
 
 const skipSource = (u: string) => u.startsWith('lyric:') || u.startsWith('trend:');
 
@@ -288,9 +289,33 @@ export async function processGlossPass(opts?: { limit?: number }): Promise<void>
   }
 }
 
+/** Every genre in active use keeps a full SIGNATURE KIT on the shelf — including
+ *  the FILL, whose absence silently disabled fill overlays on every rendered
+ *  song ("no drum fills anywhere" — Benjamin). Synth-forged, owned, seconds. */
+const KIT_ROLES = ['log_drum', 'percussion', 'bass', 'chords', 'fill'];
+export async function ensureSignatureKits(): Promise<void> {
+  try {
+    const projects = await prisma.project.findMany({ orderBy: { createdAt: 'desc' }, take: 40, select: { workspaceId: true, genre: true } });
+    const seen = new Set<string>();
+    for (const pr of projects) {
+      if (!pr.genre) continue;
+      const key = `${pr.workspaceId}|${pr.genre}`;
+      if (seen.has(key) || seen.size >= 6) continue;
+      seen.add(key);
+      const have = new Set((await prisma.materialAsset.findMany({ where: { workspaceId: pr.workspaceId, genre: pr.genre }, select: { role: true } })).map((m) => m.role));
+      const missing = KIT_ROLES.filter((r) => !have.has(r));
+      if (missing.length) {
+        console.log(`[kits] ${pr.genre}: forging ${missing.join('+')}`);
+        await processSynthMaterial({ workspaceId: pr.workspaceId, genre: pr.genre, roles: missing });
+      }
+    }
+  } catch (err) { console.warn('[kits] failed (non-fatal):', (err as Error)?.message); }
+}
+
 /** Roadmap #3 — the nightly compounding job. Cost-capped by the batch limits. */
 export async function processNightlyCompound(): Promise<void> {
   console.log('[nightly-compound] start');
+  await ensureSignatureKits();
   await processMeasureBackfill({ refLimit: 10, beatLimit: 4 });
   await processMineLexicon({ refLimit: 4 });
   await processLexiconResearch({ queries: 6 });

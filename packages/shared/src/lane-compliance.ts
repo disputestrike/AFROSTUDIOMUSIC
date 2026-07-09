@@ -47,7 +47,7 @@ export interface LaneComplianceScore {
 }
 
 // Dimensions that DEFINE the genre — a miss here is drift, not just a low score.
-const IDENTITY = new Set(['tempoBpm', 'fourOnFloor', 'logDrumLikelihood', 'swingRatio', 'lowEndRatio', 'shakerContinuity']);
+const IDENTITY = new Set(['tempoBpm', 'fourOnFloor', 'logDrumLikelihood', 'swingRatio', 'lowEndRatio', 'shakerContinuity', 'harmonicRichness']);
 // Core identity — a miss here alone is a MAJOR drift.
 const CORE = new Set(['tempoBpm', 'fourOnFloor', 'logDrumLikelihood']);
 

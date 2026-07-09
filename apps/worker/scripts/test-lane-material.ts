@@ -67,7 +67,18 @@ assert(needs.roles.some((r) => r.role === 'fill'), 'lane needs a fill role for s
 // planFills: with measured boundaries -> a fill leads into each; without -> cadence.
 const withBounds = planFills(112, 180, [0, 30, 60, 120, 150]);
 console.log('\nfills (measured boundaries):', withBounds.map((f) => f.atS.toFixed(1) + 's').join(', '));
-assert(withBounds.length === 4, 'a fill before each real section boundary (excludes t=0)');
+assert(
+  boundaries.filter((b) => b > 4 && b < DUR - 0.25).every((b) => withB.some((f) => Math.abs(f.atS - (b - secPerBar)) < 0.05)),
+  'every real section boundary still gets a fill one bar before (16-bar pulses are ADDITIVE, never replacements)'
+);
+assert(
+  withB.some((f) => f.label.includes('16-bar pulse')),
+  "the Afro pulse: 16-bar fills appear even when boundaries exist (Benjamin's law)"
+);
+assert(
+  withB.every((f, i) => i === 0 || f.atS - withB[i - 1]!.atS > secPerBar * 0.9),
+  'no two fills within the same bar (dedupe holds)'
+);
 const secPerBar = (60 / 112) * 4;
 assert(Math.abs(withBounds[0]!.atS - (30 - secPerBar)) < 0.01, 'fill lands one bar before the boundary');
 
