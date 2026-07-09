@@ -32,9 +32,10 @@ const GENRES = [
 const LANGS = [
   { value: 'pcm', label: 'Pidgin' }, { value: 'en', label: 'English' }, { value: 'yo', label: 'Yoruba' },
   { value: 'ig', label: 'Igbo' }, { value: 'ha', label: 'Hausa' }, { value: 'fr', label: 'French' },
-  { value: 'pt', label: 'Portuguese' }, { value: 'sw', label: 'Swahili' }, { value: 'zu', label: 'Zulu' }, { value: 'twi', label: 'Twi' },
+  { value: 'pt', label: 'Portuguese' }, { value: 'sw', label: 'Swahili' }, { value: 'zu', label: 'Zulu (isiZulu)' }, { value: 'twi', label: 'Twi' },
+  { value: 'xh', label: 'Xhosa (isiXhosa)' }, { value: 'st', label: 'Sesotho' }, { value: 'tn', label: 'Setswana' }, { value: 'tsotsitaal', label: 'Tsotsitaal (SA street)' },
 ];
-const MOODS = ['confident', 'love', 'heartbreak', 'party', 'vibey', 'spiritual', 'hustle', 'nostalgic', 'sexy', 'triumphant', 'luxury', 'lifestyle', 'family'];
+const MOODS = ['confident', 'love', 'heartbreak', 'party', 'vibey', 'spiritual', 'worship', 'street', 'hustle', 'nostalgic', 'sexy', 'triumphant', 'luxury', 'lifestyle', 'family', 'gratitude', 'summer', 'motivation', 'freedom'];
 const STEPS = ['Setting up your session', 'Writing hooks + A&R picking the best', 'Writing the lyrics', 'Singing & producing your song'];
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 

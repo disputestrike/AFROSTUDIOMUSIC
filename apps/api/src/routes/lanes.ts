@@ -2,6 +2,8 @@ import type { FastifyInstance } from 'fastify';
 import { prisma } from '@afrohit/db';
 import { buildLaneProfile, describeLaneProfile, scoreLaneCompliance, describeCompliance, planRepairs, describeRepairPlan, type MeasuredAnalysis } from '@afrohit/shared';
 import { requireAuth } from '../middleware/auth';
+import { loadProfileFor, unseededForLane } from '../lib/lane-report';
+import { GENRES } from '@afrohit/shared';
 
 /**
  * PHASE 1 surface — LaneProfile.
@@ -86,5 +88,44 @@ export default async function lanes(app: FastifyInstance) {
     const score = scoreLaneCompliance(subject, profile);
     const repair = planRepairs(score); // Phase 3: concrete fixes + the Phase-4 steering addendum
     return { score, repair, summary: describeCompliance(score), repairSummary: describeRepairPlan(repair), profileRefs: laneRefs.length };
+  });
+
+  // THE INVENTORY — per lane, what the lake already holds and what's still needed.
+  // This is the answer to "we have 94 songs and 1,394 hooks, why aren't we using
+  // them": measured vs unmeasured vs authentic, plus one honest next step per lane.
+  app.get('/inventory', async (req) => {
+    const { workspaceId } = requireAuth(req);
+    const lanes = await Promise.all(
+      (GENRES as readonly string[]).map(async (g) => {
+        const { profile, refs, authenticRefs } = await loadProfileFor(workspaceId, g);
+        const unseeded = await unseededForLane(g);
+        const next = !refs
+          ? 'no references yet'
+          : authenticRefs >= 3
+            ? 'READY — authentic profile live'
+            : profile
+              ? `self-trained profile only — add ${3 - authenticRefs} more real track(s) to certify`
+              : `${refs} ref(s), needs ${Math.max(0, 3 - refs)} more measured to profile`;
+        return { lane: g, refs, measuredProfiled: !!profile, authenticRefs, lexiconUnseeded: unseeded, next };
+      })
+    );
+    const [songs, beatsTotal, beatsApproved, hooks, tasteEvents, lexByLang, materials] = await Promise.all([
+      prisma.song.count({ where: { workspaceId } }),
+      prisma.beatAsset.count({ where: { project: { workspaceId } } }),
+      prisma.beatAsset.count({ where: { project: { workspaceId }, approved: true } }),
+      prisma.hookCandidate.count({ where: { project: { workspaceId } } }).catch(() => 0),
+      prisma.analyticsEvent.count({ where: { workspaceId, name: { startsWith: 'taste.' } } }).catch(() => 0),
+      prisma.lexiconEntry.groupBy({ by: ['language'], where: { workspaceId: null }, _count: true }).catch(() => []),
+      prisma.materialAsset.groupBy({ by: ['role'], where: { workspaceId }, _count: true }).catch(() => []),
+    ]);
+    const recentBeats = await prisma.beatAsset.findMany({ where: { project: { workspaceId } }, orderBy: { createdAt: 'desc' }, take: 200, select: { meta: true } });
+    const beatsMeasured = recentBeats.filter((b) => ((b.meta ?? {}) as { measured?: { engineOk?: boolean } }).measured?.engineOk).length;
+    return {
+      totals: { songs, beats: beatsTotal, beatsApproved, beatsMeasuredOfRecent200: beatsMeasured, hooks, tasteEvents },
+      lexicon: Object.fromEntries((lexByLang as Array<{ language: string; _count: number }>).map((l) => [l.language, l._count])),
+      materials: Object.fromEntries((materials as Array<{ role: string; _count: number }>).map((m) => [m.role, m._count])),
+      lanes: lanes.sort((a, b) => b.authenticRefs - a.authenticRefs || b.refs - a.refs),
+      backfill: 'POST /api/v1/admin/run {"task":"measure-backfill"} measures what history is missing; {"task":"mine-lexicon"} harvests transcripts into the word bank; nightly-compound runs both every night at 02:45 UTC.',
+    };
   });
 }

@@ -109,6 +109,17 @@ export default async function materials(app: FastifyInstance) {
     keySignature: z.string().max(24).optional(),
     vibe: z.string().max(200).optional(),
   });
+  const synthSchema = z.object({ genre: genreSchema, bpm: z.number().int().min(60).max(180).optional() });
+  app.post('/synth', { schema: { body: synthSchema } }, async (req, reply) => {
+    const { workspaceId } = requireAuth(req);
+    const input = synthSchema.parse(req.body);
+    // Owned synthesized material (log_drum / shaker / bass glide) — near-zero cost,
+    // rights-clean, disclosed as source:'forged' + meta.synth in the shelf.
+    await enqueue({ queue: app.queues.music, name: 'synth-material', payload: { workspaceId, genre: input.genre, bpm: input.bpm, roles: ['log_drum', 'percussion', 'bass'] } });
+    reply.code(202);
+    return { queued: true, roles: ['log_drum', 'percussion', 'bass'], note: 'Synthesized signature loops landing on the shelf in ~seconds.' };
+  });
+
   app.post('/auto', { schema: { body: autoSchema } }, async (req, reply) => {
     const { workspaceId } = requireAuth(req);
     const input = autoSchema.parse(req.body);

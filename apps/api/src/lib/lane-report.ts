@@ -31,25 +31,40 @@ const genreMatches = (a?: string | null, b?: string | null) => {
 };
 
 async function fetchGenreMeasured(workspaceId: string, genre: string): Promise<MeasuredAnalysis[]> {
+  return (await fetchGenreMeasuredDetailed(workspaceId, genre)).map((m) => m.analysis);
+}
+
+/** Same fetch, but keep PROVENANCE: recipe.source==='generated' marks the machine's
+ *  own output. Self refs may steer/repair; only AUTHENTIC refs certify (anti-mirror). */
+async function fetchGenreMeasuredDetailed(workspaceId: string, genre: string): Promise<Array<{ analysis: MeasuredAnalysis; authentic: boolean }>> {
   const rows = await prisma.soundReference.findMany({
     where: { workspaceId, NOT: [{ sourceUrl: { startsWith: 'lyric:' } }, { sourceUrl: { startsWith: 'trend:' } }] },
     orderBy: { createdAt: 'desc' },
     take: 300,
     select: { genre: true, recipe: true },
   });
-  const out: MeasuredAnalysis[] = [];
+  const out: Array<{ analysis: MeasuredAnalysis; authentic: boolean }> = [];
   for (const r of rows) {
     if (!genreMatches(r.genre, genre)) continue;
-    const rec = (r.recipe ?? {}) as { measured?: MeasuredAnalysis };
-    if (rec.measured && rec.measured.engineOk) out.push(rec.measured);
+    const rec = (r.recipe ?? {}) as { measured?: MeasuredAnalysis; source?: string };
+    if (rec.measured && rec.measured.engineOk) out.push({ analysis: rec.measured, authentic: rec.source !== 'generated' });
   }
   return out;
 }
 
+export async function authenticRefCount(workspaceId: string, genre?: string | null): Promise<number> {
+  if (!genre) return 0;
+  return (await fetchGenreMeasuredDetailed(workspaceId, genre)).filter((m) => m.authentic).length;
+}
+
 export async function loadProfileFor(workspaceId: string, genre: string) {
-  const measured = await fetchGenreMeasured(workspaceId, genre);
+  const detailed = await fetchGenreMeasuredDetailed(workspaceId, genre);
+  const measured = detailed.map((m) => m.analysis);
+  const authenticRefs = detailed.filter((m) => m.authentic).length;
   const profile = buildLaneProfile(genre, 'genre', measured, { minRefs: 3 });
-  return Object.keys(profile.features).length ? { profile, refs: measured.length } : { profile: null, refs: measured.length };
+  return Object.keys(profile.features).length
+    ? { profile, refs: measured.length, authenticRefs }
+    : { profile: null, refs: measured.length, authenticRefs };
 }
 
 // ---------- §10 step 3: classify against ALL profiled lanes ----------
@@ -121,6 +136,8 @@ export interface LaneReport {
   laneScore?: number | null;
   coverage?: string; // "8 measured / 2 unknown"
   rankedBy?: string | null;
+  profileTier?: 'authentic' | 'self-trained' | 'unprofiled';
+  authenticRefs?: number;
   engine?: { name: string; adequate: boolean; note?: string; recommended?: string };
   strongest?: Array<{ key: string; match: number }>;
   weakest?: Array<{ key: string; match: number; critical: boolean }>;
@@ -171,7 +188,7 @@ export async function buildLaneReport(workspaceId: string, songId: string): Prom
     };
   }
 
-  const { profile, refs } = await loadProfileFor(workspaceId, targetLane);
+  const { profile, refs, authenticRefs } = await loadProfileFor(workspaceId, targetLane);
   const [{ distribution, unprofiled }, freshScore] = await Promise.all([
     classifyAllLanes(workspaceId, meta.measured),
     Promise.resolve(profile ? scoreLaneCompliance(meta.measured, profile) : null),
@@ -187,6 +204,7 @@ export async function buildLaneReport(workspaceId: string, songId: string): Prom
     compliance: freshScore ? { overall: freshScore.overall, coverage: freshScore.coverage, drift: freshScore.drift, failedCritical: freshScore.failedCritical } : null,
     qc: (meta.qc ?? null) as never,
     lexicon: { unseeded: lexiconUnseeded },
+    profile: { authenticRefs, required: 3 },
   };
 
   return {
@@ -195,6 +213,8 @@ export async function buildLaneReport(workspaceId: string, songId: string): Prom
     targetLane,
     distribution,
     unprofiledLanes: unprofiled,
+    profileTier: !profile ? 'unprofiled' : authenticRefs >= 3 ? 'authentic' : 'self-trained',
+    authenticRefs,
     laneScore: freshScore?.overall ?? meta.bestOf?.laneScore ?? null,
     coverage: freshScore ? `${freshScore.scored} measured / ${freshScore.skipped.length} unknown` : profile ? 'scored 0' : `lane unprofiled (${refs}/3 measured refs)`,
     rankedBy: meta.bestOf?.rankedBy ?? null,

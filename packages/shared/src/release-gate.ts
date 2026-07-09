@@ -34,6 +34,10 @@ export function laneReleaseGate(input: {
   minCoverage?: number;
   /** §11 — languages this lane prescribes that have no seeded lexicon. */
   lexicon?: { unseeded: string[] } | null;
+  /** Provenance of the lane profile the score was judged against. A profile built
+   *  ONLY from the machine's own output is a mirror — it may steer and repair, but
+   *  it cannot CERTIFY (hitmaker blocks until >=required authentic references). */
+  profile?: { authenticRefs: number; required?: number } | null;
 }): ReleaseGate {
   const floor = input.floor ?? 55;
   const hit = input.mode === 'hitmaker';
@@ -80,6 +84,15 @@ export function laneReleaseGate(input: {
   // vocabulary from the wrong region (Naija vernacular into a Pretoria record).
   // Hitmaker BLOCKS; creative WARNS. Native-language human sign-off still applies
   // on top of this — seeding clears THIS check, not the review.
+  if (input.profile) {
+    const req = input.profile.required ?? 3;
+    if (input.profile.authenticRefs < req) {
+      checks.push(laneIssue('lane profile', `self-trained only (${input.profile.authenticRefs}/${req} authentic refs) — scoring against the mirror cannot certify; add real reference tracks`));
+    } else {
+      checks.push({ name: 'lane profile', ok: true, status: 'pass', detail: `${input.profile.authenticRefs} authentic refs` });
+    }
+  }
+
   if (input.lexicon?.unseeded?.length) {
     checks.push(laneIssue('lane lexicon', `unseeded language(s) for this lane: ${input.lexicon.unseeded.join(', ')} — seed to parity before certifying`));
   }

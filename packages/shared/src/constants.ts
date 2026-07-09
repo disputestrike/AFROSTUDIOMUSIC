@@ -44,6 +44,9 @@ export const LANGUAGES = {
   zu: 'Zulu',
   xh: 'Xhosa',
   twi: 'Twi',
+  st: 'Sesotho',
+  tn: 'Setswana',
+  tsotsitaal: 'Tsotsitaal (SA street)',
 } as const;
 export type LanguageCode = keyof typeof LANGUAGES;
 

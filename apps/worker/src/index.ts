@@ -66,6 +66,9 @@ const workers = [
     else if (job.name === 'assemble-beat') await processAssembleBeat(job.data as never);
     else if (job.name === 'deep-measure') await processDeepMeasure(job.data as never);
     else if (job.name === 'synth-material') await processSynthMaterial(job.data as never);
+    else if (job.name === 'nightly-compound') await processNightlyCompound();
+    else if (job.name === 'measure-backfill') await processMeasureBackfill();
+    else if (job.name === 'mine-lexicon') await processMineLexicon();
     else await processMusic(job.data as never);
   }),
   makeWorker('voice', async (job: { data: never; name: string }) => {

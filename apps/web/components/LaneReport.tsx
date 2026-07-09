@@ -23,6 +23,8 @@ export interface Report {
   laneScore?: number | null;
   coverage?: string;
   rankedBy?: string | null;
+  profileTier?: string;
+  authenticRefs?: number;
   engine?: { name: string; adequate: boolean; note?: string; recommended?: string };
   strongest?: Array<{ key: string; match: number }>;
   weakest?: Array<{ key: string; match: number; critical: boolean }>;
@@ -69,6 +71,9 @@ export function LaneReport({ songId, refreshKey = 0 }: { songId: string; refresh
       )}
       <Row k="Target lane">{r.targetLane}</Row>
       <Row k="Lane score">{r.laneScore ?? '—'} <span className="text-slate-500">({r.coverage})</span></Row>
+      {r.profileTier === 'self-trained' && (
+        <Row k="Profile"><span className="text-amber-300">self-trained ({r.authenticRefs ?? 0}/3 authentic refs) — steering works, certification needs real tracks</span></Row>
+      )}
       {r.engine && (
         <Row k="Engine">
           {r.engine.name} {r.engine.adequate ? <span className="text-emerald-400">(adequate for this lane)</span> : <span className="text-amber-300">— this engine cannot reliably perform this lane; the score reflects the engine&apos;s limit, not your brief{r.engine.recommended ? ` (use ${r.engine.recommended})` : ''}</span>}
