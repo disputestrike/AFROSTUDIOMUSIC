@@ -140,8 +140,10 @@ export async function buildLaneReport(workspaceId: string, songId: string): Prom
     select: { id: true, title: true, project: { select: { genre: true } } },
   });
   if (!song) return { available: false, reason: 'song not found' };
+  // NB: BeatAsset carries no workspaceId column — ownership is enforced by the
+  // song query above (Song.workspaceId); the beat is scoped through its song.
   const beat = await prisma.beatAsset.findFirst({
-    where: { songId, workspaceId },
+    where: { songId },
     orderBy: { createdAt: 'desc' },
     select: { provider: true, meta: true },
   });

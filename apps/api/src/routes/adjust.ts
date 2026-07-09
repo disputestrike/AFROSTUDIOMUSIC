@@ -38,7 +38,8 @@ export default async function adjust(app: FastifyInstance) {
     // User override of the target lane (§10 step 4) — rebuild the report against it.
     const finalReport = body.targetLane && body.targetLane !== report.targetLane
       ? await (async () => {
-          const beat = await prisma.beatAsset.findFirst({ where: { songId: req.params.id, workspaceId }, orderBy: { createdAt: 'desc' }, select: { id: true, meta: true } });
+          // ownership already verified by buildLaneReport above (BeatAsset has no workspaceId column)
+          const beat = await prisma.beatAsset.findFirst({ where: { songId: req.params.id }, orderBy: { createdAt: 'desc' }, select: { id: true, meta: true } });
           const meta = (beat?.meta ?? {}) as Record<string, unknown>;
           await prisma.beatAsset.update({ where: { id: beat!.id }, data: { meta: { ...meta, assessedGenre: body.targetLane } as never } });
           return buildLaneReport(workspaceId, req.params.id);
@@ -76,7 +77,7 @@ export default async function adjust(app: FastifyInstance) {
     };
     const d = dispatch[body.route];
     const res = await app.inject({ method: d.method, url: d.url, headers, payload: d.payload as never });
-    const out = res.json<Record<string, unknown>>();
+    const out = res.json() as Record<string, unknown>;
     return reply.code(res.statusCode >= 400 ? res.statusCode : 202).send({
       dispatched: `${d.method} ${d.url}`, // disclosed — the user sees exactly which repair ran
       route: body.route,
@@ -92,7 +93,7 @@ export default async function adjust(app: FastifyInstance) {
     const body = (req.body ?? {}) as { analysis?: MeasuredAnalysis; songId?: string };
     let analysis = body.analysis;
     if (!analysis && body.songId) {
-      const beat = await prisma.beatAsset.findFirst({ where: { songId: body.songId, workspaceId }, orderBy: { createdAt: 'desc' }, select: { meta: true } });
+      const beat = await prisma.beatAsset.findFirst({ where: { songId: body.songId, song: { workspaceId } }, orderBy: { createdAt: 'desc' }, select: { meta: true } });
       analysis = ((beat?.meta ?? {}) as { measured?: MeasuredAnalysis }).measured;
     }
     if (!analysis) return reply.code(400).send({ error: 'need_analysis_or_measured_songId' });
