@@ -13,6 +13,8 @@ import { prisma } from '@afrohit/db';
 import { getSoundDNA } from '@afrohit/ai';
 import { enqueue } from './queue';
 import { kitRolesFor, homeKeyFor, pickMaterial, claudeArrangement, type MaterialRow, type MaterialPick } from './material-plan';
+import { loadLaneProfileForGenre } from './lane-context';
+import { laneMaterialNeeds } from '@afrohit/shared';
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -62,7 +64,15 @@ export interface AutoMaterialOpts {
 export async function autoMaterialBeat(app: FastifyInstance, workspaceId: string, opts: AutoMaterialOpts) {
   const bpm = opts.bpm ?? getSoundDNA(opts.genre)?.typicalBpm ?? 108;
   const keySignature = opts.keySignature ?? homeKeyFor(opts.genre);
-  const wanted = kitRolesFor(opts.genre);
+
+  // §6 — roles come from the MEASURED lane profile when it exists (derives log_drum /
+  // shaker / etc. from what the lane actually is), and fall back to the hardcoded kit
+  // ONLY when the lane is underprofiled — and we SAY SO (materialSource).
+  const profile = await loadLaneProfileForGenre(workspaceId, opts.genre);
+  const wanted = profile ? laneMaterialNeeds(profile).roles.map((r) => r.role) : kitRolesFor(opts.genre);
+  const materialSource = profile
+    ? `profile-driven (${Object.keys(profile.features).length} measured features)`
+    : `fallback-hardcoded (lane underprofiled: < 3 measured refs)`;
 
   const shelf = await loadShelf(workspaceId, opts.genre);
   const picks = pickMaterial(shelf, opts.genre, bpm, keySignature);
@@ -72,7 +82,7 @@ export async function autoMaterialBeat(app: FastifyInstance, workspaceId: string
   // Shelf already stocked → assemble now.
   if (!missing.length && picks.length >= 2) {
     const jobId = await assembleFrom(app, workspaceId, opts.projectId, opts.genre, bpm, keySignature, opts.vibe, opts.songId, picks);
-    return { status: 'assembling' as const, jobId, roles: picks.map((p) => p.role), bpm, keySignature };
+    return { status: 'assembling' as const, jobId, roles: picks.map((p) => p.role), bpm, keySignature, materialSource };
   }
 
   // Forge the missing roles, staggered for the Replicate prediction-creation limit.
@@ -113,6 +123,7 @@ export async function autoMaterialBeat(app: FastifyInstance, workspaceId: string
     forging,
     bpm,
     keySignature,
+    materialSource,
     note: `AI is forging the ${opts.genre} kit (${forging.map((f) => f.role).join(', ') || 'none needed'}) and will assemble the exact beat automatically when the loops land — no need to run each step.`,
   };
 }

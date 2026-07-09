@@ -1,5 +1,5 @@
 import { prisma } from '@afrohit/db';
-import { buildLaneProfile, describeLaneProfile, type MeasuredAnalysis } from '@afrohit/shared';
+import { buildLaneProfile, describeLaneProfile, type MeasuredAnalysis, type LaneProfile } from '@afrohit/shared';
 
 /**
  * PHASE 4 — the lane context injected into generation.
@@ -20,6 +20,28 @@ const genreMatches = (a?: string | null, b?: string | null) => {
   const x = norm(a), y = norm(b);
   return !!x && !!y && (x === y || x.includes(y) || y.includes(x));
 };
+
+/** API-side lane profile from the workspace's measured references; null when the lane
+ * can't be profiled yet (< minRefs). Mirrors the worker's loadLaneProfile. */
+export async function loadLaneProfileForGenre(workspaceId: string, genre?: string | null): Promise<LaneProfile | null> {
+  if (!genre) return null;
+  try {
+    const rows = await prisma.soundReference.findMany({
+      where: { workspaceId, NOT: [{ sourceUrl: { startsWith: 'lyric:' } }, { sourceUrl: { startsWith: 'trend:' } }] },
+      orderBy: { createdAt: 'desc' }, take: 300, select: { genre: true, recipe: true },
+    });
+    const measured: MeasuredAnalysis[] = [];
+    for (const r of rows) {
+      if (!genreMatches(r.genre, genre)) continue;
+      const rec = (r.recipe ?? {}) as { measured?: MeasuredAnalysis };
+      if (rec.measured?.engineOk) measured.push(rec.measured);
+    }
+    const profile = buildLaneProfile(genre, 'genre', measured, { minRefs: 3 });
+    return Object.keys(profile.features).length ? profile : null;
+  } catch {
+    return null;
+  }
+}
 
 export async function laneContext(
   workspaceId: string,
