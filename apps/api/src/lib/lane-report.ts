@@ -200,7 +200,9 @@ export async function buildLaneReport(workspaceId: string, songId: string): Prom
   const weakest = [...dims].sort((a, b) => a.match - b.match).slice(0, 3).map((d) => ({ key: d.key, match: Math.round(d.match * 100), critical: d.identity }));
   const keep = dims.filter((d) => d.match >= 0.7).map((d) => d.key);
   const replace = (repair?.repairs ?? []).map((r) => r.key);
-  const adequacy = engineAdequacy(beat.provider, targetLane);
+  const adequacy = beat.provider === 'afrohit-own' || beat.provider === 'material'
+    ? { adequate: true, note: 'owned composition engine (afrohit-own-v1) — built from our material, not prompted from a black box' }
+    : engineAdequacy(beat.provider, targetLane);
   const gateInput = {
     compliance: freshScore ? { overall: freshScore.overall, coverage: freshScore.coverage, drift: freshScore.drift, failedCritical: freshScore.failedCritical } : null,
     qc: (meta.qc ?? null) as never,

@@ -603,3 +603,16 @@ export async function transformAudio(input: Buffer, opts: { tempo?: number; semi
     await rm(dir, { recursive: true, force: true }).catch(() => {});
   }
 }
+
+/** Mix two audio buffers (bed + layer) into one WAV; layer gain 0-1. */
+export async function mixBuffers(bed: Buffer, layer: Buffer, layerGain = 0.85): Promise<Buffer> {
+  const dir = await mkdtemp(join(tmpdir(), 'mix2-'));
+  const a = join(dir, 'a'); const b = join(dir, 'b'); const outPath = join(dir, 'out.wav');
+  try {
+    await writeFile(a, bed); await writeFile(b, layer);
+    await runFfmpeg(['-i', a, '-i', b, '-filter_complex', `[1:a]volume=${layerGain}[l];[0:a][l]amix=inputs=2:duration=first:dropout_transition=0[a]`, '-map', '[a]', '-ac', '2', '-ar', '44100', outPath]);
+    return await readFile(outPath);
+  } finally {
+    await rm(dir, { recursive: true, force: true }).catch(() => {});
+  }
+}

@@ -21,6 +21,7 @@ import { processExport } from './processors/export';
 import { notifyJobDone, processMorningDrop, processReleaseRadar, processZapRadar } from './processors/cron';
 import { processDeepMeasure } from './processors/deep-measure';
 import { processTransform } from './processors/transform';
+import { processOwnEngine } from './processors/own-engine';
 import { processSynthMaterial } from './processors/synth-material';
 import { processNightlyCompound, processMeasureBackfill, processMineLexicon, processLexiconResearch, processWiktionaryHarvest, processGlossPass } from './processors/compound';
 
@@ -67,6 +68,7 @@ const workers = [
     else if (job.name === 'assemble-beat') await processAssembleBeat(job.data as never);
     else if (job.name === 'deep-measure') await processDeepMeasure(job.data as never);
     else if (job.name === 'transform') await processTransform(job.data as never);
+    else if (job.name === 'own-engine') await processOwnEngine(job.data as never);
     else if (job.name === 'synth-material') await processSynthMaterial(job.data as never);
     else if (job.name === 'nightly-compound') await processNightlyCompound();
     else if (job.name === 'measure-backfill') await processMeasureBackfill();

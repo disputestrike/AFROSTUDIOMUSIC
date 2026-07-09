@@ -6,6 +6,7 @@ import { getSoundDNA } from '@afrohit/ai';
 import { requireAuth } from '../middleware/auth';
 import { enqueue } from '../lib/queue';
 import { kitRolesFor, homeKeyFor, pickMaterial, claudeArrangement } from '../lib/material-plan';
+import { blueprintForSong, blueprintForReference } from '../lib/blueprint';
 import { autoMaterialBeat } from '../lib/material-auto';
 
 /**
@@ -118,6 +119,38 @@ export default async function materials(app: FastifyInstance) {
     await enqueue({ queue: app.queues.music, name: 'synth-material', payload: { workspaceId, genre: input.genre, bpm: input.bpm, roles: ['log_drum', 'percussion', 'bass'] } });
     reply.code(202);
     return { queued: true, roles: ['log_drum', 'percussion', 'bass'], note: 'Synthesized signature loops landing on the shelf in ~seconds.' };
+  });
+
+  // THE AFROHIT ENGINE v1 — composed, not rented. One call: owned kit ->
+  // grid-locked beat -> optional MusicGen melody conditioned on OUR groove ->
+  // measured proof (lane + blueprint). Voice rides /vocals/upload afterwards.
+  const ownEngineSchema = z.object({
+    projectId: z.string().cuid(),
+    songId: z.string().cuid().optional(),
+    genre: genreSchema,
+    bpm: z.number().int().min(60).max(180).optional(),
+    melody: z.boolean().optional(),
+    melodyPrompt: z.string().max(300).optional(),
+    blueprintSongId: z.string().cuid().optional(),
+    blueprintReferenceId: z.string().cuid().optional(),
+  });
+  app.post('/own-engine', { schema: { body: ownEngineSchema } }, async (req, reply) => {
+    const { workspaceId } = requireAuth(req);
+    const input = ownEngineSchema.parse(req.body);
+    await prisma.project.findFirstOrThrow({ where: { id: input.projectId, workspaceId } });
+    const blueprint = input.blueprintSongId
+      ? await blueprintForSong(input.blueprintSongId)
+      : input.blueprintReferenceId
+        ? await blueprintForReference(workspaceId, input.blueprintReferenceId)
+        : null;
+    const charge = await app.chargeCredits({ workspaceId, key: 'beat_idea_short_30s', refTable: 'Project', refId: input.projectId });
+    if (!charge.ok) return reply.code(402).send({ error: 'insufficient_credits', ...charge });
+    const job = await prisma.providerJob.create({
+      data: { workspaceId, projectId: input.projectId, kind: 'music', provider: 'afrohit-own', status: 'QUEUED', inputJson: { ownEngine: true, ...input } as never },
+    });
+    await enqueue({ queue: app.queues.music, name: 'own-engine', payload: { jobId: job.id, workspaceId, projectId: input.projectId, songId: input.songId, genre: input.genre, bpm: input.bpm, melody: input.melody, melodyPrompt: input.melodyPrompt, blueprint } });
+    reply.code(202);
+    return { jobId: job.id, status: 'queued', engine: 'afrohit-own-v1', layers: ['owned rhythm (synth+material, grid-locked)', input.melody === false ? 'melody: off' : 'melody: MusicGen conditioned on our groove (fail-open)', 'voice: your upload via /vocals/upload', 'proof: lane compliance + blueprint verify'], note: 'Poll the job; the beat lands approved with measured receipts on its meta.' };
   });
 
   app.post('/auto', { schema: { body: autoSchema } }, async (req, reply) => {
