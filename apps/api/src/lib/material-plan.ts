@@ -12,13 +12,17 @@ export const MATERIAL_GAINS: Record<string, number> = { drums: 1.0, log_drum: 1.
 export const MELODIC_ROLES = new Set(['chords', 'bass', 'log_drum']);
 
 export function kitRolesFor(genre: string): string[] {
-  if (/amapiano/.test(genre)) return ['log_drum', 'drums', 'percussion', 'chords'];
-  // Afro genres get the real African hand-drums — the talking drum (gángan) is the
-  // signature "side drum" that was missing, on top of the shekere/agogo perc bed.
-  if (/afro|street_pop|highlife|gospel/.test(genre)) return ['drums', 'talking_drum', 'percussion', 'bass', 'chords'];
-  if (/drill|trap|hip_hop/.test(genre)) return ['drums', 'bass', 'chords'];
-  if (/house|edm/.test(genre)) return ['drums', 'percussion', 'bass', 'chords'];
-  return ['drums', 'percussion', 'bass', 'chords'];
+  const base = ((): string[] => {
+    if (/amapiano/.test(genre)) return ['log_drum', 'drums', 'percussion', 'chords'];
+    // Afro genres get the real African hand-drums — the talking drum (gángan) is the
+    // signature "side drum" that was missing, on top of the shekere/agogo perc bed.
+    if (/afro|street_pop|highlife|gospel/.test(genre)) return ['drums', 'talking_drum', 'percussion', 'bass', 'chords'];
+    if (/drill|trap|hip_hop/.test(genre)) return ['drums', 'bass', 'chords'];
+    if (/house|edm/.test(genre)) return ['drums', 'percussion', 'bass', 'chords'];
+    return ['drums', 'percussion', 'bass', 'chords'];
+  })();
+  // Every kit carries a section-transition drum FILL (the lift Benjamin keeps missing).
+  return [...base, 'fill'];
 }
 
 /** The genre's home key — melodic loops forge + assemble in it by default. */

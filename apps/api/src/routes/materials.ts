@@ -40,12 +40,22 @@ export default async function materials(app: FastifyInstance) {
     genre: genreSchema,
     bpm: z.number().int().min(60).max(180).optional(),
     keySignature: z.string().max(24).optional(),
-    roles: z.array(z.enum(['drums', 'log_drum', 'bass', 'talking_drum', 'percussion', 'chords'])).max(6).optional(),
+    roles: z.array(z.enum(['drums', 'log_drum', 'bass', 'talking_drum', 'percussion', 'chords', 'fill'])).max(7).optional(),
   });
   app.post('/forge', { schema: { body: forgeSchema } }, async (req, reply) => {
     const { workspaceId } = requireAuth(req);
     const input = forgeSchema.parse(req.body);
-    const roles = input.roles?.length ? input.roles : kitRolesFor(input.genre);
+    // Explicit roles are forged as asked; the DEFAULT kit forges only the GAPS —
+    // roles this genre has no material for yet — so re-running just tops up the shelf.
+    let roles = input.roles?.length ? input.roles : kitRolesFor(input.genre);
+    if (!input.roles?.length) {
+      const existing = await prisma.materialAsset.findMany({ where: { workspaceId, genre: input.genre }, select: { role: true } });
+      const have = new Set(existing.map((m) => m.role));
+      roles = roles.filter((r) => !have.has(r));
+      if (!roles.length) {
+        return { forging: [], note: `The ${input.genre} kit is already stocked (${[...have].join(', ')}). Nothing to forge.` };
+      }
+    }
     const bpm = input.bpm ?? getSoundDNA(input.genre)?.typicalBpm ?? 108;
     const keySignature = input.keySignature ?? homeKeyFor(input.genre);
 
