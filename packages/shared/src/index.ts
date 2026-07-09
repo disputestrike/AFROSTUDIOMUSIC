@@ -10,3 +10,4 @@ export * from './release-gate';
 export * from './lane-engine';
 export * from './blueprint';
 export * from './genre-signatures';
+export * from './expert-priors';

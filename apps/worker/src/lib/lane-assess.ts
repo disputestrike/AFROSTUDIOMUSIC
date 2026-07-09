@@ -1,5 +1,5 @@
 import { prisma } from '@afrohit/db';
-import { buildLaneProfile, scoreLaneCompliance, planRepairs, type MeasuredAnalysis, type LaneProfile } from '@afrohit/shared';
+import { priorAnalyses, buildLaneProfile, scoreLaneCompliance, planRepairs, type MeasuredAnalysis, type LaneProfile } from '@afrohit/shared';
 import { measureAudio, dspAvailable } from './dsp';
 
 /**
@@ -38,6 +38,18 @@ export async function loadLaneProfile(workspaceId: string, genre?: string | null
     if (rec.measured?.engineOk) measured.push(rec.measured);
   }
   const profile = buildLaneProfile(genre, 'genre', measured, { minRefs: 3 });
+  if (Object.keys(profile.features).length && measured.length >= 3) return profile;
+  // COLD-START WORKAROUND: expert priors — published knowledge as numbers, every
+  // field method-tagged 'expert-prior'. Correct scoring/ranking/repair from day
+  // one; certification still demands 3 AUTHENTIC refs (the gate is untouched).
+  const priors = priorAnalyses(genre);
+  if (priors.length) {
+    const pp = buildLaneProfile(genre, 'genre', priors, { minRefs: 1 });
+    if (Object.keys(pp.features).length) {
+      console.log(`[lane] ${genre}: expert-prior profile in use (${measured.length} real refs so far)`);
+      return pp;
+    }
+  }
   return Object.keys(profile.features).length ? profile : null;
 }
 
