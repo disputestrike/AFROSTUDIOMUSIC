@@ -40,6 +40,10 @@ export interface LaneComplianceScore {
   dimensions: DimensionScore[];
   skipped: string[]; // profiled but the track's value is unknown (or vice versa)
   drift: GenreDrift;
+  /** CORE identity dimensions (tempo/four-on-floor/log-drum) that fell OUT of lane.
+   * A take with a non-empty failedCritical is not the record, however punchy — it
+   * loses best-of-N ranking outright and blocks Hit Maker Mode. */
+  failedCritical: string[];
 }
 
 // Dimensions that DEFINE the genre — a miss here is drift, not just a low score.
@@ -128,8 +132,8 @@ export function scoreLaneCompliance(analysis: MeasuredAnalysis, profile: LanePro
     }
     return `${d.key} is "${d.trackValue}", lane expects "${d.target.dominant}"`;
   });
-  const coreOut = outIdentity.some((d) => CORE.has(d.key));
-  const severity: GenreDrift['severity'] = coreOut || outIdentity.length >= 2 ? 'major' : outIdentity.length === 1 ? 'minor' : 'none';
+  const coreOut = outIdentity.filter((d) => CORE.has(d.key));
+  const severity: GenreDrift['severity'] = coreOut.length || outIdentity.length >= 2 ? 'major' : outIdentity.length === 1 ? 'minor' : 'none';
 
   return {
     lane: profile.lane,
@@ -139,6 +143,7 @@ export function scoreLaneCompliance(analysis: MeasuredAnalysis, profile: LanePro
     dimensions,
     skipped,
     drift: { drifted: severity !== 'none', severity, reasons },
+    failedCritical: coreOut.map((d) => d.key),
   };
 }
 

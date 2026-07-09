@@ -1,5 +1,5 @@
 import { prisma } from '@afrohit/db';
-import { buildLaneProfile, scoreLaneCompliance, planRepairs, type MeasuredAnalysis } from '@afrohit/shared';
+import { buildLaneProfile, scoreLaneCompliance, planRepairs, type MeasuredAnalysis, type LaneProfile } from '@afrohit/shared';
 import { measureAudio, dspAvailable } from './dsp';
 
 /**
@@ -18,6 +18,29 @@ const genreMatches = (a?: string | null, b?: string | null) => {
   return !!x && !!y && (x === y || x.includes(y) || y.includes(x));
 };
 
+/**
+ * Load the lane profile for a genre from this workspace's MEASURED references.
+ * Returns null when the lane can't be profiled yet (< minRefs measured refs) — the
+ * caller then falls open. Shared by the post-render assessment AND best-of-N ranking.
+ */
+export async function loadLaneProfile(workspaceId: string, genre?: string | null): Promise<LaneProfile | null> {
+  if (!genre) return null;
+  const rows = await prisma.soundReference.findMany({
+    where: { workspaceId, NOT: [{ sourceUrl: { startsWith: 'lyric:' } }, { sourceUrl: { startsWith: 'trend:' } }] },
+    orderBy: { createdAt: 'desc' },
+    take: 300,
+    select: { genre: true, recipe: true },
+  });
+  const measured: MeasuredAnalysis[] = [];
+  for (const r of rows) {
+    if (!genreMatches(r.genre, genre)) continue;
+    const rec = (r.recipe ?? {}) as { measured?: MeasuredAnalysis };
+    if (rec.measured?.engineOk) measured.push(rec.measured);
+  }
+  const profile = buildLaneProfile(genre, 'genre', measured, { minRefs: 3 });
+  return Object.keys(profile.features).length ? profile : null;
+}
+
 export async function assessLaneCompliance(opts: {
   workspaceId: string;
   genre?: string | null;
@@ -25,24 +48,12 @@ export async function assessLaneCompliance(opts: {
   audioUrl: string;
 }): Promise<void> {
   try {
-    if (process.env.LANE_ASSESS !== '1' || !opts.genre) return;
+    // LANE_ASSESS default-ON (only off when explicitly '0') per the FINAL INSTRUCTION.
+    if (process.env.LANE_ASSESS === '0' || !opts.genre) return;
     if (!(await dspAvailable())) return;
 
-    // Build the lane profile from this workspace's measured references.
-    const rows = await prisma.soundReference.findMany({
-      where: { workspaceId: opts.workspaceId, NOT: [{ sourceUrl: { startsWith: 'lyric:' } }, { sourceUrl: { startsWith: 'trend:' } }] },
-      orderBy: { createdAt: 'desc' },
-      take: 300,
-      select: { genre: true, recipe: true },
-    });
-    const measured: MeasuredAnalysis[] = [];
-    for (const r of rows) {
-      if (!genreMatches(r.genre, opts.genre)) continue;
-      const rec = (r.recipe ?? {}) as { measured?: MeasuredAnalysis };
-      if (rec.measured?.engineOk) measured.push(rec.measured);
-    }
-    const profile = buildLaneProfile(opts.genre, 'genre', measured, { minRefs: 3 });
-    if (!Object.keys(profile.features).length) return; // no lane to compare against yet
+    const profile = await loadLaneProfile(opts.workspaceId, opts.genre);
+    if (!profile) return; // no lane to compare against yet
 
     // Measure the rendered take (full-mix — cheap; log-drum stays 'inferred' and is
     // excluded from the score, so no Demucs cost here).

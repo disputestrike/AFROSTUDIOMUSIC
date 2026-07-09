@@ -4,9 +4,35 @@ import type { MusicGenerationInput } from '@afrohit/ai';
 import { markFailed, markRunning, markSucceeded } from '../lib/jobs';
 import { ingestRemoteFile, downloadToBuffer, uploadBytes } from '../lib/storage';
 import { probeDurationS, measureAudioQuality, ffmpegAvailable, master as ffmpegMaster, MASTER_TARGETS, type AudioQuality } from '../lib/ffmpeg';
-import { assessLaneCompliance } from '../lib/lane-assess';
+import { assessLaneCompliance, loadLaneProfile } from '../lib/lane-assess';
 import { overlayFills } from '../lib/fills';
-import { planFills } from '@afrohit/shared';
+import { measureAudio, dspAvailable } from '../lib/dsp';
+import { planFills, scoreLaneCompliance, type LaneComplianceScore } from '@afrohit/shared';
+
+/** Minimum measured coverage before a lane score is allowed to influence ranking. */
+const MIN_COVERAGE_FOR_RANKING = 0.5;
+
+/**
+ * PATCH 1 — composite best-of-N rank (highest wins). The ear gets a vote:
+ *   1. No failed CRITICAL lane element (a take missing the log drum is not the record,
+ *      however punchy).
+ *   2. Higher lane compliance (only when coverage >= MIN_COVERAGE_FOR_RANKING, 2pt
+ *      deadband so we don't churn on measurement noise).
+ *   3. Higher qcScore — mix quality, the old behaviour, now a tiebreak AND the sole
+ *      criterion whenever the ear is blind (no profile / dsp down / thin coverage).
+ * Fail-open by construction: null/thin lane collapses to pure qcScore.
+ */
+function rankTakes(a: { qc: AudioQuality | null; lane: LaneComplianceScore | null }, b: { qc: AudioQuality | null; lane: LaneComplianceScore | null }): number {
+  const usable = (x: { lane: LaneComplianceScore | null }) => x.lane != null && x.lane.coverage >= MIN_COVERAGE_FOR_RANKING;
+  if (usable(a) && usable(b)) {
+    const critA = a.lane!.failedCritical.length > 0 ? 1 : 0;
+    const critB = b.lane!.failedCritical.length > 0 ? 1 : 0;
+    if (critA !== critB) return critA - critB; // no-critical-failure wins outright
+    const laneDelta = b.lane!.overall - a.lane!.overall;
+    if (Math.abs(laneDelta) > 2) return laneDelta; // lane compliance decides
+  }
+  return qcScore(b.qc) - qcScore(a.qc);
+}
 
 interface MusicPayload {
   jobId: string;
@@ -151,15 +177,31 @@ export async function processMusic(p: MusicPayload) {
       return;
     }
 
-    // QC every candidate on its provider URL (parallel, free ffmpeg pass) → best.
+    // Rank every candidate on LANE first, mix quality second (PATCH 1). Measure the
+    // lane of EVERY take, not just the post-hoc winner — that is the change that lets
+    // "make it 20x better" mean "more in-lane", not just "louder". Fail-open: no
+    // profile / dsp down / thin coverage collapses ranking to the old qcScore order.
+    const laneProfile = await loadLaneProfile(p.workspaceId, p.input.genre).catch(() => null);
+    const earUp = process.env.LANE_ASSESS !== '0' && !!laneProfile && (await dspAvailable());
     const scored = await Promise.all(
-      ok.map(async (r) => ({ r, qc: r.output ? await measureAudioQuality(r.output.mainAudioUrl).catch(() => null) : null }))
+      ok.map(async (r) => {
+        const url = r.output?.mainAudioUrl;
+        const qc = url ? await measureAudioQuality(url).catch(() => null) : null;
+        let lane: LaneComplianceScore | null = null;
+        if (earUp && url) {
+          lane = await measureAudio(url).then((m) => (m.engineOk ? scoreLaneCompliance(m, laneProfile!) : null)).catch(() => null);
+        }
+        return { r, qc, lane };
+      })
     );
-    scored.sort((a, b) => qcScore(b.qc) - qcScore(a.qc));
+    scored.sort(rankTakes);
     const winner = scored[0]!;
     const result = winner.r;
     const out = result.output!;
     let quality: AudioQuality | null = winner.qc;
+    const winnerLane = winner.lane;
+    const rankedBy = winnerLane && winnerLane.coverage >= MIN_COVERAGE_FOR_RANKING ? 'lane-compliance' : 'mix-quality (ear blind or coverage thin)';
+    console.log(`[music] best-of-${ok.length} ranked by ${rankedBy}${winnerLane ? ` — lane ${winnerLane.overall}/100 cov ${(winnerLane.coverage * 100) | 0}% failedCritical=[${winnerLane.failedCritical.join(',')}]` : ''}`);
 
     // Re-host ONLY the winning take (survives provider URL expiry; stable CDN path).
     let ingestedMain = await ingestRemoteFile({
@@ -222,7 +264,17 @@ export async function processMusic(p: MusicPayload) {
           placeholder,
           fallbackReason,
           // Best-of-N provenance + measured QC of the WINNING take.
-          bestOf: { tried: N, rendered: ok.length, pickedScore: Math.round(qcScore(quality)) },
+          // §2.3 — persist WHY it won, in lane terms. rankedBy tells the user whether
+          // the machine chose with its ears or its ears were shut (non-negotiable).
+          bestOf: {
+            tried: N,
+            rendered: ok.length,
+            pickedScore: Math.round(qcScore(quality)),
+            laneScore: winnerLane?.overall ?? null,
+            laneCoverage: winnerLane?.coverage ?? null,
+            failedCritical: winnerLane?.failedCritical ?? [],
+            rankedBy,
+          },
           qc: quality
             ? { ...quality, durationS: durationS || quality.durationS }
             : { durationS: durationS || null, verdict: durationS >= 12 ? 'pass' : 'fail', ok: durationS >= 12, flags: [] },
@@ -350,7 +402,7 @@ export async function processMusic(p: MusicPayload) {
 
     await markSucceeded(
       p.jobId,
-      { beatId: beat.id, stems: out.stems?.length ?? 0, placeholder, fallbackReason, autoMastered: !!masteredUrl, masterUrl: masteredUrl, bestOf: { tried: N, rendered: ok.length } },
+      { beatId: beat.id, stems: out.stems?.length ?? 0, placeholder, fallbackReason, autoMastered: !!masteredUrl, masterUrl: masteredUrl, bestOf: { tried: N, rendered: ok.length, laneScore: winnerLane?.overall ?? null, rankedBy } },
       result.estimatedCostUsd
     );
   } catch (err) {
