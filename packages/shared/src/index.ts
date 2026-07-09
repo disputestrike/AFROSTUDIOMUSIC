@@ -6,3 +6,4 @@ export * from './lane-profile';
 export * from './lane-compliance';
 export * from './lane-repair';
 export * from './lane-material';
+export * from './release-gate';

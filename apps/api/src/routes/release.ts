@@ -1,6 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import { prisma } from '@afrohit/db';
-import { rightsInputSchema } from '@afrohit/shared';
+import { rightsInputSchema, laneReleaseGate } from '@afrohit/shared';
 import { requireAuth } from '../middleware/auth';
 import { distributeRelease } from '../lib/distribution';
 import { BLOW_TARGET } from '../lib/will-it-blow';
@@ -83,15 +83,22 @@ async function assignUpc(workspaceId: string): Promise<string> {
 }
 
 async function statusFor(song: { id: string; title: string; isrc: string | null; upc: string | null; splitSheet: unknown; releaseReady: boolean; lyricId: string | null; projectId: string; nativeReviewOk: boolean; hitScore?: number | null; viralScore?: number | null }) {
-  const [master, mix, cover, languages] = await Promise.all([
+  const [master, mix, cover, languages, beat] = await Promise.all([
     prisma.master.findFirst({ where: { songId: song.id } }),
     prisma.mix.findFirst({ where: { songId: song.id } }),
     prisma.imageAsset.findFirst({ where: { projectId: song.projectId, kind: 'cover' } }),
     languagesForProject(song.projectId),
+    prisma.beatAsset.findFirst({ where: { songId: song.id }, orderBy: { createdAt: 'desc' }, select: { meta: true } }),
   ]);
+  // PHASE 6 — the release gate reads the measured signals stored on the freshest take
+  // (Phase-4 lane compliance + ffmpeg QC). It BLOCKS only on broken audio; drift/low
+  // compliance surface as warnings (the artist's ear decides). Unmeasured = unverified.
+  const meta = (beat?.meta ?? {}) as { compliance?: unknown; qc?: unknown };
+  const gate = laneReleaseGate({ compliance: (meta.compliance ?? null) as never, qc: (meta.qc ?? null) as never });
   return {
     song: { id: song.id, title: song.title, isrc: song.isrc, upc: song.upc, splitSheet: song.splitSheet, releaseReady: song.releaseReady, nativeReviewOk: song.nativeReviewOk },
     greenLight: greenLight(song, !!(master || mix), !!cover, languages),
+    releaseGate: gate,
   };
 }
 
@@ -150,11 +157,20 @@ export default async function release(app: FastifyInstance) {
     if (!song.releaseReady) {
       return reply.code(400).send({ error: 'not_green_lit', message: 'Green-light the song first (fill the checklist).' });
     }
-    const [master, mix, cover] = await Promise.all([
+    const [master, mix, cover, beat] = await Promise.all([
       prisma.master.findFirst({ where: { songId: song.id }, orderBy: { createdAt: 'desc' } }),
       prisma.mix.findFirst({ where: { songId: song.id }, orderBy: { createdAt: 'desc' } }),
       prisma.imageAsset.findFirst({ where: { projectId: song.projectId, kind: 'cover' }, orderBy: { createdAt: 'desc' } }),
+      prisma.beatAsset.findFirst({ where: { songId: song.id }, orderBy: { createdAt: 'desc' }, select: { meta: true } }),
     ]);
+    // PHASE 6 — do not push OBJECTIVELY BROKEN audio to the world (QC fail: clipping /
+    // too quiet / too short), even when green-lit. Drift is only a warning, so a
+    // lane-bending record still distributes — the artist's ear stays in charge.
+    const gmeta = (beat?.meta ?? {}) as { compliance?: unknown; qc?: unknown };
+    const gate = laneReleaseGate({ compliance: (gmeta.compliance ?? null) as never, qc: (gmeta.qc ?? null) as never });
+    if (gate.blocked) {
+      return reply.code(409).send({ error: 'audio_quality_block', message: 'This take failed audio QC (broken render) — re-master or regenerate before distributing.', checks: gate.checks });
+    }
     const result = await distributeRelease({
       title: song.title,
       artist: song.project.artist.stageName,
