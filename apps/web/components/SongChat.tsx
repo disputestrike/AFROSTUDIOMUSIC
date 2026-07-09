@@ -17,10 +17,10 @@ export function SongChat({ songId, onNewVersion }: { songId: string; onNewVersio
     api.get<{ sections: typeof sections }>(`/songs/${songId}/sections`).then((r) => setSections(r.sections)).catch(() => {});
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [songId]);
-  function tellSong(text: string) { setInput(text); }
+  function tellSong(text: string) { void send(text); }
 
-  async function send() {
-    const text = input.trim();
+  async function send(override?: string) {
+    const text = (override ?? input).trim();
     if (!text || busy) return;
     setInput('');
     setMsgs((m) => [...m, { who: 'you', text }]);
@@ -75,8 +75,8 @@ export function SongChat({ songId, onNewVersion }: { songId: string; onNewVersio
         ))}
       </div>
       <div className="mt-2 flex gap-2">
-        <input value={input} onChange={(e) => setInput(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && send()} placeholder="Tell the song what to change…" className="flex-1 rounded border border-slate-700 bg-slate-950 px-2 py-1.5 text-xs text-slate-200" />
-        <button onClick={send} disabled={busy} className="rounded bg-sky-700 px-3 py-1.5 text-xs font-medium text-white hover:bg-sky-600 disabled:opacity-50">{busy ? '…' : 'Send'}</button>
+        <input value={input} onChange={(e) => setInput(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') void send(); }} placeholder="Tell the song what to change…" className="flex-1 rounded border border-slate-700 bg-slate-950 px-2 py-1.5 text-xs text-slate-200" />
+        <button onClick={() => void send()} disabled={busy} className="rounded bg-sky-700 px-3 py-1.5 text-xs font-medium text-white hover:bg-sky-600 disabled:opacity-50">{busy ? '…' : 'Send'}</button>
       </div>
     </div>
   );
