@@ -51,6 +51,12 @@ export const LANGUAGES = {
   wo: 'Wolof',
   bm: 'Bambara',
   nouchi: 'Nouchi (Ivorian street)',
+  es: 'Spanish',
+  ar: 'Arabic (Egyptian/Maghreb)',
+  ht: 'Haitian Creole (Kreyòl)',
+  kriolu: 'Cape Verdean Kriolu',
+  am: 'Amharic',
+  patois: 'Jamaican Patois',
 } as const;
 export type LanguageCode = keyof typeof LANGUAGES;
 

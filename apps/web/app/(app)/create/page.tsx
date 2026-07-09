@@ -35,6 +35,7 @@ const LANGS = [
   { value: 'pt', label: 'Portuguese' }, { value: 'sw', label: 'Swahili' }, { value: 'zu', label: 'Zulu (isiZulu)' }, { value: 'twi', label: 'Twi' },
   { value: 'xh', label: 'Xhosa (isiXhosa)' }, { value: 'st', label: 'Sesotho' }, { value: 'tn', label: 'Setswana' }, { value: 'tsotsitaal', label: 'Tsotsitaal (SA street)' },
   { value: 'ln', label: 'Lingala' }, { value: 'wo', label: 'Wolof' }, { value: 'bm', label: 'Bambara' }, { value: 'nouchi', label: 'Nouchi (Ivorian street)' },
+  { value: 'es', label: 'Spanish' }, { value: 'ar', label: 'Arabic' }, { value: 'ht', label: 'Haitian Creole' }, { value: 'kriolu', label: 'Kriolu (Cape Verde)' }, { value: 'am', label: 'Amharic' }, { value: 'patois', label: 'Jamaican Patois' },
 ];
 const MOODS = ['confident', 'love', 'heartbreak', 'party', 'vibey', 'spiritual', 'worship', 'street', 'hustle', 'nostalgic', 'sexy', 'triumphant', 'luxury', 'lifestyle', 'family', 'gratitude', 'summer', 'motivation', 'freedom'];
 const STEPS = ['Setting up your session', 'Writing hooks + A&R picking the best', 'Writing the lyrics', 'Singing & producing your song'];

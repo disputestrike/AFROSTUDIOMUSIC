@@ -64,7 +64,7 @@ export async function processMeasureBackfill(opts?: { refLimit?: number; beatLim
   }
 }
 
-const MINE_LANGS = ['yo', 'ig', 'ha', 'pcm', 'twi', 'sw', 'zu', 'xh', 'st', 'tn', 'tsotsitaal', 'ln', 'wo', 'bm', 'nouchi'] as const;
+const MINE_LANGS = ['yo', 'ig', 'ha', 'pcm', 'twi', 'sw', 'zu', 'xh', 'st', 'tn', 'tsotsitaal', 'ln', 'wo', 'bm', 'nouchi', 'ar', 'ht', 'kriolu', 'am', 'patois', 'es'] as const;
 const MINE_CATS = ['love', 'street', 'party', 'faith', 'slang', 'adlib', 'proverb', 'dance'] as const;
 
 /** Harvest vocabulary from OWNED upload transcripts into the global word bank. */
@@ -138,6 +138,8 @@ const REGION_HINT: Record<string, string> = {
   zu: 'South Africa', xh: 'South Africa', st: 'Lesotho South Africa', tn: 'Botswana South Africa',
   tsotsitaal: 'South Africa township', ln: 'Congo DRC Kinshasa', wo: 'Senegal Dakar', bm: 'Mali Bamako',
   nouchi: "Cote d'Ivoire Abidjan",
+  ar: 'Egypt Morocco Maghreb mahraganat rai', ht: 'Haiti kompa', kriolu: 'Cape Verde funana',
+  am: 'Ethiopia Addis', patois: 'Jamaica dancehall', es: 'Latin reggaeton',
 };
 
 /** DYNAMIC LEXICON RESEARCH — the rich bank, built the honest way: Tavily finds
@@ -195,11 +197,103 @@ export async function processLexiconResearch(opts?: { queries?: number }): Promi
   }
 }
 
+/** THE FREE FIREHOSE — Wiktionary category harvest. Every term is a REAL word
+ *  (community-verified lemma list), fetched from the public MediaWiki API — no
+ *  scraping library, no fabrication. Terms land unglossed; the gloss pass below
+ *  adds paraphrased meanings in batches. This is the honest road to a very large
+ *  bank: authenticity first, volume as a knob (WIKTIONARY_PER_LANG). */
+const WIKI_CATEGORY: Record<string, string> = {
+  yo: 'Yoruba', ig: 'Igbo', ha: 'Hausa', sw: 'Swahili', zu: 'Zulu', xh: 'Xhosa', st: 'Sotho', tn: 'Tswana',
+  ln: 'Lingala', wo: 'Wolof', bm: 'Bambara', twi: 'Twi', pcm: 'Nigerian_Pidgin', ht: 'Haitian_Creole',
+  kriolu: 'Kabuverdianu', am: 'Amharic', ar: 'Egyptian_Arabic', patois: 'Jamaican_Creole',
+};
+
+export async function processWiktionaryHarvest(opts?: { langs?: string[]; perLang?: number }): Promise<void> {
+  const perLang = Math.max(50, Math.min(2000, opts?.perLang ?? parseInt(process.env.WIKTIONARY_PER_LANG ?? '400', 10) || 400));
+  const all = opts?.langs ?? Object.keys(WIKI_CATEGORY);
+  // rotate 3 languages per run so every language gets covered across runs
+  const start = Math.floor(Date.now() / 3_600_000) % all.length;
+  const langs = opts?.langs ?? Array.from({ length: 3 }, (_v, i) => all[(start + i) % all.length]!);
+  try {
+    const existing = await prisma.lexiconEntry.findMany({ where: { workspaceId: null }, select: { term: true, language: true } });
+    const have = new Set(existing.map((e) => `${e.term.toLowerCase()}|${e.language}`));
+    let inserted = 0;
+    for (const lang of langs) {
+      const cat = WIKI_CATEGORY[lang];
+      if (!cat) continue;
+      let cont: string | undefined;
+      let got = 0;
+      while (got < perLang) {
+        const url = `https://en.wiktionary.org/w/api.php?action=query&list=categorymembers&cmtitle=Category:${cat}_lemmas&cmlimit=500&cmtype=page&format=json${cont ? `&cmcontinue=${encodeURIComponent(cont)}` : ''}`;
+        const res = await fetch(url, { headers: { 'user-agent': 'AfroHitStudio/1.0 (lexicon research)' } }).catch(() => null);
+        if (!res?.ok) break;
+        const data = (await res.json().catch(() => null)) as { continue?: { cmcontinue?: string }; query?: { categorymembers?: Array<{ title?: string }> } } | null;
+        const members = data?.query?.categorymembers ?? [];
+        if (!members.length) break;
+        for (const m2 of members) {
+          if (got >= perLang) break;
+          const term = (m2.title ?? '').trim().toLowerCase();
+          if (!term || term.length > 48 || term.includes(':') || /\d/.test(term)) continue;
+          const key = `${term}|${lang}`;
+          if (have.has(key)) continue;
+          have.add(key);
+          await prisma.lexiconEntry.create({
+            data: { workspaceId: null, term, language: lang, category: 'general', register: 'casual', meaning: null, example: null, source: 'wiktionary', tags: ['wiktionary', 'needs_native_review', 'unglossed'] },
+          }).catch(() => undefined);
+          inserted++; got++;
+        }
+        cont = data?.continue?.cmcontinue;
+        if (!cont) break;
+        await new Promise((r) => setTimeout(r, 350)); // polite to the API
+      }
+      console.log(`[wiktionary] ${lang}: +${got}`);
+    }
+    console.log(`[wiktionary] total inserted=${inserted} (unglossed — gloss pass enriches nightly)`);
+  } catch (err) {
+    console.warn('[wiktionary] failed (non-fatal):', (err as Error)?.message);
+  }
+}
+
+/** Gloss pass — paraphrased meanings for unglossed harvested terms, in batches. */
+export async function processGlossPass(opts?: { limit?: number }): Promise<void> {
+  const limit = Math.max(10, Math.min(200, opts?.limit ?? parseInt(process.env.LEXICON_GLOSS_PER_RUN ?? '80', 10) || 80));
+  try {
+    const rows = await prisma.lexiconEntry.findMany({ where: { workspaceId: null, tags: { has: 'unglossed' } }, take: limit, orderBy: { createdAt: 'asc' } });
+    if (!rows.length) { console.log('[gloss] nothing unglossed'); return; }
+    const byLang = new Map<string, typeof rows>();
+    for (const r of rows) { const a = byLang.get(r.language) ?? []; a.push(r); byLang.set(r.language, a); }
+    let done = 0;
+    for (const [lang, entries] of byLang) {
+      const name = (LANGUAGES as Record<string, string>)[lang] ?? lang;
+      const out = await generateJson<{ glosses: Array<{ term: string; meaning: string; category?: string; register?: string }> }>({
+        system: `You are a ${name} lexicographer. For each REAL ${name} term below, give a short plain-English meaning IN YOUR OWN WORDS, a category from [${MINE_CATS.join('|')}|general], and register [casual|chant|poetic|sacred|flex]. If you don't confidently know a term, OMIT it. Return {"glosses":[...]}.`,
+        user: entries.map((e) => e.term).join('\n'),
+        maxTokens: 1800,
+      }).catch(() => ({ glosses: [] as Array<{ term: string; meaning: string; category?: string; register?: string }> }));
+      const map = new Map(out.glosses?.map((g) => [g.term.toLowerCase(), g] as const) ?? []);
+      for (const e of entries) {
+        const g = map.get(e.term.toLowerCase());
+        if (!g?.meaning) continue;
+        await prisma.lexiconEntry.update({
+          where: { id: e.id },
+          data: { meaning: g.meaning.slice(0, 300), category: g.category && g.category !== 'general' ? g.category : e.category, register: g.register ?? e.register, tags: e.tags.filter((t) => t !== 'unglossed') },
+        }).catch(() => undefined);
+        done++;
+      }
+    }
+    console.log(`[gloss] glossed=${done}/${rows.length}`);
+  } catch (err) {
+    console.warn('[gloss] failed (non-fatal):', (err as Error)?.message);
+  }
+}
+
 /** Roadmap #3 — the nightly compounding job. Cost-capped by the batch limits. */
 export async function processNightlyCompound(): Promise<void> {
   console.log('[nightly-compound] start');
   await processMeasureBackfill({ refLimit: 10, beatLimit: 4 });
   await processMineLexicon({ refLimit: 4 });
   await processLexiconResearch({ queries: 6 });
+  await processWiktionaryHarvest();
+  await processGlossPass();
   console.log('[nightly-compound] done');
 }
