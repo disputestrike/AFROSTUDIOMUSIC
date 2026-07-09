@@ -136,6 +136,7 @@ export interface LaneReport {
   laneScore?: number | null;
   coverage?: string; // "8 measured / 2 unknown"
   rankedBy?: string | null;
+  blueprintMatch?: number | null;
   profileTier?: 'authentic' | 'self-trained' | 'unprofiled';
   authenticRefs?: number;
   engine?: { name: string; adequate: boolean; note?: string; recommended?: string };
@@ -166,7 +167,7 @@ export async function buildLaneReport(workspaceId: string, songId: string): Prom
   });
   const meta = (beat?.meta ?? {}) as {
     measured?: MeasuredAnalysis;
-    bestOf?: { rankedBy?: string; laneScore?: number | null; engineNote?: string };
+    bestOf?: { rankedBy?: string; laneScore?: number | null; engineNote?: string; blueprintMatch?: number | null };
     qc?: { verdict?: string; flags?: string[] };
     assessedGenre?: string;
   };
@@ -218,6 +219,7 @@ export async function buildLaneReport(workspaceId: string, songId: string): Prom
     laneScore: freshScore?.overall ?? meta.bestOf?.laneScore ?? null,
     coverage: freshScore ? `${freshScore.scored} measured / ${freshScore.skipped.length} unknown` : profile ? 'scored 0' : `lane unprofiled (${refs}/3 measured refs)`,
     rankedBy: meta.bestOf?.rankedBy ?? null,
+    blueprintMatch: meta.bestOf?.blueprintMatch ?? null,
     engine: {
       name: beat.provider,
       adequate: adequacy.adequate,

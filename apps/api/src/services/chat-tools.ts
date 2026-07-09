@@ -15,6 +15,8 @@ import { laneDna, laneDnaBrief } from '../lib/lane-pipeline';
 import { enqueue } from '../lib/queue';
 import { assertSafeUrl } from '../lib/url-guard';
 import { learnedReferenceBrief, learnedStyleTags, learnedLyricCraftBrief, snapshotTrend, freshnessBrief } from '../lib/learned';
+import { blueprintForReference } from '../lib/blueprint';
+import { structureBrief } from '@afrohit/shared';
 import { learnLyricCraft, findLearnedLyric } from '../lib/lyric-learn';
 import { dataLakeReport } from '../lib/data-lake';
 import { lexiconPalette } from '../lib/lexicon';
@@ -453,7 +455,11 @@ async function createBeatJob(ctx: Ctx, a: { genre: string; fusionGenres?: string
   const dna = a.fusionGenres?.length ? laneDna(a.genre, { mood: a.mood, fusionGenres: a.fusionGenres }) : laneDna(a.genre, { mood: a.mood });
   const learned = await learnedReferenceBrief(ctx.workspaceId, a.genre, a.pinnedReferenceId);
   const learnedTags = await learnedStyleTags(ctx.workspaceId, a.genre, a.pinnedReferenceId);
-  const dnaTags = [...(dna.tags ?? []), ...learnedTags];
+  // BLUEPRINT (precision mode): a PINNED, MEASURED reference contributes its
+  // SKELETON as a hard contract — same section count/lengths/BPM, all-new flesh.
+  const blueprint = a.pinnedReferenceId ? await blueprintForReference(ctx.workspaceId, a.pinnedReferenceId) : null;
+  const bpBrief = blueprint ? structureBrief(blueprint) : '';
+  const dnaTags = [...(dna.tags ?? []), ...learnedTags, ...(blueprint ? [`structure ${blueprint.sections.length} sections`, ...(blueprint.bpm ? [`${blueprint.bpm} bpm exact`] : [])] : [])];
 
   // Arrange the vocal to sound ALIVE — ad-libs, doubled/harmonized hook.
   let styleHints: string[] = [];
@@ -467,7 +473,7 @@ async function createBeatJob(ctx: Ctx, a: { genre: string; fusionGenres?: string
       // The user's SELECTED languages outrank the artist profile's defaults.
       languages: a.languages?.length ? a.languages : project?.artist.languages,
       laneSummary: project?.artist.laneSummary ?? undefined,
-      soundDna: joinBriefs([dna.brief, learned]),
+      soundDna: joinBriefs([bpBrief, dna.brief, learned]),
     });
     if (enriched) {
       lyrics = enriched.enrichedLyrics;
@@ -513,13 +519,14 @@ async function createBeatJob(ctx: Ctx, a: { genre: string; fusionGenres?: string
         // ANTI-SOUP: vibe stays short (vibe + influence only); styleHints ride
         // as tags on dnaTags where terse tokens belong.
         vibePrompt: [a.vibePrompt, a.influence ? `in the vibe/lane of ${a.influence} (capture the feel, not a copy)` : null].filter(Boolean).join(', ') || undefined,
-        durationS: a.durationS ?? (a.withVocals ? 150 : 60),
+        durationS: a.durationS ?? blueprint?.totalDurationS ?? (a.withVocals ? 150 : 60),
         withStems: a.withStems ?? !a.withVocals,
         withVocals: a.withVocals ?? false,
         songEngine: a.songEngine,
         dnaTags: [...dnaTags, ...styleHints.slice(0, 3), ...laneSteer],
         languages: a.languages?.length ? a.languages : undefined,
         lyrics,
+        blueprint: blueprint ?? undefined,
       },
     },
   });

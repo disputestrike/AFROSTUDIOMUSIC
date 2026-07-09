@@ -7,7 +7,7 @@ import { probeDurationS, measureAudioQuality, ffmpegAvailable, master as ffmpegM
 import { assessLaneCompliance, loadLaneProfile } from '../lib/lane-assess';
 import { overlayFills } from '../lib/fills';
 import { measureAudio, dspAvailable } from '../lib/dsp';
-import { planFills, scoreLaneCompliance, engineAdequacy, type LaneComplianceScore, type MeasuredAnalysis } from '@afrohit/shared';
+import { planFills, scoreLaneCompliance, engineAdequacy, structureMatch, blueprintFromMeasured, type LaneComplianceScore, type MeasuredAnalysis, type SongBlueprint } from '@afrohit/shared';
 
 /** Minimum measured coverage before a lane score is allowed to influence ranking. */
 const MIN_COVERAGE_FOR_RANKING = 0.5;
@@ -22,12 +22,19 @@ const MIN_COVERAGE_FOR_RANKING = 0.5;
  *      criterion whenever the ear is blind (no profile / dsp down / thin coverage).
  * Fail-open by construction: null/thin lane collapses to pure qcScore.
  */
-function rankTakes(a: { qc: AudioQuality | null; lane: LaneComplianceScore | null }, b: { qc: AudioQuality | null; lane: LaneComplianceScore | null }): number {
+function rankTakes(a: { qc: AudioQuality | null; lane: LaneComplianceScore | null; bp?: number | null }, b: { qc: AudioQuality | null; lane: LaneComplianceScore | null; bp?: number | null }): number {
   const usable = (x: { lane: LaneComplianceScore | null }) => x.lane != null && x.lane.coverage >= MIN_COVERAGE_FOR_RANKING;
   if (usable(a) && usable(b)) {
     const critA = a.lane!.failedCritical.length > 0 ? 1 : 0;
     const critB = b.lane!.failedCritical.length > 0 ? 1 : 0;
-    if (critA !== critB) return critA - critB; // no-critical-failure wins outright
+    if (critA !== critB) return critA - critB;
+
+    // BLUEPRINT precision: with a structure contract, the closest skeleton wins
+    // first (7pt deadband so noise never flips takes). Lane, then mix, follow.
+    if (a.bp != null && b.bp != null) {
+      const d = b.bp - a.bp;
+      if (Math.abs(d) > 0.07) return d;
+    } // no-critical-failure wins outright
     const laneDelta = b.lane!.overall - a.lane!.overall;
     if (Math.abs(laneDelta) > 2) return laneDelta; // lane compliance decides
   }
@@ -186,6 +193,7 @@ export async function processMusic(p: MusicPayload) {
     // that grows without storing DSP teaches buildLaneProfile nothing). Lane RANKING
     // only engages once a profile exists.
     const dspUp = process.env.LANE_ASSESS !== '0' && (await dspAvailable());
+    const srcBlueprint = ((p.input as { blueprint?: SongBlueprint }).blueprint) ?? null;
     const scored = await Promise.all(
       ok.map(async (r) => {
         const url = r.output?.mainAudioUrl;
@@ -196,7 +204,8 @@ export async function processMusic(p: MusicPayload) {
           const m = await measureAudio(url).catch(() => null);
           if (m?.engineOk) { measured = m; if (laneProfile) lane = scoreLaneCompliance(m, laneProfile); }
         }
-        return { r, qc, lane, measured };
+        const bp = srcBlueprint && measured ? structureMatch(blueprintFromMeasured(measured), srcBlueprint) : null;
+        return { r, qc, lane, measured, bp };
       })
     );
     scored.sort(rankTakes);
@@ -205,7 +214,9 @@ export async function processMusic(p: MusicPayload) {
     const out = result.output!;
     let quality: AudioQuality | null = winner.qc;
     const winnerLane = winner.lane;
-    const rankedBy = winnerLane && winnerLane.coverage >= MIN_COVERAGE_FOR_RANKING ? 'lane-compliance' : 'mix-quality (ear blind or coverage thin)';
+    const rankedBy = winner.bp != null
+      ? `blueprint-structure (${Math.round(winner.bp * 100)}% skeleton match)`
+      : winnerLane && winnerLane.coverage >= MIN_COVERAGE_FOR_RANKING ? 'lane-compliance' : 'mix-quality (ear blind or coverage thin)';
     console.log(`[music] best-of-${ok.length} ranked by ${rankedBy}${winnerLane ? ` — lane ${winnerLane.overall}/100 cov ${(winnerLane.coverage * 100) | 0}% failedCritical=[${winnerLane.failedCritical.join(',')}]` : ''}`);
 
     // Re-host ONLY the winning take (survives provider URL expiry; stable CDN path).
@@ -279,12 +290,14 @@ export async function processMusic(p: MusicPayload) {
             laneCoverage: winnerLane?.coverage ?? null,
             failedCritical: winnerLane?.failedCritical ?? [],
             rankedBy,
+            blueprintMatch: winner.bp ?? null,
             // §11 — if a DRAFT engine produced a low-lane take, name the ENGINE as the
             // limit so the user never thinks they wrote a bad brief.
             engineNote: (!engineAdequacy(adapter.name, p.input.genre ?? '').adequate && (winnerLane?.overall ?? 100) < 60)
               ? engineAdequacy(adapter.name, p.input.genre ?? '').note
               : undefined,
           },
+          blueprint: srcBlueprint ?? undefined,
           qc: quality
             ? { ...quality, durationS: durationS || quality.durationS }
             : { durationS: durationS || null, verdict: durationS >= 12 ? 'pass' : 'fail', ok: durationS >= 12, flags: [] },

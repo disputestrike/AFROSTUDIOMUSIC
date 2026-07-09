@@ -11,6 +11,7 @@ import { z } from 'zod';
 import { prisma } from '@afrohit/db';
 import { recognizeSong, extractSongCraft, parseTrendSong, researchTrends } from '@afrohit/ai';
 import { laneBpm } from '../lib/lane-pipeline';
+import { GENRES } from '@afrohit/shared';
 import { requireAuth } from '../middleware/auth';
 import { publicUrlFor, assertOwnedKey } from '../lib/storage';
 
@@ -33,6 +34,19 @@ function normGenre(g?: string | null): string | null {
   if (k.includes('amapiano') || k.includes('piano')) return 'amapiano';
   if (k.includes('hiphop') || k.includes('rap')) return 'hip_hop';
   if (k.includes('rnb') || k.includes('r_b')) return 'rnb';
+  if (k.includes('trap')) return 'trap';
+  if (k.includes('drill')) return 'drill';
+  if (k.includes('dancehall')) return 'dancehall';
+  if (k.includes('reggaeton') || k.includes('latin')) return 'reggaeton';
+  if (k.includes('reggae')) return 'reggae';
+  if (k.includes('house')) return 'house';
+  if (k.includes('electro') || k.includes('edm') || k.includes('dance')) return 'edm';
+  if (k.includes('gospel') || k.includes('worship') || k.includes('christian')) return 'gospel';
+  if (k.includes('highlife')) return 'highlife';
+  if (k.includes('soul') || k.includes('funk')) return 'soul';
+  if (k.includes('country')) return 'country';
+  if (k.includes('rock') || k.includes('metal')) return 'rock';
+  if (k.includes('pop')) return 'pop';
   return null;
 }
 
@@ -137,12 +151,15 @@ export default async function zap(app: FastifyInstance) {
     const ref = await prisma.soundReference.findFirst({ where: { id: referenceId, workspaceId } });
     if (!ref) return reply.code(404).send({ error: 'reference_not_found' });
     let rec = (ref.recipe ?? {}) as { title?: string; artist?: string; genre?: string; bpm?: number; mood?: string; languages?: string[]; vibe?: string; craft?: string[] };
-    const genre = ref.genre ?? rec.genre ?? 'afrobeats';
+    // PRECISION FIX (the rap-zap-made-an-afro-song bug): NEVER silently default the
+    // lane. Resolve ref -> recipe -> metadata classify; if still unknown, ASK.
+    let genre = normGenre(ref.genre) ?? normGenre(rec.genre) ?? null;
     // BACKFILL missing lane facts (old zaps) by deriving from the song's metadata,
     // then PERSIST so it's a one-time cost — the artist's real language sticks.
-    if ((!rec.languages || !rec.languages.length || !rec.mood || !rec.bpm) && rec.title) {
-      const craft = await extractSongCraft({ title: rec.title, artist: rec.artist, genre });
+    if ((!genre || !rec.languages || !rec.languages.length || !rec.mood || !rec.bpm) && rec.title) {
+      const craft = await extractSongCraft({ title: rec.title, artist: rec.artist, genre: genre ?? undefined });
       if (craft) {
+        genre = genre ?? normGenre(craft.genre);
         rec = {
           ...rec,
           languages: rec.languages?.length ? rec.languages : craft.languages,
@@ -151,8 +168,16 @@ export default async function zap(app: FastifyInstance) {
           craft: rec.craft?.length ? rec.craft : craft.craft,
           vibe: rec.vibe ?? craft.vibe,
         };
-        await prisma.soundReference.update({ where: { id: ref.id }, data: { recipe: rec as never } }).catch(() => {});
+        await prisma.soundReference.update({ where: { id: ref.id }, data: { recipe: rec as never, ...(genre && ref.genre !== genre ? { genre } : {}) } }).catch(() => {});
       }
+    }
+    if (!genre) {
+      return reply.code(422).send({
+        error: 'lane_unresolved',
+        needsGenre: true,
+        options: [...GENRES],
+        message: "Could not resolve this song's lane from its metadata — pick the lane and I'll hold it EXACTLY. (No silent afrobeats default, ever.)",
+      });
     }
     return {
       genre,

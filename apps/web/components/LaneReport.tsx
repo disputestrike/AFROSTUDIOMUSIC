@@ -23,6 +23,7 @@ export interface Report {
   laneScore?: number | null;
   coverage?: string;
   rankedBy?: string | null;
+  blueprintMatch?: number | null;
   profileTier?: string;
   authenticRefs?: number;
   engine?: { name: string; adequate: boolean; note?: string; recommended?: string };
@@ -70,6 +71,7 @@ export function LaneReport({ songId, refreshKey = 0 }: { songId: string; refresh
         <Row k="Current lane">{r.distribution.slice(0, 3).map((d) => `${d.pct}% ${d.lane}`).join(' · ')}</Row>
       )}
       <Row k="Target lane">{r.targetLane}</Row>
+      {r.blueprintMatch != null && <Row k="Structure">{Math.round(r.blueprintMatch * 100)}% skeleton match vs source blueprint</Row>}
       <Row k="Lane score">{r.laneScore ?? '—'} <span className="text-slate-500">({r.coverage})</span></Row>
       {r.profileTier === 'self-trained' && (
         <Row k="Profile"><span className="text-amber-300">self-trained ({r.authenticRefs ?? 0}/3 authentic refs) — steering works, certification needs real tracks</span></Row>

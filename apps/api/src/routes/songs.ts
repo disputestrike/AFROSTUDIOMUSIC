@@ -1,5 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
+import { blueprintFromMeasured, structureBrief, type MeasuredAnalysis, type SongBlueprint } from '@afrohit/shared';
 import { prisma } from '@afrohit/db';
 import { predictHit, researchTrends, enrichLyricsForVocals, generateJson, prompts } from '@afrohit/ai';
 import { laneDna, laneDnaBrief } from '../lib/lane-pipeline';
@@ -624,7 +625,7 @@ export default async function songs(app: FastifyInstance) {
       lyricBody: lyrics,
       languages: song.project.artist.languages,
       laneSummary: song.project.artist.laneSummary ?? undefined,
-      soundDna: [dna.brief, learned].filter(Boolean).join('\n\n'),
+      soundDna: [selfBp ? structureBrief(selfBp) : null, dna.brief, learned].filter(Boolean).join('\n\n'),
     });
     if (enriched) {
       lyricsForSong = enriched.enrichedLyrics;
@@ -648,6 +649,10 @@ export default async function songs(app: FastifyInstance) {
       ? lane.repair.split('\n').filter((l) => l.startsWith('- ')).map((l) => l.slice(2).trim()).slice(0, 3)
       : [];
 
+    // SELF-CLONE BLUEPRINT — "same structure, different sound": this song's own
+    // measured skeleton becomes the contract for its regeneration.
+    const selfBp: SongBlueprint | null = blueprintFromMeasured(((song.beats[0]?.meta ?? {}) as { measured?: MeasuredAnalysis }).measured);
+
     const job = await prisma.providerJob.create({
       data: { workspaceId, projectId: song.projectId, kind: 'music', provider: songEngine ?? 'suno', status: 'QUEUED', inputJson: { regenerate: true, songId: song.id } as never },
     });
@@ -660,7 +665,8 @@ export default async function songs(app: FastifyInstance) {
           genre, bpm: song.project.bpm ?? 103, withVocals: true, withStems: false, songEngine,
           lyrics: lyricsForSong,
           artistTone: song.project.artist.vocalTone, languages: song.project.artist.languages,
-          dnaTags: [...(dna.tags ?? []), ...styleHints.slice(0, 3), ...laneSteer],
+          dnaTags: [...(dna.tags ?? []), ...styleHints.slice(0, 3), ...laneSteer, ...(selfBp ? [`structure ${selfBp.sections.length} sections`] : [])],
+          blueprint: selfBp ?? undefined,
         },
       },
     });
