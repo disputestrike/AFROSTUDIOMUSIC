@@ -143,6 +143,7 @@ def analyze(audio_path, stems):
     drums_y, drums_q = load_stem("drums")
     bass_y, bass_q = load_stem("bass")
     other_y, other_q = load_stem("other")
+    vocals_y, vocals_q = load_stem("vocals")  # q<1.0 => no real stem => vocal fields stay unknown
 
     # ---------- SHARED SUBSTRATE: onsets + beat grid ----------
     onset_env = librosa.onset.onset_strength(y=y, sr=sr, hop_length=HOP, aggregate=np.median)
@@ -686,11 +687,62 @@ def analyze(audio_path, stems):
         return M(round(bars, 1), min(0.8, fd["confidence"] * rounding), "firstDrop/barLength")
     out["introLengthBars"] = safe(_intro_bars, "introBars")
 
-    # ---------- HONESTLY UNKNOWN (per honesty law) ----------
+    # ---------- vocal fields (v1.1 — need the vocals stem; full mix would false-positive
+    # on melodic synth/guitar, so without a real vocal stem these stay honestly unknown) ----------
+    def _vocal_presence():
+        if vocals_q < 1.0:
+            return UNK("vocalPresence:no-vocal-stem")
+        vr = librosa.feature.rms(y=vocals_y.astype(np.float32), hop_length=HOP_SPEC, frame_length=2048)[0]
+        if vr.max() <= 0:
+            return M(0.0, 0.8, "vocal-stem RMS (silent stem)")
+        rn = vr / vr.max()
+        thr = max(0.06, float(np.median(rn) * 0.5))  # adaptive floor above the noise bed
+        return M(round(float(np.mean(rn > thr)), 3), 0.85, "vocal-stem RMS>adaptive-floor fraction")
+    out["vocalPresenceRatio"] = safe(_vocal_presence, "vocalPresence")
+
+    def _sung_vs_spoken():
+        if vocals_q < 1.0:
+            return UNK("sungVsSpoken:no-vocal-stem")
+        vseg = vocals_y[: int(45 * sr)].astype(np.float32)
+        f0, vflag, vprob = librosa.pyin(vseg, fmin=80, fmax=1000, sr=sr, frame_length=2048, hop_length=512)
+        vmask = ~np.isnan(f0)
+        if int(vmask.sum()) < int(3 * sr / 512):  # <3s of voiced material
+            return UNK("sungVsSpoken:insufficient-voiced")
+        cents = 1200 * np.log2(np.clip(np.nan_to_num(f0, nan=100.0), 1e-6, None) / 100.0)
+        frame_dt = 512 / sr
+        # PRIMARY cue: voiced-RUN length. Sung notes are HELD (~0.3-1s); spoken syllables
+        # are short (~0.1-0.25s). SECONDARY: pitch-plateau fraction (held pitch vs drift).
+        runs = []
+        i = 0; N = len(f0)
+        while i < N:
+            if vmask[i]:
+                j = i
+                while j < N and vmask[j]:
+                    j += 1
+                runs.append((j - i) * frame_dt)
+                i = j
+            else:
+                i += 1
+        med_run = float(np.median(runs)) if runs else 0.0
+        run_score = max(0.0, min(1.0, (med_run - 0.15) / 0.30))  # 0.15s->0 .. 0.45s->1
+        plateau = 0; total = 0
+        for i in np.where(vmask)[0]:
+            lo = max(0, i - 2); hi = min(len(cents), i + 3)
+            seg = cents[lo:hi][vmask[lo:hi]]
+            if len(seg) >= 3:
+                total += 1
+                if (seg.max() - seg.min()) < 60:
+                    plateau += 1
+        plateau_frac = plateau / max(1, total)
+        sungness = 0.6 * run_score + 0.4 * plateau_frac
+        label = "sung" if sungness >= 0.55 else ("spoken" if sungness <= 0.30 else "mixed")
+        conf = min(0.8, 0.45 + abs(sungness - 0.42))
+        return M(label, conf, f"sungness={sungness:.2f} (medRun={med_run:.2f}s, plateau={plateau_frac:.2f})")
+    out["sungVsSpoken"] = safe(_sung_vs_spoken, "sungVsSpoken")
+
+    # ---------- HONESTLY UNKNOWN (per honesty law — proxies that can't measure their claim) ----------
     out["harmonicRichness"] = UNK("v1:chroma-proxy-overcounts-nonchord-tones(needs-human-harmony-validation)")
     out["hatRollPresence"] = UNK("v1:roll-vs-fast-hat-indistinguishable(needs-calibration)")
-    out["vocalPresenceRatio"] = UNK("v1:needs-vocal-stem-or-whisper-coverage")
-    out["sungVsSpoken"] = UNK("v1:needs-vocal-stem(pyin-on-mix-corrupted)")
     out["adLibDensity"] = UNK("permanent-v1:demucs-vocal-stem-mixes-lead+backing")
 
     out["engineOk"] = True
