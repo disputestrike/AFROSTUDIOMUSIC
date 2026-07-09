@@ -7,13 +7,13 @@
 import { spawn } from 'node:child_process';
 import { readFile, unlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join, dirname } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { join } from 'node:path';
 import { prisma } from '@afrohit/db';
 import { uploadBytes } from '../lib/storage';
 
 const PYTHON = process.env.PYTHON_BIN || 'python3';
-const SCRIPT = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'py', 'synth_material.py');
+// CJS worker (module: CommonJS) — resolve like lib/dsp.ts does: dist/processors -> ../../py
+const SCRIPT = join(__dirname, '..', '..', 'py', 'synth_material.py');
 
 export interface SynthMaterialPayload { workspaceId: string; genre: string; bpm?: number; roles?: string[] }
 
