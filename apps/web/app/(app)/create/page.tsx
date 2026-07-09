@@ -122,6 +122,7 @@ export default function CreatePage() {
   const [bpm, setBpm] = useState(103);
   const [langs, setLangs] = useState<string[]>(['pcm', 'en']);
   const [vibe, setVibe] = useState('');
+  const [songName, setSongName] = useState('');
   const [influence, setInfluence] = useState('');
   const [engine, setEngine] = useState<'suno' | 'ace_step' | 'minimax'>('minimax');
 
@@ -209,7 +210,7 @@ export default function CreatePage() {
     setPhase('producing');
     setStepIdx(0);
     try {
-      const title = vibe.trim().slice(0, 60) || `${genreLabel} ${mood}`;
+      const title = songName.trim().slice(0, 80) || vibe.trim().slice(0, 60) || `${genreLabel} ${mood}`;
       const project = await api.post<{ id: string }>('/projects', { title, genre, bpm });
       setStepIdx(1);
       const langNames = langs.map((l) => LANGS.find((x) => x.value === l)?.label ?? l).join('/');
@@ -217,7 +218,7 @@ export default function CreatePage() {
         ? ` In the VIBE/LANE of ${influence.trim()} (capture that energy, tempo and production feel — never copy their melodies/lyrics and never name them in the song).`
         : '';
       const fusionLine = fusion.length ? ` This is a GENRE FUSION: ${genreLabel} — both identities must be clearly audible, something new, never mush.` : '';
-      const theme = `${genreLabel} ${mood} song, ${bpm}bpm, ${langNames}${vibe ? `, ${vibe.trim()}` : ''}. Make it catchy and current.${fusionLine}${influenceLine}`;
+      const theme = `${songName.trim() ? `SONG TITLE: \"${songName.trim()}\" — the hook and lyric title MUST use this exact title. ` : ''}${genreLabel} ${mood} song, ${bpm}bpm, ${langNames}${vibe ? `, ${vibe.trim()}` : ''}. Make it catchy and current.${fusionLine}${influenceLine}`;
       // Fire the Drop Machine — it replies 202 + a job id INSTANTLY and works in
       // the background (holding a 3-minute HTTP request open dies on real
       // networks). We poll the drop job for the hook/lyrics result…
@@ -384,7 +385,7 @@ export default function CreatePage() {
   }
 
   async function openStudio() {
-    const title = vibe.trim().slice(0, 60) || `${genreLabel} ${mood}`;
+    const title = songName.trim().slice(0, 80) || vibe.trim().slice(0, 60) || `${genreLabel} ${mood}`;
     const project = await api.post<{ id: string }>('/projects', { title, genre, bpm });
     router.push(`/projects/${project.id}`);
   }
@@ -588,6 +589,8 @@ export default function CreatePage() {
           <button key={l.value} onClick={() => toggleLang(l.value)} className={`rounded-full px-3.5 py-1.5 text-sm ${langs.includes(l.value) ? 'bg-white/15 text-white shadow-[inset_0_0_0_1px_rgba(226,62,140,.4)]' : 'border border-white/10 text-slate-400 hover:bg-white/5'}`}>{l.label}</button>
         ))}</div>
       </div>
+      <label className="mb-1 block text-sm text-slate-300">Song name <span className="text-slate-500">(optional — leave blank and the studio names it from the vibe)</span></label>
+      <input value={songName} onChange={(e) => setSongName(e.target.value)} maxLength={80} placeholder="e.g. Midnight in Lekki" className="mb-5 w-full rounded-xl border border-slate-700 bg-slate-950 px-4 py-3 text-slate-100 placeholder:text-slate-600" />
       <div className="mt-6"><div className="mb-2 text-sm text-slate-400">Vibe / what it’s about (optional)</div>
         <input value={vibe} onChange={(e) => setVibe(e.target.value)} placeholder="e.g. rainy-day love, chant-along hook, drive-through-Lekki energy" className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2.5 text-sm" />
       </div>

@@ -154,7 +154,8 @@ SECTION MAP: ${sectionMap || 'not measured yet'}.\nParse the artist's instructio
 - {"kind":"stem_fx","stem":"vocals|drums|bass|other","fx":"reverb|eq_low|eq_high|gain","amount":0-1}  // fx on ONE stem only
 - {"kind":"vocal_drop","fromS":45,"toS":60}                  // silence ONLY the vocal in a region (open a verse)
 - {"kind":"resing_section","index":3}                        // re-play a section: FRESH beat under the ORIGINAL vocal
-If nothing fits, op:null and coach them in reply (mixer, versions, adjust exist). Return {"reply","op"} ONLY.`,
+- {"kind":"rename","title":"Midnight in Lekki"}              // rename the song
+If nothing fits, op:null and coach them in reply (mixer, versions, adjust exist). Return {"reply","op"} ONLY. reply is UNDER 15 WORDS — no preamble, no explaining, just the move.`,
       user: message,
       maxTokens: 400,
     }).catch(() => ({ reply: 'I could not parse that — try "add a fill at 1:20" or "make it 1.1x faster".', op: null as null }));
@@ -167,6 +168,13 @@ If nothing fits, op:null and coach them in reply (mixer, versions, adjust exist)
       const v = req.headers[h]; if (typeof v === 'string') headers[h] = v;
     }
     headers['content-type'] = 'application/json';
+
+    if (op.kind === 'rename') {
+      const newTitle = String((op as { title?: unknown }).title ?? '').trim().slice(0, 80);
+      if (!newTitle) return { reply: 'Give me the name.', dispatched: null };
+      await prisma.song.update({ where: { id: song.id }, data: { title: newTitle } });
+      return { reply: `Renamed: “${newTitle}”.`, dispatched: 'rename' };
+    }
 
     if (op.kind === 'transform' || op.kind === 'remaster' || op.kind === 'regen_beat') {
       const d = op.kind === 'transform'
