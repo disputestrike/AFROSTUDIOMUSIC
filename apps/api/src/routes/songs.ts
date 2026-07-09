@@ -666,7 +666,7 @@ export default async function songs(app: FastifyInstance) {
           genre, bpm: song.project.bpm ?? 103, withVocals: true, withStems: false, songEngine,
           lyrics: lyricsForSong,
           artistTone: song.project.artist.vocalTone, languages: song.project.artist.languages,
-          dnaTags: [...(dna.tags ?? []), ...styleHints.slice(0, 3), ...laneSteer, ...(selfBp ? [`structure ${selfBp.sections.length} sections`] : [])],
+          dnaTags: [`language: strictly ${(song.project.artist.languages ?? []).join('/') || 'en'}`, ...(dna.tags ?? []), ...styleHints.slice(0, 3), ...laneSteer, ...(selfBp ? [`structure ${selfBp.sections.length} sections`] : [])].slice(0, 10),
           blueprint: selfBp ?? undefined,
         },
       },

@@ -91,7 +91,7 @@ export async function enrichLyricsForVocals(opts: {
       maxTokens: 3_000,
     });
     const out: EnrichedVocal | null = out0
-      ? { ...out0, enrichedLyrics: scrubProductionJargon(out0.enrichedLyrics ?? '', opts.genre), styleTags: [...new Set([...(out0.styleTags ?? []), 'drum fill into every hook and section change', 'natural breaths and human imperfections', 'relaxed human timing, slightly behind the beat', 'raw vocal feel, minimal pitch correction', ...(isRap ? ['rap delivery, rhythmic flow on verses'] : [])])] }
+      ? { ...out0, enrichedLyrics: scrubProductionJargon(out0.enrichedLyrics ?? '', opts.genre), styleTags: [...new Set([...(out0.styleTags ?? []), 'drum fill into every hook and section change', 'human feel: natural breaths, relaxed timing, minimal tuning', ...(isRap ? ['rap delivery, rhythmic flow on verses'] : [])])] }
       : out0;
     if (!out?.enrichedLyrics) return null;
     return { enrichedLyrics: out.enrichedLyrics, styleTags: out.styleTags ?? [] };
