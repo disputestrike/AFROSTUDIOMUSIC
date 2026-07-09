@@ -287,20 +287,20 @@ def analyze(audio_path, stems):
         if not grid_ok or len(kick_t) < 8:
             return UNK("fourOnFloor:no-grid-or-kicks")
         w = 0.12 * sigma_beat
-        occupied = np.array([1.0 if np.any(np.abs(kick_t - bt) <= w) else 0.0 for bt in beat_times])
-        beat_hit = float(occupied.mean())  # fraction of beats carrying a kick — the robust signal
-        # Corroborate with beat-IN-BAR occupancy (index mod 4): a true four-on-floor
-        # fills ALL four positions (phase-invariant — no fragile 16th-slot mapping); a
-        # broken/syncopated kick (typical afrobeats) leaves a position under-occupied.
-        pos_occ = []
-        for pos in range(4):
-            idxs = [i for i in range(n_beats) if i % 4 == pos]
-            if idxs:
-                pos_occ.append(float(np.mean([occupied[i] for i in idxs])))
-        pos_min = min(pos_occ) if pos_occ else 0.0
-        is4 = bool(beat_hit >= 0.85 and pos_min >= 0.6)
-        conf = grid_conf * max(0.0, min(1.0, (beat_hit - 0.5) / 0.4)) if is4 else grid_conf * 0.7
-        return M(is4, conf, f"kick beatHitRate={beat_hit:.2f} posMin={pos_min:.2f}")
+        # PHASE-INDEPENDENT: librosa's beat tracker can lock onto the OFF-beat when the
+        # off-beat pulse (e.g. house open hats) is strong, putting the grid a half-beat
+        # off the kicks. So slide the grid across one whole beat and take the phase that
+        # best covers the kicks — a true four-on-floor has SOME phase where a kick sits
+        # on nearly every beat; a broken/syncopated kick (afrobeats) never does.
+        best_hit = 0.0
+        for ph in np.linspace(-0.5, 0.5, 21) * sigma_beat:
+            grid = beat_times + ph
+            hit = float(np.mean([1.0 if np.any(np.abs(kick_t - g) <= w) else 0.0 for g in grid]))
+            best_hit = max(best_hit, hit)
+        kicks_per_beat = len(kick_t) / max(1, n_beats)
+        is4 = bool(best_hit >= 0.85 and kicks_per_beat >= 0.8)
+        conf = grid_conf * max(0.0, min(1.0, (best_hit - 0.5) / 0.4)) if is4 else grid_conf * 0.7
+        return M(is4, conf, f"kick coverage(best-phase)={best_hit:.2f} kicks/beat={kicks_per_beat:.2f}")
     out["fourOnFloor"] = safe(_four_on_floor, "fourOnFloor")
 
     # ---------- microtiming (signed ms behind/ahead; grid-independent) ----------
@@ -461,37 +461,61 @@ def analyze(audio_path, stems):
             opb = len(ons) / bars
             crest = float(np.max(env) / (np.mean(env) + 1e-9)) if len(env) else 0.0
             P_perc = max(0.0, min(1.0, (min(opb, 8) / 8.0) * 0.6 + min(1.0, crest / 8.0) * 0.4))
-            # pitch + glide via pyin
-            f0, vflag, vprob = librosa.pyin(cyseg, fmin=30, fmax=175, sr=sr, frame_length=4096, hop_length=HOP_SPEC)
+            # pitch + glide via pyin. FINE hop (512 = 11.6ms) so a ~30-150ms portamento
+            # is resolved by ~3-13 frames (HOP_SPEC=46ms only gave ~2 — too coarse to see
+            # the glide contour). Bound the segment to keep pyin runtime sane.
+            from scipy.signal import medfilt
+            PYIN_HOP = 512
+            pseg = cy[: int(30 * sr)]  # bound runtime (fine hop + long frame is costly)
+            # frame_length=4096 (~93ms) is REQUIRED to track 30-80Hz sub-bass — a shorter
+            # window spans too few periods and pyin reports the log drum as unvoiced.
+            f0, vflag, vprob = librosa.pyin(pseg, fmin=30, fmax=175, sr=sr, frame_length=4096, hop_length=PYIN_HOP)
             vp = np.nan_to_num(vprob)
-            voiced = np.nan_to_num(f0)
-            vmask = voiced > 0
-            if vmask.sum() > 4:
-                cents_v = 1200 * np.log2(np.clip(voiced[vmask], 1e-6, None) / 55.0)
+            voiced_mask = ~np.isnan(f0)
+            vmask = voiced_mask
+            if voiced_mask.sum() > 8:
+                cents = np.where(voiced_mask, 1200 * np.log2(np.clip(np.nan_to_num(f0, nan=55.0), 1e-6, None) / 55.0), np.nan)
+                cents_v = cents[voiced_mask]
                 semitone_range = (np.percentile(cents_v, 90) - np.percentile(cents_v, 10)) / 100.0
                 P_pitch = float(np.mean(vp)) * max(0.0, min(1.0, semitone_range / 7.0))
-                # portamento: contiguous monotonic runs >=60 cents over ~30-150ms
-                from scipy.signal import medfilt
-                cf = medfilt(np.nan_to_num(1200 * np.log2(np.clip(voiced, 1e-6, None) / 55.0)), 3)
-                dif = np.diff(cf)
-                glides = 0; trans = 0; i = 1
-                frame_dt = HOP_SPEC / sr
-                while i < len(dif):
-                    if abs(dif[i]) > 5:  # a transition begins
-                        jseg = i; span = 0.0; sign = np.sign(dif[i]); mono = True
-                        while jseg < len(dif) and abs(dif[jseg]) > 5:
-                            if np.sign(dif[jseg]) != sign:
-                                mono = False
-                            span += dif[jseg]; jseg += 1
-                        trans += 1
-                        dt = (jseg - i) * frame_dt
-                        if mono and 60 <= abs(span) <= 1100 and 0.03 <= dt <= 0.15:
-                            glides += 1
-                        i = jseg
-                    else:
+                # PORTAMENTO: walk each CONTIGUOUS VOICED RUN (a note) and look for a
+                # monotonic pitch rise >=60 cents spanning ~20-200ms. Crucially we never
+                # diff across unvoiced gaps (which would fabricate huge transitions).
+                frame_dt = PYIN_HOP / sr
+                notes = 0; glides = 0
+                N = len(f0); i = 0
+                while i < N:
+                    if not voiced_mask[i]:
                         i += 1
-                glide_frac = glides / max(1, trans)
-                glide_rate = glides / max(1e-6, len(cyseg) / sr)
+                        continue
+                    j = i
+                    while j < N and voiced_mask[j]:
+                        j += 1
+                    run = medfilt(cents[i:j], 3) if (j - i) >= 3 else cents[i:j]
+                    notes += 1
+                    # A portamento is a CONTIGUOUS RISE that ENDS at a plateau. Ride up
+                    # only while clearly rising (>2 cents/frame) and STOP at the plateau —
+                    # otherwise dt spans the whole sustained note and the glide is rejected.
+                    # Require a plateau afterward (>=2 roughly-flat frames) so a pyin
+                    # attack-ramp that never settles isn't counted.
+                    k = 1; found = False
+                    while k < len(run):
+                        if run[k] - run[k - 1] > 2:            # a rise starts
+                            s = k - 1
+                            while k < len(run) and run[k] - run[k - 1] > 2:
+                                k += 1
+                            span = run[k - 1] - run[s]; dt = (k - 1 - s) * frame_dt
+                            tail = run[k:k + 3]
+                            plateaued = len(tail) >= 2 and float(np.max(np.abs(np.diff(tail)))) < 25
+                            if span >= 60 and 0.02 <= dt <= 0.25 and plateaued:
+                                found = True; break
+                        else:
+                            k += 1
+                    if found:
+                        glides += 1
+                    i = j
+                glide_frac = glides / max(1, notes)
+                glide_rate = glides / max(1e-6, len(pseg) / sr)
                 P_glide = max(0.0, min(1.0, C["w1"] * glide_frac + C["w2"] * glide_rate))
                 pyin_rel = float(np.mean(vp[vp > 0])) if (vp > 0).any() else 0.3
             else:
