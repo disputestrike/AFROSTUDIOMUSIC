@@ -7,7 +7,7 @@ import { probeDurationS, measureAudioQuality, ffmpegAvailable, master as ffmpegM
 import { assessLaneCompliance, loadLaneProfile } from '../lib/lane-assess';
 import { overlayFills } from '../lib/fills';
 import { measureAudio, dspAvailable } from '../lib/dsp';
-import { planFills, scoreLaneCompliance, type LaneComplianceScore } from '@afrohit/shared';
+import { planFills, scoreLaneCompliance, type LaneComplianceScore, type MeasuredAnalysis } from '@afrohit/shared';
 
 /** Minimum measured coverage before a lane score is allowed to influence ranking. */
 const MIN_COVERAGE_FOR_RANKING = 0.5;
@@ -181,16 +181,22 @@ export async function processMusic(p: MusicPayload) {
     // "make it 20x better" mean "more in-lane", not just "louder". Fail-open: no
     // profile / dsp down / thin coverage collapses ranking to the old qcScore order.
     const laneProfile = await loadLaneProfile(p.workspaceId, p.input.genre).catch(() => null);
-    const earUp = process.env.LANE_ASSESS !== '0' && !!laneProfile && (await dspAvailable());
+    // Measure every candidate when the ear is up — even with NO profile yet, so the raw
+    // MeasuredAnalysis can seed the self-training library (anti-pattern #9: a library
+    // that grows without storing DSP teaches buildLaneProfile nothing). Lane RANKING
+    // only engages once a profile exists.
+    const dspUp = process.env.LANE_ASSESS !== '0' && (await dspAvailable());
     const scored = await Promise.all(
       ok.map(async (r) => {
         const url = r.output?.mainAudioUrl;
         const qc = url ? await measureAudioQuality(url).catch(() => null) : null;
+        let measured: MeasuredAnalysis | null = null;
         let lane: LaneComplianceScore | null = null;
-        if (earUp && url) {
-          lane = await measureAudio(url).then((m) => (m.engineOk ? scoreLaneCompliance(m, laneProfile!) : null)).catch(() => null);
+        if (dspUp && url) {
+          const m = await measureAudio(url).catch(() => null);
+          if (m?.engineOk) { measured = m; if (laneProfile) lane = scoreLaneCompliance(m, laneProfile); }
         }
-        return { r, qc, lane };
+        return { r, qc, lane, measured };
       })
     );
     scored.sort(rankTakes);
@@ -323,6 +329,10 @@ export async function processMusic(p: MusicPayload) {
               dnaTags: p.input.dnaTags ?? [],
               vibePrompt: (p.input.vibePrompt ?? '').slice(0, 500),
               qc: quality,
+              // Persist the winner's full MeasuredAnalysis so buildLaneProfile() LEARNS
+              // from our own good records — the library compounds into real lane data,
+              // not just tags. (anti-pattern #9.)
+              measured: winner.measured ?? undefined,
             } as never,
             summary: `Generated ${p.input.genre ?? ''} record (${Math.round(quality?.loudnessRangeLra ?? 0)}LU range, crest ${quality?.crestFactorDb ?? '—'}dB) on ${adapter.name}: ${(p.input.dnaTags ?? []).slice(0, 6).join(', ')}`,
           },
