@@ -51,8 +51,15 @@ export default async function zap(app: FastifyInstance) {
       void prisma.analyticsEvent
         .create({ data: { workspaceId, name: 'zap.identify', properties: { title: out.match.title, artist: out.match.artist, genre: out.match.genre } as never } })
         .catch(() => {});
+      return { match: out.match };
     }
-    return { match: out.match };
+    // AudD heard the clip but matched nothing (common on short/quiet captures, live
+    // versions, or very new/underground tracks). Tell the user WHY + how to fix it,
+    // instead of a silent "no result" that reads as "it didn't work".
+    return {
+      match: null,
+      hint: 'Heard the clip but could not identify it. Capture ~10-15s of a clear, loud part (ideally the hook), reduce background noise, or upload the audio file directly. Very new/underground tracks may not be in the recognition database.',
+    };
   });
 
   /** LEARN — extract the identified song's UNCOPYRIGHTABLE CRAFT into the lake.

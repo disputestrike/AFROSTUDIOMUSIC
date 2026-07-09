@@ -42,6 +42,7 @@ export default function ZapPage() {
   const [history, setHistory] = useState<ZapHist[]>([]);
   const [phase, setPhase] = useState<'idle' | 'listening' | 'identifying' | 'result' | 'nomatch' | 'error'>('idle');
   const [match, setMatch] = useState<Match | null>(null);
+  const [noMatchHint, setNoMatchHint] = useState('');
   const [err, setErr] = useState('');
   const [secs, setSecs] = useState(0);
   const [learn, setLearn] = useState<'idle' | 'learning' | 'done'>('idle');
@@ -97,11 +98,12 @@ export default function ZapPage() {
     setLearned(null);
     try {
       const { key } = await api.uploadAudioDirect(blob, 'reference');
-      const r = await api.post<{ match: Match | null }>('/zap/identify', { key });
+      const r = await api.post<{ match: Match | null; hint?: string }>('/zap/identify', { key });
       if (r.match) {
         setMatch(r.match);
         setPhase('result');
       } else {
+        setNoMatchHint(r.hint ?? '');
         setPhase('nomatch');
       }
     } catch (e) {
@@ -218,7 +220,7 @@ export default function ZapPage() {
       </div>
 
       {err && <div className="mt-6 rounded-xl border border-red-900/60 bg-red-950/40 p-3 text-sm text-red-300">{err}</div>}
-      {phase === 'nomatch' && <div className="mt-6 rounded-xl border border-white/10 bg-white/5 p-3 text-sm text-slate-300">Couldn’t recognize that one — try again with the song louder/clearer, or upload a cleaner clip.</div>}
+      {phase === 'nomatch' && <div className="mt-6 rounded-xl border border-white/10 bg-white/5 p-3 text-sm text-slate-300">{noMatchHint || 'Couldn’t recognize that one — try again with the song louder/clearer, or upload a cleaner clip.'}</div>}
 
       {/* Result */}
       {phase === 'result' && match && (
