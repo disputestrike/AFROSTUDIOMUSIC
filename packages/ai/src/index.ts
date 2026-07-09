@@ -16,4 +16,5 @@ export * from './stems';
 export * from './hit-predictor';
 export * from './lexicon-seed';
 export * from './lexicon-expansion';
+export * from './lexicon-sa';
 export * from './chat-claude';

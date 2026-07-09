@@ -147,10 +147,14 @@ async function bootstrap() {
   const port = Number(process.env.PORT ?? 4000);
   await app.listen({ port, host: '0.0.0.0' });
   app.log.info(`API listening on :${port}`);
-  // Seed the shared word bank once (idempotent; skips if already populated).
-  void import('./lib/lexicon').then(({ seedLexiconIfEmpty }) => seedLexiconIfEmpty())
-    .then((n) => { if (n) app.log.info(`lexicon seeded: ${n} entries`); })
-    .catch((err) => app.log.warn({ err }, 'lexicon seed skipped'));
+  // Seed the shared word bank once (idempotent; skips if already populated), then
+  // assert coverage — a lane whose prescribed languages are thin must not ship
+  // un-reviewed (§11). Fails LOUDLY at boot, never quietly in the lyrics.
+  void import('./lib/lexicon').then(async ({ seedLexiconIfEmpty, assertLexiconCoverage }) => {
+    const n = await seedLexiconIfEmpty();
+    if (n) app.log.info(`lexicon seeded: ${n} entries`);
+    await assertLexiconCoverage(app.log);
+  }).catch((err) => app.log.warn({ err }, 'lexicon seed skipped'));
 }
 
 bootstrap().catch((err) => {

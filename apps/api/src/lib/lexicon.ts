@@ -1,5 +1,5 @@
 import { prisma } from '@afrohit/db';
-import { SEED_LEXICON, EXPANSION_LEXICON } from '@afrohit/ai';
+import { SEED_LEXICON, EXPANSION_LEXICON, SA_LEXICON } from '@afrohit/ai';
 
 /**
  * THE WORD BANK — thousands of authentic African/diaspora terms the writer
@@ -28,7 +28,7 @@ const LANG_BUCKETS: Record<string, string[]> = {
 /** Seed the shared library once. Cheap: skips entirely if already populated. */
 export async function seedLexiconIfEmpty(): Promise<number> {
   try {
-    const ALL = [...SEED_LEXICON, ...EXPANSION_LEXICON];
+    const ALL = [...SEED_LEXICON, ...EXPANSION_LEXICON, ...SA_LEXICON];
     const have = await prisma.lexiconEntry.count({ where: { source: { in: ['seed', 'research'] } } });
     if (have >= ALL.length * 0.95) return 0; // already seeded
     let n = 0;
@@ -81,6 +81,25 @@ export async function lexiconStats(workspaceId: string) {
     byLanguage: byLang.map((l) => ({ language: l.language, count: l._count })).sort((a, b) => b.count - a.count),
     byCategory: byCat.map((c) => ({ category: c.category, count: c._count })).sort((a, b) => b.count - a.count),
   };
+}
+
+/**
+ * §11 boot assertion — log coverage per prescribed language and warn LOUDLY about
+ * "thin" lanes (< 20 terms). A song primarily in a thin language must not ship
+ * un-reviewed; the REVIEW_LANGS release gate already enforces that. This makes the
+ * gap visible at boot instead of surfacing as wrong-language lyrics.
+ */
+export async function assertLexiconCoverage(log: { info: (m: string) => void; warn: (m: string) => void }): Promise<void> {
+  try {
+    const byLang = await prisma.lexiconEntry.groupBy({ by: ['language'], where: { workspaceId: null }, _count: true });
+    const counts = new Map(byLang.map((l) => [l.language, l._count]));
+    const PRESCRIBED = ['yo', 'ig', 'ha', 'pcm', 'en', 'zu', 'xh', 'st', 'tn', 'tsotsitaal'];
+    log.info(`lexicon coverage: ${PRESCRIBED.map((l) => `${l}=${counts.get(l) ?? 0}`).join(' ')}`);
+    const thin = PRESCRIBED.filter((l) => (counts.get(l) ?? 0) < 20);
+    if (thin.length) log.warn(`lexicon THIN languages (<20 terms): ${thin.join(', ')} — songs primarily in these are BLOCKED from release until native-reviewed. Seed to parity with a native speaker.`);
+  } catch {
+    /* lexicon table may not exist on first boot */
+  }
 }
 
 // Which lexicon categories matter for a given mood — so the palette is relevant.
