@@ -150,11 +150,26 @@ export default function CatalogGrid({ initial }: { initial: SongRow[] }) {
   async function makeItBigger(s: SongRow) {
     setBusy(`${s.id}:bigger`);
     try {
-      const res = await api.post<{ whatChanged: string[] }>(`/songs/${s.id}/make-it-bigger`, {});
+      const res = await api.post<{ whatChanged: string[]; jobId?: string }>(`/songs/${s.id}/make-it-bigger`, {});
       // The old score no longer describes this song — clear it locally too
       // (the gate re-scores automatically once the new render lands).
       setSongs((prev) => prev.map((x) => (x.id === s.id ? { ...x, hitScore: null, viralScore: null, versionLabel: 'bigger (A&R notes applied)' } : x)));
-      flash(`A&R notes implemented — re-singing the bigger version (auto-masters + re-scores). Changed: ${(res.whatChanged ?? []).slice(0, 2).join('; ') || 'see lyrics'}`);
+      flash(`A&R notes implemented — re-singing the bigger version. Changed: ${(res.whatChanged ?? []).slice(0, 2).join('; ') || 'see lyrics'}`);
+      // FOLLOW THE RENDER — the silent gap that ate takes during the credit
+      // drought: the sync rewrite succeeded, the downstream re-sing died, and
+      // nobody was told. Now the button watches its own job to the end.
+      if (res.jobId) {
+        void (async () => {
+          for (let i = 0; i < 120; i++) {
+            await new Promise((r) => setTimeout(r, 5000));
+            try {
+              const j = await api.get<{ status: string; errorJson?: { message?: string } | null }>(`/jobs/${res.jobId}`);
+              if (j.status === 'SUCCEEDED') { flash(`Bigger version LANDED for “${s.title}” — compare it in Versions.`); return; }
+              if (j.status === 'FAILED') { flash(`Bigger re-sing FAILED for “${s.title}” — ${j.errorJson?.message ?? 'no reason recorded'}.`); return; }
+            } catch { /* blip */ }
+          }
+        })();
+      }
     } catch (e) { flash((e as Error).message || 'Make-it-bigger failed'); }
     finally { setBusy(''); }
   }
