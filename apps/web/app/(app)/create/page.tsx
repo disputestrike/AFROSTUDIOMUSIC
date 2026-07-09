@@ -86,9 +86,9 @@ export default function CreatePage() {
       try {
         for (let i = 0; i < 200; i++) {
           const id = renderJobId ?? dropJobId; if (!id) break;
-          let j: { status: string; outputJson?: { drop?: Array<{ jobId?: string; projectId?: string; title?: string; hookText?: string; score: number | null }> } };
+          let j: { status: string; error?: string | null; outputJson?: { drop?: Array<{ jobId?: string; projectId?: string; title?: string; hookText?: string; score: number | null }> } };
           try { j = await api.get(`/jobs/${id}`); } catch { await sleep(6000); continue; }
-          if (j.status === 'FAILED') { setErr('That render failed — start another take.'); setPhase('error'); clearProduce(); return; }
+          if (j.status === 'FAILED') { setErr(`That render failed — ${j.error ?? 'no reason recorded'}. Start another take.`); setPhase('error'); clearProduce(); return; }
           if (j.status === 'SUCCEEDED') {
             if (!renderJobId && dropJobId) {
               const item = j.outputJson?.drop?.[0];
@@ -258,11 +258,12 @@ export default function CreatePage() {
       // the Catalog rather than showing a scary error for a song that IS finishing.
       let url: string | null = null;
       let renderFailed = false;
+      let lastJobError: string | null = null;
       netFails = 0;
       for (let i = 0; i < 144; i++) {
         await sleep(5000);
-        let job: { status: string };
-        try { job = await api.get(`/jobs/${item.jobId}`); netFails = 0; }
+        let job: { status: string; error?: string | null };
+        try { job = await api.get(`/jobs/${item.jobId}`); lastJobError = job.error ?? lastJobError; netFails = 0; }
         catch { if (++netFails >= 24) break; continue; } // network blip → retry, render keeps going
         if (job.status === 'SUCCEEDED') {
           try {
@@ -273,7 +274,7 @@ export default function CreatePage() {
         }
         if (job.status === 'FAILED') { renderFailed = true; break; }
       }
-      if (renderFailed) throw new Error('The render failed — try again.');
+      if (renderFailed) throw new Error(`The render failed — ${lastJobError ?? 'no reason recorded'}. Try again.`);
       if (!url) {
         // Not a failure — the render is just still cooking. Send them to the
         // Catalog where it lands, instead of the red "Couldn't finish that one".
@@ -352,11 +353,12 @@ export default function CreatePage() {
       saveProduce({ renderJobId: r.jobId, projectId: project.id, title: 'Your song', hook: '', score: null });
       let url: string | null = null;
       let renderFailed = false;
+      let lastJobError: string | null = null;
       let netFails = 0;
       for (let i = 0; i < 144; i++) {
         await sleep(5000);
-        let job: { status: string };
-        try { job = await api.get(`/jobs/${r.jobId}`); netFails = 0; }
+        let job: { status: string; error?: string | null };
+        try { job = await api.get(`/jobs/${r.jobId}`); lastJobError = job.error ?? lastJobError; netFails = 0; }
         catch { if (++netFails >= 24) break; continue; } // network blip → retry, render keeps going
         if (job.status === 'SUCCEEDED') {
           try {

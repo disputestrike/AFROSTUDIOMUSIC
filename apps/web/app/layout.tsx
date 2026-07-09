@@ -6,9 +6,10 @@ const anton = Anton({ weight: '400', subsets: ['latin'], variable: '--font-displ
 const inter = Inter({ subsets: ['latin'], variable: '--font-sans', display: 'swap' });
 const grotesk = Space_Grotesk({ subsets: ['latin'], variable: '--font-grotesk', display: 'swap' });
 
+export const viewport = { themeColor: '#0B0F19' };
+
 export const metadata: Metadata = {
   manifest: '/manifest.json',
-  themeColor: '#0B0F19',
   title: 'AfroHit Studio — the AI production house',
   description:
     'Bring your beat, finish the whole record. Hooks, lyrics, vocals, industry mastering, cover art & release — one AI production house built for African and diaspora artists.',
