@@ -52,6 +52,7 @@ const TS: Array<[string, string]> = [
   ['P1  LaneProfile', 'test-lane-profile.ts'],
   ['P2  Compliance + drift', 'test-lane-compliance.ts'],
   ['P3  RepairPlanner', 'test-lane-repair.ts'],
+  ['P4  Genre signatures', 'test-genre-signatures.ts'],
   ['P5  Material selector', 'test-lane-material.ts'],
   ['P5  Fill insertion', 'test-fills.ts'],
   ['P6  Release gate', 'test-release-gate.ts'],

@@ -12,15 +12,8 @@
  * owns the brief; those own the feedback.
  */
 import { soundBrief, blendSoundBrief } from '@afrohit/ai';
+import { genreSignature } from '@afrohit/shared';
 
-/** Signature instruments FRONT-LOADED per lane — engines weight early tags
- *  hardest, and "amapiano without piano" proved the prose alone doesn't land. */
-const SIGNATURE_TAGS: Record<string, string[]> = {
-  amapiano: ['jazzy sustained piano chords', 'soulful amapiano keys', 'log drum bassline'],
-  gospel: ['rich gospel piano and organ'],
-  afro_gospel: ['gospel keys and organ'],
-  highlife: ['sweet highlife guitar lines'],
-};
 
 export interface LaneDna {
   brief: string;

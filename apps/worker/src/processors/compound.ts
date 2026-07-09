@@ -14,7 +14,7 @@
  */
 import { prisma } from '@afrohit/db';
 import { generateJson, tavilySearchRaw } from '@afrohit/ai';
-import { LANGUAGES } from '@afrohit/shared';
+import { LANGUAGES, genreSignature } from '@afrohit/shared';
 import { enqueueJob } from '../lib/enqueue';
 import { assessLaneCompliance } from '../lib/lane-assess';
 import { processSynthMaterial } from './synth-material';
@@ -292,7 +292,6 @@ export async function processGlossPass(opts?: { limit?: number }): Promise<void>
 /** Every genre in active use keeps a full SIGNATURE KIT on the shelf — including
  *  the FILL, whose absence silently disabled fill overlays on every rendered
  *  song ("no drum fills anywhere" — Benjamin). Synth-forged, owned, seconds. */
-const KIT_ROLES = ['log_drum', 'percussion', 'bass', 'chords', 'fill'];
 export async function ensureSignatureKits(): Promise<void> {
   try {
     const projects = await prisma.project.findMany({ orderBy: { createdAt: 'desc' }, take: 40, select: { workspaceId: true, genre: true } });
@@ -303,7 +302,7 @@ export async function ensureSignatureKits(): Promise<void> {
       if (seen.has(key) || seen.size >= 6) continue;
       seen.add(key);
       const have = new Set((await prisma.materialAsset.findMany({ where: { workspaceId: pr.workspaceId, genre: pr.genre }, select: { role: true } })).map((m) => m.role));
-      const missing = KIT_ROLES.filter((r) => !have.has(r));
+      const missing = genreSignature(pr.genre).kitRoles.filter((r) => !have.has(r));
       if (missing.length) {
         console.log(`[kits] ${pr.genre}: forging ${missing.join('+')}`);
         await processSynthMaterial({ workspaceId: pr.workspaceId, genre: pr.genre, roles: missing });
@@ -312,10 +311,35 @@ export async function ensureSignatureKits(): Promise<void> {
   } catch (err) { console.warn('[kits] failed (non-fatal):', (err as Error)?.message); }
 }
 
+/** REPORT CARD — the system tests its own output nightly and tells on itself:
+ *  per genre, average identity compliance of recent takes vs the lane profile,
+ *  worst dimensions named. No human ear required to FIND the gaps. */
+export async function processReportCard(): Promise<void> {
+  try {
+    const beats = await prisma.beatAsset.findMany({ orderBy: { createdAt: 'desc' }, take: 60, select: { meta: true, project: { select: { genre: true } } } });
+    const byGenre = new Map<string, Array<Record<string, unknown>>>();
+    for (const b of beats) {
+      const g = b.project?.genre; const meta = (b.meta ?? {}) as { compliance?: { overall?: number; dimensions?: Array<{ key: string; score: number; identity?: boolean }> } };
+      if (!g || !meta.compliance?.dimensions) continue;
+      const a = byGenre.get(g) ?? []; a.push(meta.compliance as never); byGenre.set(g, a);
+    }
+    for (const [g, rows] of byGenre) {
+      const avg = Math.round(rows.reduce((x, r) => x + Number((r as { overall?: number }).overall ?? 0), 0) / rows.length);
+      const worst = new Map<string, number>();
+      for (const r of rows) for (const d of ((r as { dimensions?: Array<{ key: string; score: number; identity?: boolean }> }).dimensions ?? []))
+        if (d.identity && d.score < 60) worst.set(d.key, (worst.get(d.key) ?? 0) + 1);
+      const gaps = [...worst.entries()].sort((a2, b2) => b2[1] - a2[1]).slice(0, 3).map(([k, n]) => `${k}(x${n})`).join(', ');
+      console.log(`[report-card] ${g}: avg ${avg}/100 over ${rows.length} takes${gaps ? ` — recurring identity gaps: ${gaps}` : ' — no recurring identity gaps'}`);
+    }
+    if (!byGenre.size) console.log('[report-card] no scored takes yet');
+  } catch (err) { console.warn('[report-card] failed (non-fatal):', (err as Error)?.message); }
+}
+
 /** Roadmap #3 — the nightly compounding job. Cost-capped by the batch limits. */
 export async function processNightlyCompound(): Promise<void> {
   console.log('[nightly-compound] start');
   await ensureSignatureKits();
+  await processReportCard();
   await processMeasureBackfill({ refLimit: 10, beatLimit: 4 });
   await processMineLexicon({ refLimit: 4 });
   await processLexiconResearch({ queries: 6 });

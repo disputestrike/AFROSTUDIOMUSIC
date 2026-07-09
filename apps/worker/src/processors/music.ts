@@ -7,7 +7,7 @@ import { probeDurationS, measureAudioQuality, ffmpegAvailable, master as ffmpegM
 import { assessLaneCompliance, loadLaneProfile } from '../lib/lane-assess';
 import { overlayFills } from '../lib/fills';
 import { measureAudio, dspAvailable } from '../lib/dsp';
-import { planFills, scoreLaneCompliance, engineAdequacy, structureMatch, blueprintFromMeasured, type LaneComplianceScore, type MeasuredAnalysis, type SongBlueprint } from '@afrohit/shared';
+import { genreSignature, planFills, scoreLaneCompliance, engineAdequacy, structureMatch, blueprintFromMeasured, type LaneComplianceScore, type MeasuredAnalysis, type SongBlueprint } from '@afrohit/shared';
 
 /** Minimum measured coverage before a lane score is allowed to influence ranking. */
 const MIN_COVERAGE_FOR_RANKING = 0.5;
@@ -250,7 +250,7 @@ export async function processMusic(p: MusicPayload) {
           where: { workspaceId: p.workspaceId, role: 'fill', OR: [{ genre: p.input.genre ?? undefined }, { genre: null }] },
           orderBy: { createdAt: 'desc' },
         });
-        const placements = fillMat ? planFills(beatBpm, durationS, null) : [];
+        const placements = fillMat ? planFills(beatBpm, durationS, null, genreSignature(p.input.genre).fillBars) : [];
         if (fillMat && placements.length) {
           const [songBytes, fillBytes] = await Promise.all([downloadToBuffer(ingestedMain), downloadToBuffer(fillMat.url)]);
           const mixed = await overlayFills(songBytes, fillBytes, placements.map((f) => f.atS));

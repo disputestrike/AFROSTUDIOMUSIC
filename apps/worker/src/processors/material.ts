@@ -4,7 +4,7 @@ import { markFailed, markRunning, markSucceeded } from '../lib/jobs';
 import { downloadToBuffer, uploadBytes, ingestRemoteFile } from '../lib/storage';
 import { trimToLoop, assembleBeat, measureAudioQuality, type AssemblyLayer, type AssemblySection } from '../lib/ffmpeg';
 import { overlayFills } from '../lib/fills';
-import { planFills } from '@afrohit/shared';
+import { genreSignature, planFills } from '@afrohit/shared';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -191,7 +191,7 @@ export async function processAssembleBeat(p: AssemblePayload) {
           let cum = 0;
           for (const s of sections) { cum += s.bars; boundaries.push(cum * secPerBar); }
           boundaries.pop(); // no fill after the final section
-          const placements = planFills(p.bpm, cum * secPerBar, boundaries);
+          const placements = planFills(p.bpm, cum * secPerBar, boundaries, genreSignature(p.genre).fillBars);
           if (placements.length) {
             const fillBuf = await downloadToBuffer(fillMat.url);
             beatBytes = await overlayFills(beatWav, fillBuf, placements.map((f) => f.atS));

@@ -17,7 +17,7 @@
  * Nobody can fence this engine off.
  */
 import { prisma } from '@afrohit/db';
-import { blueprintFromMeasured, structureMatch, type SongBlueprint, type MeasuredAnalysis } from '@afrohit/shared';
+import { blueprintFromMeasured, structureMatch, genreSignature, type SongBlueprint, type MeasuredAnalysis } from '@afrohit/shared';
 import { downloadToBuffer, uploadBytes } from '../lib/storage';
 import { measureAudioQuality, mixBuffers } from '../lib/ffmpeg';
 import { measureAudio, dspAvailable } from '../lib/dsp';
@@ -102,7 +102,7 @@ export async function processOwnEngine(p: OwnEnginePayload): Promise<void> {
     // L1a — ensure the kit: synth-forge any missing signature role (owned, seconds).
     let picks = await pickKit(p.workspaceId, p.genre, bpm);
     const haveRoles = new Set(picks.map((x) => x.role));
-    const missing = ['log_drum', 'percussion', 'bass', 'chords', 'fill'].filter((r) => !haveRoles.has(r));
+    const missing = genreSignature(p.genre).kitRoles.filter((r) => !haveRoles.has(r));
     if (missing.length) {
       notes.push(`kit: synth-forged ${missing.join('+')}`);
       await processSynthMaterial({ workspaceId: p.workspaceId, genre: p.genre, bpm, roles: missing });
@@ -129,14 +129,7 @@ export async function processOwnEngine(p: OwnEnginePayload): Promise<void> {
     let finalBeatId = out.beatId;
     const totalS = p.blueprint?.totalDurationS ?? sections.reduce((a, s) => a + s.bars, 0) * (240 / bpm);
     if (p.melody !== false) {
-      const GENRE_MELODY: Record<string, string> = {
-        amapiano: 'soulful jazzy amapiano piano chords, warm rhodes and sustained keys locking to the log-drum groove, no drums',
-        afro_gospel: 'uplifting gospel keys and organ swells over the groove, no drums',
-        gospel: 'rich gospel piano and organ, worshipful voicings, no drums',
-        highlife: 'sweet highlife guitar lines and light keys, interlocking, no drums',
-        afrobeats: 'warm keys and melodic guitar licks riding the groove, no drums',
-      };
-      const mel = await melodyLayer(out.url, p.melodyPrompt ?? GENRE_MELODY[p.genre] ?? `melodic instrumental layer for ${p.genre.replace(/_/g, ' ')}, tasteful sustained keys and lead lines that lock to the groove, no drums`, totalS);
+      const mel = await melodyLayer(out.url, p.melodyPrompt ?? genreSignature(p.genre).melodyPrompt, totalS);
       notes.push(mel.note);
       if (mel.url) {
         try {
