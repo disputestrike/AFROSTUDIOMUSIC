@@ -7,7 +7,7 @@
  * missing roles become forge gaps; and readiness gates on core roles.
  */
 import {
-  buildLaneProfile, laneMaterialNeeds, selectLaneMaterials, describeMaterialSelection,
+  buildLaneProfile, laneMaterialNeeds, selectLaneMaterials, describeMaterialSelection, planFills,
   measured, unknownAnalysis, type MeasuredAnalysis, type MaterialLite,
 } from '@afrohit/shared';
 
@@ -60,5 +60,20 @@ assert(sel.ready === true, 'ready when all CORE roles covered (chords is support
 // And when a CORE role is missing, NOT ready.
 const missingCore = selectLaneMaterials(needs, available.filter((m) => m.role !== 'bass'));
 assert(missingCore.ready === false, 'missing a core role (bass) -> not ready');
+
+// A 'fill' role is always needed (the transition Benjamin keeps missing).
+assert(needs.roles.some((r) => r.role === 'fill'), 'lane needs a fill role for section transitions');
+
+// planFills: with measured boundaries -> a fill leads into each; without -> cadence.
+const withBounds = planFills(112, 180, [0, 30, 60, 120, 150]);
+console.log('\nfills (measured boundaries):', withBounds.map((f) => f.atS.toFixed(1) + 's').join(', '));
+assert(withBounds.length === 4, 'a fill before each real section boundary (excludes t=0)');
+const secPerBar = (60 / 112) * 4;
+assert(Math.abs(withBounds[0]!.atS - (30 - secPerBar)) < 0.01, 'fill lands one bar before the boundary');
+
+const cadence = planFills(120, 60, null, 8); // no boundaries -> every 8 bars
+console.log('fills (cadence, no boundaries):', cadence.map((f) => f.atS.toFixed(1) + 's').join(', '));
+assert(cadence.length >= 1 && cadence.every((f) => f.atS < 60), 'cadence fills placed within the track');
+assert(planFills(0, 60).length === 0 && planFills(120, 0).length === 0, 'no fills without bpm/duration (no fabrication)');
 
 console.log(process.exitCode ? '\n❌ LaneMaterial test FAILED' : '\n✅ LaneMaterial test PASSED');

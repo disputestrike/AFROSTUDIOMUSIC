@@ -72,7 +72,37 @@ export function laneMaterialNeeds(profile: LaneProfile): LaneMaterialNeeds {
   if (logMed != null && logMed >= 0.4) roles.push({ role: 'log_drum', importance: 'signature', reason: `measured log-drum presence ~${logMed.toFixed(2)}` });
   const shaker = num('shakerContinuity');
   if (shaker != null && shaker >= 0.4) roles.push({ role: 'percussion', importance: 'signature', reason: `measured shaker/hat continuity ~${shaker.toFixed(2)}` });
+  // A drum FILL that lifts into each new section — the transition the artist keeps
+  // missing. Needs its own owned material (forged or an artist stem).
+  roles.push({ role: 'fill', importance: 'support', reason: 'drum fill into each new section' });
   return { lane: profile.lane, targetBpm: num('tempoBpm') ?? null, wantsFills: true, roles };
+}
+
+export interface FillPlacement {
+  atS: number; // where the fill starts (seconds)
+  label: string; // why it's here
+}
+
+/**
+ * PHASE 5 — decide WHERE drum fills go: the bar BEFORE each new section, so the fill
+ * lifts into it. Uses the ear's measured section boundaries when available (precise);
+ * otherwise falls back to a musical cadence (a fill every `barsPerFill` bars) derived
+ * from the tempo. This is the placement control the worker's ffmpeg overlay consumes.
+ */
+export function planFills(bpm: number, durationS: number, boundaries?: number[] | null, barsPerFill = 8): FillPlacement[] {
+  if (!bpm || bpm <= 0 || !durationS || durationS <= 0) return [];
+  const secPerBar = (60 / bpm) * 4;
+  if (boundaries && boundaries.length) {
+    // A fill in the bar leading into each section boundary (skip the very start/end).
+    return boundaries
+      .filter((b) => b > secPerBar && b < durationS - 0.25)
+      .map((b) => ({ atS: Math.max(0, b - secPerBar), label: `into section @${b.toFixed(1)}s` }));
+  }
+  const out: FillPlacement[] = [];
+  for (let bar = barsPerFill; bar * secPerBar < durationS - secPerBar; bar += barsPerFill) {
+    out.push({ atS: (bar - 1) * secPerBar, label: `bar ${bar} (cadence, every ${barsPerFill})` });
+  }
+  return out;
 }
 
 const norm = (g?: string | null) => (g ?? '').toLowerCase().trim().replace(/[\s/-]+/g, '_');
