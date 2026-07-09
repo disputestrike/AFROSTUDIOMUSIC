@@ -12,7 +12,7 @@
  * owns the brief; those own the feedback.
  */
 import { soundBrief, blendSoundBrief } from '@afrohit/ai';
-import { genreSignature } from '@afrohit/shared';
+import { genreSignature, CRAFT_TAGS } from '@afrohit/shared';
 
 
 export interface LaneDna {

@@ -329,7 +329,7 @@ export default function CatalogGrid({ initial }: { initial: SongRow[] }) {
       <div className="grid gap-5 sm:grid-cols-2 lg:grid-cols-3">
         {songs.map((s) => (
           <div key={s.id} className="group relative overflow-hidden rounded-2xl border border-slate-800 bg-slate-900/40">
-            <button onClick={() => setChatFor(chatFor === s.id ? null : s.id)} title="Talk to this song" className="absolute left-2 top-2 z-10 rounded-full bg-slate-950/80 px-2 py-1 text-[11px] text-slate-200 opacity-100 transition sm:opacity-0 sm:group-hover:opacity-100">💬 Talk</button>
+            <button onClick={() => setChatFor(chatFor === s.id ? null : s.id)} title="Talk to this song" className="absolute left-2 top-2 z-10 rounded-full bg-gradient-to-r from-orange-500 to-pink-500 px-2.5 py-1 text-[11px] font-semibold text-white shadow-lg">💬 Talk</button>
             <div className="aspect-square w-full bg-slate-800">
               {s.coverUrl ? (
                 // eslint-disable-next-line @next/next/no-img-element

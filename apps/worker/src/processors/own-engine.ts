@@ -49,12 +49,16 @@ function sectionsFrom(blueprint: SongBlueprint | null | undefined, roles: string
   if (blueprint?.sections?.length) {
     return blueprint.sections.map((s, i) => ({ name: `S${i + 1}`, bars: Math.max(2, s.bars ?? 8), roles: bed }));
   }
+  // CRAFT LAW at the grid level: textures EVOLVE — no section repeats unchanged.
   const lite = bed.filter((r) => r !== 'log_drum');
+  const noBass = bed.filter((r) => r !== 'bass');
+  const strip = bed.filter((r) => r === 'bass' || r === 'chords');
   return [
     { name: 'intro', bars: 4, roles: lite.length ? lite : bed },
-    { name: 'verse', bars: 16, roles: bed },
-    { name: 'hook', bars: 8, roles: bed },
-    { name: 'verse2', bars: 16, roles: bed },
+    { name: 'verse', bars: 16, roles: noBass.length >= 2 ? noBass : bed }, // bass held back
+    { name: 'hook', bars: 8, roles: bed },                                 // full band arrives
+    { name: 'verse2', bars: 16, roles: bed },                              // fuller than verse 1
+    { name: 'bridge', bars: 8, roles: strip.length ? strip : lite },       // energy flip: strip-back
     { name: 'hook2', bars: 8, roles: bed },
     { name: 'outro', bars: 4, roles: lite.length ? lite : bed },
   ];

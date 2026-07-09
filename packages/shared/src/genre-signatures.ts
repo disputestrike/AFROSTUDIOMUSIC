@@ -70,3 +70,17 @@ export function genreSignature(genre?: string | null): GenreSignature {
     }
   );
 }
+
+/** CRAFT LAW — creative complexity demanded of EVERY render, every lane. Tags
+ *  the engines weight + the brief line the writers obey. "Weak/simple" is a
+ *  construction failure, not taste. */
+export const CRAFT_TAGS = [
+  'dynamic arrangement with switch-ups every 8 bars',
+  'call-and-response between lead and backing vocals',
+  'countermelody answering under the hook',
+  'bridge flips the energy (strip-back or lift)',
+  'instrumental answer-phrases between vocal lines',
+] as const;
+
+export const CRAFT_BRIEF =
+  'CRAFT LAW: the record must EVOLVE — no section repeats its texture unchanged. Verse 2 differs from verse 1 (new counterline, added layer, or strip-back). The hook gets a countermelody answer. The bridge flips the energy. Ad-libs converse with the lead, never just echo it.';
