@@ -1,6 +1,7 @@
 import type { FastifyInstance } from 'fastify';
-import { anthropicPing, openaiPing, tavilyKey, braveKey, tavilyPing, researchTrends, soundBrief, prompts, joinBriefs, claudeRaw } from '@afrohit/ai';
+import { anthropicPing, openaiPing, tavilyKey, braveKey, tavilyPing, researchTrends, prompts, joinBriefs, claudeRaw } from '@afrohit/ai';
 import { recommendEngine } from '@afrohit/shared';
+import { laneDnaBrief } from '../lib/lane-pipeline';
 import { requireAuth } from '../middleware/auth';
 import { freshnessBrief, learnedReferenceBrief, learnedLyricCraftBrief } from '../lib/learned';
 import { lexiconPalette } from '../lib/lexicon';
@@ -57,7 +58,7 @@ export default async function debug(app: FastifyInstance) {
       brief: { mood: 'love' } as never,
       hookText: 'Under Lagos light, your smile dey my mind',
       cleanVersion: true,
-      soundDna: (soundBrief(genre).brief ?? '').slice(0, 1500),
+      soundDna: laneDnaBrief(genre).slice(0, 1500),
     });
     const r1 = await claudeRaw({ system: prompts.LYRIC_SYSTEM, user, maxTokens: 4500 });
     return { attempt: r1 };
@@ -75,7 +76,7 @@ export default async function debug(app: FastifyInstance) {
       learnedReferenceBrief(workspaceId, genre),
       learnedLyricCraftBrief(workspaceId, genre),
     ]);
-    const dna = soundBrief(genre).brief;
+    const dna = laneDnaBrief(genre);
     const hitCraft = prompts.hitCraftBrief('hook', mood);
 
     // The SAME assembly the hooks route uses (order + cap), so this is exactly

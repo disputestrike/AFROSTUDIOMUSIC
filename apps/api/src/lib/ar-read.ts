@@ -1,6 +1,7 @@
 import type { FastifyInstance } from 'fastify';
 import { prisma } from '@afrohit/db';
-import { predictHit, researchTrends, soundBrief, type HitPrediction } from '@afrohit/ai';
+import { predictHit, researchTrends, type HitPrediction } from '@afrohit/ai';
+import { laneDnaBrief } from './lane-pipeline';
 
 /**
  * THE A&R READ — one shared brain for scoring a song and PERSISTING the read.
@@ -37,7 +38,7 @@ export async function arReadSong(
       bpm: song.project.bpm ?? undefined,
       hook: song.hooks[0]?.text ?? undefined,
       lyrics: song.lyric?.body ?? undefined,
-      soundDna: soundBrief(genre).brief,
+      soundDna: laneDnaBrief(genre),
       trends,
       hasMaster: song.masters.length > 0,
       languages: song.project.artist.languages,

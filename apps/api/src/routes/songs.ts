@@ -1,7 +1,8 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { prisma } from '@afrohit/db';
-import { predictHit, soundBrief, researchTrends, enrichLyricsForVocals, generateJson, prompts } from '@afrohit/ai';
+import { predictHit, researchTrends, enrichLyricsForVocals, generateJson, prompts } from '@afrohit/ai';
+import { laneDna, laneDnaBrief } from '../lib/lane-pipeline';
 import { requireAuth } from '../middleware/auth';
 import { enqueue } from '../lib/queue';
 import { learnedReferenceBrief } from '../lib/learned';
@@ -133,7 +134,7 @@ export default async function songs(app: FastifyInstance) {
     const genre = song.project.genre;
     const bpm = song.project.bpm ?? undefined;
     const langs = (song.project.artist.languages ?? []) as string[];
-    const brief = soundBrief(genre);
+    const brief = laneDna(genre);
     // Suno's "Style of Music" field — genre + tempo + the genre's signature
     // production tokens + the artist lane. Concise; Suno weights the front.
     const stylePrompt = [
@@ -591,7 +592,7 @@ export default async function songs(app: FastifyInstance) {
     if (!lyrics) return reply.code(400).send({ error: 'no_lyrics', message: 'Write or edit lyrics first, then re-sing.' });
 
     const genre = song.project.genre;
-    const dna = soundBrief(genre);
+    const dna = laneDna(genre);
     const learned = await learnedReferenceBrief(workspaceId, genre);
     let lyricsForSong = lyrics;
     let styleHints: string[] = [];
@@ -736,7 +737,7 @@ export default async function songs(app: FastifyInstance) {
       bpm: song.project.bpm ?? undefined,
       hook,
       lyrics: song.lyric?.body ?? undefined,
-      soundDna: soundBrief(genre).brief,
+      soundDna: laneDnaBrief(genre),
       trends,
       hasMaster: song.masters.length > 0,
       languages: song.project.artist.languages,

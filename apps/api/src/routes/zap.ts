@@ -9,7 +9,8 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { prisma } from '@afrohit/db';
-import { recognizeSong, extractSongCraft, parseTrendSong, researchTrends, soundBrief } from '@afrohit/ai';
+import { recognizeSong, extractSongCraft, parseTrendSong, researchTrends } from '@afrohit/ai';
+import { laneBpm } from '../lib/lane-pipeline';
 import { requireAuth } from '../middleware/auth';
 import { publicUrlFor, assertOwnedKey } from '../lib/storage';
 
@@ -112,7 +113,7 @@ export default async function zap(app: FastifyInstance) {
         // Everything "Make in this lane" needs to auto-produce in the SAME style:
         // the lane's tempo, mood, languages + the artist as a LANE cue (never named
         // in the song). Falls back to the genre's home tempo when a hint is missing.
-        bpm: rec.bpm ?? soundBrief(r.genre).typicalBpm ?? 103,
+        bpm: rec.bpm ?? laneBpm(r.genre) ?? 103,
         mood: rec.mood ?? null,
         languages: rec.languages ?? null,
         songTitle: rec.title ?? null,
@@ -155,7 +156,7 @@ export default async function zap(app: FastifyInstance) {
     }
     return {
       genre,
-      bpm: rec.bpm ?? soundBrief(genre).typicalBpm ?? 103,
+      bpm: rec.bpm ?? laneBpm(genre) ?? 103,
       mood: rec.mood ?? null,
       languages: rec.languages?.length ? rec.languages : ['pcm', 'en'],
       influence: rec.artist ?? null,

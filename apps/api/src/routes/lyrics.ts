@@ -2,7 +2,8 @@ import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { prisma } from '@afrohit/db';
 import { generateLyricsInputSchema, GENRES } from '@afrohit/shared';
-import { joinBriefs, prompts, soundBrief, generateJson} from '@afrohit/ai';
+import { joinBriefs, prompts, generateJson } from '@afrohit/ai';
+import { laneDnaBrief } from '../lib/lane-pipeline';
 import { requireAuth } from '../middleware/auth';
 import { learnLyricCraft, findLearnedLyric } from '../lib/lyric-learn';
 import { learnedReferenceBrief, learnedLyricCraftBrief, freshnessBrief } from '../lib/learned';
@@ -64,7 +65,7 @@ export default async function lyrics(app: FastifyInstance) {
           ...(await laneContext(workspaceId, project.genre, hook.songId)),
           freshness: await freshnessBrief(workspaceId),
           palette: await lexiconPalette({ workspaceId, languages: reqLangs.length ? reqLangs : project.artist.languages, mood: lmood, rotate: Date.now() % 97 }),
-          dna: soundBrief(project.genre).brief,
+          dna: laneDnaBrief(project.genre),
           learnedRef: await learnedReferenceBrief(workspaceId, project.genre),
           learnedCraft: await learnedLyricCraftBrief(workspaceId, project.genre),
           hitCraft: prompts.hitCraftBrief('lyric', lmood),

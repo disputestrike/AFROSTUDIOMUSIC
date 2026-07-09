@@ -1,8 +1,9 @@
 import type { FastifyInstance } from 'fastify';
 import { prisma } from '@afrohit/db';
 import { generateBeatInputSchema, attachBeatUploadSchema } from '@afrohit/shared';
-import { enrichLyricsForVocals, soundBrief, blendSoundBrief } from '@afrohit/ai';
+import { enrichLyricsForVocals } from '@afrohit/ai';
 import { learnedReferenceBrief, learnedStyleTags } from '../lib/learned';
+import { laneDna } from '../lib/lane-pipeline';
 import { requireAuth } from '../middleware/auth';
 import { enqueue, QUEUES } from '../lib/queue';
 import { publicUrlFor, assertOwnedKey } from '../lib/storage';
@@ -47,8 +48,8 @@ export default async function beats(app: FastifyInstance) {
       // references (the pinned just-listened one FIRST) so the beat rebuilds the
       // real sound it heard — learned tokens join the music-model tags.
       const dna = input.fusionGenres?.length
-        ? blendSoundBrief([input.genre, ...input.fusionGenres], input.mood)
-        : soundBrief(project.genre, input.mood);
+        ? laneDna(input.genre, { mood: input.mood, fusionGenres: input.fusionGenres })
+        : laneDna(project.genre, { mood: input.mood });
       const learned = await learnedReferenceBrief(workspaceId, project.genre, input.pinnedReferenceId);
       const learnedTags = await learnedStyleTags(workspaceId, project.genre, input.pinnedReferenceId);
       const dnaTags = [...(dna.tags ?? []), ...learnedTags];

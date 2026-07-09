@@ -10,7 +10,8 @@
  */
 import type { FastifyInstance } from 'fastify';
 import { prisma } from '@afrohit/db';
-import { joinBriefs, prompts, generateJson, scoreItems, runRightsCheck, canonicalReceiptHash, directorRefineHooks, researchTrends, enrichLyricsForVocals, soundBrief, blendSoundBrief, predictHit} from '@afrohit/ai';
+import { joinBriefs, prompts, generateJson, scoreItems, runRightsCheck, canonicalReceiptHash, directorRefineHooks, researchTrends, enrichLyricsForVocals, predictHit} from '@afrohit/ai';
+import { laneDna, laneDnaBrief } from '../lib/lane-pipeline';
 import { enqueue } from '../lib/queue';
 import { assertSafeUrl } from '../lib/url-guard';
 import { learnedReferenceBrief, learnedStyleTags, learnedLyricCraftBrief, snapshotTrend, freshnessBrief } from '../lib/learned';
@@ -217,7 +218,7 @@ async function generateHooks(ctx: Ctx, count: number, languages?: string[], refi
   void snapshotTrend(ctx.workspaceId, project.genre, trendData);
   const hmood = (project.briefs[0] as { mood?: string } | undefined)?.mood;
   const hookLane = await laneContext(ctx.workspaceId, project.genre);
-  const soundDna = fuseSoundDna({ laneTargets: hookLane.laneTargets, extra: hardConstraints(project.genre, languages), freshness: await freshnessBrief(ctx.workspaceId), palette: await lexiconPalette({ workspaceId: ctx.workspaceId, languages, mood: hmood, rotate: count }), dna: soundBrief(project.genre).brief, learnedRef: await learnedReferenceBrief(ctx.workspaceId, project.genre), learnedCraft: await learnedLyricCraftBrief(ctx.workspaceId, project.genre), hitCraft: prompts.hitCraftBrief('hook', hmood) });
+  const soundDna = fuseSoundDna({ laneTargets: hookLane.laneTargets, extra: hardConstraints(project.genre, languages), freshness: await freshnessBrief(ctx.workspaceId), palette: await lexiconPalette({ workspaceId: ctx.workspaceId, languages, mood: hmood, rotate: count }), dna: laneDnaBrief(project.genre), learnedRef: await learnedReferenceBrief(ctx.workspaceId, project.genre), learnedCraft: await learnedLyricCraftBrief(ctx.workspaceId, project.genre), hitCraft: prompts.hitCraftBrief('hook', hmood) });
   // FAST + RELIABLE: OpenAI writes (word-palette gives the vocab), Claude scores
   // lean. The drop pipeline runs this per song, so speed here is what kills the
   // "nothing's happening" feel.
@@ -338,7 +339,7 @@ async function generateLyrics(ctx: Ctx, hookId: string, cleanVersion: boolean, l
     extra: hardConstraints(hook.project.genre, languages),
     freshness: await freshnessBrief(ctx.workspaceId),
     palette: await lexiconPalette({ workspaceId: ctx.workspaceId, languages: languages?.length ? languages : hook.project.artist.languages, mood: lmood, rotate: Date.now() % 97 }),
-    dna: soundBrief(hook.project.genre).brief,
+    dna: laneDnaBrief(hook.project.genre),
     learnedRef: await learnedReferenceBrief(ctx.workspaceId, hook.project.genre),
     learnedCraft: await learnedLyricCraftBrief(ctx.workspaceId, hook.project.genre),
     hitCraft: prompts.hitCraftBrief('lyric', lmood),
@@ -449,7 +450,7 @@ async function createBeatJob(ctx: Ctx, a: { genre: string; fusionGenres?: string
   // LEARNED from the artist's own references — the pinned just-listened one
   // first. Learned tokens join the MUSIC-MODEL tags so the heard sound shapes
   // the audio, not only the words.
-  const dna = a.fusionGenres?.length ? blendSoundBrief([a.genre, ...a.fusionGenres], a.mood) : soundBrief(a.genre, a.mood);
+  const dna = a.fusionGenres?.length ? laneDna(a.genre, { mood: a.mood, fusionGenres: a.fusionGenres }) : laneDna(a.genre, { mood: a.mood });
   const learned = await learnedReferenceBrief(ctx.workspaceId, a.genre, a.pinnedReferenceId);
   const learnedTags = await learnedStyleTags(ctx.workspaceId, a.genre, a.pinnedReferenceId);
   const dnaTags = [...(dna.tags ?? []), ...learnedTags];
@@ -837,7 +838,7 @@ async function predictHitTool(ctx: Ctx, songId: string | undefined) {
     bpm: song.project.bpm ?? undefined,
     hook: song.hooks[0]?.text ?? undefined,
     lyrics: song.lyric?.body ?? undefined,
-    soundDna: soundBrief(genre).brief,
+    soundDna: laneDnaBrief(genre),
     trends,
     hasMaster: song.masters.length > 0,
     languages: song.project.artist.languages,

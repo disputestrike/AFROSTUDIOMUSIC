@@ -27,7 +27,6 @@ import { prisma } from '@afrohit/db';
 import {
   generateJson,
   prompts,
-  soundBrief,
   enrichLyricsForVocals,
   predictHit,
   researchTrends,
@@ -35,6 +34,7 @@ import {
 } from '@afrohit/ai';
 import { learnedReferenceBrief } from './learned';
 import { laneContext } from './lane-context';
+import { laneDna, laneDnaBrief } from './lane-pipeline';
 import { arReadSong } from './ar-read';
 import { enqueue } from './queue';
 import { snapshotLyricVersion } from './lyric-versions';
@@ -88,7 +88,7 @@ async function rewriteLyric(
       `CURRENT LYRIC:\n${currentBody.slice(0, 4000)}\n\n` +
       `A&R NOTES TO IMPLEMENT:\n${(read.toMakeItBigger ?? []).map((n) => `- ${n}`).join('\n')}\n\n` +
       `RISKS TO FIX:\n${(read.risks ?? []).map((n) => `- ${n}`).join('\n')}\n\n` +
-      [soundBrief(genre).brief, prompts.hitCraftBrief('lyric')].filter(Boolean).join('\n\n') +
+      [laneDnaBrief(genre), prompts.hitCraftBrief('lyric')].filter(Boolean).join('\n\n') +
       `\n\nReturn strict JSON: title, body (the full rewritten lyric), whatChanged (3-5 one-line notes on what you executed).`,
     temperature: 0.8,
     maxTokens: 4000,
@@ -116,7 +116,7 @@ async function scoreVariant(
     bpm: song.project.bpm ?? undefined,
     hook: song.hooks[0]?.text ?? undefined,
     lyrics: lyricBody,
-    soundDna: soundBrief(genre).brief,
+    soundDna: laneDnaBrief(genre),
     trends,
     hasMaster,
     languages: song.project.artist.languages,
@@ -142,7 +142,7 @@ async function resing(
   const charge = await app.chargeCredits({ workspaceId, key: 'full_song_demo', refTable: 'Song', refId: song.id });
   if (!charge.ok) return null;
   const genre = song.project.genre;
-  const dna = soundBrief(genre);
+  const dna = laneDna(genre);
   const learned = await learnedReferenceBrief(workspaceId, genre);
   // PHASE 4 loop — re-sing is a regen; inject the stored repair steering so the
   // bigger take is pushed back in-lane (the whole point of make-it-bigger + the gate).

@@ -2,7 +2,8 @@ import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { prisma } from '@afrohit/db';
 import { generateHooksInputSchema, langSchema } from '@afrohit/shared';
-import { joinBriefs, prompts, generateJson, directorRefineHooks, researchTrends, anthropicEnabled, soundBrief} from '@afrohit/ai';
+import { joinBriefs, prompts, generateJson, directorRefineHooks, researchTrends, anthropicEnabled } from '@afrohit/ai';
+import { laneDnaBrief } from '../lib/lane-pipeline';
 import { requireAuth } from '../middleware/auth';
 import { memoryContext, recordFeedback } from '../services/artist-memory';
 import { learnedReferenceBrief, learnedLyricCraftBrief, snapshotTrend, freshnessBrief } from '../lib/learned';
@@ -57,7 +58,7 @@ export default async function hooks(app: FastifyInstance) {
       const soundDna = fuseSoundDna({
         freshness: await freshnessBrief(workspaceId),
         palette: await lexiconPalette({ workspaceId, mood, rotate: input.count }),
-        dna: soundBrief(project.genre).brief,
+        dna: laneDnaBrief(project.genre),
         learnedRef: await learnedReferenceBrief(workspaceId, project.genre),
         learnedCraft: await learnedLyricCraftBrief(workspaceId, project.genre),
         hitCraft: prompts.hitCraftBrief('hook', mood),
