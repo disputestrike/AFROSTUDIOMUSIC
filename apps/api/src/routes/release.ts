@@ -85,7 +85,7 @@ async function assignUpc(workspaceId: string): Promise<string> {
   return `0${String(n).padStart(11, '0')}`; // placeholder barcode
 }
 
-async function statusFor(song: { id: string; title: string; isrc: string | null; upc: string | null; splitSheet: unknown; releaseReady: boolean; lyricId: string | null; projectId: string; nativeReviewOk: boolean; hitScore?: number | null; viralScore?: number | null }) {
+async function statusFor(song: { id: string; title: string; isrc: string | null; upc: string | null; splitSheet: unknown; releaseReady: boolean; lyricId: string | null; projectId: string; nativeReviewOk: boolean; hitScore?: number | null; viralScore?: number | null }, mode: 'creative' | 'hitmaker' = 'creative') {
   const [master, mix, cover, languages, beat] = await Promise.all([
     prisma.master.findFirst({ where: { songId: song.id } }),
     prisma.mix.findFirst({ where: { songId: song.id } }),
@@ -93,13 +93,15 @@ async function statusFor(song: { id: string; title: string; isrc: string | null;
     languagesForProject(song.projectId),
     prisma.beatAsset.findFirst({ where: { songId: song.id }, orderBy: { createdAt: 'desc' }, select: { meta: true } }),
   ]);
-  // PHASE 6 — the release gate reads the measured signals stored on the freshest take
-  // (Phase-4 lane compliance + ffmpeg QC). It BLOCKS only on broken audio; drift/low
-  // compliance surface as warnings (the artist's ear decides). Unmeasured = unverified.
+  // §8 — two modes. CREATIVE (default): broken audio blocks; drift/low-compliance WARN
+  // (the artist's ear decides). HIT MAKER: lane failure / failed-critical / <80% coverage
+  // BLOCK — generating audio is not passing. Unmeasured stays 'unverified' in creative,
+  // and cannot CERTIFY in hitmaker (honesty law: what wasn't measured can't fail OR pass).
   const meta = (beat?.meta ?? {}) as { compliance?: unknown; qc?: unknown };
-  const gate = laneReleaseGate({ compliance: (meta.compliance ?? null) as never, qc: (meta.qc ?? null) as never });
+  const gate = laneReleaseGate({ compliance: (meta.compliance ?? null) as never, qc: (meta.qc ?? null) as never, mode });
   return {
     song: { id: song.id, title: song.title, isrc: song.isrc, upc: song.upc, splitSheet: song.splitSheet, releaseReady: song.releaseReady, nativeReviewOk: song.nativeReviewOk },
+    mode,
     greenLight: greenLight(song, !!(master || mix), !!cover, languages),
     releaseGate: gate,
   };
@@ -112,7 +114,7 @@ export default async function release(app: FastifyInstance) {
     await prisma.project.findFirstOrThrow({ where: { id: req.params.projectId, workspaceId } });
     const song = await prisma.song.findFirst({ where: { projectId: req.params.projectId, workspaceId }, orderBy: { createdAt: 'desc' } });
     if (!song) return { song: null, greenLight: null };
-    return statusFor(song);
+    return statusFor(song, (req.query as { mode?: string }).mode === 'hitmaker' ? 'hitmaker' : 'creative');
   });
 
   // Performance Pack — what you take on stage: a backing track to sing over
@@ -147,7 +149,7 @@ export default async function release(app: FastifyInstance) {
   app.get<{ Params: { projectId: string; songId: string } }>('/:songId', async (req) => {
     const { workspaceId } = requireAuth(req);
     const song = await prisma.song.findFirstOrThrow({ where: { id: req.params.songId, projectId: req.params.projectId, workspaceId } });
-    return statusFor(song);
+    return statusFor(song, (req.query as { mode?: string }).mode === 'hitmaker' ? 'hitmaker' : 'creative');
   });
 
   // Distribute a green-lit release (needs a distributor account/keys — see lib).
@@ -170,7 +172,8 @@ export default async function release(app: FastifyInstance) {
     // too quiet / too short), even when green-lit. Drift is only a warning, so a
     // lane-bending record still distributes — the artist's ear stays in charge.
     const gmeta = (beat?.meta ?? {}) as { compliance?: unknown; qc?: unknown };
-    const gate = laneReleaseGate({ compliance: (gmeta.compliance ?? null) as never, qc: (gmeta.qc ?? null) as never });
+    const distMode = (req.query as { mode?: string }).mode === 'hitmaker' ? 'hitmaker' : 'creative';
+    const gate = laneReleaseGate({ compliance: (gmeta.compliance ?? null) as never, qc: (gmeta.qc ?? null) as never, mode: distMode });
     if (gate.blocked) {
       return reply.code(409).send({ error: 'audio_quality_block', message: 'This take failed audio QC (broken render) — re-master or regenerate before distributing.', checks: gate.checks });
     }

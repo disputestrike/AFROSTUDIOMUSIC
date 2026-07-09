@@ -70,7 +70,7 @@ export async function assessLaneCompliance(opts: {
       data: {
         meta: {
           ...meta,
-          compliance: { overall: score.overall, coverage: score.coverage, drift: score.drift, scored: score.scored },
+          compliance: { overall: score.overall, coverage: score.coverage, drift: score.drift, scored: score.scored, failedCritical: score.failedCritical },
           laneRepair: plan.clean ? null : plan.soundBriefAddendum,
         } as never,
       },

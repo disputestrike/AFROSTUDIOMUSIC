@@ -27,9 +27,26 @@ assert(!drift.blocked, 'major drift does NOT block (artist may want it)');
 assert(drift.warnings.some((w) => w.includes('in-lane')), 'drift surfaced as a warning');
 assert(drift.warnings.some((w) => w.includes('lane compliance')), 'below-floor compliance warned');
 
-// 4) Unmeasured -> unverified, never blocks.
+// 4) Unmeasured -> unverified, never blocks (creative mode).
 const unmeasured = laneReleaseGate({ compliance: null, qc: null });
-assert(!unmeasured.blocked, 'unmeasured never blocks');
+assert(!unmeasured.blocked, 'creative: unmeasured never blocks');
 assert(unmeasured.checks.every((c) => c.status === 'unverified'), 'unmeasured signals marked unverified');
+
+// 5) HIT MAKER MODE — lane failure BLOCKS.
+const hitFail = laneReleaseGate({ compliance: { overall: 34, coverage: 0.9, drift: { severity: 'major' }, failedCritical: ['fourOnFloor', 'logDrumLikelihood'] }, qc: { verdict: 'pass' }, mode: 'hitmaker' });
+assert(hitFail.blocked, 'hitmaker: major drift + failed-critical BLOCKS');
+assert(hitFail.checks.some((c) => c.name === 'critical lane element' && !c.ok), 'hitmaker: failed-critical reported as fail');
+
+// 6) HIT MAKER MODE — thin coverage cannot certify.
+const thinCov = laneReleaseGate({ compliance: { overall: 90, coverage: 0.5, drift: { severity: 'none' }, failedCritical: [] }, qc: { verdict: 'pass' }, mode: 'hitmaker' });
+assert(thinCov.blocked, 'hitmaker: coverage < 80% BLOCKS (cannot certify an unmeasurable song)');
+
+// 7) HIT MAKER MODE — a clean, fully-measured, in-lane take PASSES.
+const hitClean = laneReleaseGate({ compliance: { overall: 88, coverage: 0.9, drift: { severity: 'none' }, failedCritical: [] }, qc: { verdict: 'pass' }, mode: 'hitmaker' });
+assert(!hitClean.blocked, 'hitmaker: clean in-lane fully-measured take PASSES');
+
+// 8) The SAME failing track in CREATIVE mode does NOT block (respects the ear).
+const creativeSame = laneReleaseGate({ compliance: { overall: 34, coverage: 0.9, drift: { severity: 'major' }, failedCritical: ['fourOnFloor'] }, qc: { verdict: 'pass' }, mode: 'creative' });
+assert(!creativeSame.blocked, 'creative: same failing track does NOT block');
 
 console.log(process.exitCode ? '\n❌ ReleaseGate test FAILED' : '\n✅ ReleaseGate test PASSED');
