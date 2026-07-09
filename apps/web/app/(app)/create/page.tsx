@@ -6,7 +6,7 @@
  * "Bring my own" is a separate intent that opens the full studio.
  */
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { MumbleBooth } from '@/components/MumbleBooth';
 import { useRouter } from 'next/navigation';
 import { useApi } from '@/lib/api';
@@ -58,6 +58,61 @@ interface Deconstruction {
 export default function CreatePage() {
   const api = useApi();
   const router = useRouter();
+
+  // STICKY PRODUCTION — the producing view must survive tab-backgrounding /
+  // remounts (mobile reloads during a 3-12 min render were dumping users back
+  // to a blank form while the song kept cooking). State persists; mount resumes.
+  const PRODUCE_KEY = 'afrohit.produce.v1';
+  const saveProduce = (patch: Record<string, unknown>) => {
+    try {
+      const cur = JSON.parse(sessionStorage.getItem(PRODUCE_KEY) ?? '{}');
+      sessionStorage.setItem(PRODUCE_KEY, JSON.stringify({ ...cur, ...patch, at: Date.now() }));
+      window.history.replaceState(null, '', '?produce=1');
+    } catch { /* storage unavailable — non-fatal */ }
+  };
+  const clearProduce = () => {
+    try { sessionStorage.removeItem(PRODUCE_KEY); window.history.replaceState(null, '', window.location.pathname); } catch { /* noop */ }
+  };
+  const resumedRef = useRef(false);
+  useEffect(() => {
+    if (resumedRef.current) return; resumedRef.current = true;
+    let saved: { dropJobId?: string; renderJobId?: string; projectId?: string; title?: string; hook?: string; score?: number | null; at?: number } | null = null;
+    try { saved = JSON.parse(sessionStorage.getItem(PRODUCE_KEY) ?? 'null'); } catch { saved = null; }
+    if (!saved || !(saved.dropJobId || saved.renderJobId) || Date.now() - (saved.at ?? 0) > 30 * 60 * 1000) return;
+    setPhase('producing'); setStepIdx(saved.renderJobId ? 3 : 1);
+    void (async () => {
+      let dropJobId = saved!.dropJobId; let renderJobId = saved!.renderJobId; let projectId = saved!.projectId;
+      let hook = saved!.hook ?? ''; let score = saved!.score ?? null; let title = saved!.title ?? 'Your song';
+      try {
+        for (let i = 0; i < 200; i++) {
+          const id = renderJobId ?? dropJobId; if (!id) break;
+          let j: { status: string; outputJson?: { drop?: Array<{ jobId?: string; projectId?: string; title?: string; hookText?: string; score: number | null }> } };
+          try { j = await api.get(`/jobs/${id}`); } catch { await sleep(6000); continue; }
+          if (j.status === 'FAILED') { setErr('That render failed — start another take.'); setPhase('error'); clearProduce(); return; }
+          if (j.status === 'SUCCEEDED') {
+            if (!renderJobId && dropJobId) {
+              const item = j.outputJson?.drop?.[0];
+              if (!item?.jobId) { setPhase('finishing'); return; }
+              renderJobId = item.jobId; projectId = item.projectId ?? projectId; hook = item.hookText ?? hook; score = item.score ?? score; title = item.title ?? title;
+              saveProduce({ renderJobId, projectId, title, hook, score }); setStepIdx(3); continue;
+            }
+            let url = '';
+            if (projectId) {
+              try {
+                const beats = await api.get<Array<{ url: string; createdAt: string }>>(`/projects/${projectId}/beats`);
+                url = beats.sort((a, b) => +new Date(b.createdAt) - +new Date(a.createdAt))[0]?.url ?? '';
+              } catch { /* land in Catalog */ }
+            }
+            setSong({ title, hook, score, url, projectId: projectId ?? '' });
+            setPhase(url ? 'done' : 'finishing'); clearProduce(); return;
+          }
+          await sleep(5000);
+        }
+        setPhase('finishing');
+      } catch { setPhase('finishing'); }
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
   // MULTI-GENRE: first pick = the backbone; a second pick FUSES into it.
   const [genres, setGenres] = useState<string[]>(['afrobeats']);
   // Has the user (or a prefill) actually chosen a genre? Until then the shown
@@ -170,6 +225,7 @@ export default function CreatePage() {
         `/projects/${project.id}/drop`,
         { theme, count: 1, genre, fusionGenres: fusion.length ? fusion : undefined, mood, bpm, withVocals: true, songEngine: engine, influence: influence.trim() || undefined, languages: langs }
       );
+      saveProduce({ dropJobId: started.jobId, renderJobId: undefined });
       let item: { jobId?: string; hookText?: string; score: number | null; error?: string } | undefined;
       // Hooks + lyrics run on Claude and can be slow under load — wait up to ~8 min.
       // RESILIENT POLL: a single fetch that fails (phone backgrounded the tab, wifi↔
@@ -191,9 +247,11 @@ export default function CreatePage() {
         // The daily cap is the usual culprit — say so plainly instead of a vague
         // "couldn't start" (which reads as "broken" when it's just the budget).
         const e = item?.error ?? '';
+        if (!e && netFails >= 24) throw new Error('Connection dropped while the studio kept working — your song did NOT fail; it will land in the Catalog. Reopen this page to resume watching it.');
         const capped = !e || /credit|cap|limit|quota|daily/i.test(e);
         throw new Error(capped ? 'Daily generation limit reached — it resets at midnight UTC (or raise the cap).' : e);
       }
+      saveProduce({ renderJobId: item.jobId, projectId: project.id, title, hook: item.hookText, score: item.score });
       setStepIdx(3);
       // Poll for the rendered audio. Real sung renders take 3-12 min (best-of-N +
       // the provider's rate limit), so wait up to ~12 min — then hand off calmly to
@@ -221,10 +279,11 @@ export default function CreatePage() {
         // Catalog where it lands, instead of the red "Couldn't finish that one".
         setSong({ title, hook: item.hookText, score: item.score, url: '', projectId: project.id });
         setPhase('finishing');
-        return;
+        return; // storage kept — reopening resumes the watch
       }
       setSong({ title, hook: item.hookText, score: item.score, url, projectId: project.id });
       setPhase('done');
+      clearProduce();
     } catch (e) {
       setErr((e as Error).message);
       setPhase('error');
@@ -290,6 +349,7 @@ export default function CreatePage() {
         songEngine: engine,
         vibePrompt: [`${mood} energy`, decon?.vocalDirection, fusion.length ? `genre fusion: ${genreLabel}` : null].filter(Boolean).join('. '),
       });
+      saveProduce({ renderJobId: r.jobId, projectId: project.id, title: 'Your song', hook: '', score: null });
       let url: string | null = null;
       let renderFailed = false;
       let netFails = 0;
