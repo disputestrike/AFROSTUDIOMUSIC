@@ -123,17 +123,24 @@ export default async function adjust(app: FastifyInstance) {
     if (!sourceUrl) return reply.code(400).send({ error: 'no_audio_yet', message: 'Render the song first — then talk to it.' });
     const measured = ((song.beats[0]?.meta ?? {}) as { measured?: { durationS?: { value?: number }; tempoBpm?: { value?: number } } }).measured;
     const durationS = measured?.durationS?.value ?? 180;
+    const bounds = ((measured as unknown as { sectionBoundaries?: { value?: number[] } })?.sectionBoundaries?.value ?? []).filter((t) => t > 2 && t < durationS - 2);
+    const secEdges = [0, ...bounds, durationS];
+    const sectionMap = secEdges.slice(0, -1).map((s0, i) => `S${i + 1} ${Math.round(s0)}–${Math.round(secEdges[i + 1]!)}s`).join(' · ');
     const bpm = measured?.tempoBpm?.value ?? null;
 
     const plan = await generateJson<{ reply: string; op: null | Record<string, unknown> }>({
       system: `You are this song's producer at the desk. Song: genre ${song.project?.genre ?? 'unknown'}, duration ${Math.round(durationS)}s${bpm ? `, ~${Math.round(bpm)} BPM` : ''}.
-Parse the artist's instruction into EXACTLY ONE op (the FIRST actionable step if they asked for several — say what's next in reply). Times like "1:20" become SECONDS. Ops:
+SECTION MAP: ${sectionMap || 'not measured yet'}.\nParse the artist's instruction into EXACTLY ONE op (the FIRST actionable step if they asked for several — say what's next in reply). Times like "1:20" become SECONDS. Ops:
 - {"kind":"transform","tempo":0.5-1.5?,"semitones":-6..6?}  // speed / key
 - {"kind":"remaster","preset":"warm|loud|club|radio"}       // tone/loudness feel incl reverb-ish "warm"
 - {"kind":"regen_beat"}                                      // new sound, SAME structure (self-clone)
 - {"kind":"add_layer","prompt":"<instrument direction>"}     // e.g. add snares/keys/strings texture
 - {"kind":"add_fill","timesS":[80]}                          // drum fill at timestamps (seconds)
 - {"kind":"cut","fromS":45,"toS":60}                         // remove a region
+- {"kind":"move_section","fromIndex":3,"toIndex":2}          // Arrange: move a section (1-based, see map)
+- {"kind":"duplicate_section","index":3}                     // Arrange: repeat a section right after itself
+- {"kind":"stem_fx","stem":"vocals|drums|bass|other","fx":"reverb|eq_low|eq_high|gain","amount":0-1}  // fx on ONE stem only
+- {"kind":"vocal_drop","fromS":45,"toS":60}                  // silence ONLY the vocal in a region (open a verse)
 If nothing fits, op:null and coach them in reply (mixer, versions, adjust exist). Return {"reply","op"} ONLY.`,
       user: message,
       maxTokens: 400,
@@ -163,7 +170,7 @@ If nothing fits, op:null and coach them in reply (mixer, versions, adjust exist)
     const job = await prisma.providerJob.create({
       data: { workspaceId, projectId: song.projectId, kind: 'music', provider: 'song-chat', status: 'QUEUED', inputJson: { songId: song.id, op } as never },
     });
-    await enqueue({ queue: app.queues.music, name: 'song-edit', payload: { jobId: job.id, workspaceId, projectId: song.projectId, songId: song.id, sourceUrl, genre: song.project?.genre, durationS, op } });
+    await enqueue({ queue: app.queues.music, name: 'song-edit', payload: { jobId: job.id, workspaceId, projectId: song.projectId, songId: song.id, sourceUrl, genre: song.project?.genre, durationS, boundaries: bounds, op } });
     reply.code(202);
     return { reply: plan.reply, dispatched: op.kind, jobId: job.id };
   });

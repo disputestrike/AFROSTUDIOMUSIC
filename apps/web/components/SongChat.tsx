@@ -46,7 +46,7 @@ export function SongChat({ songId, onNewVersion }: { songId: string; onNewVersio
 
   return (
     <div className="mt-3 rounded border border-slate-800 bg-slate-950/60 p-3">
-      <div className="mb-2 text-xs font-semibold text-slate-300">Talk to this song <span className="font-normal text-slate-500">— “add a fill at 1:20” · “1.1x faster” · “lay warm keys over it” · “cut 0:45 to 1:00”</span></div>
+      <div className="mb-2 text-xs font-semibold text-slate-300">Talk to this song <span className="font-normal text-slate-500">— “add a fill at 1:20” · “move the hook earlier” · “reverb only on the vocal” · “open the vocal 0:45–1:00”</span></div>
       <div className="max-h-56 space-y-2 overflow-y-auto">
         {msgs.map((m, i) => (
           <div key={i} className={m.who === 'you' ? 'text-right' : ''}>
