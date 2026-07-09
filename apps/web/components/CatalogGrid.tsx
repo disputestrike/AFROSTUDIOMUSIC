@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation';
 import { useApi } from '@/lib/api';
 import { Trash2, Download, Wand2, FileText, Copy, Recycle, Pencil, Sliders, X, Loader2, Music2, Layers, TrendingUp, RefreshCw, Mic, Disc3, Sparkles, GitCompare } from 'lucide-react';
 import { SunoBridge } from './SunoBridge';
+import { SongChat } from './SongChat';
 
 interface HitPrediction {
   hitScore: number;
@@ -56,6 +57,7 @@ interface VersionsResp {
 }
 
 export default function CatalogGrid({ initial }: { initial: SongRow[] }) {
+  const [chatFor, setChatFor] = useState<string | null>(null);
   const api = useApi();
   const router = useRouter();
   const [songs, setSongs] = useState<SongRow[]>(initial);
@@ -327,6 +329,7 @@ export default function CatalogGrid({ initial }: { initial: SongRow[] }) {
       <div className="grid gap-5 sm:grid-cols-2 lg:grid-cols-3">
         {songs.map((s) => (
           <div key={s.id} className="group relative overflow-hidden rounded-2xl border border-slate-800 bg-slate-900/40">
+            <button onClick={() => setChatFor(chatFor === s.id ? null : s.id)} title="Talk to this song" className="absolute left-2 top-2 z-10 rounded-full bg-slate-950/80 px-2 py-1 text-[11px] text-slate-200 opacity-100 transition sm:opacity-0 sm:group-hover:opacity-100">💬 Talk</button>
             <div className="aspect-square w-full bg-slate-800">
               {s.coverUrl ? (
                 // eslint-disable-next-line @next/next/no-img-element
@@ -391,6 +394,15 @@ export default function CatalogGrid({ initial }: { initial: SongRow[] }) {
           </div>
         ))}
       </div>
+      {chatFor && (
+        <div className="mt-4 rounded-xl border border-sky-800/60 bg-slate-950/70 p-3">
+          <div className="mb-1 flex items-center justify-between text-xs text-slate-300">
+            <b>Talk to: {songs.find((x) => x.id === chatFor)?.title ?? 'this song'}</b>
+            <button onClick={() => setChatFor(null)} className="text-slate-500 hover:text-slate-200">✕ close</button>
+          </div>
+          <SongChat songId={chatFor} onNewVersion={() => {}} />
+        </div>
+      )}
 
       {/* Lyric editor */}
       {editing && (

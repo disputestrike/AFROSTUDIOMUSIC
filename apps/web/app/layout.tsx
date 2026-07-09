@@ -21,7 +21,8 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
       <body className="min-h-screen bg-night-950 font-sans text-slate-100 antialiased">
         <div className="aurora" aria-hidden />
         <div className="grain" aria-hidden />
-        <div className="relative z-10">{children}</div>
+        <div className="relative z-10">{children}
+        <div className="pointer-events-none fixed bottom-1 right-2 z-50 text-[10px] text-slate-700">build {(process.env.RAILWAY_GIT_COMMIT_SHA ?? 'dev').slice(0, 7)}</div></div>
       </body>
     </html>
   );
