@@ -18,6 +18,11 @@ const LANG_BUCKETS: Record<string, string[]> = {
   ha: ['ha', 'mixed', 'motif'],
   twi: ['twi', 'mixed', 'motif'],
   sw: ['sw', 'mixed', 'motif'],
+  // South African lanes — requestable now; the word bank needs native seeding
+  // (Phase 7), and release stays blocked on native review until a speaker signs off.
+  zu: ['zu', 'mixed', 'motif'],
+  xh: ['xh', 'mixed', 'motif'],
+  st: ['st', 'mixed', 'motif'],
 };
 
 /** Seed the shared library once. Cheap: skips entirely if already populated. */

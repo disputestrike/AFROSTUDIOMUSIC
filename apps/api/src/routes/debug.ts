@@ -1,5 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import { anthropicPing, openaiPing, tavilyKey, braveKey, tavilyPing, researchTrends, soundBrief, prompts, joinBriefs, claudeRaw } from '@afrohit/ai';
+import { recommendEngine } from '@afrohit/shared';
 import { requireAuth } from '../middleware/auth';
 import { freshnessBrief, learnedReferenceBrief, learnedLyricCraftBrief } from '../lib/learned';
 import { lexiconPalette } from '../lib/lexicon';
@@ -33,6 +34,9 @@ export default async function debug(app: FastifyInstance) {
       braveConfigured: !!braveKey(),
       trends: trend ? { ok: true, source: trend.source, sample: trend.digest.slice(0, 120) } : { ok: false },
       musicProvider: process.env.MUSIC_PROVIDER ?? '(unset)',
+      // Phase 7 — the engine ceiling: which full-song engine renders will use, and
+      // (when not Suno) how to lift the quality ceiling.
+      engineCeiling: recommendEngine('afrobeats', { sunoAvailable: !!process.env.SUNO_API_KEY }),
     };
   });
 

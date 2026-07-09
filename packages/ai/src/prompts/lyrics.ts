@@ -63,6 +63,7 @@ No prose. No markdown fences around the JSON. JSON only.`;
 const LANG_NAMES: Record<string, string> = {
   yo: 'Yoruba', ig: 'Igbo', ha: 'Hausa', pcm: 'Nigerian Pidgin', en: 'English',
   twi: 'Twi', sw: 'Swahili', es: 'Spanish', fr: 'French', pt: 'Portuguese',
+  zu: 'isiZulu', xh: 'isiXhosa', st: 'Sesotho',
 };
 
 export function lyricUserPrompt(opts: {

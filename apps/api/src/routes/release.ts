@@ -19,7 +19,10 @@ type Split = { name: string; role: string; share: number };
 
 // Tonal languages where off-pitch AI delivery reads as fake — gate behind a
 // human native-speaker sign-off before release.
-const REVIEW_LANGS = ['yo', 'ig', 'ha'];
+// Indigenous languages that must be human-reviewed before release. The lexicon has
+// deep Yoruba/Igbo/Hausa but ~zero isiZulu/isiXhosa/Sesotho, so those especially must
+// NOT ship un-reviewed — the gate blocks release until a native speaker signs off.
+const REVIEW_LANGS = ['yo', 'ig', 'ha', 'zu', 'xh', 'st'];
 
 function greenLight(
   song: { lyricId: string | null; isrc: string | null; splitSheet: unknown; nativeReviewOk: boolean; hitScore?: number | null; viralScore?: number | null },

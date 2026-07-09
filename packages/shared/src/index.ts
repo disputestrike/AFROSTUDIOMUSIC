@@ -7,3 +7,4 @@ export * from './lane-compliance';
 export * from './lane-repair';
 export * from './lane-material';
 export * from './release-gate';
+export * from './lane-engine';
