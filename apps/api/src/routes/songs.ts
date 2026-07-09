@@ -5,6 +5,7 @@ import { predictHit, soundBrief, researchTrends, enrichLyricsForVocals, generate
 import { requireAuth } from '../middleware/auth';
 import { enqueue } from '../lib/queue';
 import { learnedReferenceBrief } from '../lib/learned';
+import { laneContext } from '../lib/lane-context';
 import { arReadSong, arReadAfterRender } from '../lib/ar-read';
 import { improveSongOnce } from '../lib/will-it-blow';
 import { snapshotLyricVersion, readVersions } from '../lib/lyric-versions';
@@ -614,6 +615,14 @@ export default async function songs(app: FastifyInstance) {
     const charge = await app.chargeCredits({ workspaceId, key: 'full_song_demo', refTable: 'Song', refId: song.id });
     if (!charge.ok) return reply.code(402).send({ error: 'insufficient_credits', ...charge });
 
+    // PHASE 4 loop — this IS a regen, so inject the repair steering stored on the
+    // song's last measured take (from laneContext) as concrete style directives, the
+    // same as createBeatJob. This is where a drifted take gets pushed back in-lane.
+    const lane = await laneContext(workspaceId, genre, song.id);
+    const laneSteer = lane.repair
+      ? lane.repair.split('\n').filter((l) => l.startsWith('- ')).map((l) => l.slice(2).trim()).slice(0, 3)
+      : [];
+
     const job = await prisma.providerJob.create({
       data: { workspaceId, projectId: song.projectId, kind: 'music', provider: songEngine ?? 'suno', status: 'QUEUED', inputJson: { regenerate: true, songId: song.id } as never },
     });
@@ -626,7 +635,7 @@ export default async function songs(app: FastifyInstance) {
           genre, bpm: song.project.bpm ?? 103, withVocals: true, withStems: false, songEngine,
           lyrics: lyricsForSong,
           artistTone: song.project.artist.vocalTone, languages: song.project.artist.languages,
-          dnaTags: [...(dna.tags ?? []), ...styleHints.slice(0, 3)],
+          dnaTags: [...(dna.tags ?? []), ...styleHints.slice(0, 3), ...laneSteer],
         },
       },
     });

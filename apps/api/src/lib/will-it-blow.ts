@@ -34,6 +34,7 @@ import {
   type HitPrediction,
 } from '@afrohit/ai';
 import { learnedReferenceBrief } from './learned';
+import { laneContext } from './lane-context';
 import { arReadSong } from './ar-read';
 import { enqueue } from './queue';
 import { snapshotLyricVersion } from './lyric-versions';
@@ -143,6 +144,12 @@ async function resing(
   const genre = song.project.genre;
   const dna = soundBrief(genre);
   const learned = await learnedReferenceBrief(workspaceId, genre);
+  // PHASE 4 loop — re-sing is a regen; inject the stored repair steering so the
+  // bigger take is pushed back in-lane (the whole point of make-it-bigger + the gate).
+  const lane = await laneContext(workspaceId, genre, song.id);
+  const laneSteer = lane.repair
+    ? lane.repair.split('\n').filter((l) => l.startsWith('- ')).map((l) => l.slice(2).trim()).slice(0, 3)
+    : [];
   let lyricsForSong = body;
   let styleHints: string[] = [];
   const enriched = await enrichLyricsForVocals({
@@ -170,7 +177,7 @@ async function resing(
         genre, bpm: song.project.bpm ?? 103, withVocals: true, withStems: false, songEngine,
         lyrics: lyricsForSong,
         artistTone: song.project.artist.vocalTone, languages: song.project.artist.languages,
-        dnaTags: [...(dna.tags ?? []), ...styleHints.slice(0, 3)],
+        dnaTags: [...(dna.tags ?? []), ...styleHints.slice(0, 3), ...laneSteer],
       },
     },
   });
