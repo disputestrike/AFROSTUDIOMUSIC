@@ -3,6 +3,8 @@ import { musicAdapter } from '@afrohit/ai';
 import { markFailed, markRunning, markSucceeded } from '../lib/jobs';
 import { downloadToBuffer, uploadBytes, ingestRemoteFile } from '../lib/storage';
 import { trimToLoop, assembleBeat, measureAudioQuality, type AssemblyLayer, type AssemblySection } from '../lib/ffmpeg';
+import { overlayFills } from '../lib/fills';
+import { planFills } from '@afrohit/shared';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -141,11 +143,15 @@ export async function processAssembleBeat(p: AssemblePayload) {
   const dir = await mkdtemp(join(tmpdir(), 'mats-'));
   try {
     if (!p.picks.length) throw new Error('no material picked — forge some loops for this genre first');
+    // A 'fill' is a transition, not a bed — keep it OUT of the section layers (it's
+    // overlaid at boundaries below), else it would play continuously under the hook.
+    const bedPicks = p.picks.filter((x) => x.role !== 'fill');
+    if (!bedPicks.length) throw new Error('no bed material — forge drums/bass/chords for this genre first');
     // Pull every picked loop local.
     const layers: AssemblyLayer[] = [];
     const roleIdx = new Map<string, number>();
-    for (let i = 0; i < p.picks.length; i++) {
-      const pick = p.picks[i]!;
+    for (let i = 0; i < bedPicks.length; i++) {
+      const pick = bedPicks[i]!;
       const buf = await downloadToBuffer(pick.url);
       const path = join(dir, `mat${i}.wav`);
       await writeFile(path, buf);
@@ -169,7 +175,34 @@ export async function processAssembleBeat(p: AssemblePayload) {
       { name: 'outro', bars: 4, layerIdx: idx(['percussion', 'log_drum']).length ? idx(['percussion', 'log_drum']) : all.slice(0, 1) },
     ];
     const beatWav = await assembleBeat({ layers, sections, targetBpm: p.bpm });
-    const url = await uploadBytes({ workspaceId: p.workspaceId, kind: 'beats', bytes: beatWav, contentType: 'audio/wav', ext: 'wav' });
+
+    // PHASE 5 — lay fills at the arrangement's KNOWN section boundaries (bar counts
+    // give exact seconds). Gated FILL_OVERLAY=1; best-effort, clean assembly kept on
+    // any failure. A 'fill' loop is excluded from the section LAYERS (it's a
+    // transition, not a bed) and used only here.
+    let beatBytes = beatWav;
+    if (process.env.FILL_OVERLAY === '1') {
+      try {
+        const fillPick = p.picks.find((x) => x.role === 'fill');
+        const fillMat = fillPick ?? (await prisma.materialAsset.findFirst({ where: { workspaceId: p.workspaceId, role: 'fill', OR: [{ genre: p.genre }, { genre: null }] }, orderBy: { createdAt: 'desc' } }));
+        if (fillMat) {
+          const secPerBar = (60 / p.bpm) * 4;
+          const boundaries: number[] = [];
+          let cum = 0;
+          for (const s of sections) { cum += s.bars; boundaries.push(cum * secPerBar); }
+          boundaries.pop(); // no fill after the final section
+          const placements = planFills(p.bpm, cum * secPerBar, boundaries);
+          if (placements.length) {
+            const fillBuf = await downloadToBuffer(fillMat.url);
+            beatBytes = await overlayFills(beatWav, fillBuf, placements.map((f) => f.atS));
+            console.log(`[assemble] overlaid ${placements.length} fills at section boundaries`);
+          }
+        }
+      } catch (err) {
+        console.warn('[assemble] fill overlay failed (clean assembly kept):', (err as Error)?.message);
+      }
+    }
+    const url = await uploadBytes({ workspaceId: p.workspaceId, kind: 'beats', bytes: beatBytes, contentType: 'audio/wav', ext: 'wav' });
     const qc = await measureAudioQuality(url).catch(() => null);
 
     const beat = await prisma.beatAsset.create({
