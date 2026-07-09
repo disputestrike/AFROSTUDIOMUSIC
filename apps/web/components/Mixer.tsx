@@ -48,7 +48,7 @@ function RecordVocalButton({ projectId, onDone }: { projectId: string; onDone: (
       r.onstop = async () => {
         stream.getTracks().forEach((tr) => tr.stop());
         setRec(null);
-        const dur = secs || 1;
+        const dur = Math.max(1, secs);
         setSecs(0);
         setStatus('Uploading your take…');
         try {
@@ -64,10 +64,8 @@ function RecordVocalButton({ projectId, onDone }: { projectId: string; onDone: (
     } catch { setStatus('Mic unavailable — allow microphone access in your browser.'); }
   }
   return (
-    <>
-    <div className="mb-2 flex items-center justify-between"><span className="text-xs font-semibold text-slate-300">Your voice on this record</span><RecordVocalButton projectId={projectId} onDone={() => setVocalBump((x) => x + 1)} /></div>
     <span className="flex items-center gap-2">
-      <button onClick={toggle} className={`rounded px-3 py-1 text-xs font-medium ${rec ? 'bg-red-600 text-white' : 'bg-slate-800 text-slate-200 hover:bg-slate-700'}`}>
+      <button onClick={toggle} className={rec ? 'rounded bg-red-600 px-3 py-1 text-xs font-medium text-white' : 'rounded bg-slate-800 px-3 py-1 text-xs font-medium text-slate-200 hover:bg-slate-700'}>
         {rec ? `■ Stop (0:${String(secs).padStart(2, '0')})` : '● Record vocal'}
       </button>
       {status && <span className="text-[11px] text-slate-400">{status}</span>}
@@ -150,6 +148,7 @@ export function Mixer({ projectId }: { projectId: string }) {
 
   return (
     <section className="mt-8">
+      <div className="mb-2 flex items-center justify-between"><span className="text-xs font-semibold text-slate-300">Your voice on this record</span><RecordVocalButton projectId={projectId} onDone={() => setVocalBump((x) => x + 1)} /></div>
       <div className="flex items-center justify-between">
         <div>
           <h2 className="font-display text-2xl">Mixer console</h2>
@@ -320,6 +319,5 @@ function Knob({
       <input type="range" min={min} max={max} step={step} value={value} onChange={(e) => onChange(Number(e.target.value))} className="h-1 flex-1 accent-afrobrand-500" />
       <span className="w-8 shrink-0 text-right tabular-nums text-slate-300">{fmt ? fmt(value) : `${value}${unit ?? ''}`}</span>
     </label>
-  </>
   );
 }

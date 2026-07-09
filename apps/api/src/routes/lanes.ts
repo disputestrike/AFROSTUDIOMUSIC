@@ -96,7 +96,6 @@ export default async function lanes(app: FastifyInstance) {
   // This is the answer to "we have 94 songs and 1,394 hooks, why aren't we using
   // them": measured vs unmeasured vs authentic, plus one honest next step per lane.
   app.get('/inventory', async (req) => {
-    const {
     await requireAdmin(req); // owner dashboard — never public
     const { workspaceId } = requireAuth(req);
     const lanes = await Promise.all(
