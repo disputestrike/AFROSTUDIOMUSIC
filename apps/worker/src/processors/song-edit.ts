@@ -102,8 +102,14 @@ const FX_CHAIN: Record<string, (amt: number) => string> = {
 
 /** Demucs the record, apply an fx chain to ONE stem (or gate a region on vocals), remix all four. */
 async function stemSurgery(sourceUrl: string, target: 'vocals' | 'drums' | 'bass' | 'other', chain: string): Promise<Buffer> {
-  const stems = await separateStems({ audioUrl: sourceUrl, mode: 'full' });
-  const urls = stems as unknown as Record<string, string | undefined>;
+  const res = await separateStems({ audioUrl: sourceUrl, mode: 'full' });
+  const byRole = new Map(res.stems.map((st) => [st.role.toLowerCase(), st.url]));
+  const urls: Record<string, string | undefined> = {
+    vocals: byRole.get('vocals') ?? byRole.get('vocal'),
+    drums: byRole.get('drums') ?? byRole.get('drum'),
+    bass: byRole.get('bass'),
+    other: byRole.get('other') ?? byRole.get('instrumental') ?? res.instrumentalUrl,
+  };
   const need: Array<'vocals' | 'drums' | 'bass' | 'other'> = ['vocals', 'drums', 'bass', 'other'];
   const dir = await mkdtemp(join(tmpdir(), 'stemfx-'));
   try {
