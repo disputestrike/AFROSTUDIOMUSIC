@@ -1,5 +1,5 @@
 import type { FastifyInstance } from 'fastify';
-import { anthropicPing, tavilyKey, braveKey, tavilyPing, researchTrends, soundBrief, prompts, joinBriefs, claudeRaw } from '@afrohit/ai';
+import { anthropicPing, openaiPing, tavilyKey, braveKey, tavilyPing, researchTrends, soundBrief, prompts, joinBriefs, claudeRaw } from '@afrohit/ai';
 import { requireAuth } from '../middleware/auth';
 import { freshnessBrief, learnedReferenceBrief, learnedLyricCraftBrief } from '../lib/learned';
 import { lexiconPalette } from '../lib/lexicon';
@@ -11,14 +11,24 @@ import { fuseSoundDna } from '../lib/fuse';
  */
 export default async function debug(app: FastifyInstance) {
   app.get('/ai', async () => {
-    const [anthropic, tavily, trend] = await Promise.all([
+    const [anthropic, openai, tavily, trend] = await Promise.all([
       anthropicPing(),
+      openaiPing(),
       tavilyPing(),
       researchTrends({ genre: 'afrobeats' }),
     ]);
+    // The brain is DOWN when neither text model can be reached — every LLM feature
+    // (lyrics, hooks, A&R, reference analysis, Zap craft-learning) fails or goes
+    // hollow. Surface it loudly so a credit top-up is the obvious fix, not a bug hunt.
+    const brainOk = anthropic.ok || openai.ok;
     return {
-      openaiKey: !!process.env.OPENAI_API_KEY,
+      brainOk,
+      brainStatus: brainOk
+        ? `OK via ${anthropic.ok ? 'Claude' : 'OpenAI'}`
+        : 'DOWN — both Claude and OpenAI unreachable (usually exhausted credits). Top up Anthropic and/or OpenAI; lyrics/hooks/A&R/analysis/Zap-learn will fail until then.',
       anthropic,
+      openai,
+      audd: { configured: !!process.env.AUDD_API_TOKEN }, // Zap song ID needs this
       tavily: { configured: !!tavilyKey(), ...tavily },
       braveConfigured: !!braveKey(),
       trends: trend ? { ok: true, source: trend.source, sample: trend.digest.slice(0, 120) } : { ok: false },

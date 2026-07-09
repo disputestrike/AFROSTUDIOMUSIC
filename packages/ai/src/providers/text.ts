@@ -46,6 +46,18 @@ export async function responsesJson<T>(opts: ResponsesJsonOptions): Promise<T> {
   return JSON.parse(content) as T;
 }
 
+/** Health check for the OpenAI fallback brain — mirrors anthropicPing. */
+export async function openaiPing(): Promise<{ ok: boolean; model: string; error?: string }> {
+  const model = MODELS.draft;
+  if (!process.env.OPENAI_API_KEY) return { ok: false, model, error: 'no OPENAI_API_KEY' };
+  try {
+    await responsesJson<{ ok: boolean }>({ system: 'Reply with JSON {"ok":true} only.', user: 'ping', maxOutputTokens: 20, temperature: 0 });
+    return { ok: true, model };
+  } catch (e) {
+    return { ok: false, model, error: (e as Error).message.slice(0, 300) };
+  }
+}
+
 /**
  * Tool-calling helper used by the studio-chat orchestrator.
  * Returns either a content message or a list of tool calls to execute.
