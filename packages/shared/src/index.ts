@@ -5,3 +5,4 @@ export * from './dsp-analysis';
 export * from './lane-profile';
 export * from './lane-compliance';
 export * from './lane-repair';
+export * from './lane-material';
