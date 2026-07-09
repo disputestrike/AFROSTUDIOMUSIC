@@ -47,6 +47,21 @@ export function dspAvailable(): Promise<boolean> {
   return _dspCache;
 }
 
+/** The log-drum TRUTH-GATE status (from py/fixtures/logdrum_calibration.json). */
+export interface LogdrumStatus { calibrated: boolean; reason?: string | null; separationMargin?: number | null }
+export function logdrumCalibrationStatus(): Promise<LogdrumStatus> {
+  return new Promise((resolve) => {
+    const p = spawn(PYTHON, [scriptPath(), '--calibration-status']);
+    let out = '';
+    p.stdout.on('data', (d) => (out += d.toString()));
+    p.on('error', () => resolve({ calibrated: false, reason: 'dsp-unavailable' }));
+    p.on('exit', () => {
+      try { resolve(JSON.parse(out.trim().split('\n').filter(Boolean).pop() || '{}')); }
+      catch { resolve({ calibrated: false, reason: 'status-parse-failed' }); }
+    });
+  });
+}
+
 function runPython(args: string[]): Promise<string> {
   return new Promise((resolve, reject) => {
     const p = spawn(PYTHON, args);

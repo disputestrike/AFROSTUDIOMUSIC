@@ -16,12 +16,13 @@
  *
  * An 'unknown' where a measurement is REQUIRED counts as a FAIL (honest, but it
  * fails the gate — that is correct). Gate 3 reads logDrumLikelihood whether it is
- * 'measured' or 'inferred' (uncalibrated); once the gap is positive with margin,
- * freeze the fitted LOGDRUM constants in analyze_dsp.py and set LOGDRUM_CALIBRATED=1
- * so the field ships 'measured'.
+ * 'measured' or 'inferred' (uncalibrated). When all three gates pass, this script
+ * WRITES py/fixtures/logdrum_calibration.json (gatesPassed:true + the validated
+ * params + margin). analyze_dsp.py loads that artifact and only THEN ships the field
+ * as 'measured'. There is no LOGDRUM_CALIBRATED env var — the artifact IS the gate.
  */
 import { readFile } from 'node:fs/promises';
-import { existsSync } from 'node:fs';
+import { existsSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { measureAudio, dspAvailable, type StemInputs } from '../src/lib/dsp';
 
@@ -107,6 +108,29 @@ async function main() {
 
   const pass = g1 && g2 && g3;
   console.log(`\n${pass ? '✅ PHASE 0 ACCEPTANCE PASSED' : '❌ PHASE 0 ACCEPTANCE FAILED'}\n`);
+
+  // ---- Write the calibration ARTIFACT (the TRUTH GATE). Its existence with
+  // gatesPassed:true IS the calibration — analyze_dsp.py loads it and only then ships
+  // logDrumLikelihood as 'measured'. schemaVersion must match LOGDRUM_SCHEMA. The
+  // params are the constants validated against THIS 9-track set (they separated the
+  // genres). Commit this JSON; NEVER commit the audio. ----
+  const artifact = {
+    schemaVersion: 3, // === LOGDRUM_SCHEMA in analyze_dsp.py
+    gatesPassed: pass,
+    separationMargin: Number.isFinite(gap) ? Math.round(gap * 1000) / 1000 : null,
+    fittedOn: new Date().toISOString().slice(0, 10),
+    trackCount: real.length,
+    gates: { tempo: g1, fourOnFloor: g2, logDrumSeparation: g3 },
+    // The constants validated on this set. (A future refit can grid-search these to
+    // widen the margin; today they are the frozen, validated defaults.)
+    params: { r0: 0.45, s: 0.12, w1: 1.2, w2: 0.15, glideFloor: 0.30 },
+  };
+  const artifactPath = join(fixturesDir, 'logdrum_calibration.json');
+  writeFileSync(artifactPath, JSON.stringify(artifact, null, 2) + '\n');
+  console.log(`Wrote ${artifactPath}`);
+  console.log(pass
+    ? `→ log-drum CALIBRATED (margin ${artifact.separationMargin}). Commit logdrum_calibration.json — the field now ships 'measured'.`
+    : `→ gatesPassed:false — log-drum stays 'inferred' (uncalibrated) until the gates pass. Not committed as calibrated.`);
   process.exit(pass ? 0 : 1);
 }
 

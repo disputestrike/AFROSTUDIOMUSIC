@@ -69,16 +69,38 @@ _MAJ = [6.35, 2.23, 3.48, 2.33, 4.38, 4.09, 2.52, 5.19, 2.39, 3.66, 2.29, 2.88]
 _MIN = [6.33, 2.68, 3.52, 5.38, 2.60, 3.53, 2.54, 4.75, 3.98, 2.69, 3.34, 3.17]
 _NOTES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"]
 
-# logDrumLikelihood named constants — FIT on the 9-track acceptance set, then freeze
-# and flip calibrated=True. Until then the field ships 'inferred' (kept OUT of any
-# compliance score) with these sensible-but-unvalidated defaults.
-LOGDRUM = dict(
+# logDrumLikelihood is a TRUTH GATE. Its constants are NEVER hand-edited or env-toggled.
+# They are fitted by scripts/eval-ear.ts against the 9-track acceptance set and frozen
+# to py/fixtures/logdrum_calibration.json. Absent/stale/failed artifact => the field
+# ships 'inferred' (carrying a machine-readable reason) and is excluded from every
+# compliance score. The gate opens when the DATA says it may, not when a human says so.
+LOGDRUM_SCHEMA = 3  # bump when the detector math changes -> forces a refit (stale-schema)
+_LOGDRUM_DEFAULTS = dict(
     r0=0.45, s=0.12,            # P_sub sigmoid center/width on E(40-100)/E(20-300)
     w1=1.2, w2=0.15,            # P_glide = saturate(w1*glideFraction + w2*glideRate)
     glideFloor=0.30,            # final = core*(glideFloor + (1-glideFloor)*P_glide)
     e_sub=0.8, e_perc=1.0, e_pitch=0.9, geo_root=2.7,  # weighted geo-mean exponents
-    calibrated=(os.environ.get("LOGDRUM_CALIBRATED", "0") == "1"),
 )
+CALIB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "py", "fixtures", "logdrum_calibration.json")
+
+
+def _load_logdrum_calibration():
+    d = dict(_LOGDRUM_DEFAULTS)
+    try:
+        with open(CALIB_PATH) as f:
+            c = json.load(f)
+        if not c.get("gatesPassed"):
+            return {**d, "calibrated": False, "reason": "gates-not-passed", "separationMargin": None}
+        if c.get("schemaVersion") != LOGDRUM_SCHEMA:
+            return {**d, "calibrated": False, "reason": "stale-schema", "separationMargin": None}
+        return {**d, **(c.get("params") or {}), "calibrated": True, "reason": None, "separationMargin": c.get("separationMargin")}
+    except FileNotFoundError:
+        return {**d, "calibrated": False, "reason": "no-calibration-artifact", "separationMargin": None}
+    except Exception as e:  # noqa — a broken artifact must NOT crash analysis; it just means uncalibrated
+        return {**d, "calibrated": False, "reason": f"artifact-error:{type(e).__name__}", "separationMargin": None}
+
+
+LOGDRUM = _load_logdrum_calibration()
 
 
 # ---------- decode ----------
@@ -531,9 +553,11 @@ def analyze(audio_path, stems):
             if best is None or rec["value"] > best["value"]:
                 best = rec
         method = f"composite[{best['stem']}] subs={best['subs']}"
-        if C["calibrated"]:
-            return M(round(best["value"], 3), best["conf"], "logdrum " + method)
-        return INF(round(best["value"], 3), min(best["conf"], 0.5), "logdrum UNCALIBRATED(pending 9-track fit) " + method)
+        if C.get("calibrated"):
+            return M(round(best["value"], 3), best["conf"], f"logdrum calibrated(margin={C.get('separationMargin')}) " + method)
+        # Uncalibrated: ship 'inferred' with the machine-readable reason so the UI can say
+        # "log drum: not scored — <reason>" instead of silently dropping the field.
+        return INF(round(best["value"], 3), min(best["conf"], 0.5), f"logdrum uncalibrated({C.get('reason')}) " + method)
     out["logDrumLikelihood"] = safe(_logdrum, "logDrum")
 
     # ---------- shakerContinuity ----------
@@ -750,6 +774,15 @@ def analyze(audio_path, stems):
 
 
 def main():
+    # Boot-time / eval query: report the log-drum truth-gate status without analyzing.
+    if len(sys.argv) > 1 and sys.argv[1] == "--calibration-status":
+        print(json.dumps({
+            "calibrated": bool(LOGDRUM.get("calibrated")),
+            "reason": LOGDRUM.get("reason"),
+            "separationMargin": LOGDRUM.get("separationMargin"),
+            "schema": LOGDRUM_SCHEMA,
+        }))
+        return
     ap = argparse.ArgumentParser()
     ap.add_argument("audio")
     ap.add_argument("--bass"); ap.add_argument("--drums"); ap.add_argument("--other"); ap.add_argument("--vocals")

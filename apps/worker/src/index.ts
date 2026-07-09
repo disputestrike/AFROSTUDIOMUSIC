@@ -141,3 +141,18 @@ process.on('SIGTERM', () => void shutdown('SIGTERM'));
 process.on('SIGINT', () => void shutdown('SIGINT'));
 
 log.info('worker up, listening on queues: music, voice, image, video, mix, master, export, cron');
+
+// PATCH 2 — announce the log-drum TRUTH-GATE status once at boot. Never silent: the
+// operator must always know whether the log drum is calibrated (voting in lane scores)
+// or excluded (uncalibrated) — no fabricated measurements slip in unnoticed.
+void (async () => {
+  try {
+    const { dspAvailable, logdrumCalibrationStatus } = await import('./lib/dsp');
+    if (!(await dspAvailable())) { log.warn('logdrum: DSP engine unavailable — the ear cannot run (lane scoring disabled)'); return; }
+    const cal = await logdrumCalibrationStatus();
+    if (cal.calibrated) log.info(`logdrum: CALIBRATED (margin ${cal.separationMargin}) — included in lane scoring`);
+    else log.warn(`logdrum: UNCALIBRATED (${cal.reason}) — excluded from lane scoring until eval-ear.ts passes on real reference tracks`);
+  } catch (err) {
+    log.warn({ err }, 'logdrum: could not read calibration status');
+  }
+})();
