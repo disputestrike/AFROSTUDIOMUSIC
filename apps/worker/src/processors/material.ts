@@ -181,7 +181,7 @@ export async function processAssembleBeat(p: AssemblePayload) {
     // any failure. A 'fill' loop is excluded from the section LAYERS (it's a
     // transition, not a bed) and used only here.
     let beatBytes = beatWav;
-    if (process.env.FILL_OVERLAY === '1') {
+    if (process.env.FILL_OVERLAY !== '0') {
       try {
         const fillPick = p.picks.find((x) => x.role === 'fill');
         const fillMat = fillPick ?? (await prisma.materialAsset.findFirst({ where: { workspaceId: p.workspaceId, role: 'fill', OR: [{ genre: p.genre }, { genre: null }] }, orderBy: { createdAt: 'desc' } }));

@@ -71,10 +71,10 @@ export async function processAnalyze(p: AnalyzePayload) {
     try {
       if (await dspAvailable()) {
         // Stems let log-drum/shaker/kick/clap run at full confidence (kick->drums,
-        // log-drum->bass — the only clean disambiguation). Gated behind DSP_STEMS=1
-        // because Demucs on Replicate adds cost+latency; best-effort, full-mix on fail.
+        // log-drum->bass — the only clean disambiguation). Default-ON per the FINAL
+        // INSTRUCTION (off only when DSP_STEMS=0); best-effort, full-mix on any failure.
         let stems: StemInputs | undefined;
-        if (process.env.DSP_STEMS === '1') {
+        if (process.env.DSP_STEMS !== '0') {
           try {
             const sep = await separateStems({ audioUrl: p.url, mode: 'full', apiKey: ws?.musicApiKey ?? undefined });
             const byRole = (r: string) => sep.stems.find((s) => s.role === r)?.url;
