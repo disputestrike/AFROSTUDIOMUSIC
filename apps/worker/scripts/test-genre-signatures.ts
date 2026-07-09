@@ -14,6 +14,8 @@ for (const g of GENRES) {
   assert(sig.tags.length >= 2 && sig.tags.some((t) => INSTRUMENT_WORDS.test(t)), `${g}: >=2 tags incl a concrete instrument`);
   assert(/no drums$/.test(sig.melodyPrompt.trim()), `${g}: melody prompt ends 'no drums' (the groove owns the drums)`);
   assert([8, 16, 32].includes(sig.fillBars), `${g}: fill cadence declared`);
+  assert(sig.bpm >= 60 && sig.bpm <= 180, `${g}: natural tempo declared (Create auto-sets it)`);
+  assert(Array.isArray(sig.languages) && sig.languages.length >= 1, `${g}: default languages declared`);
   assert(sig.kitRoles.includes('fill') && sig.kitRoles.includes('chords'), `${g}: kit demands fill + chords (the two Benjamin caught missing)`);
 }
 assert(genreSignature('__unknown__').tags.length >= 1, 'unknown genres get a safe fallback');

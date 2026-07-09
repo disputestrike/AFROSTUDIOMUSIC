@@ -97,7 +97,7 @@ export async function processOwnEngine(p: OwnEnginePayload): Promise<void> {
   await markRunning(p.jobId);
   const notes: string[] = [];
   try {
-    const bpm = p.bpm ?? 112;
+    const bpm = p.bpm ?? genreSignature(p.genre).bpm ?? 112;
 
     // L1a — ensure the kit: synth-forge any missing signature role (owned, seconds).
     let picks = await pickKit(p.workspaceId, p.genre, bpm);

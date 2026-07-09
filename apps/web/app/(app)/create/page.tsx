@@ -1,4 +1,5 @@
 'use client';
+import { genreSignature } from '@afrohit/shared';
 
 /**
  * The front door. Pick your sound → "Create the song" produces it RIGHT HERE
@@ -120,6 +121,8 @@ export default function CreatePage() {
   const [genreTouched, setGenreTouched] = useState(false);
   const [mood, setMood] = useState('confident');
   const [bpm, setBpm] = useState(103);
+  const bpmTouched = useRef(false);
+  const langsTouched = useRef(false);
   const [langs, setLangs] = useState<string[]>(['pcm', 'en']);
   const [vibe, setVibe] = useState('');
   const [songName, setSongName] = useState('');
@@ -154,7 +157,7 @@ export default function CreatePage() {
     const m = q.get('mood');
     if (m && MOODS.includes(m)) setMood(m);
     const b = Number(q.get('bpm'));
-    if (b >= 60 && b <= 180) setBpm(Math.round(b));
+    if (b >= 60 && b <= 180) { setBpm(Math.round(b)); bpmTouched.current = true; }
     const v = q.get('vibe');
     if (v) setVibe(v.slice(0, 300));
     const inf = q.get('influence');
@@ -162,7 +165,7 @@ export default function CreatePage() {
     const lg = q.get('languages');
     if (lg) {
       const arr = lg.split(',').map((s) => s.trim()).filter((x) => LANGS.some((l) => l.value === x));
-      if (arr.length) setLangs(arr);
+      if (arr.length) { setLangs(arr); langsTouched.current = true; }
     }
     if (q.get('produce') === '1') setAutoProduce(true);
     // Clean the URL so a refresh doesn't re-fire the auto-create.
@@ -181,7 +184,21 @@ export default function CreatePage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [autoProduce]);
 
-  const toggleLang = (l: string) => setLangs((p) => (p.includes(l) ? p.filter((x) => x !== l) : [...p, l]));
+  // SALIENCE: the software knows each lane's natural tempo and tongue — picking a
+  // genre sets them; fusing two BLENDS the tempo; the user's touch always wins.
+  useEffect(() => {
+    const sigs = genres.slice(0, 2).map((g) => genreSignature(g));
+    if (!sigs.length) return;
+    const blend = Math.round(sigs.reduce((a, x) => a + x.bpm, 0) / sigs.length);
+    if (!bpmTouched.current) setBpm(blend);
+    if (!langsTouched.current) {
+      const cand = [...new Set(sigs.flatMap((x) => x.languages))].filter((l) => LANGS.some((x) => x.value === l));
+      if (cand.length) setLangs(cand);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [genres]);
+
+  const toggleLang = (l: string) => { langsTouched.current = true; setLangs((p) => (p.includes(l) ? p.filter((x) => x !== l) : [...p, l])); };
   const toggleGenre = (g: string) =>
     setGenres((p) => {
       // The FIRST manual pick REPLACES the default backbone — so you can switch
@@ -582,7 +599,7 @@ export default function CreatePage() {
       </div>
       <div className="mt-6">
         <div className="mb-2 flex justify-between text-sm text-slate-400"><span>Tempo</span><span className="tabular-nums text-slate-200">{bpm} BPM</span></div>
-        <input type="range" min={60} max={180} value={bpm} onChange={(e) => setBpm(Number(e.target.value))} className="w-full accent-afrobrand-500" />
+        <input type="range" min={60} max={180} value={bpm} onChange={(e) => { bpmTouched.current = true; setBpm(Number(e.target.value)); }} className="w-full accent-afrobrand-500" />
       </div>
       <div className="mt-6"><div className="mb-2 text-sm text-slate-400">Languages</div>
         <div className="flex flex-wrap gap-2">{LANGS.map((l) => (
