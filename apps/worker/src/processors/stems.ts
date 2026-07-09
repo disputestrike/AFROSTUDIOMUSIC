@@ -10,6 +10,8 @@ interface StemsPayload {
   songId: string;
   beatId?: string;
   mode?: 'instrumental' | 'full';
+  /** Override the audio to separate (e.g. a specific VERSION's master URL) — defaults to the beat. */
+  sourceUrl?: string;
 }
 
 /**
@@ -25,7 +27,9 @@ export async function processStems(p: StemsPayload) {
       ? await prisma.beatAsset.findFirstOrThrow({ where: { id: p.beatId } })
       : await prisma.beatAsset.findFirstOrThrow({ where: { songId: p.songId }, orderBy: { createdAt: 'desc' } });
 
-    const result = await separateStems({ audioUrl: beat.url, apiKey: ws?.musicApiKey ?? undefined, mode: p.mode ?? 'instrumental' });
+    // Separate the requested version's audio when given (per-version instrumental),
+    // else the beat. Result stems still attach to the beat row for download/remix.
+    const result = await separateStems({ audioUrl: p.sourceUrl || beat.url, apiKey: ws?.musicApiKey ?? undefined, mode: p.mode ?? 'instrumental' });
     if (!result.stems.length) throw new Error('stem separation returned no audio');
 
     // Re-host to our bucket (parallel), then persist as Stem rows.

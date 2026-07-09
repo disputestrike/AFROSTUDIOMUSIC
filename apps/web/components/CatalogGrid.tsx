@@ -51,7 +51,7 @@ interface VersionsResp {
   songId: string;
   versionLabel: string | null;
   hasBigger: boolean;
-  audioVersions: Array<{ label: string; url: string; at: string }>;
+  audioVersions: Array<{ index: number; label: string; url: string; at: string; isCurrent?: boolean; dl?: string; canRevert?: boolean }>;
   lyricVersions: Array<{ label: string; title: string | null; body: string; at: string | null }>;
 }
 
@@ -76,6 +76,39 @@ export default function CatalogGrid({ initial }: { initial: SongRow[] }) {
     } catch (e) {
       flash((e as Error).message || 'Could not load versions');
       setCompare(null);
+    }
+  }
+
+  // Make ANY prior take the current version, then refresh the modal + the card audio.
+  async function revertAudio(index: number) {
+    const data = compare?.data;
+    if (!data) return;
+    setBusy(`${data.songId}:revert${index}`);
+    try {
+      await api.post(`/songs/${data.songId}/versions/revert`, { index });
+      flash('Reverted — that take is now the current version.');
+      const fresh = await api.get<VersionsResp>(`/songs/${data.songId}/versions`);
+      setCompare((c) => (c ? { ...c, data: fresh } : c));
+      router.refresh(); // update the catalog card's current audio
+    } catch (e) {
+      flash((e as Error).message || 'Revert failed');
+    } finally {
+      setBusy('');
+    }
+  }
+
+  // Kick off a Demucs instrumental for a SPECIFIC take (downloadable when it finishes).
+  async function versionInstrumental(index: number) {
+    const data = compare?.data;
+    if (!data) return;
+    setBusy(`${data.songId}:inst${index}`);
+    try {
+      await api.post(`/songs/${data.songId}/versions/instrumental`, { index });
+      flash('Instrumental is separating — it’ll be downloadable from Download → stems shortly.');
+    } catch (e) {
+      flash((e as Error).message || 'Could not start instrumental');
+    } finally {
+      setBusy('');
     }
   }
 
@@ -481,8 +514,36 @@ export default function CatalogGrid({ initial }: { initial: SongRow[] }) {
                   <div className="grid gap-2 sm:grid-cols-2">
                     {compare.data?.audioVersions.map((a, i) => (
                       <div key={i} className={`rounded-xl border p-2.5 ${a.label.includes('Original') ? 'border-white/10 bg-white/5' : 'border-afrobrand-500/30 bg-afrobrand-500/5'}`}>
-                        <div className="mb-1 text-xs font-medium text-slate-200">{a.label}</div>
+                        <div className="mb-1 flex items-center justify-between gap-2">
+                          <span className="text-xs font-medium text-slate-200">{a.label}</span>
+                          {a.isCurrent && <span className="rounded-full bg-emerald-500/15 px-1.5 py-0.5 text-[10px] text-emerald-300">current</span>}
+                        </div>
                         <audio controls preload="none" src={a.url} className="w-full" />
+                        <div className="mt-2 flex flex-wrap gap-1.5">
+                          <a
+                            href={api.fileHref(a.dl ?? `/songs/${compare.data!.songId}/file?type=version&index=${a.index}`)}
+                            download
+                            target="_blank"
+                            rel="noreferrer"
+                            className="inline-flex items-center gap-1 rounded-full border border-white/10 bg-white/5 px-2.5 py-1 text-xs text-slate-300 hover:bg-white/10"
+                          >
+                            <Download className="h-3.5 w-3.5" /> Download
+                          </a>
+                          {a.canRevert && (
+                            <Action
+                              label={isBusy(compare.data!.songId, `revert${a.index}`) ? 'Reverting…' : 'Make current'}
+                              icon={<RefreshCw className="h-3.5 w-3.5" />}
+                              onClick={() => void revertAudio(a.index)}
+                              busy={isBusy(compare.data!.songId, `revert${a.index}`)}
+                            />
+                          )}
+                          <Action
+                            label={isBusy(compare.data!.songId, `inst${a.index}`) ? 'Starting…' : 'Instrumental'}
+                            icon={<Music2 className="h-3.5 w-3.5" />}
+                            onClick={() => void versionInstrumental(a.index)}
+                            busy={isBusy(compare.data!.songId, `inst${a.index}`)}
+                          />
+                        </div>
                       </div>
                     ))}
                     {!compare.data?.audioVersions.length && <div className="text-xs text-slate-500">No audio takes found.</div>}

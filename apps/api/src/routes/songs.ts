@@ -265,9 +265,14 @@ export default async function songs(app: FastifyInstance) {
     const rows = (song.masters.length ? song.masters : song.beats).map((m) => ({ url: m.url, at: m.createdAt }));
     const audio = rows.filter((r, i) => i === 0 || r.url !== rows[i - 1]!.url);
     const audioVersions = audio.map((a, i) => ({
+      index: i,
       label: audio.length === 1 ? 'Version' : i === audio.length - 1 ? 'Bigger (current)' : i === 0 ? 'Original' : `Take ${i + 1}`,
       url: a.url,
       at: a.at,
+      isCurrent: i === audio.length - 1,
+      // per-version download (proxied, clean filename) + a revert affordance for the older takes
+      dl: `/songs/${song.id}/file?type=version&index=${i}`,
+      canRevert: i !== audio.length - 1,
     }));
 
     // Lyric takes: the current (bigger) body first, then the snapshot history
@@ -280,6 +285,53 @@ export default async function songs(app: FastifyInstance) {
 
     const hasBigger = /bigger/i.test(song.versionLabel ?? '') || audioVersions.length > 1 || lyricVersions.length > 1;
     return { songId: song.id, versionLabel: song.versionLabel, hasBigger, audioVersions, lyricVersions };
+  });
+
+  // ---- Revert audio to ANY prior version (make that take the current one) ----
+  // Additive: appends a new master pointing at the chosen take, so nothing is lost
+  // and the revert is itself reversible (newest take is always "current").
+  app.post<{ Params: { id: string }; Body: { index?: number } }>('/:id/versions/revert', async (req, reply) => {
+    const { workspaceId } = requireAuth(req);
+    const idx = Math.max(0, Number(req.body?.index ?? 0));
+    const song = await prisma.song.findFirst({
+      where: { id: req.params.id, workspaceId },
+      include: { masters: { orderBy: { createdAt: 'asc' } }, beats: { orderBy: { createdAt: 'asc' } } },
+    });
+    if (!song) return reply.code(404).send({ error: 'song_not_found' });
+    const rows = (song.masters.length ? song.masters : song.beats).map((m) => ({ url: m.url }));
+    const audio = rows.filter((r, i) => i === 0 || r.url !== rows[i - 1]!.url);
+    const target = audio[idx];
+    if (!target) return reply.code(400).send({ error: 'no_such_version', have: audio.length });
+    if (idx === audio.length - 1) return { ok: true, alreadyCurrent: true };
+    const label = idx === 0 ? 'Original' : `Take ${idx + 1}`;
+    const master = await prisma.master.create({
+      data: { projectId: song.projectId, songId: song.id, preset: 'reverted', url: target.url, approved: true },
+    });
+    return { ok: true, revertedTo: label, masterId: master.id, url: target.url };
+  });
+
+  // ---- Instrumental for a SPECIFIC version (Demucs on that take) ----
+  app.post<{ Params: { id: string }; Body: { index?: number } }>('/:id/versions/instrumental', async (req, reply) => {
+    const { workspaceId } = requireAuth(req);
+    const idx = Math.max(0, Number(req.body?.index ?? 0));
+    const song = await prisma.song.findFirst({
+      where: { id: req.params.id, workspaceId },
+      include: { masters: { orderBy: { createdAt: 'asc' } }, beats: { orderBy: { createdAt: 'desc' }, take: 1 } },
+    });
+    if (!song) return reply.code(404).send({ error: 'song_not_found' });
+    const rows = song.masters.map((m) => ({ url: m.url }));
+    const ded = rows.filter((r, i) => i === 0 || r.url !== rows[i - 1]!.url);
+    const target = ded[idx] ?? ded[ded.length - 1];
+    const beat = song.beats[0];
+    if (!target || !beat) return reply.code(400).send({ error: 'no_audio_to_separate' });
+    const charge = await app.chargeCredits({ workspaceId, key: 'beat_idea_short_30s', refTable: 'Song', refId: song.id });
+    if (!charge.ok) return reply.code(402).send({ error: 'insufficient_credits', ...charge });
+    const job = await prisma.providerJob.create({
+      data: { workspaceId, projectId: song.projectId, kind: 'stems', provider: 'replicate', status: 'QUEUED', inputJson: { songId: song.id, beatId: beat.id, mode: 'instrumental', sourceUrl: target.url } as never },
+    });
+    await enqueue({ queue: app.queues.music, name: 'stems', payload: { jobId: job.id, workspaceId, projectId: song.projectId, songId: song.id, beatId: beat.id, mode: 'instrumental', sourceUrl: target.url } });
+    reply.code(202);
+    return { jobId: job.id, status: 'queued', versionIndex: idx, note: 'Instrumental is separating — download it from this version when the job completes.' };
   });
 
   // ---- Download manifest (audio + stems + cover + lyrics) ----
@@ -330,6 +382,19 @@ export default async function songs(app: FastifyInstance) {
     if (type === 'master' && song.masters[0]) { url = song.masters[0].url; ext = 'wav'; }
     else if (type === 'mix' && song.mixes[0]) { url = song.mixes[0].url; ext = 'wav'; }
     else if (type === 'stem' && req.query.stem) { url = beat?.stems.find((s) => s.role === req.query.stem)?.url; ext = 'mp3'; }
+    else if (type === 'version') {
+      // Download a SPECIFIC take by its index in the versions list (owned URLs only,
+      // resolved server-side — no arbitrary URL, no SSRF).
+      const idx = Math.max(0, Number((req.query as { index?: string }).index ?? 0));
+      const [ms, bs] = await Promise.all([
+        prisma.master.findMany({ where: { songId: song.id }, orderBy: { createdAt: 'asc' }, select: { url: true } }),
+        prisma.beatAsset.findMany({ where: { songId: song.id }, orderBy: { createdAt: 'asc' }, select: { url: true, format: true } }),
+      ]);
+      const rows = ms.length ? ms.map((m) => ({ url: m.url, format: 'wav' })) : bs.map((b) => ({ url: b.url, format: b.format ?? 'mp3' }));
+      const ded = rows.filter((r, i) => i === 0 || r.url !== rows[i - 1]!.url);
+      const t = ded[idx];
+      if (t) { url = t.url; ext = ms.length ? 'wav' : (t.format ?? 'mp3'); }
+    }
     else if (beat) { url = beat.url; ext = beat.format ?? 'mp3'; }
     if (!url) return reply.code(404).send({ error: 'no_such_asset' });
 
