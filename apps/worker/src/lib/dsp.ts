@@ -29,13 +29,22 @@ function scriptPath(): string {
   return candidates.find((p) => existsSync(p)) ?? candidates[1] ?? 'analyze_dsp.py';
 }
 
-/** Is the DSP engine actually installed? (python3 + librosa importable) */
-export async function dspAvailable(): Promise<boolean> {
-  return new Promise((resolve) => {
+/** Is the DSP engine actually installed? (python3 + librosa importable)
+ * Memoized — the answer can't change within a process lifetime, so we probe ONCE
+ * instead of spawning a python import on every analyze/render (that added seconds
+ * of latency to each job). */
+let _dspCache: Promise<boolean> | null = null;
+export function dspAvailable(): Promise<boolean> {
+  if (_dspCache) return _dspCache;
+  _dspCache = new Promise<boolean>((resolve) => {
     const p = spawn(PYTHON, ['-c', 'import librosa, numpy, soundfile']);
-    p.on('error', () => resolve(false));
-    p.on('exit', (code) => resolve(code === 0));
+    let settled = false;
+    const done = (v: boolean) => { if (!settled) { settled = true; resolve(v); } };
+    const timer = setTimeout(() => { p.kill('SIGKILL'); done(false); }, 15_000); // never hang on the probe
+    p.on('error', () => { clearTimeout(timer); done(false); });
+    p.on('exit', (code) => { clearTimeout(timer); done(code === 0); });
   });
+  return _dspCache;
 }
 
 function runPython(args: string[]): Promise<string> {
