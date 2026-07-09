@@ -93,7 +93,7 @@ def _load_logdrum_calibration():
             return {**d, "calibrated": False, "reason": "gates-not-passed", "separationMargin": None}
         if c.get("schemaVersion") != LOGDRUM_SCHEMA:
             return {**d, "calibrated": False, "reason": "stale-schema", "separationMargin": None}
-        return {**d, **(c.get("params") or {}), "calibrated": True, "reason": None, "separationMargin": c.get("separationMargin")}
+        return {**d, **(c.get("params") or {}), "calibrated": True, "reason": None, "separationMargin": c.get("separationMargin"), "calibratedOn": c.get("calibratedOn") or "reference-tracks"}
     except FileNotFoundError:
         return {**d, "calibrated": False, "reason": "no-calibration-artifact", "separationMargin": None}
     except Exception as e:  # noqa — a broken artifact must NOT crash analysis; it just means uncalibrated
@@ -780,6 +780,7 @@ def main():
             "calibrated": bool(LOGDRUM.get("calibrated")),
             "reason": LOGDRUM.get("reason"),
             "separationMargin": LOGDRUM.get("separationMargin"),
+            "calibratedOn": LOGDRUM.get("calibratedOn"),
             "schema": LOGDRUM_SCHEMA,
         }))
         return

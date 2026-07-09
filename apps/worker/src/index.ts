@@ -150,7 +150,7 @@ void (async () => {
     const { dspAvailable, logdrumCalibrationStatus } = await import('./lib/dsp');
     if (!(await dspAvailable())) { log.warn('logdrum: DSP engine unavailable — the ear cannot run (lane scoring disabled)'); return; }
     const cal = await logdrumCalibrationStatus();
-    if (cal.calibrated) log.info(`logdrum: CALIBRATED (margin ${cal.separationMargin}) — included in lane scoring`);
+    if (cal.calibrated) log.info(`logdrum: CALIBRATED (margin ${cal.separationMargin}, on ${cal.calibratedOn ?? 'reference-tracks'}) — included in lane scoring${cal.calibratedOn === 'synthetic-archetypes' ? '; drop 9 real rights-clean tracks + run eval-ear.ts to upgrade to real-audio calibration' : ''}`);
     else log.warn(`logdrum: UNCALIBRATED (${cal.reason}) — excluded from lane scoring until eval-ear.ts passes on real reference tracks`);
   } catch (err) {
     log.warn({ err }, 'logdrum: could not read calibration status');

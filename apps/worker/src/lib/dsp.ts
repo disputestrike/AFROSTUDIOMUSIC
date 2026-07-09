@@ -48,7 +48,7 @@ export function dspAvailable(): Promise<boolean> {
 }
 
 /** The log-drum TRUTH-GATE status (from py/fixtures/logdrum_calibration.json). */
-export interface LogdrumStatus { calibrated: boolean; reason?: string | null; separationMargin?: number | null }
+export interface LogdrumStatus { calibrated: boolean; reason?: string | null; separationMargin?: number | null; calibratedOn?: string | null }
 export function logdrumCalibrationStatus(): Promise<LogdrumStatus> {
   return new Promise((resolve) => {
     const p = spawn(PYTHON, [scriptPath(), '--calibration-status']);

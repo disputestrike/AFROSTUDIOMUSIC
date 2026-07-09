@@ -65,15 +65,19 @@ export async function assessLaneCompliance(opts: {
 
     const beat = await prisma.beatAsset.findUnique({ where: { id: opts.beatId }, select: { meta: true } });
     const meta = (beat?.meta ?? {}) as Record<string, unknown>;
+    // Persist the RAW MeasuredAnalysis too (anti-pattern #9: a library that grows
+    // without storing its DSP teaches nothing — and Adjust-Song classifies against
+    // ALL lanes from this exact object, no re-measure needed).
+    const laneRead = {
+      measured: analysis,
+      compliance: { overall: score.overall, coverage: score.coverage, drift: score.drift, scored: score.scored, failedCritical: score.failedCritical },
+      laneRepair: plan.clean ? null : plan.laneSteeringAddendum,
+      assessedGenre: opts.genre,
+      assessedAt: new Date().toISOString(),
+    };
     await prisma.beatAsset.update({
       where: { id: opts.beatId },
-      data: {
-        meta: {
-          ...meta,
-          compliance: { overall: score.overall, coverage: score.coverage, drift: score.drift, scored: score.scored, failedCritical: score.failedCritical },
-          laneRepair: plan.clean ? null : plan.soundBriefAddendum,
-        } as never,
-      },
+      data: { meta: { ...meta, ...laneRead } as never },
     });
     console.log(`[lane-assess] ${opts.genre}: compliance=${score.overall}/100 drift=${score.drift.severity} repairs=${plan.repairs.length}`);
   } catch (err) {

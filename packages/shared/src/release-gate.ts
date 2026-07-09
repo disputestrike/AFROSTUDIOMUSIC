@@ -32,6 +32,8 @@ export function laneReleaseGate(input: {
   mode?: ReleaseMode;
   /** Minimum measured coverage to CERTIFY in hitmaker mode (an unmeasurable song can't be certified). */
   minCoverage?: number;
+  /** §11 — languages this lane prescribes that have no seeded lexicon. */
+  lexicon?: { unseeded: string[] } | null;
 }): ReleaseGate {
   const floor = input.floor ?? 55;
   const hit = input.mode === 'hitmaker';
@@ -71,6 +73,15 @@ export function laneReleaseGate(input: {
     if (cov == null) checks.push({ name: 'coverage', ok: false, status: 'fail', detail: 'unmeasured — cannot certify' });
     else if (cov < minCov) checks.push({ name: 'coverage', ok: false, status: 'fail', detail: `${Math.round(cov * 100)}% measured (need ${Math.round(minCov * 100)}%)` });
     else checks.push({ name: 'coverage', ok: true, status: 'pass', detail: `${Math.round(cov * 100)}% measured` });
+  }
+
+  // §11 — a lane whose required languages are unseeded must not be offered as
+  // release-ready: the writer has nothing authentic to reach for, so it pulls
+  // vocabulary from the wrong region (Naija vernacular into a Pretoria record).
+  // Hitmaker BLOCKS; creative WARNS. Native-language human sign-off still applies
+  // on top of this — seeding clears THIS check, not the review.
+  if (input.lexicon?.unseeded?.length) {
+    checks.push(laneIssue('lane lexicon', `unseeded language(s) for this lane: ${input.lexicon.unseeded.join(', ')} — seed to parity before certifying`));
   }
 
   return {

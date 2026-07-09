@@ -3,7 +3,7 @@
  *
  * Turns a LaneComplianceScore (Phase 2) into CONCRETE, measured repair instructions:
  * what to change, in which direction, toward which target number — never vibes. The
- * output includes a compact `soundBriefAddendum` that Phase 4 injects into the NEXT
+ * output includes a compact `laneSteeringAddendum` that Phase 4 injects into the NEXT
  * generation to steer the track back into its lane.
  *
  * DOCTRINE (from the Master spec): repairs are STEERING for the next render, applied
@@ -31,7 +31,7 @@ export interface RepairPlan {
   driftSeverity: 'none' | 'minor' | 'major';
   repairs: Repair[];
   /** Compact steering block for the next generation (Phase 4 injects this verbatim). */
-  soundBriefAddendum: string;
+  laneSteeringAddendum: string;
 }
 
 const round = (n: number) => (Math.abs(n) >= 10 ? Math.round(n) : Math.round(n * 100) / 100);
@@ -97,7 +97,7 @@ export function planRepairs(score: LaneComplianceScore): RepairPlan {
 
   const clean = repairs.length === 0;
   const top = repairs.slice(0, 6).map((r) => r.instruction);
-  const soundBriefAddendum = clean
+  const laneSteeringAddendum = clean
     ? ''
     : `LANE REPAIR — bring this back into the ${score.lane} lane (compliance ${score.overall}/100${score.drift.drifted ? `, ${score.drift.severity} drift` : ''}). Apply on the next take:\n- ${top.join('\n- ')}`;
 
@@ -107,7 +107,7 @@ export function planRepairs(score: LaneComplianceScore): RepairPlan {
     clean,
     driftSeverity: score.drift.severity,
     repairs,
-    soundBriefAddendum,
+    laneSteeringAddendum,
   };
 }
 
