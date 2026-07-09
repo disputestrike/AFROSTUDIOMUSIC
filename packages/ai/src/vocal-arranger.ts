@@ -36,19 +36,25 @@ Rules:
 Return ONLY JSON: {"enrichedLyrics": string, "styleTags": string[]}. styleTags describe the vocal PRODUCTION for the generator, e.g. ["layered vocals","doubled lead","background harmonies on the hook","lively ad-libs","hums and vocal textures between phrases","breathy intimate verses","call and response","behind-the-beat phrasing","energetic performance"].`;
 
 const JARGON = /(log[\s-]?drums?|shakers?|shekere|808s?|\bbpm\b|drum\s?(?:rolls?|fills?)|tom\s?fills?|percussion|hi-?hats?|snares?|bass\s?line|four[\s-]on[\s-]the[\s-]floor|\bthe\s+drop\b)/gi;
+// In the RAP FAMILY, 808 / snare / hi-hat / bassline / the drop are CULTURE, not
+// leaks — the full ban was punching holes in bars mid-flow. Rap gets a minimal
+// scrub (engine-cue phrases only); every other lane keeps the full protection.
+const RAP_FAMILY = new Set(['hip_hop', 'trap', 'drill']);
+const JARGON_RAP = /(log[\s-]?drums?|drum\s?(?:rolls?|fills?)|tom\s?fills?)/gi;
 
 /** Belt-and-braces: strip production vocabulary from SUNG text. Bracketed
  *  [Section] headers are preserved; any parenthetical containing jargon is
  *  removed whole (engines sing parentheticals); bare jargon words are excised. */
-export function scrubProductionJargon(body: string): string {
+export function scrubProductionJargon(body: string, genre?: string): string {
+  const RX = RAP_FAMILY.has(genre ?? '') ? JARGON_RAP : JARGON;
   return body
     .split('\n')
     .map((line) => {
       if (/^\s*\[[^\]]+\]\s*$/.test(line)) return line; // section header — engine cue, allowed
-      let out = line.replace(/\(([^)]*)\)/g, (m, inner) => (JARGON.test(inner) ? '' : m));
-      JARGON.lastIndex = 0;
-      out = out.replace(JARGON, '').replace(/\s{2,}/g, ' ').replace(/\(\s*\)/g, '').trimEnd();
-      JARGON.lastIndex = 0;
+      let out = line.replace(/\(([^)]*)\)/g, (m, inner) => (RX.test(inner) ? '' : m));
+      RX.lastIndex = 0;
+      out = out.replace(RX, '').replace(/\s{2,}/g, ' ').replace(/\(\s*\)/g, '').trimEnd();
+      RX.lastIndex = 0;
       return out;
     })
     .filter((l, i, arr) => !(l.trim() === '' && (arr[i - 1] ?? '').trim() === ''))
@@ -85,7 +91,7 @@ export async function enrichLyricsForVocals(opts: {
       maxTokens: 3_000,
     });
     const out: EnrichedVocal | null = out0
-      ? { ...out0, enrichedLyrics: scrubProductionJargon(out0.enrichedLyrics ?? ''), styleTags: [...new Set([...(out0.styleTags ?? []), 'drum fill into every hook and section change', 'natural breaths and human imperfections', 'relaxed human timing, slightly behind the beat', 'raw vocal feel, minimal pitch correction', ...(isRap ? ['rap delivery, rhythmic flow on verses'] : [])])] }
+      ? { ...out0, enrichedLyrics: scrubProductionJargon(out0.enrichedLyrics ?? '', opts.genre), styleTags: [...new Set([...(out0.styleTags ?? []), 'drum fill into every hook and section change', 'natural breaths and human imperfections', 'relaxed human timing, slightly behind the beat', 'raw vocal feel, minimal pitch correction', ...(isRap ? ['rap delivery, rhythmic flow on verses'] : [])])] }
       : out0;
     if (!out?.enrichedLyrics) return null;
     return { enrichedLyrics: out.enrichedLyrics, styleTags: out.styleTags ?? [] };
