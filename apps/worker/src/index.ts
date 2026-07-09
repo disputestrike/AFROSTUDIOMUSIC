@@ -19,6 +19,9 @@ import { processMix } from './processors/mix';
 import { processMaster } from './processors/master';
 import { processExport } from './processors/export';
 import { notifyJobDone, processMorningDrop, processReleaseRadar, processZapRadar } from './processors/cron';
+import { processDeepMeasure } from './processors/deep-measure';
+import { processSynthMaterial } from './processors/synth-material';
+import { processNightlyCompound, processMeasureBackfill, processMineLexicon } from './processors/compound';
 
 const log = pino({ level: process.env.LOG_LEVEL ?? 'info' });
 
@@ -61,6 +64,8 @@ const workers = [
     else if (job.name === 'stems') await processStems(job.data as never);
     else if (job.name === 'forge-material') await processForgeMaterial(job.data as never);
     else if (job.name === 'assemble-beat') await processAssembleBeat(job.data as never);
+    else if (job.name === 'deep-measure') await processDeepMeasure(job.data as never);
+    else if (job.name === 'synth-material') await processSynthMaterial(job.data as never);
     else await processMusic(job.data as never);
   }),
   makeWorker('voice', async (job: { data: never; name: string }) => {
@@ -86,6 +91,9 @@ const workers = [
     if (job.name === 'morning-drop') await processMorningDrop();
     else if (job.name === 'release-radar') await processReleaseRadar();
     else if (job.name === 'zap-radar') await processZapRadar();
+    else if (job.name === 'nightly-compound') await processNightlyCompound();
+    else if (job.name === 'measure-backfill') await processMeasureBackfill();
+    else if (job.name === 'mine-lexicon') await processMineLexicon();
   }),
 ];
 
@@ -109,8 +117,13 @@ async function registerCron() {
   // Zap Radar — daily 03:00 UTC (off-peak, before the morning drop): pull the
   // charts and learn the craft of new trending songs into the lake. Autonomous,
   // capped, keyless, non-interfering.
+  // zap-radar now runs ZAP_RUNS_PER_DAY times (default 4), rotating genre slices.
+  const zapRuns = Math.max(1, Math.min(12, parseInt(process.env.ZAP_RUNS_PER_DAY ?? '4', 10) || 4));
+  const zapPattern = `0 */${Math.max(1, Math.floor(24 / zapRuns))} * * *`;
+  await cronQueue.removeRepeatable('zap-radar', { pattern: '0 3 * * *' }).catch(() => undefined);
+  await cronQueue.add('nightly-compound', {}, { repeat: { pattern: '45 2 * * *' } });
   await cronQueue.add('zap-radar', {}, {
-    repeat: { pattern: '0 3 * * *' },
+    repeat: { pattern: zapPattern },
     removeOnComplete: { count: 10 },
     removeOnFail: { count: 10 },
   });

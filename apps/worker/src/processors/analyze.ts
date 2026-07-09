@@ -1,8 +1,9 @@
 import { prisma } from '@afrohit/db';
-import { analyzeAudio, separateStems } from '@afrohit/ai';
+import { analyzeAudio } from '@afrohit/ai';
 import { analysisCoverage, unknownAnalysis } from '@afrohit/shared';
 import { markFailed, markRunning, markSucceeded } from '../lib/jobs';
-import { measureAudio, dspAvailable, type StemInputs } from '../lib/dsp';
+import { measureAudio, dspAvailable } from '../lib/dsp';
+import { enqueueJob } from '../lib/enqueue';
 import { ffmpegAvailable, extractClip, measureAudioQuality } from '../lib/ffmpeg';
 import { downloadToBuffer, uploadBytes } from '../lib/storage';
 
@@ -73,17 +74,11 @@ export async function processAnalyze(p: AnalyzePayload) {
         // Stems let log-drum/shaker/kick/clap run at full confidence (kick->drums,
         // log-drum->bass — the only clean disambiguation). Default-ON per the FINAL
         // INSTRUCTION (off only when DSP_STEMS=0); best-effort, full-mix on any failure.
-        let stems: StemInputs | undefined;
-        if (process.env.DSP_STEMS !== '0') {
-          try {
-            const sep = await separateStems({ audioUrl: p.url, mode: 'full', apiKey: ws?.musicApiKey ?? undefined });
-            const byRole = (r: string) => sep.stems.find((s) => s.role === r)?.url;
-            stems = { bass: byRole('bass'), drums: byRole('drums'), other: byRole('other'), vocals: byRole('vocals') };
-          } catch (e) {
-            console.warn('[analyze] stem separation failed, full-mix DSP:', (e as Error)?.message);
-          }
-        }
-        measured = await measureAudio(p.url, stems);
+        // SPEED FIX: the interactive Listen flow measures FULL-MIX only (seconds).
+        // Demucs stem separation (minutes of CPU) moved to the queued deep-measure
+        // job enqueued below — same stem-grade log-drum facts land on the reference
+        // a few minutes later; nobody stares at a stepper.
+        measured = await measureAudio(p.url);
       }
     } catch (err) {
       console.warn('[analyze] DSP measure failed:', (err as Error)?.message);
@@ -135,6 +130,13 @@ export async function processAnalyze(p: AnalyzePayload) {
         console.warn('[analyze] SoundReference write failed:', (err as Error)?.message);
         return null;
       });
+
+    // Deep pass (stems + refined DSP) runs in the BACKGROUND — the reference
+    // upgrades itself in place a few minutes after the artist already has results.
+    if (reference?.id && process.env.DSP_STEMS !== '0' && measured.engineOk) {
+      await enqueueJob('music', 'deep-measure', { referenceId: reference.id, url: p.url, workspaceId: p.workspaceId })
+        .catch((e) => console.warn('[analyze] deep-measure enqueue failed:', (e as Error)?.message));
+    }
 
     // Taste graph — what the artist chose to listen to / build from. Compounds.
     await prisma.analyticsEvent

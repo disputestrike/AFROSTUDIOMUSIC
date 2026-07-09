@@ -11,6 +11,7 @@
  * Both are best-effort per workspace — one failing artist never blocks the rest.
  */
 import { prisma } from '@afrohit/db';
+import { GENRES } from '@afrohit/shared';
 import { prompts, responsesJson, scoreItems, researchTrends, extractSongCraft, parseTrendSong } from '@afrohit/ai';
 import { debitCredits } from '../lib/credits';
 import { jobDoneEmail, morningDropEmail, releaseRadarEmail, sendEmail } from '../lib/email';
@@ -160,6 +161,17 @@ export async function processReleaseRadar() {
  * Tightly capped so it never runs up the budget or interferes with anything.
  */
 const RADAR_GENRES = ['afrobeats', 'amapiano', 'afro_fusion', 'afro_pop', 'street_pop'];
+// With ZAP_RUNS_PER_DAY runs/day, rotate 5-genre slices of the FULL genre map so
+// every lane in the world/continent gets radar coverage daily, cost still bounded.
+function radarSlice(): string[] {
+  const runs = Math.max(1, Math.min(12, parseInt(process.env.ZAP_RUNS_PER_DAY ?? '4', 10) || 4));
+  const pool = [...GENRES] as string[];
+  const chunk = 5;
+  const slot = Math.floor(new Date().getUTCHours() / Math.max(1, Math.floor(24 / runs)));
+  const idx = slot % Math.ceil(pool.length / chunk);
+  const slice = pool.slice(idx * chunk, idx * chunk + chunk);
+  return slice.length ? slice : RADAR_GENRES;
+}
 const RADAR_MAX_PER_RUN = Number(process.env.ZAP_RADAR_MAX ?? 6);
 
 export async function processZapRadar() {
@@ -171,7 +183,7 @@ export async function processZapRadar() {
   for (const ws of workspaces) {
     let learned = 0;
     try {
-      for (const genre of RADAR_GENRES) {
+      for (const genre of radarSlice()) {
         if (learned >= RADAR_MAX_PER_RUN) break;
         const trends = await researchTrends({ genre }).catch(() => null);
         // ONLY learn from real SONG charts (Apple most-played / YouTube). When those
