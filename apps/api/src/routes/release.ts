@@ -2,6 +2,7 @@ import type { FastifyInstance } from 'fastify';
 import { prisma } from '@afrohit/db';
 import { rightsInputSchema, laneReleaseGate } from '@afrohit/shared';
 import { requireAuth } from '../middleware/auth';
+import { unseededForLane } from '../lib/lane-report';
 import { distributeRelease } from '../lib/distribution';
 import { BLOW_TARGET } from '../lib/will-it-blow';
 
@@ -97,8 +98,10 @@ async function statusFor(song: { id: string; title: string; isrc: string | null;
   // (the artist's ear decides). HIT MAKER: lane failure / failed-critical / <80% coverage
   // BLOCK — generating audio is not passing. Unmeasured stays 'unverified' in creative,
   // and cannot CERTIFY in hitmaker (honesty law: what wasn't measured can't fail OR pass).
-  const meta = (beat?.meta ?? {}) as { compliance?: unknown; qc?: unknown };
-  const gate = laneReleaseGate({ compliance: (meta.compliance ?? null) as never, qc: (meta.qc ?? null) as never, mode });
+  const meta = (beat?.meta ?? {}) as { compliance?: unknown; qc?: unknown; assessedGenre?: string };
+  // §11 — a lane whose required languages are unseeded is not offered as release-ready.
+  const lexicon = { unseeded: await unseededForLane(meta.assessedGenre ?? (await prisma.project.findUnique({ where: { id: song.projectId }, select: { genre: true } }))?.genre) };
+  const gate = laneReleaseGate({ compliance: (meta.compliance ?? null) as never, qc: (meta.qc ?? null) as never, mode, lexicon });
   return {
     song: { id: song.id, title: song.title, isrc: song.isrc, upc: song.upc, splitSheet: song.splitSheet, releaseReady: song.releaseReady, nativeReviewOk: song.nativeReviewOk },
     mode,

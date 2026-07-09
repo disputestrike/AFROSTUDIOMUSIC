@@ -44,6 +44,7 @@ import instrumentals from './routes/instrumentals';
 import lexicon from './routes/lexicon';
 import zap from './routes/zap';
 import lanes from './routes/lanes';
+import adjust from './routes/adjust';
 import uploads from './routes/uploads';
 import mixer from './routes/mixer';
 import settings from './routes/settings';
@@ -122,6 +123,7 @@ async function bootstrap() {
       await api.register(admin, { prefix: '/admin' });
       await api.register(reviews, { prefix: '/reviews' });
       await api.register(songs, { prefix: '/songs' });
+      await api.register(adjust, { prefix: '/songs' }); // §9 lane-report + §10 Adjust-Song
       await api.register(albums, { prefix: '/albums' });
       await api.register(materials, { prefix: '/materials' });
       await api.register(instrumentals, { prefix: '/instrumentals' });
