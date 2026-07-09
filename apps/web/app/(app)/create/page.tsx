@@ -21,7 +21,7 @@ const GENRES = [
   { value: 'amapiano', label: 'Amapiano' }, { value: 'afro_dancehall', label: 'Afro-dancehall' },
   { value: 'street_pop', label: 'Street-pop / Zanku' }, { value: 'afro_rnb', label: 'Afro R&B' },
   { value: 'afro_pop', label: 'Afropop' }, { value: 'highlife', label: 'Highlife' },
-  { value: 'gospel', label: 'Gospel' }, { value: 'hip_hop', label: 'Hip-hop' }, { value: 'reggae', label: 'Reggae' },
+  { value: 'gospel', label: 'Gospel' }, { value: 'hip_hop', label: 'Hip-hop / Rap' }, { value: 'reggae', label: 'Reggae' },
   // Global
   { value: 'pop', label: 'Pop' }, { value: 'rnb', label: 'R&B' },
   { value: 'dancehall', label: 'Dancehall' }, { value: 'drill', label: 'Drill' },

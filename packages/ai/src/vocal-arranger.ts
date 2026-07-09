@@ -56,6 +56,7 @@ export function scrubProductionJargon(body: string): string {
 }
 
 export async function enrichLyricsForVocals(opts: {
+  genre?: string;
   lyricBody: string;
   languages?: string[];
   slang?: string;
@@ -64,8 +65,13 @@ export async function enrichLyricsForVocals(opts: {
   soundDna?: string;
 }): Promise<EnrichedVocal | null> {
   try {
+    const RAP_GENRES = new Set(['hip_hop', 'trap', 'drill']);
+    const isRap = RAP_GENRES.has(opts.genre ?? '');
+    const rapLaw = isRap
+      ? `\nRAP DELIVERY LAW — this is ${opts.genre}: VERSES ARE RAPPED, not sung — rhythmic spoken flow, bars with internal rhyme and punchlines, a cadence switch between verse halves. The HOOK may sing or chant. Ad-libs punctuate the bars ("uh", "yeah", "talk!"). Melodic delivery on verses is a HARD FAIL.`
+      : '';
     const out0 = await generateJson<EnrichedVocal>({
-      system: ARRANGER_SYSTEM,
+      system: ARRANGER_SYSTEM + rapLaw,
       user: [
         `LANGUAGES: ${opts.languages?.join(', ') || 'english, pidgin'}`,
         opts.laneSummary ? `ARTIST LANE: ${opts.laneSummary}` : null,
@@ -79,7 +85,7 @@ export async function enrichLyricsForVocals(opts: {
       maxTokens: 3_000,
     });
     const out: EnrichedVocal | null = out0
-      ? { ...out0, enrichedLyrics: scrubProductionJargon(out0.enrichedLyrics ?? ''), styleTags: [...new Set([...(out0.styleTags ?? []), 'drum fill into every hook and section change', 'natural breaths and human imperfections', 'relaxed human timing, slightly behind the beat', 'raw vocal feel, minimal pitch correction'])] }
+      ? { ...out0, enrichedLyrics: scrubProductionJargon(out0.enrichedLyrics ?? ''), styleTags: [...new Set([...(out0.styleTags ?? []), 'drum fill into every hook and section change', 'natural breaths and human imperfections', 'relaxed human timing, slightly behind the beat', 'raw vocal feel, minimal pitch correction', ...(isRap ? ['rap delivery, rhythmic flow on verses'] : [])])] }
       : out0;
     if (!out?.enrichedLyrics) return null;
     return { enrichedLyrics: out.enrichedLyrics, styleTags: out.styleTags ?? [] };
