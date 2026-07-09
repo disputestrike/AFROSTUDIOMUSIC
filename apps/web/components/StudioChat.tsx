@@ -40,9 +40,12 @@ export default function StudioChat({ projectId }: { projectId?: string }) {
   const api = useApi();
   const [threadId, setThreadId] = useState<string | null>(null);
   const listRef = useRef<HTMLDivElement>(null);
+  const navRef = useRef<HTMLDivElement>(null);
   const stickRef = useRef(true);
   useEffect(() => { if (stickRef.current) requestAnimationFrame(() => listRef.current?.scrollTo({ top: listRef.current.scrollHeight, behavior: 'smooth' })); });
   const [threads, setThreads] = useState<ThreadRow[]>([]);
+  // The nav is LOCKED on most recent: newest thread on top, rail snaps to top on change.
+  useEffect(() => { navRef.current?.scrollTo({ top: 0 }); }, [threads.length]);
   const [messages, setMessages] = useState<Message[]>([]);
   const [draft, setDraft] = useState('');
   const [busy, setBusy] = useState(false);
@@ -61,7 +64,12 @@ export default function StudioChat({ projectId }: { projectId?: string }) {
 
   async function loadThreads() {
     try {
-      setThreads(await api.get<ThreadRow[]>('/chat/threads'));
+      setThreads(
+        (await api.get<ThreadRow[]>('/chat/threads')).sort((a, b) =>
+          String((b as { updatedAt?: string; createdAt?: string }).updatedAt ?? (b as { createdAt?: string }).createdAt ?? '')
+            .localeCompare(String((a as { updatedAt?: string; createdAt?: string }).updatedAt ?? (a as { createdAt?: string }).createdAt ?? ''))
+        )
+      );
     } catch {
       /* ignore */
     }
@@ -221,9 +229,9 @@ export default function StudioChat({ projectId }: { projectId?: string }) {
   return (
     // Mobile: the fixed 240px rail would crush the chat — hide it below md
     // (threads still resume via localStorage; history is a desktop affordance).
-    <div className="grid h-full grid-cols-1 md:grid-cols-[240px_1fr]">
+    <div className="grid h-[calc(100dvh-88px)] min-h-0 grid-cols-1 overflow-hidden md:grid-cols-[240px_1fr]">
       {/* History rail */}
-      <aside className="hidden md:flex flex-col border-r border-slate-800 bg-slate-950/60">
+      <aside className="hidden min-h-0 md:flex flex-col border-r border-slate-800 bg-slate-950/60">
         <button
           onClick={newChat}
           className="m-3 flex items-center justify-center gap-2 rounded-xl bg-afrobrand-500 px-3 py-2 text-sm font-medium text-ink hover:bg-afrobrand-400"
@@ -257,8 +265,8 @@ export default function StudioChat({ projectId }: { projectId?: string }) {
       </aside>
 
       {/* Chat column */}
-      <div className="flex h-full flex-col">
-        <div className="flex-1 overflow-y-auto px-6 py-4">
+      <div className="flex h-full min-h-0 flex-col">
+        <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-6 py-4">
           {messages.length === 0 && (
             <div className="mx-auto mt-12 max-w-2xl rounded-3xl border border-slate-800 bg-slate-900/40 p-6 text-sm text-slate-300">
               <div className="mb-1 font-display text-2xl text-slate-100">Ship <span className="text-gradient">your</span> Afrobeats.</div>
