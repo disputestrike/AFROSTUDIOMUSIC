@@ -7,7 +7,9 @@
     "dev": "tsx watch src/index.ts",
     "build": "tsc -p tsconfig.json",
     "start": "node dist/index.js",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "tsx scripts/test-all.ts",
+    "test:live": "tsx scripts/test-all.ts -- --live"
   },
   "dependencies": {
     "@afrohit/ai": "workspace:*",
