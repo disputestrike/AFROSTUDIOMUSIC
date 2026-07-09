@@ -625,6 +625,7 @@ export default async function songs(app: FastifyInstance) {
     let lyricsForSong = lyrics;
     let styleHints: string[] = [];
     const enriched = await enrichLyricsForVocals({
+      genre: genre,
       lyricBody: lyrics,
       languages: song.project.artist.languages,
       laneSummary: song.project.artist.laneSummary ?? undefined,

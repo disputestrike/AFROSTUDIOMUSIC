@@ -153,6 +153,7 @@ async function resing(
   let lyricsForSong = body;
   let styleHints: string[] = [];
   const enriched = await enrichLyricsForVocals({
+      genre: song.project.genre,
     lyricBody: body,
     languages: song.project.artist.languages,
     laneSummary: song.project.artist.laneSummary ?? undefined,

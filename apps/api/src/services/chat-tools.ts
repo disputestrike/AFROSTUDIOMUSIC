@@ -469,6 +469,7 @@ async function createBeatJob(ctx: Ctx, a: { genre: string; fusionGenres?: string
       include: { artist: true },
     });
     const enriched = await enrichLyricsForVocals({
+      genre: a.genre,
       lyricBody: lyrics,
       // The user's SELECTED languages outrank the artist profile's defaults.
       languages: a.languages?.length ? a.languages : project?.artist.languages,

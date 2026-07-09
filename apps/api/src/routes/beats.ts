@@ -57,6 +57,7 @@ export default async function beats(app: FastifyInstance) {
       // Arrange the vocal to sound ALIVE (ad-libs, doubled/harmonized hook).
       if (input.withVocals && lyrics && input.richVocals) {
         const enriched = await enrichLyricsForVocals({
+      genre: project.genre,
           lyricBody: lyrics,
           languages: project.artist.languages,
           laneSummary: project.artist.laneSummary ?? undefined,
