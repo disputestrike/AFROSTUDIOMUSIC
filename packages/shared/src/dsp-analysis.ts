@@ -46,7 +46,7 @@ export interface MeasuredAnalysis {
   fourOnFloor: Measured<boolean>;
 
   // Spectral / instrument presence (per-stem via Demucs when available)
-  lowEndProfile: Measured<number>; // 30–120 Hz energy ratio
+  lowEndProfile: Measured<{ ratio: number; crest: number }>; // 30–120 Hz energy ratio + low-band crest
   logDrumLikelihood: Measured<number>; // 0–1 composite (pitched+percussive+sub+portamento)
   shakerContinuity: Measured<number>; // 0–1 proportion of 16th slots with HF percussive energy
   kickDensity: Measured<number>;
