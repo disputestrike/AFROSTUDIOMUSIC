@@ -150,7 +150,7 @@ const REGION_HINT: Record<string, string> = {
  *  LEXICON_RESEARCH_QUERIES per run. Facts about a language are minable;
  *  a dictionary's prose is not — we take the words, never the wording. */
 export async function processLexiconResearch(opts?: { queries?: number }): Promise<void> {
-  const perRun = Math.max(1, Math.min(20, opts?.queries ?? parseInt(process.env.LEXICON_RESEARCH_QUERIES ?? '6', 10) || 6));
+  const perRun = Math.max(1, Math.min(20, opts?.queries ?? (parseInt(process.env.LEXICON_RESEARCH_QUERIES ?? '6', 10) || 6)));
   try {
     const slots: Array<{ lang: string; cat: string }> = [];
     for (const lang of MINE_LANGS) for (const cat of MINE_CATS) slots.push({ lang, cat });
@@ -210,7 +210,7 @@ const WIKI_CATEGORY: Record<string, string> = {
 
 export async function processWiktionaryHarvest(opts?: { langs?: string[]; perLang?: number; all?: boolean }): Promise<void> {
   const burst = !!opts?.all;
-  const perLang = Math.max(50, Math.min(5000, opts?.perLang ?? parseInt(process.env[burst ? 'WIKTIONARY_BURST_PER_LANG' : 'WIKTIONARY_PER_LANG'] ?? (burst ? '1500' : '400'), 10) || (burst ? 1500 : 400)));
+  const perLang = Math.max(50, Math.min(5000, opts?.perLang ?? (parseInt(process.env[burst ? 'WIKTIONARY_BURST_PER_LANG' : 'WIKTIONARY_PER_LANG'] ?? (burst ? '1500' : '400'), 10) || (burst ? 1500 : 400))));
   const all = opts?.langs ?? Object.keys(WIKI_CATEGORY);
   // rotate 3 languages per run so every language gets covered across runs
   const start = Math.floor(Date.now() / 3_600_000) % all.length;
@@ -257,7 +257,7 @@ export async function processWiktionaryHarvest(opts?: { langs?: string[]; perLan
 
 /** Gloss pass — paraphrased meanings for unglossed harvested terms, in batches. */
 export async function processGlossPass(opts?: { limit?: number }): Promise<void> {
-  const limit = Math.max(10, Math.min(200, opts?.limit ?? parseInt(process.env.LEXICON_GLOSS_PER_RUN ?? '80', 10) || 80));
+  const limit = Math.max(10, Math.min(200, opts?.limit ?? (parseInt(process.env.LEXICON_GLOSS_PER_RUN ?? '80', 10) || 80)));
   try {
     const rows = await prisma.lexiconEntry.findMany({ where: { workspaceId: null, tags: { has: 'unglossed' } }, take: limit, orderBy: { createdAt: 'asc' } });
     if (!rows.length) { console.log('[gloss] nothing unglossed'); return; }

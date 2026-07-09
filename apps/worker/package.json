@@ -9,7 +9,8 @@
     "start": "node dist/index.js",
     "typecheck": "tsc --noEmit",
     "test": "tsx scripts/test-all.ts",
-    "test:live": "tsx scripts/test-all.ts -- --live"
+    "test:live": "tsx scripts/test-all.ts -- --live",
+    "typecheck:shim": "tsc -p tsconfig.shim.json --noEmit"
   },
   "dependencies": {
     "@afrohit/ai": "workspace:*",

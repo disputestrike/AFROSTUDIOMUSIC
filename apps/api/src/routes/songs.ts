@@ -619,6 +619,9 @@ export default async function songs(app: FastifyInstance) {
     const genre = song.project.genre;
     const dna = laneDna(genre);
     const learned = await learnedReferenceBrief(workspaceId, genre);
+    // SELF-CLONE BLUEPRINT — "same structure, different sound": this song's own
+    // measured skeleton becomes the contract for its regeneration.
+    const selfBp: SongBlueprint | null = blueprintFromMeasured(((song.beats[0]?.meta ?? {}) as { measured?: MeasuredAnalysis }).measured);
     let lyricsForSong = lyrics;
     let styleHints: string[] = [];
     const enriched = await enrichLyricsForVocals({
@@ -649,9 +652,6 @@ export default async function songs(app: FastifyInstance) {
       ? lane.repair.split('\n').filter((l) => l.startsWith('- ')).map((l) => l.slice(2).trim()).slice(0, 3)
       : [];
 
-    // SELF-CLONE BLUEPRINT — "same structure, different sound": this song's own
-    // measured skeleton becomes the contract for its regeneration.
-    const selfBp: SongBlueprint | null = blueprintFromMeasured(((song.beats[0]?.meta ?? {}) as { measured?: MeasuredAnalysis }).measured);
 
     const job = await prisma.providerJob.create({
       data: { workspaceId, projectId: song.projectId, kind: 'music', provider: songEngine ?? 'suno', status: 'QUEUED', inputJson: { regenerate: true, songId: song.id } as never },
