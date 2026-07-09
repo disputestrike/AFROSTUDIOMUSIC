@@ -73,6 +73,7 @@ const workers = [
     else if (job.name === 'mine-lexicon') await processMineLexicon();
     else if (job.name === 'lexicon-research') await processLexiconResearch();
     else if (job.name === 'wiktionary-harvest') await processWiktionaryHarvest();
+    else if (job.name === 'wiktionary-burst') await processWiktionaryHarvest({ all: true });
     else if (job.name === 'lexicon-gloss') await processGlossPass();
     else await processMusic(job.data as never);
   }),
@@ -104,6 +105,7 @@ const workers = [
     else if (job.name === 'mine-lexicon') await processMineLexicon();
     else if (job.name === 'lexicon-research') await processLexiconResearch();
     else if (job.name === 'wiktionary-harvest') await processWiktionaryHarvest();
+    else if (job.name === 'wiktionary-burst') await processWiktionaryHarvest({ all: true });
     else if (job.name === 'lexicon-gloss') await processGlossPass();
   }),
 ];

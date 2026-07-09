@@ -32,7 +32,7 @@ const grantSchema = z.object({
 
 export default async function admin(app: FastifyInstance) {
   // One-tap compounding: run the lake jobs NOW instead of waiting for tonight.
-  const runSchema = z.object({ task: z.enum(['nightly-compound', 'measure-backfill', 'mine-lexicon', 'lexicon-research', 'wiktionary-harvest', 'lexicon-gloss']) });
+  const runSchema = z.object({ task: z.enum(['nightly-compound', 'measure-backfill', 'mine-lexicon', 'lexicon-research', 'wiktionary-harvest', 'wiktionary-burst', 'lexicon-gloss']) });
   app.post('/run', { schema: { body: runSchema } }, async (req, reply) => {
     await requireAdmin(req);
     const { task } = runSchema.parse(req.body);

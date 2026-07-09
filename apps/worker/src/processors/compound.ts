@@ -208,12 +208,13 @@ const WIKI_CATEGORY: Record<string, string> = {
   kriolu: 'Kabuverdianu', am: 'Amharic', ar: 'Egyptian_Arabic', patois: 'Jamaican_Creole',
 };
 
-export async function processWiktionaryHarvest(opts?: { langs?: string[]; perLang?: number }): Promise<void> {
-  const perLang = Math.max(50, Math.min(2000, opts?.perLang ?? parseInt(process.env.WIKTIONARY_PER_LANG ?? '400', 10) || 400));
+export async function processWiktionaryHarvest(opts?: { langs?: string[]; perLang?: number; all?: boolean }): Promise<void> {
+  const burst = !!opts?.all;
+  const perLang = Math.max(50, Math.min(5000, opts?.perLang ?? parseInt(process.env[burst ? 'WIKTIONARY_BURST_PER_LANG' : 'WIKTIONARY_PER_LANG'] ?? (burst ? '1500' : '400'), 10) || (burst ? 1500 : 400)));
   const all = opts?.langs ?? Object.keys(WIKI_CATEGORY);
   // rotate 3 languages per run so every language gets covered across runs
   const start = Math.floor(Date.now() / 3_600_000) % all.length;
-  const langs = opts?.langs ?? Array.from({ length: 3 }, (_v, i) => all[(start + i) % all.length]!);
+  const langs = burst ? all : (opts?.langs ?? Array.from({ length: 3 }, (_v, i) => all[(start + i) % all.length]!));
   try {
     const existing = await prisma.lexiconEntry.findMany({ where: { workspaceId: null }, select: { term: true, language: true } });
     const have = new Set(existing.map((e) => `${e.term.toLowerCase()}|${e.language}`));
