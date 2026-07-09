@@ -8,6 +8,8 @@
 
 import { useCallback, useEffect, useState } from 'react';
 import { useApi } from '@/lib/api';
+import { LaneReport } from './LaneReport';
+import { AdjustSong } from './AdjustSong';
 
 interface Split { name: string; role: string; share: number }
 interface Check { name: string; ok: boolean; detail?: string }
@@ -105,6 +107,10 @@ export function ReleaseReadiness({ projectId }: { projectId: string }) {
         </span>
       </div>
       <p className="mt-1 text-sm text-slate-400">What a DSP needs before it accepts + pays out on “{status.song.title}”.</p>
+
+      {/* §9 — the producer brain, always visible. §10 — adjust, plan before spend. */}
+      <LaneReport songId={status.song.id} />
+      <AdjustSong songId={status.song.id} onDispatched={() => void load()} />
 
       <div className="mt-4 grid gap-4 md:grid-cols-2">
         {/* Green-light checklist */}
