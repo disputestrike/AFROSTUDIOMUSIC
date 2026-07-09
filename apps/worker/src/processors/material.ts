@@ -32,6 +32,7 @@ const FORGE_PROMPTS: Record<string, (genre: string, bpm: number, key?: string) =
   bass: (g, b, k) => `solo ${g.replace(/_/g, ' ')} bassline${k ? ` in ${k}` : ''}, ${b} bpm — warm round sub-bass with genuine groove and movement, fingered feel sitting in the pocket; bass only, no drums, no melody, no vocals, seamless loop`,
   percussion: (g, b) => `solo African percussion bed for ${g.replace(/_/g, ' ')}, ${b} bpm — interlocking shekere, agogo bells, congas and shaker with organic groove, space and human timing; percussion only, no kick, no snare, no melody, no vocals, seamless loop`,
   chords: (g, b, k) => `solo ${g.replace(/_/g, ' ')} chord bed${k ? ` in ${k}` : ''}, ${b} bpm — warm rich keys or clean guitar chords with gentle movement, emotive and musical with natural space; chords only, no drums, no bass, no vocals, seamless loop`,
+  fill: (g, b) => `solo ${g.replace(/_/g, ' ')} DRUM FILL, ${b} bpm — a short 1-2 bar drum roll/tumble that BUILDS and lifts into a new section: rising tom rolls, snare buzz and a crash-style accent landing on the downbeat; drums only, no melody, no bass, no vocals — a one-shot fill, not a repeating loop`,
 };
 const MELODIC_ROLES = new Set(['log_drum', 'bass', 'chords']);
 

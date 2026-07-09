@@ -5,6 +5,8 @@ import { markFailed, markRunning, markSucceeded } from '../lib/jobs';
 import { ingestRemoteFile, downloadToBuffer, uploadBytes } from '../lib/storage';
 import { probeDurationS, measureAudioQuality, ffmpegAvailable, master as ffmpegMaster, MASTER_TARGETS, type AudioQuality } from '../lib/ffmpeg';
 import { assessLaneCompliance } from '../lib/lane-assess';
+import { overlayFills } from '../lib/fills';
+import { planFills } from '@afrohit/shared';
 
 interface MusicPayload {
   jobId: string;
@@ -160,7 +162,7 @@ export async function processMusic(p: MusicPayload) {
     let quality: AudioQuality | null = winner.qc;
 
     // Re-host ONLY the winning take (survives provider URL expiry; stable CDN path).
-    const ingestedMain = await ingestRemoteFile({
+    let ingestedMain = await ingestRemoteFile({
       workspaceId: p.workspaceId,
       url: out.mainAudioUrl,
       kind: 'beats',
@@ -178,6 +180,28 @@ export async function processMusic(p: MusicPayload) {
     if (durationS < 12) {
       const probed = await probeDurationS(ingestedMain);
       if (probed > 0) durationS = probed;
+    }
+
+    // PHASE 5 — insert drum fills into the section transitions (the fills Benjamin
+    // keeps missing). Gated FILL_OVERLAY=1 (quality-sensitive) and only when a fill
+    // material for the genre exists. Best-effort: any failure keeps the clean render.
+    const beatBpm = out.bpm ?? p.input.bpm ?? 0;
+    if (process.env.FILL_OVERLAY === '1' && !placeholder && beatBpm > 0 && durationS > 12) {
+      try {
+        const fillMat = await prisma.materialAsset.findFirst({
+          where: { workspaceId: p.workspaceId, role: 'fill', OR: [{ genre: p.input.genre ?? undefined }, { genre: null }] },
+          orderBy: { createdAt: 'desc' },
+        });
+        const placements = fillMat ? planFills(beatBpm, durationS, null) : [];
+        if (fillMat && placements.length) {
+          const [songBytes, fillBytes] = await Promise.all([downloadToBuffer(ingestedMain), downloadToBuffer(fillMat.url)]);
+          const mixed = await overlayFills(songBytes, fillBytes, placements.map((f) => f.atS));
+          ingestedMain = await uploadBytes({ workspaceId: p.workspaceId, kind: 'beats', bytes: mixed, contentType: 'audio/wav', ext: 'wav' });
+          console.log(`[fills] overlaid ${placements.length} fills @ ${placements.map((f) => Math.round(f.atS) + 's').join(',')}`);
+        }
+      } catch (err) {
+        console.warn('[fills] overlay failed (clean render kept):', (err as Error)?.message);
+      }
     }
 
     const beat = await prisma.beatAsset.create({
