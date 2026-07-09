@@ -46,15 +46,22 @@ export default async function lyrics(app: FastifyInstance) {
 
       type LyricOut = { title: string; body: string; cleanVersion?: string; explicit?: boolean; structure?: unknown; languageMix?: Record<string, number>; needsNativeReview?: string[] };
       const lmood = (project.briefs?.[0] as { mood?: string } | undefined)?.mood;
+      // Requested languages for THIS song, primary first: the per-song mix wins over
+      // the artist default so a Yoruba request stays Yoruba (was drifting to pidgin).
+      const mix = (input.languageMix ?? {}) as Record<string, number>;
+      const reqLangs = Object.keys(mix).length
+        ? Object.entries(mix).sort((a, b) => b[1] - a[1]).map(([k]) => k)
+        : (project.artist.languages ?? []);
       const lyricUser = prompts.lyricUserPrompt({
         artist: project.artist as never,
         brief: project.briefs[0] as never,
         hookText: hook.text,
         cleanVersion: input.cleanVersion,
         languageMix: input.languageMix as never,
+        languages: reqLangs,
         soundDna: fuseSoundDna({
           freshness: await freshnessBrief(workspaceId),
-          palette: await lexiconPalette({ workspaceId, languages: project.artist.languages, mood: lmood, rotate: Date.now() % 97 }),
+          palette: await lexiconPalette({ workspaceId, languages: reqLangs.length ? reqLangs : project.artist.languages, mood: lmood, rotate: Date.now() % 97 }),
           dna: soundBrief(project.genre).brief,
           learnedRef: await learnedReferenceBrief(workspaceId, project.genre),
           learnedCraft: await learnedLyricCraftBrief(workspaceId, project.genre),

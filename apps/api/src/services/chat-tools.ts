@@ -335,7 +335,7 @@ async function generateLyrics(ctx: Ctx, hookId: string, cleanVersion: boolean, l
   const lyricSoundDna = fuseSoundDna({
     extra: hardConstraints(hook.project.genre, languages),
     freshness: await freshnessBrief(ctx.workspaceId),
-    palette: await lexiconPalette({ workspaceId: ctx.workspaceId, languages, mood: lmood, rotate: Date.now() % 97 }),
+    palette: await lexiconPalette({ workspaceId: ctx.workspaceId, languages: languages?.length ? languages : hook.project.artist.languages, mood: lmood, rotate: Date.now() % 97 }),
     dna: soundBrief(hook.project.genre).brief,
     learnedRef: await learnedReferenceBrief(ctx.workspaceId, hook.project.genre),
     learnedCraft: await learnedLyricCraftBrief(ctx.workspaceId, hook.project.genre),
@@ -343,7 +343,7 @@ async function generateLyrics(ctx: Ctx, hookId: string, cleanVersion: boolean, l
   }, 6000); // lyrics: leaner than hooks — a huge input + long output JSON breaks more often
 
   type LyricOut = { title: string; body: string; cleanVersion?: string; explicit?: boolean; structure?: unknown; languageMix?: Record<string, number>; needsNativeReview?: string[] };
-  const lyricUser = prompts.lyricUserPrompt({ artist: hook.project.artist as never, brief: hook.project.briefs[0] as never, hookText: hook.text, cleanVersion, soundDna: lyricSoundDna });
+  const lyricUser = prompts.lyricUserPrompt({ artist: hook.project.artist as never, brief: hook.project.briefs[0] as never, hookText: hook.text, cleanVersion, languages: languages?.length ? languages : hook.project.artist.languages, soundDna: lyricSoundDna });
 
   // RETRY UNTIL NON-EMPTY: a long multi-line lyric returned as a JSON string
   // sometimes comes back empty/broken (~1 in 3 live) — regenerate up to 3x
@@ -370,6 +370,7 @@ async function generateLyrics(ctx: Ctx, hookId: string, cleanVersion: boolean, l
           brief: hook.project.briefs[0] as never,
           hookText: hook.text,
           cleanVersion,
+          languages: languages?.length ? languages : hook.project.artist.languages,
           soundDna: hardConstraints(hook.project.genre, languages),
         }),
       temperature: 0.7,
