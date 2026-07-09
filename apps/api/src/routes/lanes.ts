@@ -1,6 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import { prisma } from '@afrohit/db';
-import { buildLaneProfile, describeLaneProfile, scoreLaneCompliance, describeCompliance, type MeasuredAnalysis } from '@afrohit/shared';
+import { buildLaneProfile, describeLaneProfile, scoreLaneCompliance, describeCompliance, planRepairs, describeRepairPlan, type MeasuredAnalysis } from '@afrohit/shared';
 import { requireAuth } from '../middleware/auth';
 
 /**
@@ -84,6 +84,7 @@ export default async function lanes(app: FastifyInstance) {
       return reply.code(422).send({ error: 'lane_not_profiled', refsMeasured: laneRefs.length, hint: `Need at least ${profile.minRefs} measured ${genre} references to score against.` });
     }
     const score = scoreLaneCompliance(subject, profile);
-    return { score, summary: describeCompliance(score), profileRefs: laneRefs.length };
+    const repair = planRepairs(score); // Phase 3: concrete fixes + the Phase-4 steering addendum
+    return { score, repair, summary: describeCompliance(score), repairSummary: describeRepairPlan(repair), profileRefs: laneRefs.length };
   });
 }
