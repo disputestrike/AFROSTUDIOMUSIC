@@ -14,6 +14,8 @@
  *    already exists (POST /songs/:id/versions/revert).
  */
 import type { FastifyInstance } from 'fastify';
+import { generateJson } from '@afrohit/ai';
+import { enqueue } from '../lib/queue';
 import { z } from 'zod';
 import { prisma } from '@afrohit/db';
 import { requireAuth } from '../middleware/auth';
@@ -100,4 +102,70 @@ export default async function adjust(app: FastifyInstance) {
     const dist = await classifyAllLanes(workspaceId, analysis);
     return { ...dist, lexiconUnseeded: dist.distribution[0] ? await unseededForLane(dist.distribution[0].lane) : [] };
   });
+  // ---------------------------------------------------------------------------
+  // TALK TO YOUR SONG — the chat editor. One instruction -> ONE typed op ->
+  // executed (existing routes via inject, timeline ops via the song-edit job)
+  // -> a NEW VERSION that auto-plays and reverts in one tap. The differentiator.
+  app.post<{ Params: { id: string }; Body: { message: string } }>('/:id/chat', async (req, reply) => {
+    const { workspaceId } = requireAuth(req);
+    const message = String((req.body as { message?: string })?.message ?? '').slice(0, 500);
+    if (!message.trim()) return reply.code(400).send({ error: 'empty_message' });
+    const song = await prisma.song.findFirst({
+      where: { id: req.params.id, workspaceId },
+      include: {
+        project: { select: { genre: true } },
+        masters: { orderBy: { createdAt: 'desc' }, take: 1 },
+        beats: { orderBy: { createdAt: 'desc' }, take: 1 },
+      },
+    });
+    if (!song) return reply.code(404).send({ error: 'song_not_found' });
+    const sourceUrl = song.masters[0]?.url ?? song.beats[0]?.url;
+    if (!sourceUrl) return reply.code(400).send({ error: 'no_audio_yet', message: 'Render the song first — then talk to it.' });
+    const measured = ((song.beats[0]?.meta ?? {}) as { measured?: { durationS?: { value?: number }; tempoBpm?: { value?: number } } }).measured;
+    const durationS = measured?.durationS?.value ?? 180;
+    const bpm = measured?.tempoBpm?.value ?? null;
+
+    const plan = await generateJson<{ reply: string; op: null | Record<string, unknown> }>({
+      system: `You are this song's producer at the desk. Song: genre ${song.project?.genre ?? 'unknown'}, duration ${Math.round(durationS)}s${bpm ? `, ~${Math.round(bpm)} BPM` : ''}.
+Parse the artist's instruction into EXACTLY ONE op (the FIRST actionable step if they asked for several — say what's next in reply). Times like "1:20" become SECONDS. Ops:
+- {"kind":"transform","tempo":0.5-1.5?,"semitones":-6..6?}  // speed / key
+- {"kind":"remaster","preset":"warm|loud|club|radio"}       // tone/loudness feel incl reverb-ish "warm"
+- {"kind":"regen_beat"}                                      // new sound, SAME structure (self-clone)
+- {"kind":"add_layer","prompt":"<instrument direction>"}     // e.g. add snares/keys/strings texture
+- {"kind":"add_fill","timesS":[80]}                          // drum fill at timestamps (seconds)
+- {"kind":"cut","fromS":45,"toS":60}                         // remove a region
+If nothing fits, op:null and coach them in reply (mixer, versions, adjust exist). Return {"reply","op"} ONLY.`,
+      user: message,
+      maxTokens: 400,
+    }).catch(() => ({ reply: 'I could not parse that — try "add a fill at 1:20" or "make it 1.1x faster".', op: null as null }));
+
+    const op = plan.op as (null | { kind?: string } & Record<string, unknown>);
+    if (!op?.kind) return { reply: plan.reply, dispatched: null };
+
+    const headers: Record<string, string> = {};
+    for (const h of ['authorization', 'x-workspace-id', 'cookie']) {
+      const v = req.headers[h]; if (typeof v === 'string') headers[h] = v;
+    }
+    headers['content-type'] = 'application/json';
+
+    if (op.kind === 'transform' || op.kind === 'remaster' || op.kind === 'regen_beat') {
+      const d = op.kind === 'transform'
+        ? { url: `/api/v1/songs/${song.id}/transform`, payload: { tempo: op.tempo, semitones: op.semitones } }
+        : op.kind === 'remaster'
+          ? { url: `/api/v1/songs/${song.id}/master`, payload: { preset: op.preset ?? 'warm' } }
+          : { url: `/api/v1/songs/${song.id}/regenerate-beat`, payload: {} };
+      const res = await app.inject({ method: 'POST', url: d.url, headers, payload: d.payload as never });
+      const body = res.json() as Record<string, unknown>;
+      return { reply: plan.reply, dispatched: op.kind, jobId: (body.jobId as string) ?? null, status: res.statusCode };
+    }
+
+    // timeline ops -> the song-edit job
+    const job = await prisma.providerJob.create({
+      data: { workspaceId, projectId: song.projectId, kind: 'music', provider: 'song-chat', status: 'QUEUED', inputJson: { songId: song.id, op } as never },
+    });
+    await enqueue({ queue: app.queues.music, name: 'song-edit', payload: { jobId: job.id, workspaceId, projectId: song.projectId, songId: song.id, sourceUrl, genre: song.project?.genre, durationS, op } });
+    reply.code(202);
+    return { reply: plan.reply, dispatched: op.kind, jobId: job.id };
+  });
+
 }

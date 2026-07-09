@@ -62,7 +62,7 @@ function sectionsFrom(blueprint: SongBlueprint | null | undefined, roles: string
 
 /** Minimal direct MusicGen call (Replicate, Prefer:wait) with OUR groove as the
  *  melody condition. Returns an audio URL or null (reason logged) — fail-open. */
-async function melodyLayer(groove: string, prompt: string, durationS: number): Promise<{ url: string | null; note: string }> {
+export async function melodyLayer(groove: string, prompt: string, durationS: number): Promise<{ url: string | null; note: string }> {
   const token = process.env.REPLICATE_API_TOKEN;
   if (!token) return { url: null, note: 'melody skipped: no REPLICATE_API_TOKEN' };
   try {

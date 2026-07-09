@@ -16,7 +16,7 @@ export async function ffmpegAvailable(): Promise<boolean> {
   });
 }
 
-function runFfmpeg(args: string[]): Promise<void> {
+export function runFfmpeg(args: string[]): Promise<void> {
   return new Promise((resolve, reject) => {
     const p = spawn('ffmpeg', ['-y', '-hide_banner', '-loglevel', 'error', ...args]);
     let stderr = '';

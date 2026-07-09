@@ -1,4 +1,5 @@
 'use client';
+import { SongChat } from './SongChat';
 
 /**
  * §10 — ADJUST SONG. The workflow, in order and on one card:
@@ -107,6 +108,7 @@ export function AdjustSong({ songId, onDispatched }: { songId: string; onDispatc
         </button>
       </div>
       {msg && <p className="mt-2 text-[11px] text-slate-400">{msg}</p>}
+      <SongChat songId={songId} onNewVersion={onDispatched} />
     </div>
   );
 }
