@@ -907,8 +907,11 @@ export function musicAdapter(override?: string, apiKey?: string): MusicProviderA
       // win. Default stays the Replicate music-2.6 the owner's ear approved.
       return fal && process.env.FAL_MINIMAX_MODEL ? falMiniMax(apiKey) : new MiniMaxSongAdapter(apiKey);
     case 'ace_step':
-      // fal-ACE stays auto: same underlying model, only the route differs.
-      return fal ? falAce(apiKey) : new AceStepSongAdapter(apiKey);
+      // OWNER DIRECTIVE (2026-07-11): fal is FULLY DORMANT until the bake-off
+      // proves it — even ACE requires the explicit FAL_ACE_MODEL env to route
+      // through fal. With just FAL_KEY set, everything renders on Replicate,
+      // exactly the configuration the owner's ear approved.
+      return fal && process.env.FAL_ACE_MODEL ? falAce(apiKey) : new AceStepSongAdapter(apiKey);
     case 'suno':
       return new SunoAdapter(apiKey);
     case 'replicate':

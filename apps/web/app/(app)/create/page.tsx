@@ -128,6 +128,8 @@ export default function CreatePage() {
   const [songName, setSongName] = useState('');
   const [singName, setSingName] = useState(true);
   const [voice, setVoice] = useState<'auto' | 'female' | 'male' | 'duet' | 'group'>('auto');
+  // A zap/listen reference pinned via ?pin= — its recipe LEADS the engine brief.
+  const [pinnedRef, setPinnedRef] = useState<string | null>(null);
   // WO-5: takes rendered for this song — 1 = cheap draft; 2-3 = the ear picks
   // among DIFFERENT directions (costs that many renders).
   const [takes, setTakes] = useState<1 | 2 | 3>(1);
@@ -166,6 +168,8 @@ export default function CreatePage() {
     const v = q.get('vibe');
     if (v) setVibe(v.slice(0, 300));
     const inf = q.get('influence');
+    const pin = q.get('pin');
+    if (pin) setPinnedRef(pin);
     if (inf) setInfluence(inf.slice(0, 100));
     const lg = q.get('languages');
     if (lg) {
@@ -246,7 +250,7 @@ export default function CreatePage() {
       // networks). We poll the drop job for the hook/lyrics result…
       const started = await api.post<{ jobId: string }>(
         `/projects/${project.id}/drop`,
-        { theme, vibe: vibe.trim().slice(0, 500) || undefined, songTitle: songName.trim() || undefined, voice: voice === 'auto' ? undefined : voice, candidates: takes > 1 ? takes : undefined, count: 1, genre, fusionGenres: fusion.length ? fusion : undefined, mood, bpm, withVocals: true, songEngine: engine, influence: influence.trim() || undefined, languages: langs }
+        { theme, vibe: vibe.trim().slice(0, 500) || undefined, songTitle: songName.trim() || undefined, voice: voice === 'auto' ? undefined : voice, candidates: takes > 1 ? takes : undefined, pinnedReferenceId: pinnedRef || undefined, count: 1, genre, fusionGenres: fusion.length ? fusion : undefined, mood, bpm, withVocals: true, songEngine: engine, influence: influence.trim() || undefined, languages: langs }
       );
       saveProduce({ dropJobId: started.jobId, renderJobId: undefined });
       let item: { jobId?: string; hookText?: string; score: number | null; error?: string } | undefined;

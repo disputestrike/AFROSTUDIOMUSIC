@@ -328,7 +328,7 @@ export default async function lyrics(app: FastifyInstance) {
         data: { workspaceId, projectId: project.id, title, status: 'SKETCH' },
       });
       const lyric = await prisma.lyricDraft.create({
-        data: { projectId: project.id, songId: song.id, title, body, approved: true },
+        data: { projectId: project.id, songId: song.id, title, body, approved: true, artistAuthored: true },
       });
       await prisma.song.update({ where: { id: song.id }, data: { lyricId: lyric.id } });
       reply.code(201);

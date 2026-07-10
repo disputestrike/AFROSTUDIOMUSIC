@@ -10,6 +10,7 @@ import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { prisma } from '@afrohit/db';
 import { recognizeSong, extractSongCraft, parseTrendSong, researchTrends } from '@afrohit/ai';
+import { enqueue } from '../lib/queue';
 import { laneBpm } from '../lib/lane-pipeline';
 import { GENRES } from '@afrohit/shared';
 import { requireAuth } from '../middleware/auth';
@@ -17,6 +18,8 @@ import { publicUrlFor, assertOwnedKey } from '../lib/storage';
 
 const identifySchema = z.object({ key: z.string().min(4) });
 const learnSchema = z.object({
+  /** AudD's LICENSED 30s preview — measured facts-only (real tempo/groove), never stored. */
+  previewUrl: z.string().url().optional(),
   title: z.string().min(1).max(200),
   artist: z.string().max(200).optional(),
   genre: z.string().max(60).optional(),
@@ -103,8 +106,15 @@ export default async function zap(app: FastifyInstance) {
         summary: (craft.whatToLearn || craft.vibe || '').slice(0, 400),
       },
     });
+    // MEASURE THE LICENSED PREVIEW (facts, never expression): AudD's official
+    // 30s preview is legally obtained — the ear reads its REAL tempo/groove into
+    // recipe.measured so "make in this lane" matches the actual record's speed,
+    // not an LLM's guess. The preview is never stored; only numbers land.
+    if (m.previewUrl) {
+      await enqueue({ queue: app.queues.music, name: 'deep-measure', payload: { referenceId: ref.id, url: m.previewUrl, workspaceId } }).catch(() => undefined);
+    }
     void prisma.analyticsEvent
-      .create({ data: { workspaceId, name: 'zap.learn', properties: { title: m.title, genre } as never } })
+      .create({ data: { workspaceId, name: 'zap.learn', properties: { title: m.title, genre, measuredPreview: !!m.previewUrl } as never } })
       .catch(() => {});
     return { learned: true, referenceId: ref.id, genre, craft: craft.craft, vibe: craft.vibe, whatToLearn: craft.whatToLearn, bpm: craft.suggestedBpm ?? null, mood: craft.mood ?? null, languages: craft.languages ?? null };
   });
@@ -127,7 +137,7 @@ export default async function zap(app: FastifyInstance) {
         // Everything "Make in this lane" needs to auto-produce in the SAME style:
         // the lane's tempo, mood, languages + the artist as a LANE cue (never named
         // in the song). Falls back to the genre's home tempo when a hint is missing.
-        bpm: rec.bpm ?? laneBpm(r.genre) ?? 103,
+        bpm: (rec as { measured?: { tempoBpm?: { value?: number } } }).measured?.tempoBpm?.value ?? rec.bpm ?? laneBpm(r.genre) ?? 103,
         mood: rec.mood ?? null,
         languages: rec.languages ?? null,
         songTitle: rec.title ?? null,
@@ -181,7 +191,8 @@ export default async function zap(app: FastifyInstance) {
     }
     return {
       genre,
-      bpm: rec.bpm ?? laneBpm(genre) ?? 103,
+      // MEASURED tempo (from the licensed preview) outranks the craft guess.
+      bpm: (rec as { measured?: { tempoBpm?: { value?: number } } }).measured?.tempoBpm?.value ?? rec.bpm ?? laneBpm(genre) ?? 103,
       mood: rec.mood ?? null,
       languages: rec.languages?.length ? rec.languages : ['pcm', 'en'],
       influence: rec.artist ?? null,

@@ -430,6 +430,10 @@ model LyricDraft {
   structure     Json?    // {sections:[{name:"verse1", lines:[...]}]}
   cleanVersion  String?  @db.Text
   explicit      Boolean  @default(false)
+  // THE ARTIST'S OWN WORDS ARE LAW: from-lyrics/mumble-picked drafts set this;
+  // the will-it-blow gate and make-it-bigger NEVER rewrite an artist-authored
+  // lyric — they score it and stop ("doesn't follow my lyrics" root cause).
+  artistAuthored Boolean @default(false)
   languageMix   Json?    // {pcm:0.6, yo:0.3, en:0.1}
   melody        Json?    // melody spec per section: contour, syllable timing (drives sung vocals)
   translation   Json?

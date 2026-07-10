@@ -198,7 +198,7 @@ export interface ImproveResult {
   jobId: string;
   whatChanged: string[];
 }
-export type ImproveError = 'song_not_found' | 'no_lyrics' | 'a&r_unavailable' | 'insufficient_credits' | 'rewrite_failed';
+export type ImproveError = 'song_not_found' | 'no_lyrics' | 'a&r_unavailable' | 'insufficient_credits' | 'rewrite_failed' | 'artist_authored';
 
 /** Manual "Make it bigger": ONE rewrite + immediate re-sing (auto-masters +
  * re-scores when it lands). Shares the rewrite/re-sing pieces with the gate. */
@@ -211,6 +211,10 @@ export async function improveSongOnce(
   const song = await loadSong(workspaceId, songId);
   if (!song) return { error: 'song_not_found' };
   if (!song.lyric?.body) return { error: 'no_lyrics' };
+  // THE ARTIST'S WORDS ARE LAW: a from-lyrics/mumble-authored draft is never
+  // rewritten by the machine — not by Make-it-bigger, not by the gate. Score
+  // it, advise, stop. (Root cause of "it doesn't follow my lyrics".)
+  if ((song.lyric as { artistAuthored?: boolean }).artistAuthored) return { error: 'artist_authored' };
   let read = song.hitRead as { toMakeItBigger?: string[]; risks?: string[] } | null;
   if (!read?.toMakeItBigger?.length) {
     read = await arReadSong(app, workspaceId, songId);
@@ -250,6 +254,13 @@ async function runGateForSong(app: FastifyInstance, workspaceId: string, songId:
     }
 
     const song = await loadSong(workspaceId, songId);
+    // ARTIST-AUTHORED LYRICS ARE LAW: the gate scores them and STOPS — it never
+    // climbs by rewriting the artist's own words.
+    if (song?.lyric && (song.lyric as { artistAuthored?: boolean }).artistAuthored) {
+      console.log(`[gate] ${songId}: artist-authored lyric — score-only, no rewrites (${bestScore}/100)`);
+      await stamp(songId, bestScore, 0, blows(pred0.hitScore, pred0.viralScore));
+      return;
+    }
     if (!song?.lyric?.body) {
       await stamp(songId, bestScore, 0, false);
       return;

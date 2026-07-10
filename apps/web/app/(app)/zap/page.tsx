@@ -84,6 +84,9 @@ export default function ZapPage() {
       } catch { /* fall back to what we have */ } finally { setPreparing(''); }
     }
     const params = new URLSearchParams({ genre, produce: '1', languages: (languages?.length ? languages : ['pcm', 'en']).join(','), vibe: vibe.slice(0, 240) });
+    // PIN the reference — without this the render used generic lane DNA and
+    // "make in this lane" came out a different song entirely.
+    if (opts.referenceId) params.set('pin', opts.referenceId);
     if (bpm) params.set('bpm', String(bpm));
     if (mood) params.set('mood', mood);
     if (influence) params.set('influence', influence);
@@ -155,7 +158,7 @@ export default function ZapPage() {
     setLearn('learning');
     try {
       const r = await api.post<{ referenceId?: string; craft?: string[]; whatToLearn?: string; genre?: string; bpm?: number | null; mood?: string | null; languages?: string[] | null }>('/zap/learn', {
-        title: match.title, artist: match.artist, genre: match.genre, album: match.album, releaseDate: match.releaseDate, isrc: match.isrc,
+        title: match.title, artist: match.artist, genre: match.genre, album: match.album, releaseDate: match.releaseDate, isrc: match.isrc, previewUrl: match.previewUrl,
       });
       setLearned(r);
       setLearn('done');
