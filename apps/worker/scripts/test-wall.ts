@@ -3,7 +3,6 @@
  * Pure-function tests: the routing law must hold in code, not policy.
  */
 import { engineClass, resolveEngineForWorkspace, isFirstPartyWorkspace, recommendEngine, referenceOrigin, groundingOf, describeGrounding, promotionEligible, buildLicenseCertificate, validateDatasetManifest, priorAnalyses, buildLaneProfile, scoreLaneCompliance, planRepairs, type MeasuredAnalysis } from '@afrohit/shared';
-import { falRequestBase } from '@afrohit/ai';
 import { readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 
@@ -97,11 +96,6 @@ check('C-3: unmeasured can never promote', !promotionEligible({ laneScore: null,
   const fofGood = scoreLaneCompliance(good, profile).dimensions.find((d) => d.key === 'fourOnFloor');
   check('prior-fix: a CORRECT 4x4 take is in-lane on the dim (was scoring 0)', fofGood?.status === 'in-lane');
 }
-
-// A3 hotfix — the LIVE 405: fal requests URLs use the ROOT namespace, never the
-// model subpath (submit succeeded, poll 405'd, render died on the user's screen).
-check('fal: subpath model polls at root namespace', falRequestBase('fal-ai/minimax-music/v2') === 'fal-ai/minimax-music');
-check('fal: simple slug unchanged', falRequestBase('fal-ai/ace-step') === 'fal-ai/ace-step');
 
 // W-3: certificates — class-only, bridge never certifiable, standard = pass-through
 const certOk = buildLicenseCertificate({ songId: 's1', workspaceId: 'w1', engineClass: 'certified-clean', issuedAt: '2026-07-10', certificateId: 'c1' });

@@ -58,7 +58,6 @@ export default async function admin(app: FastifyInstance) {
   // glance, live. Admin-only (real vendor names live here — §1.11).
   app.get('/engines', async (req) => {
     await requireAdmin(req);
-    const fal = !!process.env.FAL_KEY;
     const sunoAvailable = !!process.env.SUNO_API_KEY;
     const firstParty = isFirstPartyWorkspace('(internal)');
     const vocal = resolveEngineForWorkspace(undefined, { firstParty, sunoAvailable });
@@ -93,15 +92,14 @@ export default async function admin(app: FastifyInstance) {
         firstParty,
         bridgeAvailable: sunoAvailable && firstParty,
       },
-      falRouting: {
-        keyPresent: fal,
+      renderRouting: {
+        locked: 'replicate (owner-approved configuration; fal removed entirely 2026-07-11 — any cheaper route re-enters only via a measured bake-off)',
         adapters: {
-          ace_step: { route: fal ? 'fal' : 'replicate', model: fal ? process.env.FAL_ACE_MODEL ?? 'fal-ai/ace-step' : 'lucataco/ace-step' },
-          minimax: { route: fal ? 'fal' : 'replicate', model: fal ? process.env.FAL_MINIMAX_MODEL ?? 'fal-ai/minimax-music/v2' : 'minimax/music-2.6' },
-          minimax_ref: { route: fal ? 'fal' : 'replicate (UNCONDITIONED fallback)', model: process.env.FAL_MINIMAX_REF_MODEL ?? 'fal-ai/minimax-music' },
-          musicgen: { route: fal ? 'fal' : 'replicate', model: fal ? process.env.FAL_MUSICGEN_MODEL ?? 'fal-ai/musicgen' : 'meta/musicgen' },
+          minimax: 'minimax/music-2.6 via Replicate',
+          ace_step: 'lucataco/ace-step via Replicate',
+          musicgen: 'MusicGen via Replicate',
+          suno: 'bridge/gateway when SUNO_API_KEY set (first-party only)',
         },
-        note: 'fal adapters fall back to Replicate inline on any failure — a fallback shows up as Replicate spend in the last-24h table below.',
       },
       brainTiers: {
         judgment: { brain: 'anthropic', configured: !!(process.env.ANTHROPIC_API_KEY || process.env.CLAUDE_API_KEY) },

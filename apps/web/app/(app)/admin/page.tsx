@@ -311,7 +311,7 @@ function EngineStatus() {
   useEffect(() => { api.get<Record<string, unknown>>('/admin/engines').then(setD).catch(() => {}); }, []); // eslint-disable-line react-hooks/exhaustive-deps
   if (!d) return null;
   const resolved = (d.resolved ?? {}) as Record<string, unknown>;
-  const fal = (d.falRouting ?? {}) as { keyPresent?: boolean; adapters?: Record<string, { route?: string; model?: string }> };
+  const routing = (d.renderRouting ?? {}) as { adapters?: Record<string, string> };
   const brains = (d.brainTiers ?? {}) as { judgment?: { configured?: boolean }; bulk?: { configured?: boolean; model?: string } };
   const spend = (d.last24hRenderSpend ?? []) as Array<{ engine: string; renders: number; costUsd: number }>;
   return (
@@ -320,13 +320,13 @@ function EngineStatus() {
       <div className="mt-3 grid gap-3 text-sm sm:grid-cols-2 lg:grid-cols-4">
         <div><div className="text-xs uppercase tracking-widest text-slate-500">Vocal default</div><div className="text-afrobrand-300">{String(resolved.vocalDefault ?? '—')}</div></div>
         <div><div className="text-xs uppercase tracking-widest text-slate-500">Stems mode</div><div className="text-slate-200">{String(resolved.stemsMode ?? '—')}</div></div>
-        <div><div className="text-xs uppercase tracking-widest text-slate-500">fal routing</div><div className={fal.keyPresent ? 'text-emerald-400' : 'text-amber-300'}>{fal.keyPresent ? 'ACTIVE (paid fallback ready)' : 'OFF — set FAL_KEY'}</div></div>
+        <div><div className="text-xs uppercase tracking-widest text-slate-500">Render routing</div><div className="text-slate-200">locked — owner-approved config</div></div>
         <div><div className="text-xs uppercase tracking-widest text-slate-500">Brains</div><div className="text-slate-200">judgment: {brains.judgment?.configured ? 'anthropic ✓' : '✗'} · bulk: {brains.bulk?.configured ? `cerebras ✓ (${brains.bulk?.model})` : 'not set'}</div></div>
       </div>
       <div className="mt-3 grid gap-2 text-xs text-slate-400 sm:grid-cols-2">
         <div>
           <div className="text-slate-500 uppercase tracking-widest">Adapters</div>
-          {Object.entries(fal.adapters ?? {}).map(([k, v]) => <div key={k}>{k}: <span className="text-slate-200">{v.route}</span> ({v.model})</div>)}
+          {Object.entries(routing.adapters ?? {}).map(([k, v]) => <div key={k}>{k}: <span className="text-slate-200">{String(v)}</span></div>)}
         </div>
         <div>
           <div className="text-slate-500 uppercase tracking-widest">Last 24h render spend</div>

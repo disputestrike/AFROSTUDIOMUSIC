@@ -11,7 +11,9 @@
 
 let keyCursor = 0;
 export function cerebrasKey(): string | undefined {
-  const list = (process.env.CEREBRAS_API_KEYS ?? process.env.CEREBRAS_API_KEY ?? '')
+  // Accept common env spellings (the elevenKey lesson): a naming mismatch on
+  // Railway must never silently disable the bulk brain.
+  const list = (process.env.CEREBRAS_API_KEYS ?? process.env.CEREBRAS_API_KEY ?? process.env.CEREBRAS_KEY ?? process.env.CEREBRASAI_API_KEY ?? '')
     .split(',')
     .map((s) => s.trim())
     .filter(Boolean);

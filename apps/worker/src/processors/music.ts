@@ -105,7 +105,10 @@ export async function processMusic(p: MusicPayload) {
     // traceable to its source sound (internal log — wall-safe).
     if (p.input.referenceAudioUrl && wantsVocals) {
       adapter = musicAdapter('minimax_ref', engineKey);
-      console.log(`[adjust] reference-conditioned render — reference-input=${String(p.input.referenceAudioUrl).slice(0, 80)}`);
+      // HONESTY: no conditioning engine is configured (fal removed by owner
+      // directive) — the render is UNCONDITIONED; the reference steers only
+      // through the brief/lane repair. Never claim conditioning that didn't run.
+      console.log(`[adjust] steered re-render (unconditioned — no conditioning engine) — reference-input=${String(p.input.referenceAudioUrl).slice(0, 80)}`);
     }
     type GenResult = Awaited<ReturnType<typeof adapter.generate>>;
 

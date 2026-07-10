@@ -176,7 +176,7 @@ async function bootstrap() {
   // The API runs the WRITERS (hooks/lyrics/A&R) — its brain config must be as
   // loud as the worker's: a stale Railway ANTHROPIC_MODEL here burns silently.
   app.log.info(
-    `brains: judgment=${process.env.ANTHROPIC_MODEL ?? 'claude-sonnet-5'} (key=${!!(process.env.ANTHROPIC_API_KEY || process.env.CLAUDE_API_KEY)}) bulk=cerebras(key=${!!(process.env.CEREBRAS_API_KEY || process.env.CEREBRAS_API_KEYS)}) fal=${!!process.env.FAL_KEY}`
+    `brains: judgment=${process.env.ANTHROPIC_MODEL ?? 'claude-sonnet-5'} (key=${!!(process.env.ANTHROPIC_API_KEY || process.env.CLAUDE_API_KEY)}) bulk=cerebras(key=${!!(process.env.CEREBRAS_API_KEY || process.env.CEREBRAS_API_KEYS)})`
   );
   // Seed the shared word bank once (idempotent; skips if already populated), then
   // assert coverage — a lane whose prescribed languages are thin must not ship
