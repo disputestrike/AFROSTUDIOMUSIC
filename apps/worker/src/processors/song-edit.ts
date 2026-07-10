@@ -257,6 +257,24 @@ export async function processSongEdit(p: SongEditPayload): Promise<void> {
 
     const url = await uploadBytes({ workspaceId: p.workspaceId, kind: 'masters', bytes: out, contentType: 'audio/wav', ext: 'wav' });
     await prisma.master.create({ data: { projectId: p.projectId, songId: p.songId, preset: `chat ${label}`.slice(0, 60), url, approved: true } });
+    // VERSION DISCIPLINE — chat edits never pile up an endless version list:
+    // keep the CURRENT edit + ONE previous chat version; older chat versions
+    // are pruned. The ORIGINAL render/master (non-chat presets) is never
+    // touched, so "do it to the original" and full revert always survive.
+    try {
+      const chatVersions = await prisma.master.findMany({
+        where: { songId: p.songId, preset: { startsWith: 'chat ' } },
+        orderBy: { createdAt: 'desc' },
+        select: { id: true },
+      });
+      const stale = chatVersions.slice(2);
+      if (stale.length) {
+        await prisma.master.deleteMany({ where: { id: { in: stale.map((m) => m.id) } } });
+        console.log(`[song-edit] pruned ${stale.length} old chat version(s) — current + 1 previous kept, original untouched`);
+      }
+    } catch (err) {
+      console.warn('[song-edit] version prune failed (non-fatal):', (err as Error)?.message);
+    }
     await markSucceeded(p.jobId, { url, label, note: 'New version is live — it auto-plays and reverts in one tap.' });
     console.log(`[song-edit] ${p.songId}: ${label}`);
   } catch (err) {

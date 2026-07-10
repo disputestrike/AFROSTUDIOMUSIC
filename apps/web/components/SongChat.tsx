@@ -21,8 +21,13 @@ export function SongChat({ songId, onNewVersion }: { songId: string; onNewVersio
   const [input, setInput] = useState('');
   const [busy, setBusy] = useState(false);
   const [sections, setSections] = useState<Array<{ index: number; label: string; startS: number; endS: number }>>([]);
+  // VERSION PICKER — by default every edit hits the CURRENT version; the artist
+  // can aim an instruction at any earlier take ("do it to the original").
+  const [versions, setVersions] = useState<Array<{ index: number; label: string; isCurrent?: boolean }>>([]);
+  const [versionIndex, setVersionIndex] = useState<number | 'current'>('current');
   useEffect(() => {
     api.get<{ sections: typeof sections }>(`/songs/${songId}/sections`).then((r) => setSections(r.sections)).catch(() => {});
+    api.get<{ audioVersions: Array<{ index: number; label: string; isCurrent?: boolean }> }>(`/songs/${songId}/versions`).then((r) => setVersions(r.audioVersions ?? [])).catch(() => {});
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [songId]);
   function tellSong(text: string) { void send(text); }
@@ -34,7 +39,7 @@ export function SongChat({ songId, onNewVersion }: { songId: string; onNewVersio
     setMsgs((m) => [...m, { who: 'you', text }]);
     setBusy(true);
     try {
-      const r = await api.post<{ reply: string; dispatched?: string | null; jobId?: string | null }>(`/songs/${songId}/chat`, { message: text });
+      const r = await api.post<{ reply: string; dispatched?: string | null; jobId?: string | null; talkingTo?: string }>(`/songs/${songId}/chat`, { message: text, ...(versionIndex !== 'current' ? { versionIndex } : {}) });
       setMsgs((m) => [...m, { who: 'song', text: r.reply }]);
       if (r.jobId) {
         setMsgs((m) => [...m, { who: 'song', text: 'Working on it…' }]);
@@ -60,7 +65,24 @@ export function SongChat({ songId, onNewVersion }: { songId: string; onNewVersio
 
   return (
     <div className="mt-3 rounded border border-slate-800 bg-slate-950/60 p-3">
-      <div className="mb-2 text-xs font-semibold text-slate-300">Talk to this song <span className="font-normal text-slate-500">— “add a fill at 1:20” · “move the hook earlier” · “reverb only on the vocal” · “open the vocal 0:45–1:00”</span></div>
+      <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+        <div className="text-xs font-semibold text-slate-300">Talk to this song <span className="font-normal text-slate-500">— “add a fill at 1:20” · “move the hook earlier” · “reverb only on the vocal”</span></div>
+        {versions.length > 1 && (
+          <label className="flex items-center gap-1.5 text-[11px] text-slate-400">
+            Talking to:
+            <select
+              value={versionIndex === 'current' ? 'current' : String(versionIndex)}
+              onChange={(e) => setVersionIndex(e.target.value === 'current' ? 'current' : Number(e.target.value))}
+              className="rounded border border-slate-700 bg-slate-900 px-1.5 py-0.5 text-[11px] text-slate-200"
+            >
+              <option value="current">Current (latest)</option>
+              {versions.map((v) => (
+                <option key={v.index} value={v.index}>{v.label}</option>
+              ))}
+            </select>
+          </label>
+        )}
+      </div>
       {sections.length > 1 && (
         <div className="mb-2 flex flex-wrap gap-1">
           {sections.map((sec) => (

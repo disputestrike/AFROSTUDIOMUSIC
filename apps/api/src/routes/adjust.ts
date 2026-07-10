@@ -126,21 +126,42 @@ export default async function adjust(app: FastifyInstance) {
     return { sections: dur ? edges.slice(0, -1).map((s0, i) => ({ index: i + 1, label: `S${i + 1}`, startS: Math.round(s0), endS: Math.round(edges[i + 1]!) })) : [] };
   });
 
-  app.post<{ Params: { id: string }; Body: { message: string } }>('/:id/chat', async (req, reply) => {
+  app.post<{ Params: { id: string }; Body: { message: string; versionIndex?: number } }>('/:id/chat', async (req, reply) => {
     const { workspaceId } = requireAuth(req);
     const message = String((req.body as { message?: string })?.message ?? '').slice(0, 500);
+    const versionIndex = (req.body as { versionIndex?: number })?.versionIndex;
     if (!message.trim()) return reply.code(400).send({ error: 'empty_message' });
     const song = await prisma.song.findFirst({
       where: { id: req.params.id, workspaceId },
       include: {
         project: { select: { genre: true } },
-        masters: { orderBy: { createdAt: 'desc' }, take: 1 },
+        masters: { orderBy: { createdAt: 'desc' } },
+        mixes: { orderBy: { createdAt: 'desc' }, take: 1 },
         lyric: true,
         beats: { orderBy: { createdAt: 'desc' }, take: 1 },
       },
     });
     if (!song) return reply.code(404).send({ error: 'song_not_found' });
-    const sourceUrl = song.masters[0]?.url ?? song.beats[0]?.url;
+    // TALK TO THE CURRENT VERSION — the freshest of master/mix/beat (the same
+    // rule the catalog player uses). The old masters[0]??beats[0] pick silently
+    // edited a STALE master when a re-sing/upload was newer ("you should be
+    // talking to the current version, not the previous one"). An explicit
+    // versionIndex (from the chat's version picker) overrides.
+    let sourceUrl: string | undefined;
+    let talkingTo = 'current version';
+    if (versionIndex != null) {
+      const vRows = (song.masters.length ? [...song.masters].reverse() : [{ url: song.beats[0]?.url ?? '', createdAt: new Date() }]).map((m) => ({ url: m.url }));
+      const vAudio = vRows.filter((r, i) => r.url && (i === 0 || r.url !== vRows[i - 1]!.url));
+      sourceUrl = vAudio[versionIndex]?.url;
+      talkingTo = `version ${versionIndex + 1} of ${vAudio.length}`;
+      if (!sourceUrl) return reply.code(400).send({ error: 'version_not_found', message: `No version #${versionIndex + 1} — pick one from the selector.` });
+    } else {
+      const cands = [song.masters[0], song.mixes[0], song.beats[0]]
+        .filter((x) => !!x?.url)
+        .map((x) => ({ url: String(x!.url), at: +new Date(x!.createdAt) }))
+        .sort((a, b) => b.at - a.at);
+      sourceUrl = cands[0]?.url;
+    }
     if (!sourceUrl) return reply.code(400).send({ error: 'no_audio_yet', message: 'Render the song first — then talk to it.' });
     const measured = ((song.beats[0]?.meta ?? {}) as { measured?: { durationS?: { value?: number }; tempoBpm?: { value?: number } } }).measured;
     const durationS = measured?.durationS?.value ?? 180;
@@ -245,7 +266,7 @@ ${song.lyric.body.slice(0, 4000)}`,
     });
     await enqueue({ queue: app.queues.music, name: 'song-edit', payload: { jobId: job.id, workspaceId, projectId: song.projectId, songId: song.id, sourceUrl, genre: song.project?.genre, durationS, bpm, boundaries: bounds, op } });
     reply.code(202);
-    return { reply: plan.reply, dispatched: op.kind, jobId: job.id };
+    return { reply: plan.reply, dispatched: op.kind, jobId: job.id, talkingTo };
   });
 
 }
