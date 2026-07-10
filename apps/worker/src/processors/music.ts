@@ -195,7 +195,13 @@ export async function processMusic(p: MusicPayload) {
     const fallbackReason: string | undefined = undefined;
     if (!ok.length) {
       const reason = settled.find((r) => r.error)?.error ?? 'provider_failed';
-      await markFailed(p.jobId, `music_generation_failed: ${reason} — no placeholder emitted; retry or switch engine in Settings.`);
+      // §1.11 THE WALL: errorJson reaches the user's screen — vendor/route names
+      // are INTERNAL. Log the real reason here; ship the class-level one.
+      console.warn(`[music] all candidates failed — internal reason: ${reason}`);
+      const publicReason = reason
+        .replace(/\bfal\b/gi, 'engine route')
+        .replace(/suno|minimax|ace[-_ ]?step|replicate|eleven(labs)?|stable[_ ]?audio|musicgen/gi, 'engine');
+      await markFailed(p.jobId, `music_generation_failed: ${publicReason} — no placeholder emitted; retry or switch engine in Settings.`);
       return;
     }
 

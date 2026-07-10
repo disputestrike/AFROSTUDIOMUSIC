@@ -744,6 +744,16 @@ class StubMusicAdapter implements MusicProviderAdapter {
  * user payload; the worker's fallbackReason stays class-level/generic).
  * Model slugs are env-overridable. [Live verification pending FAL_KEY — §7.3.]
  */
+/**
+ * fal queue URL rule (bit us live with a 405): SUBMIT goes to the FULL model
+ * path (e.g. fal-ai/minimax-music/v2), but STATUS/RESPONSE requests go to the
+ * ROOT namespace (fal-ai/minimax-music/requests/{id}/...) — subpaths are not
+ * part of the requests URL. Exported for the wall test.
+ */
+export function falRequestBase(model: string): string {
+  return model.split('/').slice(0, 2).join('/');
+}
+
 class FalQueueAdapter implements MusicProviderAdapter {
   constructor(
     public readonly name: string,
@@ -753,9 +763,20 @@ class FalQueueAdapter implements MusicProviderAdapter {
     private fallback: MusicProviderAdapter
   ) {}
 
+  /** Poll hard-failed on fal (4xx / lost request): RESUBMIT on the fallback so
+   *  the user's render SURVIVES instead of dying over a routing error. The new
+   *  externalId comes from the fallback; later polls route there automatically. */
+  private async resubmitOnFallback(input: MusicGenerationInput | undefined, why: string): Promise<ProviderJobResult<MusicGenerationOutput>> {
+    console.warn(`[fal-${this.name}] ${why} — resubmitting this render on the paid fallback so it survives`);
+    if (!input) return { status: 'failed', error: 'engine route unavailable and the take could not be resubmitted (no input snapshot)' };
+    return this.fallback.generate(input);
+  }
+  private lastInput?: MusicGenerationInput;
+
   async generate(input: MusicGenerationInput): Promise<ProviderJobResult<MusicGenerationOutput>> {
     const key = process.env.FAL_KEY;
     if (!key) return this.fallback.generate(input);
+    this.lastInput = input; // snapshot: a hard poll failure resubmits this render
     try {
       const res = await fetch(`https://queue.fal.run/${this.model}`, {
         method: 'POST',
@@ -781,19 +802,26 @@ class FalQueueAdapter implements MusicProviderAdapter {
       return { externalId, status: 'failed', error: 'fallback adapter has no poll' };
     }
     const key = process.env.FAL_KEY;
-    if (!key) return { status: 'failed', error: 'FAL_KEY missing at poll time' };
+    if (!key) return { status: 'failed', error: 'engine key missing at poll time' };
     const id = externalId.slice(4);
     const auth = { authorization: `Key ${key}` };
-    const st = await fetch(`https://queue.fal.run/${this.model}/requests/${id}/status`, { headers: auth });
-    if (!st.ok) return { externalId, status: 'failed', error: `fal status ${st.status}` };
+    // THE 405 LESSON: requests URLs use the ROOT namespace, never the subpath.
+    const base = falRequestBase(this.model);
+    const st = await fetch(`https://queue.fal.run/${base}/requests/${id}/status`, { headers: auth });
+    if (!st.ok) {
+      // 4xx = permanent routing/contract problem → the render must SURVIVE:
+      // resubmit on the fallback. 5xx = fal blip → keep polling a while.
+      if (st.status >= 400 && st.status < 500) return this.resubmitOnFallback(this.lastInput, `status poll ${st.status}`);
+      return { externalId, status: 'running', pollAfterMs: 10_000 };
+    }
     const status = ((await st.json()) as { status?: string }).status;
     if (status === 'IN_QUEUE' || status === 'IN_PROGRESS') return { externalId, status: 'running', pollAfterMs: 5_000 };
-    if (status !== 'COMPLETED') return { externalId, status: 'failed', error: `fal ${status ?? 'unknown status'}` };
-    const rs = await fetch(`https://queue.fal.run/${this.model}/requests/${id}`, { headers: auth });
-    if (!rs.ok) return { externalId, status: 'failed', error: `fal response ${rs.status}` };
+    if (status !== 'COMPLETED') return this.resubmitOnFallback(this.lastInput, `terminal fal status ${status ?? 'unknown'}`);
+    const rs = await fetch(`https://queue.fal.run/${base}/requests/${id}`, { headers: auth });
+    if (!rs.ok) return this.resubmitOnFallback(this.lastInput, `response fetch ${rs.status}`);
     const out = (await rs.json()) as { audio?: { url?: string } | string; audio_url?: string; audio_file?: { url?: string } };
     const url = typeof out.audio === 'string' ? out.audio : out.audio?.url ?? out.audio_url ?? out.audio_file?.url;
-    if (!url) return { externalId, status: 'failed', error: 'fal: completed but no audio url in response' };
+    if (!url) return this.resubmitOnFallback(this.lastInput, 'completed but no audio url in response');
     return {
       externalId,
       status: 'succeeded',
