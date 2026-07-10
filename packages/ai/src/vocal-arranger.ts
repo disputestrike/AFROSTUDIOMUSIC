@@ -62,6 +62,7 @@ export function scrubProductionJargon(body: string, genre?: string): string {
 }
 
 export async function enrichLyricsForVocals(opts: {
+  voice?: 'auto' | 'female' | 'male' | 'duet' | 'group';
   genre?: string;
   lyricBody: string;
   languages?: string[];
@@ -73,11 +74,16 @@ export async function enrichLyricsForVocals(opts: {
   try {
     const RAP_GENRES = new Set(['hip_hop', 'trap', 'drill']);
     const isRap = RAP_GENRES.has(opts.genre ?? '');
+    const voiceLaw = opts.voice === 'duet'
+      ? '\nDUET LAW: MALE + FEMALE duet — alternate whole lines naturally, share the hook in harmony, let the voices ANSWER each other. Never label lines; the trade-off must be audible from the writing.'
+      : opts.voice === 'group'
+        ? '\nGROUP LAW: group vocals — lead lines answered by a chanting group; the hook sung TOGETHER; call-and-response everywhere.'
+        : '';
     const rapLaw = isRap
       ? `\nRAP DELIVERY LAW — this is ${opts.genre}: VERSES ARE RAPPED, not sung — rhythmic spoken flow, bars with internal rhyme and punchlines, a cadence switch between verse halves. The HOOK may sing or chant. Ad-libs punctuate the bars ("uh", "yeah", "talk!"). Melodic delivery on verses is a HARD FAIL.`
       : '';
     const out0 = await generateJson<EnrichedVocal>({
-      system: ARRANGER_SYSTEM + rapLaw,
+      system: ARRANGER_SYSTEM + rapLaw + voiceLaw,
       user: [
         `LANGUAGES: ${opts.languages?.join(', ') || 'english, pidgin'}`,
         opts.laneSummary ? `ARTIST LANE: ${opts.laneSummary}` : null,

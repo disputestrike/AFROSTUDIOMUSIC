@@ -421,7 +421,7 @@ async function generateLyrics(ctx: Ctx, hookId: string, cleanVersion: boolean, l
   return { lyric: { id: lyric.id, title: lyric.title }, ...(langViolation.length ? { languageWarning: `still contains: ${langViolation.join(', ')} — regenerate or edit` } : {}) };
 }
 
-async function createBeatJob(ctx: Ctx, a: { genre: string; fusionGenres?: string[]; mood?: string; pinnedReferenceId?: string; bpm: number; keySignature?: string; durationS?: number; vibePrompt?: string; withStems?: boolean; withVocals?: boolean; songEngine?: 'suno' | 'ace_step' | 'minimax'; influence?: string; languages?: string[] }) {
+async function createBeatJob(ctx: Ctx, a: { genre: string; fusionGenres?: string[]; mood?: string; pinnedReferenceId?: string; bpm: number; keySignature?: string; durationS?: number; vibePrompt?: string; withStems?: boolean; withVocals?: boolean; songEngine?: 'suno' | 'ace_step' | 'minimax'; influence?: string; languages?: string[]; voice?: 'auto' | 'female' | 'male' | 'duet' | 'group' }) {
   if (!ctx.projectId) return { error: 'no_project_in_thread' };
 
   // Honor the requested genre for the whole session — the chat's scratch project
@@ -470,6 +470,7 @@ async function createBeatJob(ctx: Ctx, a: { genre: string; fusionGenres?: string
     });
     const enriched = await enrichLyricsForVocals({
       genre: a.genre,
+      voice: a.voice,
       lyricBody: lyrics,
       // The user's SELECTED languages outrank the artist profile's defaults.
       languages: a.languages?.length ? a.languages : project?.artist.languages,
@@ -519,12 +520,17 @@ async function createBeatJob(ctx: Ctx, a: { genre: string; fusionGenres?: string
         // never a clone and never named. Goes to the music model as a style cue.
         // ANTI-SOUP: vibe stays short (vibe + influence only); styleHints ride
         // as tags on dnaTags where terse tokens belong.
-        vibePrompt: [`LANGUAGES: strictly ${(a.languages ?? []).join('/') || 'en'} — never drift into Pidgin unless pcm is listed.`, [a.vibePrompt].filter(Boolean).join(' '), a.influence ? `in the vibe/lane of ${a.influence} (capture the feel, not a copy)` : null].filter(Boolean).join(', ') || undefined,
+        vibePrompt: [`LANGUAGES: strictly ${(a.languages ?? []).join('/') || 'en'} — never drift into Pidgin unless pcm is listed.${(a.languages ?? []).includes('ig') ? ' Igbo lines: authentic IGBO (Nigerian) pronunciation — never Swahili/Zulu phonetics.' : ''}${(a.languages ?? []).includes('yo') ? ' Yoruba lines: true Yoruba tonality.' : ''}`, [a.vibePrompt].filter(Boolean).join(' '), a.influence ? `in the vibe/lane of ${a.influence} (capture the feel, not a copy)` : null].filter(Boolean).join(', ') || undefined,
         durationS: a.durationS ?? blueprint?.totalDurationS ?? (a.withVocals ? genreSignature(a.genre).durationS : 60),
         withStems: a.withStems ?? !a.withVocals,
         withVocals: a.withVocals ?? false,
         songEngine: a.songEngine,
-        dnaTags: [...dnaTags, ...styleHints.slice(0, 3), ...laneSteer],
+        dnaTags: [
+          ...(a.voice && a.voice !== 'auto'
+            ? [{ female: 'female lead vocal', male: 'male lead vocal', duet: 'male and female duet, trading lines and harmonies', group: 'group vocals, choir-style call-and-response' }[a.voice]!]
+            : []),
+          ...dnaTags, ...styleHints.slice(0, 3), ...laneSteer,
+        ].slice(0, 11),
         languages: a.languages?.length ? a.languages : undefined,
         lyrics,
         blueprint: blueprint ?? undefined,
@@ -735,7 +741,7 @@ async function analyzeAudioTool(ctx: Ctx, url: string) {
   return { jobId: job.id, status: 'queued', note: 'Listening — poll the job; outputJson.profile has BPM/key/genre/mood/instruments + a fresh-vibe prompt to create an original from.' };
 }
 
-async function runDropTool(ctx: Ctx, a: { theme: string; count?: number; genre?: string; bpm?: number; withVocals?: boolean; songEngine?: 'suno' | 'ace_step' | 'minimax' }) {
+async function runDropTool(ctx: Ctx, a: { theme: string; count?: number; genre?: string; bpm?: number; withVocals?: boolean; songEngine?: 'suno' | 'ace_step' | 'minimax'; languages?: string[]; mood?: string; fusionGenres?: string[]; influence?: string; durationS?: number; voice?: 'auto' | 'female' | 'male' | 'duet' | 'group'; songTitle?: string }) {
   if (!ctx.projectId) return { error: 'no_project_in_thread' };
   const count = Math.min(Math.max(Number(a.count ?? 3), 1), 6);
   const genre = a.genre ?? 'afrobeats';
@@ -754,7 +760,7 @@ async function runDropTool(ctx: Ctx, a: { theme: string; count?: number; genre?:
     const best = hooks.slice().sort((x, y) => (y.score ?? 0) - (x.score ?? 0))[0]!;
     const ap = (await approveHook(ctx, best.id)) as { songId?: string };
     await generateLyrics(ctx, best.id, true);
-    const beat = (await createBeatJob(ctx, { genre, bpm, withVocals: a.withVocals ?? true, songEngine: a.songEngine })) as { jobId?: string; songId?: string; error?: string };
+    const beat = (await createBeatJob(ctx, { genre, bpm, withVocals: a.withVocals ?? true, songEngine: a.songEngine, languages: a.languages, mood: a.mood, fusionGenres: a.fusionGenres, influence: a.influence, durationS: a.durationS, voice: a.voice, vibePrompt: a.theme })) as { jobId?: string; songId?: string; error?: string };
     drops.push({ songId: ap?.songId ?? beat?.songId, hookText: best.text, score: best.score ?? null, jobId: beat?.jobId, error: beat?.error });
     if (beat?.error === 'insufficient_credits') break;
   }

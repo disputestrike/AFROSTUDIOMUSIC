@@ -127,6 +127,7 @@ export default function CreatePage() {
   const [vibe, setVibe] = useState('');
   const [songName, setSongName] = useState('');
   const [singName, setSingName] = useState(true);
+  const [voice, setVoice] = useState<'auto' | 'female' | 'male' | 'duet' | 'group'>('auto');
   const [influence, setInfluence] = useState('');
   const [engine, setEngine] = useState<'suno' | 'ace_step' | 'minimax'>('minimax');
 
@@ -242,7 +243,7 @@ export default function CreatePage() {
       // networks). We poll the drop job for the hook/lyrics result…
       const started = await api.post<{ jobId: string }>(
         `/projects/${project.id}/drop`,
-        { theme, count: 1, genre, fusionGenres: fusion.length ? fusion : undefined, mood, bpm, withVocals: true, songEngine: engine, influence: influence.trim() || undefined, languages: langs }
+        { theme, songTitle: songName.trim() || undefined, voice: voice === 'auto' ? undefined : voice, count: 1, genre, fusionGenres: fusion.length ? fusion : undefined, mood, bpm, withVocals: true, songEngine: engine, influence: influence.trim() || undefined, languages: langs }
       );
       saveProduce({ dropJobId: started.jobId, renderJobId: undefined });
       let item: { jobId?: string; hookText?: string; score: number | null; error?: string } | undefined;
@@ -622,6 +623,18 @@ export default function CreatePage() {
       <div className="mt-6"><div className="mb-2 text-sm text-slate-400">Influence — artist lane (optional)</div>
         <input value={influence} onChange={(e) => setInfluence(e.target.value)} placeholder="e.g. Davido, Wizkid, Asake" className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2.5 text-sm" />
         <p className="mt-1.5 text-xs text-slate-500">Steers the <span className="text-slate-300">vibe/energy/production feel</span> toward artists you love — the kind of record they’d make. It never copies their songs and never names them.</p>
+      </div>
+
+      <label className="mb-1 mt-4 block text-sm text-slate-300">Voice</label>
+
+      <div className="mb-4 flex flex-wrap gap-2">
+
+        {(['auto', 'female', 'male', 'duet', 'group'] as const).map((v) => (
+
+          <button key={v} onClick={() => setVoice(v)} className={`rounded-full border px-3 py-1.5 text-sm capitalize ${voice === v ? 'border-transparent bg-gradient-to-r from-orange-500 to-pink-500 text-white' : 'border-slate-700 bg-slate-900 text-slate-300 hover:border-slate-500'}`}>{v === 'auto' ? 'Auto' : v}</button>
+
+        ))}
+
       </div>
 
       <div className="mt-6"><div className="mb-2 text-sm text-slate-400">Vocal engine</div>
