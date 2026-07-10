@@ -1,5 +1,5 @@
 import { prisma } from '@afrohit/db';
-import { priorAnalyses, buildLaneProfile, scoreLaneCompliance, planRepairs, type MeasuredAnalysis, type LaneProfile } from '@afrohit/shared';
+import { priorAnalyses, buildLaneProfile, scoreLaneCompliance, planRepairs, referenceOrigin, groundingOf, type MeasuredAnalysis, type LaneProfile, type LaneGrounding } from '@afrohit/shared';
 import { measureAudio, dspAvailable } from './dsp';
 
 /**
@@ -23,34 +23,61 @@ const genreMatches = (a?: string | null, b?: string | null) => {
  * Returns null when the lane can't be profiled yet (< minRefs measured refs) — the
  * caller then falls open. Shared by the post-render assessment AND best-of-N ranking.
  */
+/** C-2 — grounding census for a lane: who the measured refs actually ARE. */
+export async function laneGrounding(workspaceId: string, genre?: string | null): Promise<LaneGrounding> {
+  if (!genre) return { external: 0, factsOnly: 0, self: 0, grounded: false };
+  const rows = await prisma.soundReference.findMany({
+    where: { workspaceId, NOT: [{ sourceUrl: { startsWith: 'lyric:' } }, { sourceUrl: { startsWith: 'trend:' } }] },
+    orderBy: { createdAt: 'desc' },
+    take: 300,
+    select: { genre: true, sourceUrl: true, recipe: true },
+  });
+  const origins: Array<{ origin: ReturnType<typeof referenceOrigin> }> = [];
+  for (const r of rows) {
+    if (!genreMatches(r.genre, genre)) continue;
+    const rec = (r.recipe ?? {}) as { measured?: MeasuredAnalysis; source?: string };
+    if (rec.measured?.engineOk) origins.push({ origin: referenceOrigin(r.sourceUrl, rec) });
+  }
+  return groundingOf(origins);
+}
+
 export async function loadLaneProfile(workspaceId: string, genre?: string | null): Promise<LaneProfile | null> {
   if (!genre) return null;
   const rows = await prisma.soundReference.findMany({
     where: { workspaceId, NOT: [{ sourceUrl: { startsWith: 'lyric:' } }, { sourceUrl: { startsWith: 'trend:' } }] },
     orderBy: { createdAt: 'desc' },
     take: 300,
-    select: { genre: true, recipe: true },
+    select: { genre: true, sourceUrl: true, recipe: true },
   });
-  const measured: MeasuredAnalysis[] = [];
+  // C-2 — GROUNDING RULE: a lane's profile counts NON-SELF refs as grounding.
+  // Self-generated measurements join only once the lane is grounded (≥3 non-self)
+  // — scoring our own renders against a guess and folding the matches back in
+  // would teach the lane to sound like ourselves (feedback loop, not learning).
+  const nonSelf: MeasuredAnalysis[] = [];
+  const self: MeasuredAnalysis[] = [];
   for (const r of rows) {
     if (!genreMatches(r.genre, genre)) continue;
-    const rec = (r.recipe ?? {}) as { measured?: MeasuredAnalysis };
-    if (rec.measured?.engineOk) measured.push(rec.measured);
+    const rec = (r.recipe ?? {}) as { measured?: MeasuredAnalysis; source?: string };
+    if (!rec.measured?.engineOk) continue;
+    (referenceOrigin(r.sourceUrl, rec) === 'self-generated' ? self : nonSelf).push(rec.measured);
   }
-  const profile = buildLaneProfile(genre, 'genre', measured, { minRefs: 3 });
-  if (Object.keys(profile.features).length && measured.length >= 3) return profile;
+  if (nonSelf.length >= 3) {
+    const profile = buildLaneProfile(genre, 'genre', [...nonSelf, ...self], { minRefs: 3 });
+    if (Object.keys(profile.features).length) return profile;
+  }
   // COLD-START WORKAROUND: expert priors — published knowledge as numbers, every
   // field method-tagged 'expert-prior'. Correct scoring/ranking/repair from day
-  // one; certification still demands 3 AUTHENTIC refs (the gate is untouched).
+  // one; certification still demands 3 AUTHENTIC refs, and C-2 locks self-
+  // promotion until the lane is grounded in non-self references.
   const priors = priorAnalyses(genre);
   if (priors.length) {
     const pp = buildLaneProfile(genre, 'genre', priors, { minRefs: 1 });
     if (Object.keys(pp.features).length) {
-      console.log(`[lane] ${genre}: expert-prior profile in use (${measured.length} real refs so far)`);
+      console.log(`[lane] ${genre}: expert-prior profile in use (${nonSelf.length} external refs; ${self.length} self excluded — self-promotion locked)`);
       return pp;
     }
   }
-  return Object.keys(profile.features).length ? profile : null;
+  return null;
 }
 
 export async function assessLaneCompliance(opts: {

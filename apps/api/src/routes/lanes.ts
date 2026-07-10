@@ -1,6 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import { prisma } from '@afrohit/db';
-import { buildLaneProfile, describeLaneProfile, scoreLaneCompliance, describeCompliance, planRepairs, describeRepairPlan, type MeasuredAnalysis } from '@afrohit/shared';
+import { buildLaneProfile, describeLaneProfile, scoreLaneCompliance, describeCompliance, planRepairs, describeRepairPlan, referenceOrigin, groundingOf, describeGrounding, type MeasuredAnalysis } from '@afrohit/shared';
 import { requireAuth } from '../middleware/auth';
 import { loadProfileFor, unseededForLane } from '../lib/lane-report';
 import { GENRES } from '@afrohit/shared';
@@ -24,21 +24,21 @@ const genreMatches = (a?: string | null, b?: string | null) => {
   return !!x && !!y && (x === y || x.includes(y) || y.includes(x));
 };
 
-/** Every measured reference in a genre lane (with the source ref id, for exclusion). */
+/** Every measured reference in a genre lane (with the source ref id + C-2 origin). */
 async function fetchGenreMeasured(workspaceId: string, genre: string) {
   const rows = await prisma.soundReference.findMany({
     where: { workspaceId, NOT: [{ sourceUrl: { startsWith: 'lyric:' } }, { sourceUrl: { startsWith: 'trend:' } }] },
     orderBy: { createdAt: 'desc' },
     take: 300,
-    select: { id: true, genre: true, recipe: true },
+    select: { id: true, genre: true, sourceUrl: true, recipe: true },
   });
   let refsInGenre = 0;
-  const measured: Array<{ id: string; analysis: MeasuredAnalysis }> = [];
+  const measured: Array<{ id: string; analysis: MeasuredAnalysis; origin: ReturnType<typeof referenceOrigin> }> = [];
   for (const r of rows) {
     if (!genreMatches(r.genre, genre)) continue;
     refsInGenre++;
-    const rec = (r.recipe ?? {}) as { measured?: MeasuredAnalysis };
-    if (rec.measured && rec.measured.engineOk) measured.push({ id: r.id, analysis: rec.measured });
+    const rec = (r.recipe ?? {}) as { measured?: MeasuredAnalysis; source?: string };
+    if (rec.measured && rec.measured.engineOk) measured.push({ id: r.id, analysis: rec.measured, origin: referenceOrigin(r.sourceUrl, rec) });
   }
   return { refsInGenre, measured };
 }
@@ -50,16 +50,21 @@ export default async function lanes(app: FastifyInstance) {
     const { workspaceId } = requireAuth(req);
     const { genre } = req.params as { genre: string };
     const { refsInGenre, measured } = await fetchGenreMeasured(workspaceId, genre);
-    const profile = buildLaneProfile(genre, 'genre', measured.map((m) => m.analysis), { minRefs: 3 });
+    // ADDENDUM C-2 — grounding: only NON-SELF refs ground a lane; self rows join
+    // the profile only once grounded (never bootstrap a lane from our own output).
+    const grounding = groundingOf(measured);
+    const forProfile = grounding.grounded ? measured : measured.filter((m) => m.origin !== 'self-generated');
+    const profile = buildLaneProfile(genre, 'genre', forProfile.map((m) => m.analysis), { minRefs: 3 });
     profile.builtAt = new Date().toISOString();
     return {
       profile,
       summary: describeLaneProfile(profile),
       refsInGenre,
       refsMeasured: measured.length,
+      grounding: { ...grounding, status: describeGrounding(grounding) },
       note:
-        measured.length < profile.minRefs
-          ? `Only ${measured.length} measured reference(s) in "${genre}". Analyze at least ${profile.minRefs} rights-cleared ${genre} tracks (the ear measures each) to build a real lane profile.`
+        !grounding.grounded
+          ? `${describeGrounding(grounding)} — analyze at least 3 rights-cleared ${genre} tracks (owned uploads or facts-only records) to ground this lane.`
           : undefined,
     };
   });
@@ -172,9 +177,27 @@ export default async function lanes(app: FastifyInstance) {
       if ((r.laneScore ?? 0) < 60 || r.failedCritical.length) cur.failing++;
       byLane.set(k, cur);
     }
+    // C-2 — print each lane's GROUNDING beside its scores: 'measured (5 refs:
+    // 3 external + 2 self)' vs 'expert-prior (1 external ref — self-promotion locked)'.
+    const refRows = await prisma.soundReference.findMany({
+      where: { workspaceId, NOT: [{ sourceUrl: { startsWith: 'lyric:' } }, { sourceUrl: { startsWith: 'trend:' } }] },
+      select: { genre: true, sourceUrl: true, recipe: true },
+      take: 500,
+    });
+    const originsByLane = new Map<string, Array<{ origin: ReturnType<typeof referenceOrigin> }>>();
+    for (const r of refRows) {
+      const rec = (r.recipe ?? {}) as { measured?: { engineOk?: boolean }; source?: string };
+      if (!rec.measured?.engineOk) continue;
+      const g = norm(r.genre);
+      if (!g) continue;
+      originsByLane.set(g, [...(originsByLane.get(g) ?? []), { origin: referenceOrigin(r.sourceUrl, rec) }]);
+    }
     return {
       totals: { songs: rows.length, measured: measured.length, unmeasured: rows.length - measured.length },
-      byLane: [...byLane.values()].map((l) => ({ ...l, avg: Math.round(l.avg) })).sort((a, b) => b.n - a.n),
+      byLane: [...byLane.values()].map((l) => {
+        const g = groundingOf(originsByLane.get(norm(l.lane)) ?? []);
+        return { ...l, avg: Math.round(l.avg), grounding: describeGrounding(g) };
+      }).sort((a, b) => b.n - a.n),
       songs: rows,
       note: 'listen-back walks the back catalog nightly (8/run) — unmeasured shrinks on its own; POST /admin/run {"task":"listen-back"} forces a batch now.',
     };

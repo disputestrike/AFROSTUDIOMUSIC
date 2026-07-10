@@ -169,7 +169,8 @@ interface Integration {
 
 /**
  * Connect your AI music engine right here — no Railway, no env vars.
- * Paste your Replicate (or Suno) key, Save, and it tests the connection live.
+ * Paste your engine key, Save, and it tests the connection live.
+ * §1.11 THE WALL: public copy speaks in engine CLASSES, never vendor names.
  */
 function MusicEngine() {
   const api = useApi();
@@ -240,8 +241,8 @@ function MusicEngine() {
           onChange={(e) => setProvider(e.target.value)}
           className="rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm"
         >
-          <option value="replicate">Replicate</option>
-          <option value="suno">Suno</option>
+          <option value="replicate">Standard engine</option>
+          <option value="suno">Flagship engine</option>
         </select>
         <input
           type="password"
@@ -269,8 +270,7 @@ function MusicEngine() {
       </div>
 
       <p className="mt-3 text-[11px] text-slate-500">
-        Get a key: Replicate → replicate.com/account/api-tokens (needs a card, ~$0.10/beat) · Suno → sunoapi.org.
-        Your key is stored privately and never shown again.
+        Your key is stored privately and never shown again. Key setup details live in the operator docs (.env.example).
       </p>
     </div>
   );

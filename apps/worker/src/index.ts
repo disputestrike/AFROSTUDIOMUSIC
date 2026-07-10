@@ -193,7 +193,9 @@ void (async () => {
     log.info(
       `capabilities: eleven=${!!process.env.ELEVENLABS_API_KEY} replicate=${!!process.env.REPLICATE_API_TOKEN} tavily=${!!process.env.TAVILY_API_KEY} suno=${!!process.env.SUNO_API_KEY} anthropic=${!!(process.env.ANTHROPIC_API_KEY || process.env.CLAUDE_API_KEY)}`
     );
-    if (cal.calibrated) log.info(`logdrum: CALIBRATED (margin ${cal.separationMargin}, on ${cal.calibratedOn ?? 'reference-tracks'}) — included in lane scoring${cal.calibratedOn === 'synthetic-archetypes' ? '; drop 9 real rights-clean tracks + run eval-ear.ts to upgrade to real-audio calibration' : ''}`);
+    // ADDENDUM C-1 — provenance stated explicitly, every boot:
+    if (cal.calibrated) log.info(`logdrum: REAL calibration (margin ${cal.separationMargin}) — measured`);
+    else if (cal.reason === 'synthetic-calibration') log.warn('logdrum: SYNTHETIC calibration — inferred only, excluded from scoring (drop 9 real rights-clean tracks + run eval-ear.ts to earn measured)');
     else log.warn(`logdrum: UNCALIBRATED (${cal.reason}) — excluded from lane scoring until eval-ear.ts passes on real reference tracks`);
   } catch (err) {
     log.warn({ err }, 'logdrum: could not read calibration status');

@@ -4,7 +4,7 @@ import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { useApi } from '@/lib/api';
 import { Trash2, Download, Wand2, FileText, Copy, Recycle, Pencil, Sliders, X, Loader2, Music2, Layers, TrendingUp, RefreshCw, Mic, Disc3, Sparkles, GitCompare } from 'lucide-react';
-import { SunoBridge } from './SunoBridge';
+import { FlagshipBridge } from './FlagshipBridge';
 import { SongChat } from './SongChat';
 
 interface HitPrediction {
@@ -67,7 +67,10 @@ export default function CatalogGrid({ initial }: { initial: SongRow[] }) {
   const [editing, setEditing] = useState<{ id: string; lyricId?: string; title: string; body: string; versions?: LyricVer[] } | null>(null);
   const [downloads, setDownloads] = useState<{ id: string; files: DownloadFile[] } | null>(null);
   const [hit, setHit] = useState<{ title: string; p: HitPrediction } | null>(null);
-  const [suno, setSuno] = useState<{ songId: string; projectId: string } | null>(null);
+  const [bridge, setBridge] = useState<{ songId: string; projectId: string } | null>(null);
+  // §1.11 first-party unlock: the admin key (set once on /admin) reveals the
+  // internal bridge tooling; without it the wall keeps vendor tools hidden.
+  const firstParty = typeof localStorage !== 'undefined' && !!localStorage.getItem('afrohit.adminKey');
   const [compare, setCompare] = useState<{ title: string; loading: boolean; data?: VersionsResp } | null>(null);
 
   async function openCompare(s: SongRow) {
@@ -377,13 +380,18 @@ export default function CatalogGrid({ initial }: { initial: SongRow[] }) {
                 {s.hitScore != null && <Action label="🚀 Make it bigger" busy={isBusy(s.id, 'bigger')} onClick={() => void makeItBigger(s)} />}
                 {/bigger/i.test(s.versionLabel ?? '') && <Action label="⤢ Compare versions" icon={<GitCompare className="h-3.5 w-3.5" />} onClick={() => void openCompare(s)} />}
                 <Action label="Re-master" icon={<Wand2 className="h-3.5 w-3.5" />} busy={isBusy(s.id, 'master')} onClick={() => void remaster(s)} />
-                <button
-                  onClick={() => setSuno({ songId: s.id, projectId: s.projectId })}
-                  title="Generate this in your own Suno account (best audio, your rights), then bring it back to master + score"
-                  className="inline-flex items-center gap-1 rounded-full border border-afrobrand-500/40 bg-afrobrand-500/10 px-2.5 py-1 text-xs text-afrobrand-300 hover:bg-afrobrand-500/20"
-                >
-                  <Sparkles className="h-3.5 w-3.5" /> Take to Suno
-                </button>
+                {/* §1.11 THE WALL: the bridge is a FIRST-PARTY tool — rendered only
+                    when the operator has unlocked with the admin key. Customers
+                    never see it; public copy never names the vendor. */}
+                {firstParty && (
+                  <button
+                    onClick={() => setBridge({ songId: s.id, projectId: s.projectId })}
+                    title="Generate this in your own flagship-studio account (best audio, your rights), then bring it back to master + score"
+                    className="inline-flex items-center gap-1 rounded-full border border-afrobrand-500/40 bg-afrobrand-500/10 px-2.5 py-1 text-xs text-afrobrand-300 hover:bg-afrobrand-500/20"
+                  >
+                    <Sparkles className="h-3.5 w-3.5" /> Flagship bridge
+                  </button>
+                )}
                 <button onClick={() => setOpenId(openId === s.id ? null : s.id)} className="rounded-full border border-white/10 bg-white/5 px-2.5 py-1 text-xs text-slate-300 hover:bg-white/10">
                   {openId === s.id ? 'Less' : 'More'}
                 </button>
@@ -514,12 +522,12 @@ export default function CatalogGrid({ initial }: { initial: SongRow[] }) {
         </Modal>
       )}
 
-      {suno && (
-        <SunoBridge
-          songId={suno.songId}
-          projectId={suno.projectId}
-          onClose={() => setSuno(null)}
-          onDone={() => flash('Suno file received — mastering + scoring. It updates here in ~1 min.')}
+      {firstParty && bridge && (
+        <FlagshipBridge
+          songId={bridge.songId}
+          projectId={bridge.projectId}
+          onClose={() => setBridge(null)}
+          onDone={() => flash('Flagship file received — mastering + scoring. It updates here in ~1 min.')}
         />
       )}
 

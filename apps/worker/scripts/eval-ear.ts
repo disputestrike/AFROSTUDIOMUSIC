@@ -117,6 +117,10 @@ async function main() {
   const artifact = {
     schemaVersion: 3, // === LOGDRUM_SCHEMA in analyze_dsp.py
     gatesPassed: pass,
+    // ADDENDUM C-1: eval-ear.ts on the REAL 9 tracks is the ONLY writer of
+    // 'real-9track' — the sole provenance that opens the truth gate. Synthetic
+    // artifacts (synth harness) validate direction only and stay 'inferred'.
+    provenance: 'real-9track',
     separationMargin: Number.isFinite(gap) ? Math.round(gap * 1000) / 1000 : null,
     fittedOn: new Date().toISOString().slice(0, 10),
     trackCount: real.length,

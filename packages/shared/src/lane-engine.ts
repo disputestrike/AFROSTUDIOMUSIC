@@ -20,19 +20,23 @@ export interface EngineRecommendation {
  * Best full-song engine for a lane given what's configured. `sunoAvailable` = a Suno
  * key is set (the worker uses its own SUNO_API_KEY, never the workspace Replicate key).
  */
-export function recommendEngine(genre: string, opts: { sunoAvailable: boolean }): EngineRecommendation {
-  if (opts.sunoAvailable) {
+export function recommendEngine(genre: string, opts: { sunoAvailable: boolean; firstParty?: boolean }): EngineRecommendation {
+  // W-2 THE WALL: the bridge is never recommended to a non-first-party caller —
+  // its output cannot be resold. Default firstParty=true preserves the internal
+  // single-owner behavior; multi-tenant callers MUST pass their real status.
+  // Reasons speak in ENGINE CLASSES (§1.11): these strings reach user surfaces.
+  if (opts.sunoAvailable && (opts.firstParty ?? true)) {
     return {
       engine: 'suno',
       ceiling: 'best',
-      reason: 'Suno V5 is the strongest full-song engine for every lane — top vocals + arrangement.',
+      reason: 'The flagship engine is the strongest full-song path for every lane — top vocals + arrangement (first-party releases only).',
     };
   }
   return {
     engine: 'minimax',
     ceiling: 'good',
-    reason: `MiniMax music-2.6 is the best available full-song engine for ${genre.replace(/_/g, ' ')} without a Suno key (ACE-Step is the last-resort fallback if it fails).`,
-    lift: 'Set SUNO_API_KEY on the worker to render every song on Suno V5 — the biggest single quality lever.',
+    reason: `The standard full-song engine is the best available for ${genre.replace(/_/g, ' ')} on this route (a fast draft engine is the last-resort fallback if it fails).`,
+    lift: (opts.firstParty ?? true) ? 'Set SUNO_API_KEY on the worker to route first-party songs to the flagship engine — the biggest single quality lever.' : undefined,
   };
 }
 
@@ -44,9 +48,10 @@ const DRAFT_ENGINES = new Set(['ace_step', 'musicgen']);
 export function engineAdequacy(engine: string | undefined | null, genre: string): { adequate: boolean; note?: string } {
   const e = (engine ?? '').toLowerCase();
   if (DRAFT_ENGINES.has(e)) {
+    // §1.11 THE WALL: this note reaches user surfaces — class language only.
     return {
       adequate: false,
-      note: `Engine "${e}" is a DRAFT engine and cannot reliably perform ${genre.replace(/_/g, ' ')} (especially its signature rhythm). A low lane score here reflects the ENGINE's limit, not your brief — set SUNO_API_KEY (Suno V5) or use MiniMax.`,
+      note: `This take was rendered on a fast DRAFT engine, which cannot reliably perform ${genre.replace(/_/g, ' ')} (especially its signature rhythm). A low lane score here reflects the ENGINE's limit, not your brief — re-render on a standard or flagship engine.`,
     };
   }
   return { adequate: true };

@@ -93,7 +93,15 @@ def _load_logdrum_calibration():
             return {**d, "calibrated": False, "reason": "gates-not-passed", "separationMargin": None}
         if c.get("schemaVersion") != LOGDRUM_SCHEMA:
             return {**d, "calibrated": False, "reason": "stale-schema", "separationMargin": None}
-        return {**d, **(c.get("params") or {}), "calibrated": True, "reason": None, "separationMargin": c.get("separationMargin"), "calibratedOn": c.get("calibratedOn") or "reference-tracks"}
+        # ADDENDUM C-1 — synthetic calibration must NOT open the truth gate.
+        # Synthetic sines validate DIRECTION, not calibrated absolute values: only
+        # the real 9-track run (eval-ear.ts, the sole writer of 'real-9track')
+        # earns 'measured'. A synthetic artifact still improves the constants but
+        # the field ships 'inferred' and is excluded from every compliance score,
+        # rankTakes, and the promotion rule — exactly as if uncalibrated.
+        if c.get("provenance") != "real-9track":
+            return {**d, **(c.get("params") or {}), "calibrated": False, "reason": "synthetic-calibration", "separationMargin": c.get("separationMargin"), "provenance": c.get("provenance") or "synthetic"}
+        return {**d, **(c.get("params") or {}), "calibrated": True, "reason": None, "separationMargin": c.get("separationMargin"), "calibratedOn": c.get("calibratedOn") or "reference-tracks", "provenance": "real-9track"}
     except FileNotFoundError:
         return {**d, "calibrated": False, "reason": "no-calibration-artifact", "separationMargin": None}
     except Exception as e:  # noqa — a broken artifact must NOT crash analysis; it just means uncalibrated
@@ -796,6 +804,7 @@ def main():
             "reason": LOGDRUM.get("reason"),
             "separationMargin": LOGDRUM.get("separationMargin"),
             "calibratedOn": LOGDRUM.get("calibratedOn"),
+            "provenance": LOGDRUM.get("provenance"),
             "schema": LOGDRUM_SCHEMA,
         }))
         return

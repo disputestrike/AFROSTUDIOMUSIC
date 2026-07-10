@@ -4,10 +4,10 @@ import type { MusicGenerationInput } from '@afrohit/ai';
 import { markFailed, markRunning, markSucceeded } from '../lib/jobs';
 import { ingestRemoteFile, downloadToBuffer, uploadBytes } from '../lib/storage';
 import { probeDurationS, measureAudioQuality, ffmpegAvailable, master as ffmpegMaster, MASTER_TARGETS, type AudioQuality } from '../lib/ffmpeg';
-import { assessLaneCompliance, loadLaneProfile } from '../lib/lane-assess';
+import { assessLaneCompliance, loadLaneProfile, laneGrounding } from '../lib/lane-assess';
 import { overlayFills } from '../lib/fills';
 import { measureAudio, dspAvailable } from '../lib/dsp';
-import { genreSignature, planFills, scoreLaneCompliance, engineAdequacy, structureMatch, blueprintFromMeasured, type LaneComplianceScore, type MeasuredAnalysis, type SongBlueprint } from '@afrohit/shared';
+import { genreSignature, planFills, scoreLaneCompliance, engineAdequacy, structureMatch, blueprintFromMeasured, isFirstPartyWorkspace, resolveEngineForWorkspace, type LaneComplianceScore, type MeasuredAnalysis, type SongBlueprint } from '@afrohit/shared';
 
 /** Minimum measured coverage before a lane score is allowed to influence ranking. */
 const MIN_COVERAGE_FOR_RANKING = 0.5;
@@ -86,7 +86,13 @@ export async function processMusic(p: MusicPayload) {
     // (strong, on the workspace Replicate key) → ACE-Step (last resort). MiniMax
     // is the default fallback because ACE-Step's vocals were the "whack singing"
     // — MiniMax music-2.6 is markedly better for Afrobeats vocals.
-    let engine = p.input.songEngine ?? (sunoKey() ? 'suno' : 'minimax');
+    // W-2 THE WALL: the bridge is not a customer render path — a non-first-party
+    // workspace requesting 'suno' is hard-substituted to the best resellable
+    // engine, in CODE, so misconfiguration cannot leak bridge output.
+    const firstParty = isFirstPartyWorkspace(p.workspaceId);
+    const resolved = resolveEngineForWorkspace(p.input.songEngine ?? (sunoKey() && firstParty ? 'suno' : 'minimax'), { firstParty, sunoAvailable: !!sunoKey() });
+    if (resolved.wallSubstituted) console.log(`[wall] bridge blocked for customer workspace ${p.workspaceId} — rendering on ${resolved.engine}`);
+    let engine = resolved.engine as 'suno' | 'minimax' | 'ace_step';
     if (engine === 'suno' && !sunoKey()) engine = 'minimax';
     // Suno uses its OWN key (SUNO_API_KEY), never the workspace's Replicate key.
     const engineKey = engine === 'suno' ? undefined : ws?.musicApiKey ?? undefined;
@@ -337,9 +343,17 @@ export async function processMusic(p: MusicPayload) {
     // Pass = lane score ≥ LANE_PROMOTE_MIN (70) with coverage ≥ 0.8 when the ear
     // ranked this render; ear-blind renders fall back to the QC-pass rule (the
     // profile builder itself only reads rows that carry measured facts).
+    // ADDENDUM C-2 — an EXPERT-PRIOR lane may not bootstrap from its own output:
+    // self-promotion is LOCKED until the lane is grounded in ≥3 non-self refs
+    // (owned uploads or facts-only records). Scoring ourselves against a guess
+    // and promoting the matches is a feedback loop, not learning.
+    const grounding = await laneGrounding(p.workspaceId, p.input.genre).catch(() => ({ external: 0, factsOnly: 0, self: 0, grounded: false }));
+    if (!grounding.grounded && wantsVocals) {
+      console.log(`[lane] ${p.input.genre}: self-promotion locked (${grounding.external + grounding.factsOnly} external refs — expert-prior lane)`);
+    }
     const promoteMin = Number(process.env.LANE_PROMOTE_MIN ?? 70);
     const lanePromotable =
-      winnerLane == null || (winnerLane.overall >= promoteMin && winnerLane.coverage >= 0.8);
+      grounding.grounded && (winnerLane == null || (winnerLane.overall >= promoteMin && winnerLane.coverage >= 0.8));
     if (wantsVocals && lanePromotable && (quality?.verdict === 'pass' || clipOnlyFinished)) {
       // Dedupe: at most ONE self-training row per workspace+genre per day —
       // otherwise generated rows flood the library and bury the artist's real

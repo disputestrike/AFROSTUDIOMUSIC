@@ -17,6 +17,7 @@ import {
   describeRepairPlan,
   engineAdequacy,
   recommendEngine,
+  engineClass,
   laneReleaseGate,
   type MeasuredAnalysis,
   type LaneComplianceScore,
@@ -59,8 +60,12 @@ export async function authenticRefCount(workspaceId: string, genre?: string | nu
 
 export async function loadProfileFor(workspaceId: string, genre: string) {
   const detailed = await fetchGenreMeasuredDetailed(workspaceId, genre);
-  const measured = detailed.map((m) => m.analysis);
   const authenticRefs = detailed.filter((m) => m.authentic).length;
+  // ADDENDUM C-2 — grounding rule: a lane profile exists only when grounded in
+  // ≥3 NON-SELF refs; self measurements join only then (never bootstrap a lane
+  // from the machine's own output).
+  if (authenticRefs < 3) return { profile: null, refs: detailed.length, authenticRefs };
+  const measured = [...detailed.filter((m) => m.authentic), ...detailed.filter((m) => !m.authentic)].map((m) => m.analysis);
   const profile = buildLaneProfile(genre, 'genre', measured, { minRefs: 3 });
   return Object.keys(profile.features).length
     ? { profile, refs: measured.length, authenticRefs }
@@ -226,11 +231,13 @@ export async function buildLaneReport(workspaceId: string, songId: string): Prom
     coverage: freshScore ? `${freshScore.scored} measured / ${freshScore.skipped.length} unknown` : profile ? 'scored 0' : `lane unprofiled (${refs}/3 measured refs)`,
     rankedBy: meta.bestOf?.rankedBy ?? null,
     blueprintMatch: meta.bestOf?.blueprintMatch ?? null,
+    // §1.11 THE WALL: the lane report is a USER surface — it names the engine
+    // CLASS, never the vendor. Real names live behind /admin only.
     engine: {
-      name: beat.provider,
+      name: engineClass(beat.provider ?? 'stub'),
       adequate: adequacy.adequate,
       note: adequacy.note ?? meta.bestOf?.engineNote,
-      recommended: recommendEngine(targetLane, { sunoAvailable: !!process.env.SUNO_API_KEY }).engine,
+      recommended: engineClass(recommendEngine(targetLane, { sunoAvailable: !!process.env.SUNO_API_KEY }).engine),
     },
     strongest,
     weakest,

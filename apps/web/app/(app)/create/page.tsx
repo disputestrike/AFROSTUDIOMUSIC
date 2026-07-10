@@ -644,9 +644,11 @@ export default function CreatePage() {
       <div className="mt-6"><div className="mb-2 text-sm text-slate-400">Vocal engine</div>
         <div className="flex flex-wrap gap-2">
           {([
-            { value: 'suno', label: 'Suno V5', hint: 'Best quality (needs Suno key)' },
-            { value: 'minimax', label: 'MiniMax', hint: 'High vocal realism' },
-            { value: 'ace_step', label: 'ACE-Step', hint: 'Fast fallback' },
+            // §1.11 THE WALL: public surfaces speak in ENGINE CLASSES, never
+            // vendor names. Values stay internal identifiers; labels are classes.
+            { value: 'suno', label: 'Flagship', hint: 'Best quality (first-party releases)' },
+            { value: 'minimax', label: 'Standard A', hint: 'High vocal realism' },
+            { value: 'ace_step', label: 'Standard B', hint: 'Fast draft' },
           ] as const).map((e) => (
             <button key={e.value} onClick={() => setEngine(e.value)} className={`rounded-full px-4 py-2 text-sm ${engine === e.value ? 'bg-brand-gradient text-ink shadow-glow' : 'border border-white/10 bg-white/5 text-slate-300 hover:bg-white/10'}`}>
               {e.label} <span className="opacity-60">· {e.hint}</span>

@@ -24,7 +24,7 @@ interface Export {
   tips: string;
 }
 
-export function SunoBridge({ songId, projectId, onClose, onDone }: Props) {
+export function FlagshipBridge({ songId, projectId, onClose, onDone }: Props) {
   const api = useApi();
   const [data, setData] = useState<Export | null>(null);
   const [err, setErr] = useState('');

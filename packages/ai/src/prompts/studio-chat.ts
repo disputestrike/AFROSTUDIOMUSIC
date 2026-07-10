@@ -182,7 +182,9 @@ export const STUDIO_CHAT_TOOLS = [
         songEngine: {
           type: 'string',
           enum: ['suno', 'ace_step', 'minimax'],
-          description: 'Vocal/song engine when withVocals=true. suno = best full-production quality (default when available); minimax = high vocal realism; ace_step = fast fallback. Omit to auto-pick the best.',
+          // §1.11 THE WALL: the model repeats these words to users — class
+          // language only (values stay internal identifiers).
+          description: 'Vocal/song engine when withVocals=true. suno = the flagship engine (first-party releases, default when available); minimax = standard, high vocal realism; ace_step = fast draft fallback. Omit to auto-pick the best. When talking to the user, call them "flagship engine" / "standard engine" / "draft engine" — never internal engine ids.',
         },
       },
       required: ['genre', 'bpm'],

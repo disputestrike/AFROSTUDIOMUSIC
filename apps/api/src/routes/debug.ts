@@ -3,6 +3,7 @@ import { anthropicPing, openaiPing, tavilyKey, braveKey, tavilyPing, researchTre
 import { recommendEngine } from '@afrohit/shared';
 import { laneDnaBrief } from '../lib/lane-pipeline';
 import { requireAuth } from '../middleware/auth';
+import { requireAdmin } from './admin';
 import { freshnessBrief, learnedReferenceBrief, learnedLyricCraftBrief } from '../lib/learned';
 import { lexiconPalette } from '../lib/lexicon';
 import { fuseSoundDna } from '../lib/fuse';
@@ -12,7 +13,8 @@ import { fuseSoundDna } from '../lib/fuse';
  * Surfaces the real error the generation path swallows.
  */
 export default async function debug(app: FastifyInstance) {
-  app.get('/ai', async () => {
+  app.get('/ai', async (req) => {
+    await requireAdmin(req); // §1.11 THE WALL: vendor names + key status are INTERNAL
     const [anthropic, openai, tavily, trend] = await Promise.all([
       anthropicPing(),
       openaiPing(),
@@ -56,6 +58,7 @@ export default async function debug(app: FastifyInstance) {
    */
   // RAW lyric diagnostic — what Claude ACTUALLY returns for a lyric, unparsed.
   app.get<{ Querystring: { genre?: string } }>('/lyric-raw', async (req) => {
+    await requireAdmin(req); // §1.11 THE WALL
     const genre = req.query.genre || 'afrobeats';
     const user = prompts.lyricUserPrompt({
       artist: { stageName: 'Test', laneSummary: 'afro', languages: ['pcm', 'en'], vocalTone: ['smooth'] } as never,
@@ -69,6 +72,7 @@ export default async function debug(app: FastifyInstance) {
   });
 
   app.get<{ Querystring: { genre?: string; mood?: string; languages?: string } }>('/generation-context', async (req) => {
+    await requireAdmin(req); // §1.11 THE WALL
     const { workspaceId } = requireAuth(req);
     const genre = req.query.genre || 'afrobeats';
     const mood = req.query.mood || 'love';
