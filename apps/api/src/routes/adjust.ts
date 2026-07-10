@@ -70,6 +70,12 @@ export default async function adjust(app: FastifyInstance) {
     });
     if (!song) return reply.code(404).send({ error: 'song_not_found' });
     const genre = body.targetLane ?? song.project.genre ?? 'afrobeats';
+    // §1.5 — the user's confirmed lane outranks the stored one, on EVERY repair
+    // route: rerender/hooks/writers all read project.genre server-side, so a
+    // targetLane that isn't persisted was silently ignored by 3 of 4 routes.
+    if (body.targetLane && body.targetLane !== song.project.genre) {
+      await prisma.project.update({ where: { id: song.projectId }, data: { genre: body.targetLane } });
+    }
 
     const headers = { authorization: (req.headers.authorization as string) ?? '', 'content-type': 'application/json', cookie: (req.headers.cookie as string) ?? '' };
     const dispatch: Record<AdjustRoute['route'], { method: 'POST'; url: string; payload: unknown }> = {

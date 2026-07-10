@@ -53,6 +53,46 @@ export default async function admin(app: FastifyInstance) {
     return { queued: task, note: 'Running on the worker now — watch worker logs; results land in /lanes/inventory.' };
   });
 
+  // WO-15 — ECONOMICS: marginal cost per render and RENDERS-PER-KEPT-SONG (the
+  // margin number; the ear's success metric — quality structurally lowers cost).
+  app.get<{ Querystring: { days?: string } }>('/economics', async (req) => {
+    await requireAdmin(req);
+    const days = Math.min(Math.max(Number(req.query.days ?? 30), 1), 365);
+    const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
+    const [renders, failed, costAgg, keptSongs] = await Promise.all([
+      prisma.providerJob.findMany({
+        where: { kind: 'music', status: 'SUCCEEDED', createdAt: { gte: since } },
+        select: { provider: true, cost: true, outputJson: true },
+      }),
+      prisma.providerJob.count({ where: { kind: 'music', status: 'FAILED', createdAt: { gte: since } } }),
+      prisma.providerJob.aggregate({ where: { kind: 'music', status: 'SUCCEEDED', createdAt: { gte: since } }, _sum: { cost: true } }),
+      prisma.song.count({
+        where: { createdAt: { gte: since }, OR: [{ masters: { some: {} } }, { mixes: { some: {} } }, { beats: { some: {} } }] },
+      }),
+    ]);
+    const byEngine = new Map<string, { engine: string; renders: number; costUsd: number }>();
+    let candidatesRendered = 0;
+    for (const r of renders) {
+      const k = r.provider ?? 'unknown';
+      const cur = byEngine.get(k) ?? { engine: k, renders: 0, costUsd: 0 };
+      cur.renders++;
+      cur.costUsd += Number(r.cost ?? 0);
+      byEngine.set(k, cur);
+      const bo = ((r.outputJson ?? {}) as { bestOf?: { rendered?: number } }).bestOf;
+      candidatesRendered += Math.max(1, bo?.rendered ?? 1);
+    }
+    const totalCost = Number(costAgg._sum.cost ?? 0);
+    return {
+      windowDays: days,
+      renders: { succeeded: renders.length, failed, candidatesRendered },
+      costUsd: { total: Math.round(totalCost * 100) / 100, perRender: renders.length ? Math.round((totalCost / renders.length) * 1000) / 1000 : null },
+      keptSongs,
+      rendersPerKeptSong: keptSongs ? Math.round((candidatesRendered / keptSongs) * 100) / 100 : null,
+      byEngine: [...byEngine.values()].map((e) => ({ ...e, costUsd: Math.round(e.costUsd * 100) / 100 })).sort((a, b) => b.renders - a.renders),
+      note: 'rendersPerKeptSong is THE margin number — the ear lowering it is the moat (§E2). Costs are provider estimates recorded per job.',
+    };
+  });
+
   app.get('/stats', async (req) => {
     await requireAdmin(req);
     const [workspaces, users, songs, jobs, openReviews, failedJobs] = await Promise.all([

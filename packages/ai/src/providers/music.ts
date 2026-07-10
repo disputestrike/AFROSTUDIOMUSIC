@@ -728,12 +728,80 @@ class StubMusicAdapter implements MusicProviderAdapter {
   }
 }
 
+/**
+ * WO-9(a) — ACE-Step via fal.ai (same model, ~10× cheaper than the Replicate
+ * route: ~$0.0002/s ≈ 83 min/$1). Queue protocol: POST queue.fal.run/{model}
+ * → {request_id}; poll status; fetch response. Selected automatically when
+ * FAL_KEY is set; any fal-side failure FALLS BACK inline to the Replicate
+ * adapter so a fal outage (or an input-contract drift) never kills a render.
+ * [PENDING live verification — needs FAL_KEY on the worker (§7.3).]
+ */
+class FalAceStepAdapter implements MusicProviderAdapter {
+  readonly name = 'ace_step'; // same engine — the ROUTE is the only difference
+  private model = process.env.FAL_ACE_MODEL ?? 'fal-ai/ace-step';
+  private fallback: AceStepSongAdapter;
+  constructor(apiKey?: string) {
+    this.fallback = new AceStepSongAdapter(apiKey);
+  }
+
+  async generate(input: MusicGenerationInput): Promise<ProviderJobResult<MusicGenerationOutput>> {
+    const key = process.env.FAL_KEY;
+    if (!key) return this.fallback.generate(input);
+    const duration = Math.min(Math.max(Math.round(input.durationS ?? 120), 30), 240);
+    const tags = composeStyleTags(input, {
+      fallbackLiteral: 'catchy, melodic vocals, punchy drums, warm bass, radio-ready',
+    }).join(', ');
+    try {
+      const res = await fetch(`https://queue.fal.run/${this.model}`, {
+        method: 'POST',
+        headers: { authorization: `Key ${key}`, 'content-type': 'application/json' },
+        body: JSON.stringify({ tags, lyrics: input.lyrics ?? '', duration }),
+      });
+      if (!res.ok) {
+        console.warn(`[fal-ace] submit ${res.status} — falling back to Replicate:`, (await res.text()).slice(0, 160));
+        return this.fallback.generate(input);
+      }
+      const data = (await res.json()) as { request_id?: string };
+      if (!data.request_id) return this.fallback.generate(input);
+      return { externalId: `fal:${data.request_id}`, status: 'running', pollAfterMs: 5_000 };
+    } catch (err) {
+      console.warn('[fal-ace] submit error — falling back to Replicate:', (err as Error)?.message);
+      return this.fallback.generate(input);
+    }
+  }
+
+  async poll(externalId: string): Promise<ProviderJobResult<MusicGenerationOutput>> {
+    if (!externalId.startsWith('fal:')) return this.fallback.poll(externalId);
+    const key = process.env.FAL_KEY;
+    if (!key) return { status: 'failed', error: 'FAL_KEY missing at poll time' };
+    const id = externalId.slice(4);
+    const auth = { authorization: `Key ${key}` };
+    const st = await fetch(`https://queue.fal.run/${this.model}/requests/${id}/status`, { headers: auth });
+    if (!st.ok) return { externalId, status: 'failed', error: `fal status ${st.status}` };
+    const status = ((await st.json()) as { status?: string }).status;
+    if (status === 'IN_QUEUE' || status === 'IN_PROGRESS') return { externalId, status: 'running', pollAfterMs: 5_000 };
+    if (status !== 'COMPLETED') return { externalId, status: 'failed', error: `fal ${status ?? 'unknown status'}` };
+    const rs = await fetch(`https://queue.fal.run/${this.model}/requests/${id}`, { headers: auth });
+    if (!rs.ok) return { externalId, status: 'failed', error: `fal response ${rs.status}` };
+    const out = (await rs.json()) as { audio?: { url?: string } | string; audio_url?: string; audio_file?: { url?: string } };
+    const url = typeof out.audio === 'string' ? out.audio : out.audio?.url ?? out.audio_url ?? out.audio_file?.url;
+    if (!url) return { externalId, status: 'failed', error: 'fal: completed but no audio url in response' };
+    return {
+      externalId,
+      status: 'succeeded',
+      output: { mainAudioUrl: url, format: 'wav', durationS: 0 },
+      estimatedCostUsd: Math.max(0.01, 0.0002 * 180),
+    };
+  }
+}
+
 export function musicAdapter(override?: string, apiKey?: string): MusicProviderAdapter {
   switch (override ?? provider()) {
     case 'minimax':
       return new MiniMaxSongAdapter(apiKey);
     case 'ace_step':
-      return new AceStepSongAdapter(apiKey);
+      // WO-9: fal route when the key exists (~10× cheaper), Replicate otherwise.
+      return process.env.FAL_KEY ? new FalAceStepAdapter(apiKey) : new AceStepSongAdapter(apiKey);
     case 'suno':
       return new SunoAdapter(apiKey);
     case 'replicate':
