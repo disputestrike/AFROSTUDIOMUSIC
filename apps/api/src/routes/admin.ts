@@ -11,8 +11,20 @@ import { enqueue, QUEUES, type QueueName } from '../lib/queue';
 
 export async function requireAdmin(req: FastifyRequest): Promise<void> {
   const { userId } = requireAuth(req);
-  // Internal single-tenant mode: the one resolved user IS the operator.
-  if (isInternalMode()) return;
+  // WO-1 SAFETY RAIL: the API is publicly reachable, and in internal mode
+  // requireAuth never rejects — so "the one resolved user IS the operator" made
+  // every admin/trigger route (spend triggers included) open to the internet.
+  // Internal mode now requires the ADMIN_SECRET header. No secret configured =
+  // 401 for everyone (set ADMIN_SECRET on the API service; send x-admin-secret).
+  if (isInternalMode()) {
+    const secret = process.env.ADMIN_SECRET ?? '';
+    const given = String(req.headers['x-admin-secret'] ?? '');
+    if (!secret) {
+      throw Object.assign(new Error('admin locked: set ADMIN_SECRET on the API service and send the x-admin-secret header'), { statusCode: 401 });
+    }
+    if (given !== secret) throw Object.assign(new Error('unauthorized'), { statusCode: 401 });
+    return;
+  }
   // Multi-user modes: gate by ADMIN_EMAILS allowlist.
   const allow = (process.env.ADMIN_EMAILS ?? '')
     .split(',')
@@ -32,7 +44,7 @@ const grantSchema = z.object({
 
 export default async function admin(app: FastifyInstance) {
   // One-tap compounding: run the lake jobs NOW instead of waiting for tonight.
-  const runSchema = z.object({ task: z.enum(['nightly-compound', 'measure-backfill', 'learn-backfill', 'mine-lexicon', 'lexicon-research', 'wiktionary-harvest', 'wiktionary-burst', 'lexicon-gloss']) });
+  const runSchema = z.object({ task: z.enum(['nightly-compound', 'measure-backfill', 'learn-backfill', 'listen-back', 'mine-lexicon', 'lexicon-research', 'wiktionary-harvest', 'wiktionary-burst', 'lexicon-gloss']) });
   app.post('/run', { schema: { body: runSchema } }, async (req, reply) => {
     await requireAdmin(req);
     const { task } = runSchema.parse(req.body);

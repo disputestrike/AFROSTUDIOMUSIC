@@ -88,7 +88,7 @@ async function assignUpc(workspaceId: string): Promise<string> {
 
 async function statusFor(song: { id: string; title: string; isrc: string | null; upc: string | null; splitSheet: unknown; releaseReady: boolean; lyricId: string | null; projectId: string; nativeReviewOk: boolean; hitScore?: number | null; viralScore?: number | null }, mode: 'creative' | 'hitmaker' = 'creative') {
   const [master, mix, cover, languages, beat] = await Promise.all([
-    prisma.master.findFirst({ where: { songId: song.id } }),
+    prisma.master.findFirst({ where: { songId: song.id }, orderBy: { createdAt: 'desc' } }),
     prisma.mix.findFirst({ where: { songId: song.id } }),
     prisma.imageAsset.findFirst({ where: { projectId: song.projectId, kind: 'cover' } }),
     languagesForProject(song.projectId),
@@ -99,6 +99,10 @@ async function statusFor(song: { id: string; title: string; isrc: string | null;
   // BLOCK — generating audio is not passing. Unmeasured stays 'unverified' in creative,
   // and cannot CERTIFY in hitmaker (honesty law: what wasn't measured can't fail OR pass).
   const meta = (beat?.meta ?? {}) as { compliance?: unknown; qc?: unknown; assessedGenre?: string };
+  // WO-6(a): the gate judges the MASTERED artifact when one exists — what ships
+  // is what gets certified. Pre-master QC is only the fallback (no master yet).
+  const masterQc = ((master?.meta ?? {}) as { qc?: unknown }).qc ?? null;
+  const gateQc = masterQc ?? meta.qc ?? null;
   // §11 — a lane whose required languages are unseeded is not offered as release-ready.
   const proj = await prisma.project.findUnique({ where: { id: song.projectId }, select: { genre: true, workspaceId: true } });
   const laneGenre = meta.assessedGenre ?? proj?.genre;
@@ -107,7 +111,7 @@ async function statusFor(song: { id: string; title: string; isrc: string | null;
     unseededForLane(laneGenre),
     wsId ? authenticRefCount(wsId, laneGenre) : Promise.resolve(0),
   ]);
-  const gate = laneReleaseGate({ compliance: (meta.compliance ?? null) as never, qc: (meta.qc ?? null) as never, mode, lexicon: { unseeded }, profile: { authenticRefs, required: 3 } });
+  const gate = laneReleaseGate({ compliance: (meta.compliance ?? null) as never, qc: gateQc as never, mode, lexicon: { unseeded }, profile: { authenticRefs, required: 3 } });
   return {
     song: { id: song.id, title: song.title, isrc: song.isrc, upc: song.upc, splitSheet: song.splitSheet, releaseReady: song.releaseReady, nativeReviewOk: song.nativeReviewOk },
     mode,
@@ -181,8 +185,11 @@ export default async function release(app: FastifyInstance) {
     // too quiet / too short), even when green-lit. Drift is only a warning, so a
     // lane-bending record still distributes — the artist's ear stays in charge.
     const gmeta = (beat?.meta ?? {}) as { compliance?: unknown; qc?: unknown };
+    // WO-6(a): what distributes is the MASTER — judge its measured QC, not the
+    // pre-master take's (fallback only when no master exists).
+    const distMasterQc = ((master?.meta ?? {}) as { qc?: unknown }).qc ?? null;
     const distMode = (req.query as { mode?: string }).mode === 'hitmaker' ? 'hitmaker' : 'creative';
-    const gate = laneReleaseGate({ compliance: (gmeta.compliance ?? null) as never, qc: (gmeta.qc ?? null) as never, mode: distMode });
+    const gate = laneReleaseGate({ compliance: (gmeta.compliance ?? null) as never, qc: (distMasterQc ?? gmeta.qc ?? null) as never, mode: distMode });
     if (gate.blocked) {
       return reply.code(409).send({ error: 'audio_quality_block', message: 'This take failed audio QC (broken render) — re-master or regenerate before distributing.', checks: gate.checks });
     }

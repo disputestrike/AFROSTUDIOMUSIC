@@ -58,6 +58,9 @@ export async function assessLaneCompliance(opts: {
   genre?: string | null;
   beatId: string;
   audioUrl: string;
+  /** WO-4(c): when the take belongs to a song, the read writes through to the
+   *  Song row too — no new song is "done" until the studio has listened to it. */
+  songId?: string | null;
 }): Promise<void> {
   try {
     // LANE_ASSESS default-ON (only off when explicitly '0') per the FINAL INSTRUCTION.
@@ -75,7 +78,7 @@ export async function assessLaneCompliance(opts: {
     const score = scoreLaneCompliance(analysis, profile);
     const plan = planRepairs(score);
 
-    const beat = await prisma.beatAsset.findUnique({ where: { id: opts.beatId }, select: { meta: true } });
+    const beat = await prisma.beatAsset.findUnique({ where: { id: opts.beatId }, select: { meta: true, songId: true } });
     const meta = (beat?.meta ?? {}) as Record<string, unknown>;
     // Persist the RAW MeasuredAnalysis too (anti-pattern #9: a library that grows
     // without storing its DSP teaches nothing — and Adjust-Song classifies against
@@ -91,6 +94,26 @@ export async function assessLaneCompliance(opts: {
       where: { id: opts.beatId },
       data: { meta: { ...meta, ...laneRead } as never },
     });
+    // WO-4(c): write the listen-back through to the song (measured lane read
+    // beside the LLM hitScore — §1.6, two questions, two systems, never merged).
+    const songId = opts.songId ?? beat?.songId;
+    if (songId) {
+      await prisma.song.update({
+        where: { id: songId },
+        data: {
+          laneScore: score.overall,
+          measuredAnalysis: analysis as never,
+          laneGaps: {
+            coverage: score.coverage,
+            failedCritical: score.failedCritical,
+            topGaps: (plan.repairs ?? []).slice(0, 5),
+            drift: score.drift,
+            assessedGenre: opts.genre,
+            measuredAt: new Date().toISOString(),
+          } as never,
+        },
+      }).catch((e) => console.warn('[lane-assess] song write-through failed:', (e as Error)?.message));
+    }
     console.log(`[lane-assess] ${opts.genre}: compliance=${score.overall}/100 drift=${score.drift.severity} repairs=${plan.repairs.length}`);
   } catch (err) {
     console.warn('[lane-assess] failed (non-fatal):', (err as Error)?.message);

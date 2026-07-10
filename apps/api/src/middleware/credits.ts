@@ -36,13 +36,14 @@ export const creditsPlugin = fp(async function (app) {
     refId?: string;
   }) => {
     // Internal single-owner mode: the operator pays provider costs directly via
-    // their own API keys — no internal credit wall. Generation is free for them.
-    // DAILY CAP IS OFF BY DEFAULT (unlimited) for the current testing phase — the
-    // operator asked for no limits so they can test freely. Set MAX_DAILY_GENERATIONS
-    // to a positive number to re-enable the runaway-cost guard before going public.
+    // their own API keys — no internal credit wall. WO-1 SAFETY RAIL: spend is
+    // CAPPED BY DEFAULT (daily + monthly) so a runaway loop can never exceed it
+    // — the API is publicly reachable and best-of-N multiplies renders. Override
+    // via MAX_DAILY_GENERATIONS / MAX_MONTHLY_GENERATIONS (0 = explicit opt-out).
     if (isInternalMode()) {
-      const cap = Number(process.env.MAX_DAILY_GENERATIONS ?? 0);
-      if (cap > 0) {
+      const daily = Number(process.env.MAX_DAILY_GENERATIONS ?? 250);
+      const monthly = Number(process.env.MAX_MONTHLY_GENERATIONS ?? 4000);
+      if (daily > 0) {
         const since = new Date();
         since.setUTCHours(0, 0, 0, 0);
         // Count EVERY charged action today (debit ledger rows), not just
@@ -51,8 +52,19 @@ export const creditsPlugin = fp(async function (app) {
         const usedToday = await prisma.creditLedger.count({
           where: { workspaceId: opts.workspaceId, createdAt: { gte: since }, delta: { lt: 0 } },
         });
-        if (usedToday >= cap) {
-          return { ok: false as const, needed: cap, balance: usedToday, reason: 'daily_cap' };
+        if (usedToday >= daily) {
+          return { ok: false as const, needed: daily, balance: usedToday, reason: 'daily_cap' };
+        }
+      }
+      if (monthly > 0) {
+        const monthStart = new Date();
+        monthStart.setUTCDate(1);
+        monthStart.setUTCHours(0, 0, 0, 0);
+        const usedMonth = await prisma.creditLedger.count({
+          where: { workspaceId: opts.workspaceId, createdAt: { gte: monthStart }, delta: { lt: 0 } },
+        });
+        if (usedMonth >= monthly) {
+          return { ok: false as const, needed: monthly, balance: usedMonth, reason: 'monthly_cap' };
         }
       }
       // Ledger the charge so the cap has a uniform unit across all generation types.

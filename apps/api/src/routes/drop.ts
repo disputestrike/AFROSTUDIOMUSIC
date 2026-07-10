@@ -125,7 +125,7 @@ export async function runDropPipeline(app: FastifyInstance, ctx: DropCtx, input:
             // vibe were silently dropped here while the fix landed only in chat.
             // vibe (the raw musical description) is preferred over theme, which is
             // wrapped in title-anchor boilerplate the music engine can't use.
-            args: { genre: input.genre, fusionGenres: input.fusionGenres, mood: input.mood, pinnedReferenceId: input.pinnedReferenceId, bpm: input.bpm, withVocals: input.withVocals, songEngine: input.songEngine, influence: input.influence, languages: input.languages, voice: input.voice, vibePrompt: input.vibe },
+            args: { genre: input.genre, fusionGenres: input.fusionGenres, mood: input.mood, pinnedReferenceId: input.pinnedReferenceId, bpm: input.bpm, withVocals: input.withVocals, songEngine: input.songEngine, influence: input.influence, languages: input.languages, voice: input.voice, vibePrompt: input.vibe, candidates: input.candidates },
           })) as { jobId?: string; songId?: string; error?: string };
 
           // The user's typed song name IS the title — the writers already treat it

@@ -79,6 +79,8 @@ export default async function beats(app: FastifyInstance) {
       const charge = await app.chargeCredits({
         workspaceId,
         key: input.withVocals || input.withStems ? 'full_song_demo' : 'beat_idea_short_30s',
+        // WO-1/WO-5: N candidates = N renders = N charges against the cap.
+        multiplier: Math.max(1, input.candidates ?? 1),
         refTable: 'Project',
         refId: project.id,
       });

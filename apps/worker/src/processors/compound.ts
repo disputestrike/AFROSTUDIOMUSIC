@@ -14,9 +14,10 @@
  */
 import { prisma } from '@afrohit/db';
 import { generateJson, tavilySearchRaw } from '@afrohit/ai';
-import { LANGUAGES, genreSignature } from '@afrohit/shared';
+import { LANGUAGES, genreSignature, scoreLaneCompliance, planRepairs } from '@afrohit/shared';
 import { enqueueJob } from '../lib/enqueue';
-import { assessLaneCompliance } from '../lib/lane-assess';
+import { assessLaneCompliance, loadLaneProfile } from '../lib/lane-assess';
+import { measureAudio, dspAvailable } from '../lib/dsp';
 import { processSynthMaterial } from './synth-material';
 
 // 'zap:' rows are METADATA-learned lanes (no audio behind the sourceUrl) — the
@@ -66,6 +67,74 @@ export async function processMeasureBackfill(opts?: { refLimit?: number; beatLim
     console.log(`[backfill] deep-measure queued=${queued}, beats assessed=${assessed}`);
   } catch (err) {
     console.warn('[backfill] failed (non-fatal):', (err as Error)?.message);
+  }
+}
+
+/**
+ * WO-4 LISTEN-BACK — the studio listens to every song it has ever made.
+ * Walks generated songs that have audio but no measured lane read; measures the
+ * CURRENT artifact (master > mix > beat, freshest first), scores it against the
+ * lane, persists Song.laneScore/measuredAnalysis/laneGaps. Batch-bounded; runs
+ * over the whole back catalog once, then nightly keeps up. The gap dashboard
+ * (GET /lanes/gap-map) reads what this writes.
+ */
+export async function processListenBack(opts?: { limit?: number }): Promise<void> {
+  const limit = opts?.limit ?? 8;
+  try {
+    if (!(await dspAvailable())) { console.log('[listen-back] DSP unavailable — skipped'); return; }
+    const songs = await prisma.song.findMany({
+      where: { laneScore: null, OR: [{ masters: { some: {} } }, { mixes: { some: {} } }, { beats: { some: {} } }] },
+      orderBy: { createdAt: 'desc' },
+      take: limit,
+      select: {
+        id: true, workspaceId: true,
+        project: { select: { genre: true } },
+        masters: { orderBy: { createdAt: 'desc' }, take: 1, select: { url: true, createdAt: true } },
+        mixes: { orderBy: { createdAt: 'desc' }, take: 1, select: { url: true, createdAt: true } },
+        beats: { orderBy: { createdAt: 'desc' }, take: 1, select: { url: true, createdAt: true } },
+      },
+    });
+    if (!songs.length) { console.log('[listen-back] back catalog fully listened'); return; }
+    let done = 0;
+    for (const s of songs) {
+      try {
+        // The CURRENT audio = freshest of master/mix/beat (a re-sing or re-master
+        // becomes the thing we listen to, same rule as the catalog player).
+        const cands = [s.masters[0], s.mixes[0], s.beats[0]].filter((x): x is { url: string; createdAt: Date } => !!x?.url);
+        cands.sort((a, b) => +b.createdAt - +a.createdAt);
+        const url = cands[0]?.url;
+        const genre = s.project?.genre;
+        if (!url || !genre) continue;
+        const profile = await loadLaneProfile(s.workspaceId, genre);
+        const analysis = await measureAudio(url);
+        if (!analysis.engineOk) {
+          // Honest unknown: record that we listened and the ear was blind.
+          await prisma.song.update({ where: { id: s.id }, data: { laneGaps: { unmeasured: true, reason: 'ear unavailable for this artifact', measuredAt: new Date().toISOString() } as never } });
+          continue;
+        }
+        if (!profile) {
+          await prisma.song.update({ where: { id: s.id }, data: { measuredAnalysis: analysis as never, laneGaps: { unmeasured: true, reason: `no lane profile for ${genre} yet`, measuredAt: new Date().toISOString() } as never } });
+          done++;
+          continue;
+        }
+        const score = scoreLaneCompliance(analysis, profile);
+        const plan = planRepairs(score);
+        await prisma.song.update({
+          where: { id: s.id },
+          data: {
+            laneScore: score.overall,
+            measuredAnalysis: analysis as never,
+            laneGaps: { coverage: score.coverage, failedCritical: score.failedCritical, topGaps: (plan.repairs ?? []).slice(0, 5), drift: score.drift, assessedGenre: genre, measuredAt: new Date().toISOString() } as never,
+          },
+        });
+        done++;
+      } catch (err) {
+        console.warn(`[listen-back] song ${s.id} failed:`, (err as Error)?.message);
+      }
+    }
+    console.log(`[listen-back] listened to ${done}/${songs.length} songs this run`);
+  } catch (err) {
+    console.warn('[listen-back] failed (non-fatal):', (err as Error)?.message);
   }
 }
 
@@ -392,6 +461,7 @@ export async function processNightlyCompound(): Promise<void> {
   await ensureSignatureKits();
   await processReportCard();
   await processLearnBackfill({ limit: 5 });
+  await processListenBack({ limit: 8 });
   await processMeasureBackfill({ refLimit: 10, beatLimit: 4 });
   await processMineLexicon({ refLimit: 4 });
   await processLexiconResearch({ queries: 6 });

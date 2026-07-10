@@ -358,6 +358,11 @@ model Song {
   hitScore    Int?      // 0-100 from the Will-it-hit engine
   viralScore  Int?      // 0-100
   hitRead     Json?     // full prediction: strengths/risks/toMakeItBigger/tiktokMoment
+  // WO-4 LISTEN-BACK — the studio LISTENS to every song it makes (measured, not
+  // vibes; §1.6: compliance ≠ taste, so these live beside hitScore, never merged).
+  laneScore        Int?   // 0-100 measured lane compliance of the current audio
+  measuredAnalysis Json?  // MeasuredAnalysis of the current audio (provenance-tagged)
+  laneGaps         Json?  // { coverage, failedCritical[], topGaps[], drift, measuredAt }
   createdAt   DateTime @default(now()) @db.Timestamptz(6)
 
   workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
@@ -529,6 +534,9 @@ model Master {
   url         String
   loudness    Float?
   approved    Boolean  @default(false)
+  // WO-6(a): measured QC of the MASTERED artifact — the release gate judges
+  // this, never the pre-master take (what ships is what gets certified).
+  meta        Json?
   createdAt   DateTime @default(now()) @db.Timestamptz(6)
 
   project     Project @relation(fields: [projectId], references: [id], onDelete: Cascade)

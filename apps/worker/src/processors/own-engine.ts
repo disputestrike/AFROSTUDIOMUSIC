@@ -152,16 +152,24 @@ export async function processOwnEngine(p: OwnEnginePayload): Promise<void> {
         try {
           const [bed, lead] = await Promise.all([downloadToBuffer(out.url), downloadToBuffer(mel.url)]);
           const mixed = await mixBuffers(bed, lead, 0.85);
-          finalUrl = await uploadBytes({ workspaceId: p.workspaceId, kind: 'beats', bytes: mixed, contentType: 'audio/wav', ext: 'wav' });
-          const qc = await measureAudioQuality(finalUrl).catch(() => null);
-          const beat = await prisma.beatAsset.create({
-            data: {
-              projectId: p.projectId, songId: p.songId ?? null, url: finalUrl, format: 'wav', bpm,
-              provider: 'afrohit-own', approved: true,
-              meta: { ownEngine: { v: 1, layers: notes }, qc } as never,
-            },
-          });
-          finalBeatId = beat.id;
+          const mixedUrl = await uploadBytes({ workspaceId: p.workspaceId, kind: 'beats', bytes: mixed, contentType: 'audio/wav', ext: 'wav' });
+          const qc = await measureAudioQuality(mixedUrl).catch(() => null);
+          // WO-1 SAFETY RAIL: the melody-mixed take passes the same QC gate as
+          // any render — a broken mix is rejected and the clean assembled bed
+          // (which already passed its own gate) stays the shipped take.
+          if (qc?.verdict === 'fail') {
+            notes.push(`melody mix REJECTED by QC (${(qc.flags ?? []).join(', ') || 'broken audio'}) — kept the clean assembled bed`);
+          } else {
+            finalUrl = mixedUrl;
+            const beat = await prisma.beatAsset.create({
+              data: {
+                projectId: p.projectId, songId: p.songId ?? null, url: finalUrl, format: 'wav', bpm,
+                provider: 'afrohit-own', approved: true,
+                meta: { ownEngine: { v: 1, layers: notes }, qc } as never,
+              },
+            });
+            finalBeatId = beat.id;
+          }
         } catch (err) {
           notes.push(`melody mix skipped: ${(err as Error)?.message?.slice(0, 100)}`);
         }

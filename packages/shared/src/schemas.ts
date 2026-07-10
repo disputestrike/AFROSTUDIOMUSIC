@@ -129,6 +129,8 @@ export const generateBeatInputSchema = z.object({
   /** HARD language constraint — outranks the artist profile's defaults. */
   languages: z.array(z.string().min(2).max(12)).max(5).optional(),
   voice: z.enum(['auto', 'female', 'male', 'duet', 'group']).optional(),
+  /** WO-5: takes rendered for THIS request (draft default 1; Hit-Maker flows pass 2). */
+  candidates: z.number().int().min(1).max(4).optional(),
   withStems: z.boolean().default(true),
   // Full song WITH AI vocals: set withVocals + provide lyrics (or let the API
   // pull the latest lyric for the song). Routes to the vocals model.
@@ -391,6 +393,8 @@ export const dropBatchSchema = z.object({
   vibe: z.string().max(500).optional(),
   songTitle: z.string().max(80).optional(),
   voice: z.enum(['auto', 'female', 'male', 'duet', 'group']).optional(),
+  /** WO-5: takes rendered per song (draft default 1; Hit-Maker flows pass 2). */
+  candidates: z.number().int().min(1).max(4).optional(),
   count: z.number().int().min(1).max(6).default(3),
   genre: z.string().max(40).default('afrobeats'),
   // FUSION: extra genres blended into the primary (e.g. amapiano × drill) —

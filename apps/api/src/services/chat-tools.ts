@@ -447,7 +447,7 @@ async function generateLyrics(ctx: Ctx, hookId: string, cleanVersion: boolean, l
   return { lyric: { id: lyric.id, title: lyric.title }, ...(langViolation.length ? { languageWarning: `still contains: ${langViolation.join(', ')} — regenerate or edit` } : {}) };
 }
 
-async function createBeatJob(ctx: Ctx, a: { genre: string; fusionGenres?: string[]; mood?: string; pinnedReferenceId?: string; bpm: number; keySignature?: string; durationS?: number; vibePrompt?: string; withStems?: boolean; withVocals?: boolean; songEngine?: 'suno' | 'ace_step' | 'minimax'; influence?: string; languages?: string[]; voice?: 'auto' | 'female' | 'male' | 'duet' | 'group' }) {
+async function createBeatJob(ctx: Ctx, a: { genre: string; fusionGenres?: string[]; mood?: string; pinnedReferenceId?: string; bpm: number; keySignature?: string; durationS?: number; vibePrompt?: string; withStems?: boolean; withVocals?: boolean; songEngine?: 'suno' | 'ace_step' | 'minimax'; influence?: string; languages?: string[]; voice?: 'auto' | 'female' | 'male' | 'duet' | 'group'; candidates?: number }) {
   if (!ctx.projectId) return { error: 'no_project_in_thread' };
 
   // Honor the requested genre for the whole session — the chat's scratch project
@@ -520,6 +520,8 @@ async function createBeatJob(ctx: Ctx, a: { genre: string; fusionGenres?: string
   const charge = await ctx.app.chargeCredits({
     workspaceId: ctx.workspaceId,
     key: a.withVocals || a.withStems ? 'full_song_demo' : 'beat_idea_short_30s',
+    // WO-1/WO-5: N candidates = N renders = N charges against the cap.
+    multiplier: Math.max(1, a.candidates ?? 1),
   });
   if (!charge.ok) return { error: 'insufficient_credits', ...charge };
   const job = await prisma.providerJob.create({

@@ -1,7 +1,7 @@
 import { prisma } from '@afrohit/db';
 import { markFailed, markRunning, markSucceeded } from '../lib/jobs';
 import { downloadToBuffer, uploadBytes } from '../lib/storage';
-import { ffmpegAvailable, master as ffmpegMaster, MASTER_TARGETS } from '../lib/ffmpeg';
+import { ffmpegAvailable, master as ffmpegMaster, MASTER_TARGETS, measureAudioQuality } from '../lib/ffmpeg';
 
 interface MasterPayload {
   jobId: string;
@@ -46,6 +46,10 @@ export async function processMaster(p: MasterPayload) {
     ]);
 
     const target = MASTER_TARGETS[p.preset] ?? MASTER_TARGETS['streaming_lufs_-14']!;
+    // WO-6(a): measure THE MASTERED ARTIFACT — the release gate certifies what
+    // actually ships, never the pre-master take. Measured loudness stored where
+    // available (the target only as fallback — honesty law).
+    const masterQc = await measureAudioQuality(wavUrl).catch(() => null);
     const masterRow = await prisma.master.create({
       data: {
         projectId: p.projectId,
@@ -53,7 +57,8 @@ export async function processMaster(p: MasterPayload) {
         mixId: mix.id,
         preset: p.preset,
         url: wavUrl,
-        loudness: target.lufs,
+        loudness: masterQc?.integratedLufs ?? target.lufs,
+        meta: (masterQc ? { qc: masterQc } : { qc: null, note: 'master QC measurement unavailable' }) as never,
         // Rendered by an explicit user action → usable immediately (same rule as
         // uploads). Without this the export bundle + catalog download see null.
         approved: true,

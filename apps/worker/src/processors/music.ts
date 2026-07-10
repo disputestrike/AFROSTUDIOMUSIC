@@ -150,11 +150,13 @@ export async function processMusic(p: MusicPayload) {
           setTimeout(() => resolve({ status: 'failed', error: 'render timed out after 12 minutes' } as GenResult), HARD_TIMEOUT_MS)
         ),
       ]);
-    // BEST_OF_N default 3 (serious) per the FINAL INSTRUCTION — one take is not
-    // hit-making, and PATCH 1 now ranks the N takes on LANE, which is the only reason
-    // raising N is worth it. Staggered starts + 429-retry (below) tame the Replicate
-    // burst limit. Set BEST_OF_N=1 for a fast draft, up to 5 for premium/high-stakes.
-    const N = Math.max(1, Math.min(Number(p.input.candidates ?? process.env.BEST_OF_N ?? 3), 5));
+    // WO-5 PROGRESSIVE BEST-OF-N (supersedes the blanket 3): DRAFT default N=1 —
+    // cheapest possible first listen; the ear measures it either way (WO-4).
+    // Escalation is DEMAND-DRIVEN: "make it bigger"/retry renders exactly ONE new
+    // take (its measurement is compared against what's already stored — never a
+    // re-run of the set). Premium/Hit-Maker flows request candidates:2 upfront,
+    // escalating to 3 only when both fail the lane. Never render 3 blind.
+    const N = Math.max(1, Math.min(Number(p.input.candidates ?? process.env.BEST_OF_N ?? 1), 5));
     // STAGGER the candidate STARTS by ~15s (Replicate's prediction-creation slot
     // refills at ≈6/min): the renders still overlap so wall-clock ≈ one render +
     // (N-1)·15s, but no two creates collide on the BURST-1 limit. This is what
@@ -328,7 +330,17 @@ export async function processMusic(p: MusicPayload) {
       quality?.verdict === 'fail' &&
       (quality.flags ?? []).length === 1 &&
       quality.flags?.[0] === 'clipping';
-    if (wantsVocals && (quality?.verdict === 'pass' || clipOnlyFinished)) {
+    // WO-4(f) PROMOTION RULE — measure everything, promote selectively. Every
+    // take enters the GAP MAP (Song.laneScore, above); only takes that PASS
+    // promotion enter the REFERENCE LAKE that feeds buildLaneProfile. Averaging
+    // our own misses into the lane target would teach the studio to repeat them.
+    // Pass = lane score ≥ LANE_PROMOTE_MIN (70) with coverage ≥ 0.8 when the ear
+    // ranked this render; ear-blind renders fall back to the QC-pass rule (the
+    // profile builder itself only reads rows that carry measured facts).
+    const promoteMin = Number(process.env.LANE_PROMOTE_MIN ?? 70);
+    const lanePromotable =
+      winnerLane == null || (winnerLane.overall >= promoteMin && winnerLane.coverage >= 0.8);
+    if (wantsVocals && lanePromotable && (quality?.verdict === 'pass' || clipOnlyFinished)) {
       // Dedupe: at most ONE self-training row per workspace+genre per day —
       // otherwise generated rows flood the library and bury the artist's real
       // uploads at retrieval.
@@ -431,7 +443,7 @@ export async function processMusic(p: MusicPayload) {
     // and store the repair steering on the beat so the next regen is pushed back
     // in-lane. Gated (LANE_ASSESS=1 + ear available); a no-op otherwise, never fatal.
     if (!placeholder) {
-      await assessLaneCompliance({ workspaceId: p.workspaceId, genre: p.input.genre, beatId: beat.id, audioUrl: masteredUrl ?? ingestedMain });
+      await assessLaneCompliance({ workspaceId: p.workspaceId, genre: p.input.genre, beatId: beat.id, audioUrl: masteredUrl ?? ingestedMain, songId: p.songId ?? null });
     }
 
     await markSucceeded(

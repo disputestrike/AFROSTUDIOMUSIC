@@ -204,6 +204,12 @@ export async function processAssembleBeat(p: AssemblePayload) {
     }
     const url = await uploadBytes({ workspaceId: p.workspaceId, kind: 'beats', bytes: beatBytes, contentType: 'audio/wav', ext: 'wav' });
     const qc = await measureAudioQuality(url).catch(() => null);
+    // WO-1 SAFETY RAIL: assembled output passes the SAME QC gate as provider
+    // output — a broken render (near-silence/clipping) is rejected with the real
+    // reason, never approved. 'weak' ships flagged; unmeasured ships disclosed.
+    if (qc?.verdict === 'fail') {
+      throw new Error(`assembled take failed QC (${(qc.flags ?? []).join(', ') || 'broken audio'}) — nothing shipped`);
+    }
 
     const beat = await prisma.beatAsset.create({
       data: {

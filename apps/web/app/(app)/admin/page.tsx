@@ -33,6 +33,8 @@ export default function AdminPage() {
   const [stats, setStats] = useState<Stats | null>(null);
   const [rows, setRows] = useState<WorkspaceRow[]>([]);
   const [denied, setDenied] = useState(false);
+  const [needsKey, setNeedsKey] = useState(false);
+  const [keyInput, setKeyInput] = useState('');
   const [busy, setBusy] = useState<string | null>(null);
 
   async function load() {
@@ -44,13 +46,23 @@ export default function AdminPage() {
       setStats(s);
       setRows(w);
       setDenied(false);
+      setNeedsKey(false);
     } catch (err) {
-      if (String(err).includes('403')) setDenied(true);
+      // WO-1: admin routes are locked behind ADMIN_SECRET — prompt for the key.
+      if (String(err).includes('401')) setNeedsKey(true);
+      else if (String(err).includes('403')) setDenied(true);
     }
   }
   useEffect(() => {
     void load();
   }, []);
+
+  function saveKey() {
+    if (!keyInput.trim()) return;
+    localStorage.setItem('afrohit.adminKey', keyInput.trim());
+    setKeyInput('');
+    void load();
+  }
 
   async function grant(id: string) {
     const usd = prompt('Grant amount in USD (negative to claw back):', '10');
@@ -77,6 +89,31 @@ export default function AdminPage() {
     } finally {
       setBusy(null);
     }
+  }
+
+  if (needsKey) {
+    return (
+      <div className="mx-auto max-w-md px-6 py-20 text-center">
+        <h1 className="font-display text-3xl">Admin key required</h1>
+        <p className="mt-3 text-sm text-slate-400">
+          Admin routes are locked (safety rail — the API is public). Enter the <code>ADMIN_SECRET</code> you set on the API
+          service; it is stored only in this browser.
+        </p>
+        <div className="mt-5 flex gap-2">
+          <input
+            type="password"
+            value={keyInput}
+            onChange={(e) => setKeyInput(e.target.value)}
+            onKeyDown={(e) => e.key === 'Enter' && saveKey()}
+            placeholder="ADMIN_SECRET"
+            className="flex-1 rounded-xl border border-white/15 bg-white/5 px-3 py-2 text-sm"
+          />
+          <button onClick={saveKey} className="rounded-xl bg-brand-gradient px-4 py-2 text-sm font-medium text-ink">
+            Unlock
+          </button>
+        </div>
+      </div>
+    );
   }
 
   if (denied) {

@@ -131,4 +131,52 @@ export default async function lanes(app: FastifyInstance) {
       backfill: 'POST /api/v1/admin/run {"task":"measure-backfill"} measures what history is missing; {"task":"mine-lexicon"} harvests transcripts into the word bank; nightly-compound runs both every night at 02:45 UTC.',
     };
   });
+
+  // WO-4(d) — THE GAP DASHBOARD: every song the studio has made, its target
+  // lane, measured score + coverage, top failing dimensions and drift — the map
+  // of what to fix, built from songs already paid for. Unmeasured songs are
+  // listed honestly with their reason (never silently missing).
+  app.get('/gap-map', async (req) => {
+    const { workspaceId } = requireAuth(req);
+    const songs = await prisma.song.findMany({
+      where: { workspaceId, OR: [{ masters: { some: {} } }, { mixes: { some: {} } }, { beats: { some: {} } }] },
+      orderBy: { createdAt: 'desc' },
+      take: 300,
+      select: { id: true, title: true, laneScore: true, laneGaps: true, hitScore: true, createdAt: true, project: { select: { genre: true } } },
+    });
+    const rows = songs.map((s) => {
+      const gaps = (s.laneGaps ?? {}) as { coverage?: number; failedCritical?: string[]; topGaps?: unknown[]; drift?: { severity?: string }; unmeasured?: boolean; reason?: string; measuredAt?: string };
+      return {
+        songId: s.id,
+        title: s.title,
+        lane: s.project?.genre ?? null,
+        laneScore: s.laneScore, // measured compliance (§1.6: distinct from hitScore, the taste read)
+        hitScore: s.hitScore,
+        coverage: gaps.coverage ?? null,
+        failedCritical: gaps.failedCritical ?? [],
+        topGaps: gaps.topGaps ?? [],
+        drift: gaps.drift?.severity ?? null,
+        measured: !gaps.unmeasured && s.laneScore != null,
+        reason: gaps.unmeasured ? (gaps.reason ?? 'not yet listened') : undefined,
+        measuredAt: gaps.measuredAt ?? null,
+        createdAt: s.createdAt,
+      };
+    });
+    const measured = rows.filter((r) => r.measured);
+    const byLane = new Map<string, { lane: string; n: number; avg: number; failing: number }>();
+    for (const r of measured) {
+      const k = r.lane ?? 'unknown';
+      const cur = byLane.get(k) ?? { lane: k, n: 0, avg: 0, failing: 0 };
+      cur.avg = (cur.avg * cur.n + (r.laneScore ?? 0)) / (cur.n + 1);
+      cur.n++;
+      if ((r.laneScore ?? 0) < 60 || r.failedCritical.length) cur.failing++;
+      byLane.set(k, cur);
+    }
+    return {
+      totals: { songs: rows.length, measured: measured.length, unmeasured: rows.length - measured.length },
+      byLane: [...byLane.values()].map((l) => ({ ...l, avg: Math.round(l.avg) })).sort((a, b) => b.n - a.n),
+      songs: rows,
+      note: 'listen-back walks the back catalog nightly (8/run) — unmeasured shrinks on its own; POST /admin/run {"task":"listen-back"} forces a batch now.',
+    };
+  });
 }

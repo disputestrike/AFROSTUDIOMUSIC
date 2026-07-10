@@ -203,9 +203,13 @@ export async function buildLaneReport(workspaceId: string, songId: string): Prom
   const adequacy = beat.provider === 'afrohit-own' || beat.provider === 'material'
     ? { adequate: true, note: 'owned composition engine (afrohit-own-v1) — built from our material, not prompted from a black box' }
     : engineAdequacy(beat.provider, targetLane);
+  // WO-6(a): certify the MASTERED artifact when one exists — its measured QC
+  // outranks the pre-master take's (what ships is what gets certified).
+  const latestMaster = await prisma.master.findFirst({ where: { songId }, orderBy: { createdAt: 'desc' }, select: { meta: true } });
+  const masterQc = ((latestMaster?.meta ?? {}) as { qc?: unknown }).qc ?? null;
   const gateInput = {
     compliance: freshScore ? { overall: freshScore.overall, coverage: freshScore.coverage, drift: freshScore.drift, failedCritical: freshScore.failedCritical } : null,
-    qc: (meta.qc ?? null) as never,
+    qc: (masterQc ?? meta.qc ?? null) as never,
     lexicon: { unseeded: lexiconUnseeded },
     profile: { authenticRefs, required: 3 },
   };
