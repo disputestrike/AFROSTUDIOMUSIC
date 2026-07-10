@@ -30,6 +30,7 @@ Rules:
 - ONE consistent LEAD voice throughout the whole song — same singer, same tone. Doubles, harmonies and ad-libs SUPPORT that single lead; never switch to a different-sounding lead mid-song.
 - HARD BAN — production words NEVER appear in the lyric text, not even in parentheses (singer engines SING parentheticals): "log drum", "shaker", "shekere", "808", "amapiano", "BPM", "percussion", "drum roll", "tom fill", "bassline", "the drop", "hi-hat", "snare". The GENRE_SOUND_DNA/context inputs describe the BEAT ONLY — never quote their words. Section lift is expressed through VOCAL energy cues only ("(rise)", "(full power)", "(strip back)"); the drums announce sections via styleTags — ALWAYS include "drum fill into every hook and section change" in styleTags instead of writing it in the lyric.
 - Keep it singable and on-theme. Do NOT invent a different song or add whole new verses.
+- NEVER write production markers ([Drum Fill], [Break], [Instrumental]) into the lyric text — fills are AUDIO the studio places; only real section headers ([Intro][Verse][Hook][Bridge][Outro]) belong in a lyric.
 - NATURALNESS LAW (the AI tells are: perfect pitch, breathless long phrases, identical doubles, robotic echo ad-libs — kill them all): write HUMAN SOUNDS as sung text, phoneticized inline — a breath before a big line as "hhh—", an exhale "whoo!", a soft laugh "ehe", a strain " agh" — NEVER meta-words like "(breath)" or "(laughs)" (engines sing those). No phrase runs longer than a real lung: break lines so a singer could breathe. Place ONE intentional imperfection per song (a cracked/strained note moment, a spoken half-line, a trailing mumble) — perfection is the tell. Doubles/harmonies vary their words or timing slightly; ad-libs CONVERSE ("na so!", "tell them!") and never robot-echo the lead.
 - LANGUAGE IS A HARD CONTRACT: keep every line in ITS ORIGINAL LANGUAGE — never translate, never drift. Ad-libs/textures must come from the SONG'S OWN languages: isiZulu/isiXhosa/SA township: "yebo!", "haibo", "eish", "hhayi bo", "woza", "sho", "aweh", "eita", "sharp sharp"; Swahili: "eeh", "twende", "sawa"; Lingala: "eh mama", "malamu"; Wolof: "waaw", "dégg naa"; Kreyòl: "anmwey", "cheri"; Patois: "yow", "big up". Naija flavor ONLY when pcm/yo/ig/ha are among the song's languages. If unsure of a native phrase, use a NON-LEXICAL texture (hum, "eh-eh", vowel run) — NEVER substitute Pidgin or English for a native line.
 
@@ -46,6 +47,13 @@ const JARGON_RAP = /(log[\s-]?drums?|drum\s?(?:rolls?|fills?)|tom\s?fills?)/gi;
  *  [Section] headers are preserved; any parenthetical containing jargon is
  *  removed whole (engines sing parentheticals); bare jargon words are excised. */
 export function scrubProductionJargon(body: string, genre?: string): string {
+  // HARD FILTER: bracketed PRODUCTION markers ([Drum Fill], [Percussion Break],
+  // [Instrumental]) are cues for OUR audio overlay, never engine text — MiniMax
+  // sings brackets. Real section headers (Intro/Verse/Hook/Bridge/Outro) survive.
+  body = body
+    .split('\n')
+    .filter((line) => !/^\s*\[[^\]]*(?:drum|fill|perc|instrumental|break|solo|riser|drop)[^\]]*\]\s*$/i.test(line))
+    .join('\n');
   const RX = RAP_FAMILY.has(genre ?? '') ? JARGON_RAP : JARGON;
   return body
     .split('\n')
