@@ -51,8 +51,11 @@ export const creditsPlugin = fp(async function (app) {
     // — the API is publicly reachable and best-of-N multiplies renders. Override
     // via MAX_DAILY_GENERATIONS / MAX_MONTHLY_GENERATIONS (0 = explicit opt-out).
     if (isInternalMode()) {
-      const daily = Number(process.env.MAX_DAILY_GENERATIONS ?? 250);
-      const monthly = Number(process.env.MAX_MONTHLY_GENERATIONS ?? 4000);
+      // TESTING PHASE (owner directive 2026-07-11): 1000/day so testing never
+      // stalls mid-session; the rail still exists — a runaway loop dies at the
+      // cap, and the monthly ceiling scales with it (1000/day needs >4000/mo).
+      const daily = Number(process.env.MAX_DAILY_GENERATIONS ?? 1000);
+      const monthly = Number(process.env.MAX_MONTHLY_GENERATIONS ?? 20000);
       if (daily > 0) {
         const since = new Date();
         since.setUTCHours(0, 0, 0, 0);

@@ -109,6 +109,9 @@ export default function ZapPage() {
     } catch (e) {
       const msg = String((e as Error)?.message ?? '');
       if (/501|not_configured/.test(msg)) setErr('Zap needs a recognition key — add AUDD_API_TOKEN (from audd.io) to the API + worker, then try again.');
+      // Cap hits are policy, not failures — plain words, never raw JSON.
+      else if (/daily_cap/.test(msg)) setErr('Daily generation cap reached — resets at midnight UTC. Raise MAX_DAILY_GENERATIONS on the API service if today needs more headroom.');
+      else if (/monthly_cap/.test(msg)) setErr('Monthly generation cap reached — raise MAX_MONTHLY_GENERATIONS on the API service.');
       else setErr(msg.slice(0, 180) || 'Could not identify that.');
       setPhase('error');
     }
