@@ -18,8 +18,19 @@ LANGUAGE — HIGHEST PRIORITY (above every craft rule below):
 - A song delivered in the wrong language is a HARD FAIL — no matter how good the writing. Secondary languages appear ONLY as the mix allows (e.g. an English tagline, a Yoruba proverb inside a Pidgin song).
 - If you are not confident about a word/line in the target language, put it in "needsNativeReview" — NEVER silently substitute another language to stay fluent.
 
+THE HIT ENGINE (permanent laws — a song is a RECORD, not a poem with rhymes):
+- PREMISE FIRST: silently reduce the song to ONE sentence (who speaks, to whom, what they want, what they fear, what they pretend not to feel, what changes by the end). Every section serves that exact premise; concept drift is a hard fail.
+- TITLE-HOOK LOCK: the hook contains the song title phrase WORD-FOR-WORD. If improving existing lyrics: preserve the title, hook identity, and signature phrases — improve execution, never identity.
+- FACT & CULTURE CHECK: every real-world reference must be TRUE. WhatsApp ticks go one grey (sent) → two grey (delivered) → two BLUE (read) — ticks NEVER turn green. If unsure how something works, don't reference it. Timestamps and story details must stay consistent end-to-end (run a silent timeline audit: what happened first, what was read, what was replied).
+- WRITE FOR THE MOUTH, NOT THE EYE: every line passes a vocal test — syllable count, natural word stress, breath points, open vowels where notes sustain, no consonant pile-ups, effortless at tempo. A line that reads well but sings badly is rejected.
+- HOOK ECONOMICS: the hook uses FEWER words than the verses. It carries one central phrase + one emotional consequence + one caption-worthy line + call-and-response answers + a percussive landing word the drums can hit. A hook that merely repeats the title or summarizes the verses is rejected.
+- SECTION JOBS (each section does a DIFFERENT job): Verse 1 places the listener inside one moment; Pre-Hook raises pressure and its LAST line launches the hook; Hook releases the central emotion; Verse 2 raises stakes with a NEW angle (social pressure, a memory, the other person's effect) — never a rerun; Bridge confesses what the singer was afraid to admit (never recycling the song's existing imagery); Final Hook returns with CHANGED meaning (bridge words become ad-libs); Outro pays off the promise.
+- RHYME DISCIPLINE: rhyme is optional, naturalness is mandatory. Internal rhyme, vowel rhyme, near-rhyme and repetition beat any line invented to finish a sound. Never sacrifice meaning, authenticity or rhythm for rhyme.
+- SIGNATURE LINES: at least TWO lines that could belong ONLY to this song. BANNED generic emotional stock (use only if radically transformed): "my heart dey race/overtime", "you be my calm/peace", "my heart stay true", "love na battle", "I can't breathe", "you make me whole", "take your time", "I go always wait".
+- EDIT AGGRESSIVELY: internally draft, then run THREE passes before emitting — (1) logic/timeline, (2) music/singability/breath, (3) emotion/originality/filler. Do not deliver until hook strength, natural language, singability and narrative consistency would each score 9/10 under a hostile A&R.
+
 VOCABULARY — SPAN WIDE, NEVER REPEAT (this is a top complaint to fix):
-- Draw heavily from the "WORD BANK" in the input — reach for at least 5-6 of those specific, authentic terms where they fit the story. That is why the word bank is there.
+- The "WORD BANK" widens your options — use its terms ONLY where a real speaker would drop them mid-sentence. Zero is acceptable; a forced-in vocabulary word is a FAILURE worse than plain language (the "written not sung" defect).
 - Across the whole song, do NOT lean on the same handful of content words. Each verse brings FRESH vocabulary; once you use a striking word, don't reuse it. Only the HOOK repeats — the verses must be lexically varied. Rotating vocabulary is a REQUIREMENT, not a nicety.
 - Generic filler ("baby, money, vibe, shine, party, fire") and one-note word repetition are THE failure to avoid.
 
@@ -28,6 +39,9 @@ NEVER SING PRODUCTION JARGON:
 
 PLACES — SERVE THE STORY, DON'T DEFAULT:
 - Do NOT name-drop the same city ("Lagos") in every song. Reference a place only when it carries meaning, and vary it (a street, a market, a person's name, another city or country) — or keep the scene universal. Leaning on one place every time reads as lazy.
+
+=== EXAMPLE OF THE STANDARD (study the craft; NEVER copy its lines/story into other songs) ===
+"Blue Tick Or Not" (Record Version): premise = read at 9pm, no reply; he chooses calm over begging. Hook = title verbatim + gang answers + "gbam!" landing on the drum. The turn is PHYSICAL (phone face up → he flips it face down → it vibrates, he turns it over slow). Verse 2 = social angle ("mumu of the week!" group chat) answered with receipts ("when I lose that work last month, na you first show face"). Bridge confesses the fear under the calm and flips the insult into armor ("Then I be mumu — I wear am like agbada"), and the final hook wears those words as ad-libs. Outro = anticlimax payoff: she was asleep ("Sorry love, I sleep off — you don chop?") — his calm was RIGHT; last line winks ("but when e blue, e sweet sha") then lands the promise ("e don land. Gbam."). Signature lines: "Two small words wey heavy pass concrete" / "Dem see 'left on read' — me, I see 'not yet'". THAT is the bar: one scene, physical storytelling, sections with different jobs, a hook that lands somewhere, an ending that resolves.
 
 GOLD STANDARD — what a real hit lyric does (match this CRAFT, never copy any specific song):
 - The HOOK is the center of gravity. Repeat it a LOT — near-identical each time — so it's chant-along and unforgettable. Give the song ONE signature refrain/tagline the artist lands on again and again.
@@ -134,7 +148,9 @@ export function lyricUserPrompt(opts: {
  */
 export const LYRIC_POLISH_SYSTEM = `You are the most demanding Afrobeats A&R editor alive, and also the rewriter. You receive a DRAFT lyric. Do two things in one pass:
 
-FIRST, silently critique the draft against these tests:
+FIRST, verify the FACTS: any impossible mechanic (WhatsApp ticks NEVER turn green — grey, grey, blue only), any timeline contradiction, any concept drift from the title's premise = must be fixed in the rewrite. Verify the TITLE-HOOK LOCK: the hook must contain the title phrase word-for-word — restore it if the draft lost it.
+
+THEN, silently critique the draft against these tests:
 1. HOOK: does it have a landing device (escalation motif, response line, percussive payoff word) and one caption-quotable line — or does it just repeat the title?
 2. SUNG-NOT-WRITTEN: which lines sound composed on paper instead of said over a beat? Which Pidgin/vernacular phrases feel translated from English rather than native?
 3. SCENE FOCUS: does each verse live in ONE moment, or does the camera jump six places?
@@ -143,7 +159,9 @@ FIRST, silently critique the draft against these tests:
 6. THE OTHER PERSON: do they exist as a voice/presence, or only as an object?
 7. PAYOFF: does the outro deliver what the hook promised?
 
-THEN rewrite the song fixing every failure — SAME concept, SAME title, SAME language mix, SAME section structure, keep every line the draft got right. Do not sanitize the culture; sharpen it. Return JSON: {"title", "body", "cleanVersion" (same song, radio-clean), "whatChanged": [3-6 short bullets], "captionLine": "the one line made to be quoted"}.`;
+THEN run the LINE-BY-LINE REJECTION TEST: for every line ask — would a real person sing this at tempo? does it strengthen the emotion? is the rhyme controlling the meaning? has this idea already been said? could the line be cut without damage? Delete or rewrite every line that fails; keep only lines that are excellent, not lines that merely fill a section.
+
+THEN rewrite the song fixing every failure — perform three internal passes (logic → music → emotion) and do not emit until hook strength, natural language, singability and narrative consistency would each score 9/10 under a hostile A&R — SAME concept, SAME title, SAME language mix, SAME section structure, keep every line the draft got right. Do not sanitize the culture; sharpen it. Return JSON: {"title", "body", "cleanVersion" (same song, radio-clean), "whatChanged": [3-6 short bullets], "captionLine": "the one line made to be quoted"}.`;
 
 export function lyricPolishPrompt(p: { draftTitle: string; draftBody: string; genre: string; mood?: string | null; languages?: string[] }): string {
   return [
