@@ -37,7 +37,7 @@ const P: Record<string, Prior> = {
   rock: { bpm: 120, four: 0.5, log: 0.05, swing: 0.5, shaker: 0.3, keys: 0.5, sync: 0.4 },
 };
 
-const M = (v: number) => ({ value: v, source: 'measured', confidence: 0.5, method: 'expert-prior' });
+const M = <T,>(v: T) => ({ value: v, source: 'measured', confidence: 0.5, method: 'expert-prior' });
 
 /** Three lightly-jittered pseudo-analyses so variance/tolerance are sane. */
 export function priorAnalyses(genre: string): MeasuredAnalysis[] {
@@ -48,7 +48,13 @@ export function priorAnalyses(genre: string): MeasuredAnalysis[] {
     return {
       engineOk: true,
       tempoBpm: M(pr.bpm + j * 2),
-      fourOnFloor: M(f(pr.four)),
+      // fourOnFloor is a BOOLEAN in every real MeasuredAnalysis — emitting the
+      // prior as a number (0.85) made the profile build this dimension as
+      // NUMERIC: the repair planner fell into the wrong branch ("drop the
+      // four-on-floor" told to amapiano regens!) and a CORRECT true take could
+      // even read out-of-lane (1.0 > p90 of 0.9). The prior's belief maps to
+      // the boolean it describes.
+      fourOnFloor: M(pr.four >= 0.5),
       logDrumLikelihood: M(f(pr.log)),
       swingRatio: M(f(pr.swing, 0.02)),
       shakerContinuity: M(f(pr.shaker)),

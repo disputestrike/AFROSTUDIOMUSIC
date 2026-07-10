@@ -19,7 +19,7 @@ export interface DimensionScore {
   key: string;
   kind: 'numeric' | 'boolean' | 'categorical';
   trackValue: number | string | boolean;
-  target: { median?: number; p10?: number; p90?: number; dominant?: string };
+  target: { median?: number; p10?: number; p90?: number; dominant?: string; dominantShare?: number };
   match: number; // 0–1
   status: LaneStatus;
   weight: number;
@@ -109,6 +109,7 @@ export function scoreLaneCompliance(analysis: MeasuredAnalysis, profile: LanePro
     } else if (spec.kind !== 'numeric') {
       match = catMatch(String(got.v), stat);
       target.dominant = stat.dominant;
+      target.dominantShare = stat.distribution?.[stat.dominant ?? ''] ?? undefined;
     } else {
       skipped.push(`${spec.key} (type mismatch)`);
       continue;

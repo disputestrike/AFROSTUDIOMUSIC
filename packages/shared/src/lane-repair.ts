@@ -47,7 +47,8 @@ function repairFor(d: DimensionScore, lane: string): { direction: Repair['direct
     case 'tempoBpm':
       return { direction: below ? 'increase' : 'decrease', target: numTarget, instruction: `${below ? 'Raise' : 'Lower'} the tempo from ${cur} to ${numTarget} BPM.` };
     case 'fourOnFloor':
-      return d.target.dominant === 'true'
+      // String() belt: a boolean-typed dominant must never invert the branch.
+      return String(d.target.dominant) === 'true'
         ? { direction: 'add', target: 'four-on-floor', instruction: `Add a FOUR-ON-FLOOR kick — a kick on EVERY beat (the lane's foundation).` }
         : { direction: 'remove', target: 'broken kick', instruction: `Drop the four-on-floor — the lane uses a broken/syncopated kick pattern.` };
     case 'harmonicRichness':
@@ -89,8 +90,14 @@ function repairFor(d: DimensionScore, lane: string): { direction: Repair['direct
  */
 export function planRepairs(score: LaneComplianceScore): RepairPlan {
   const repairs: Repair[] = [];
+  const WEAK_DOMINANT_DIMS = new Set(['timeSignature', 'mode', 'key', 'sungVsSpoken']);
   for (const d of score.dimensions) {
     if (d.status === 'in-lane') continue;
+    // A categorical dominant that only narrowly leads the lane's refs (e.g. a
+    // '3/4' timeSignature from a few weak detector reads) is NOT lane law —
+    // repairing toward it would steer good takes wrong. Identity dims are
+    // exempt (their dominance is the lane).
+    if (WEAK_DOMINANT_DIMS.has(d.key) && !d.identity && (d.target.dominantShare ?? 1) < 0.6) continue;
     const gap = 1 - d.match;
     const priority = d.weight * gap * (d.identity ? 1.5 : 1);
     const severity: Repair['severity'] = d.status === 'out-of-lane' && d.identity ? 'critical' : d.status === 'out-of-lane' ? 'major' : 'minor';

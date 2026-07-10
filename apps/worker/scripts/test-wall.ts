@@ -2,7 +2,7 @@
  * ADDENDUM §1.11 — THE WALL, acceptance tests (W-2 + W-1 mapping + C-1 gate).
  * Pure-function tests: the routing law must hold in code, not policy.
  */
-import { engineClass, resolveEngineForWorkspace, isFirstPartyWorkspace, recommendEngine, referenceOrigin, groundingOf, describeGrounding, promotionEligible, buildLicenseCertificate, validateDatasetManifest } from '@afrohit/shared';
+import { engineClass, resolveEngineForWorkspace, isFirstPartyWorkspace, recommendEngine, referenceOrigin, groundingOf, describeGrounding, promotionEligible, buildLicenseCertificate, validateDatasetManifest, priorAnalyses, buildLaneProfile, scoreLaneCompliance, planRepairs, type MeasuredAnalysis } from '@afrohit/shared';
 import { falRequestBase } from '@afrohit/ai';
 import { readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
@@ -79,6 +79,24 @@ check('C-3: SAME take once lane grounds → promotable retroactively', promotion
 check('C-3: grounded but below bar (65) → still not promoted', !promotionEligible({ laneScore: 65, coverage: 0.85, grounded: true }));
 check('C-3: grounded, high score, thin coverage (0.5) → not promoted', !promotionEligible({ laneScore: 90, coverage: 0.5, grounded: true }));
 check('C-3: unmeasured can never promote', !promotionEligible({ laneScore: null, coverage: null, grounded: true }));
+
+// LIVE-DATA hotfix — the expert-prior fourOnFloor inversion (caught on the gap
+// map: 'drop the four-on-floor' told to amapiano, and EVERY take scoring 0 on
+// the dim). Priors now emit the boolean; scoring + repair must both be sane.
+{
+  const priors = priorAnalyses('amapiano');
+  const profile = buildLaneProfile('amapiano', 'genre', priors, { minRefs: 1 });
+  const broken = JSON.parse(JSON.stringify(priors[1])) as MeasuredAnalysis;
+  (broken as unknown as { fourOnFloor: { value: boolean } }).fourOnFloor.value = false;
+  const badScore = scoreLaneCompliance(broken, profile);
+  const fofBad = badScore.dimensions.find((d) => d.key === 'fourOnFloor');
+  check('prior-fix: amapiano take WITHOUT 4x4 fails the dim', fofBad?.status === 'out-of-lane');
+  const repair = planRepairs(badScore).repairs.find((r) => r.key === 'fourOnFloor');
+  check('prior-fix: repair says ADD four-on-floor (was inverted!)', repair?.direction === 'add' && /FOUR-ON-FLOOR/i.test(repair?.instruction ?? ''));
+  const good = priors[1]!;
+  const fofGood = scoreLaneCompliance(good, profile).dimensions.find((d) => d.key === 'fourOnFloor');
+  check('prior-fix: a CORRECT 4x4 take is in-lane on the dim (was scoring 0)', fofGood?.status === 'in-lane');
+}
 
 // A3 hotfix — the LIVE 405: fal requests URLs use the ROOT namespace, never the
 // model subpath (submit succeeded, poll 405'd, render died on the user's screen).
