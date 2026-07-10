@@ -126,6 +126,7 @@ export default function CreatePage() {
   const [langs, setLangs] = useState<string[]>(['pcm', 'en']);
   const [vibe, setVibe] = useState('');
   const [songName, setSongName] = useState('');
+  const [singName, setSingName] = useState(true);
   const [influence, setInfluence] = useState('');
   const [engine, setEngine] = useState<'suno' | 'ace_step' | 'minimax'>('minimax');
 
@@ -235,7 +236,7 @@ export default function CreatePage() {
         ? ` In the VIBE/LANE of ${influence.trim()} (capture that energy, tempo and production feel — never copy their melodies/lyrics and never name them in the song).`
         : '';
       const fusionLine = fusion.length ? ` This is a GENRE FUSION: ${genreLabel} — both identities must be clearly audible, something new, never mush.` : '';
-      const theme = `${songName.trim() ? `SONG TITLE: \"${songName.trim()}\" — the hook and lyric title MUST use this exact title. ` : ''}${genreLabel} ${mood} song, ${bpm}bpm, ${langNames}${vibe ? `, ${vibe.trim()}` : ''}. Make it catchy and current.${fusionLine}${influenceLine}`;
+      const theme = `${songName.trim() ? (singName ? `SONG TITLE (CREATIVE ANCHOR): \"${songName.trim()}\" — the HOOK must SING this name (or a natural in-language variant) as its centerpiece; verses orbit its meaning; if the vibe conflicts with the name inside the hook, the NAME wins. The lyric title uses it exactly. ` : `SONG TITLE (LABEL ONLY): \"${songName.trim()}\" — use it as the title exactly, but do NOT force the phrase into the lyrics. `) : ''}${genreLabel} ${mood} song, ${bpm}bpm, ${langNames}${vibe ? `, ${vibe.trim()}` : ''}. Make it catchy and current.${fusionLine}${influenceLine}`;
       // Fire the Drop Machine — it replies 202 + a job id INSTANTLY and works in
       // the background (holding a 3-minute HTTP request open dies on real
       // networks). We poll the drop job for the hook/lyrics result…
@@ -607,7 +608,13 @@ export default function CreatePage() {
         ))}</div>
       </div>
       <label className="mb-1 block text-sm text-slate-300">Song name <span className="text-slate-500">(optional — leave blank and the studio names it from the vibe)</span></label>
-      <input value={songName} onChange={(e) => setSongName(e.target.value)} maxLength={80} placeholder="e.g. Midnight in Lekki" className="mb-5 w-full rounded-xl border border-slate-700 bg-slate-950 px-4 py-3 text-slate-100 placeholder:text-slate-600" />
+      <input value={songName} onChange={(e) => setSongName(e.target.value)} maxLength={80} placeholder="e.g. Midnight in Lekki" className="mb-2 w-full rounded-xl border border-slate-700 bg-slate-950 px-4 py-3 text-slate-100 placeholder:text-slate-600" />
+{songName.trim() && (
+  <label className="mb-5 flex items-center gap-2 text-xs text-slate-400">
+    <input type="checkbox" checked={singName} onChange={(e) => setSingName(e.target.checked)} className="h-3.5 w-3.5 rounded border-slate-600 bg-slate-950" />
+    Sing the name in the hook <span className="text-slate-600">— off = label only, the lyrics won&apos;t force it</span>
+  </label>
+)}
       <div className="mt-6"><div className="mb-2 text-sm text-slate-400">Vibe / what it’s about (optional)</div>
         <input value={vibe} onChange={(e) => setVibe(e.target.value)} placeholder="e.g. rainy-day love, chant-along hook, drive-through-Lekki energy" className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2.5 text-sm" />
       </div>

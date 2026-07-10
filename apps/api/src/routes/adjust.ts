@@ -15,6 +15,7 @@
  */
 import type { FastifyInstance } from 'fastify';
 import { generateJson } from '@afrohit/ai';
+import { snapshotLyricVersion } from '../lib/lyric-versions';
 import { enqueue } from '../lib/queue';
 import { z } from 'zod';
 import { prisma } from '@afrohit/db';
@@ -127,6 +128,7 @@ export default async function adjust(app: FastifyInstance) {
       include: {
         project: { select: { genre: true } },
         masters: { orderBy: { createdAt: 'desc' }, take: 1 },
+        lyric: true,
         beats: { orderBy: { createdAt: 'desc' }, take: 1 },
       },
     });
@@ -154,7 +156,8 @@ SECTION MAP: ${sectionMap || 'not measured yet'}.\nParse the artist's instructio
 - {"kind":"stem_fx","stem":"vocals|drums|bass|other","fx":"reverb|eq_low|eq_high|gain","amount":0-1}  // fx on ONE stem only
 - {"kind":"vocal_drop","fromS":45,"toS":60}                  // silence ONLY the vocal in a region (open a verse)
 - {"kind":"resing_section","index":3}                        // re-play a section: FRESH beat under the ORIGINAL vocal
-- {"kind":"rename","title":"Midnight in Lekki"}              // rename the song
+- {"kind":"rename","title":"Midnight in Lekki"}              // rename ONLY (label surgery, instant)
+- {"kind":"rebuild_hook","title":"Midnight in Lekki"}        // creative surgery: rewrite the HOOK around this name, then re-sing
 If nothing fits, op:null and coach them in reply (mixer, versions, adjust exist). Return {"reply","op"} ONLY. reply is UNDER 15 WORDS — no preamble, no explaining, just the move.`,
       user: message,
       maxTokens: 400,
@@ -174,6 +177,27 @@ If nothing fits, op:null and coach them in reply (mixer, versions, adjust exist)
       if (!newTitle) return { reply: 'Give me the name.', dispatched: null };
       await prisma.song.update({ where: { id: song.id }, data: { title: newTitle } });
       return { reply: `Renamed: “${newTitle}”.`, dispatched: 'rename' };
+    }
+
+    if (op.kind === 'rebuild_hook') {
+      const anchor = String((op as { title?: unknown }).title ?? '').trim().slice(0, 80);
+      if (!anchor) return { reply: 'Give me the name to build the hook around.', dispatched: null };
+      if (!song.lyric?.body) return { reply: 'No lyric on this song yet — generate one first.', dispatched: null };
+      const rw = await generateJson<{ body: string }>({
+        system: 'You are a hit songwriter performing HOOK SURGERY. Rewrite ONLY the hook/chorus sections of the lyric so the given TITLE is sung as their centerpiece (or a natural in-language variant). Keep every verse, bridge, section header, and language EXACTLY as-is. No production words in lyrics. Return {"body"} = the FULL lyric with only hooks changed.',
+        user: `TITLE: "${anchor}"
+
+LYRIC:
+${song.lyric.body.slice(0, 4000)}`,
+        maxTokens: 2500,
+      }).catch(() => null);
+      if (!rw?.body) return { reply: 'Hook surgery failed — try again.', dispatched: null };
+      await snapshotLyricVersion(song.lyric.id, 'before hook rebuild');
+      await prisma.lyricDraft.update({ where: { id: song.lyric.id }, data: { body: rw.body, title: anchor } });
+      await prisma.song.update({ where: { id: song.id }, data: { title: anchor } });
+      const res = await app.inject({ method: 'POST', url: `/api/v1/songs/${song.id}/regenerate-beat`, headers, payload: {} });
+      const body = res.json() as Record<string, unknown>;
+      return { reply: `Hook rebuilt around “${anchor}” — re-singing now.`, dispatched: 'rebuild_hook', jobId: (body.jobId as string) ?? null };
     }
 
     if (op.kind === 'transform' || op.kind === 'remaster' || op.kind === 'regen_beat') {
