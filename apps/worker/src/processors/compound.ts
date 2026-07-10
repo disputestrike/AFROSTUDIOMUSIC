@@ -211,6 +211,48 @@ export async function processListenBack(opts?: { limit?: number }): Promise<void
     }
     console.log(`[listen-back] listened to ${done}/${songs.length} songs this run`);
 
+    // RE-LISTEN (rotating): measurements go STALE — profiles improve as refs
+    // land and scorer fixes ship (the fourOnFloor prior bug deflated every
+    // expert-prior lane's scores). Each run re-scores the oldest-measured songs
+    // so the gap map converges on the truth instead of freezing old mistakes.
+    try {
+      const measuredSongs = await prisma.song.findMany({
+        where: { laneScore: { not: null } },
+        take: 200,
+        select: { id: true, workspaceId: true, laneGaps: true, project: { select: { genre: true } }, masters: { orderBy: { createdAt: 'desc' }, take: 1, select: { url: true, createdAt: true } }, mixes: { orderBy: { createdAt: 'desc' }, take: 1, select: { url: true, createdAt: true } }, beats: { orderBy: { createdAt: 'desc' }, take: 1, select: { url: true, createdAt: true } } },
+      });
+      const withAge = measuredSongs
+        .map((s) => ({ s, at: String(((s.laneGaps ?? {}) as { measuredAt?: string }).measuredAt ?? '') }))
+        .sort((a, b) => a.at.localeCompare(b.at))
+        .slice(0, 4);
+      let rescored = 0;
+      for (const { s } of withAge) {
+        const cands = [s.masters[0], s.mixes[0], s.beats[0]].filter((x): x is { url: string; createdAt: Date } => !!x?.url);
+        cands.sort((a, b) => +b.createdAt - +a.createdAt);
+        const url = cands[0]?.url;
+        const genre = s.project?.genre;
+        if (!url || !genre) continue;
+        const profile = await loadLaneProfile(s.workspaceId, genre);
+        if (!profile) continue;
+        const analysis = await measureAudio(url);
+        if (!analysis.engineOk) continue;
+        const score = scoreLaneCompliance(analysis, profile);
+        const plan = planRepairs(score);
+        await prisma.song.update({
+          where: { id: s.id },
+          data: {
+            laneScore: score.overall,
+            measuredAnalysis: analysis as never,
+            laneGaps: { coverage: score.coverage, failedCritical: score.failedCritical, topGaps: (plan.repairs ?? []).slice(0, 5), drift: score.drift, assessedGenre: genre, measuredAt: new Date().toISOString(), relistened: true } as never,
+          },
+        }).catch(() => undefined);
+        rescored++;
+      }
+      if (rescored) console.log(`[listen-back] re-listened ${rescored} stale reads (oldest first — scores converge as profiles improve)`);
+    } catch (err) {
+      console.warn('[listen-back] re-listen failed (non-fatal):', (err as Error)?.message);
+    }
+
     // C-3 KNOCK-ON — RETROACTIVE PROMOTION: once a lane becomes grounded (e.g.
     // re-filed uploads reclaimed its refs), previously-measured self-generated
     // takes that already pass the promotion law enter the reference lake with
