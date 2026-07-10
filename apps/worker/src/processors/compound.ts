@@ -14,9 +14,9 @@
  */
 import { prisma } from '@afrohit/db';
 import { generateJson, tavilySearchRaw } from '@afrohit/ai';
-import { LANGUAGES, genreSignature, scoreLaneCompliance, planRepairs } from '@afrohit/shared';
+import { LANGUAGES, GENRES, genreSignature, scoreLaneCompliance, planRepairs, promotionEligible, type MeasuredAnalysis } from '@afrohit/shared';
 import { enqueueJob } from '../lib/enqueue';
-import { assessLaneCompliance, loadLaneProfile } from '../lib/lane-assess';
+import { assessLaneCompliance, loadLaneProfile, laneGrounding } from '../lib/lane-assess';
 import { measureAudio, dspAvailable } from '../lib/dsp';
 import { processSynthMaterial } from './synth-material';
 
@@ -67,6 +67,83 @@ export async function processMeasureBackfill(opts?: { refLimit?: number; beatLim
     console.log(`[backfill] deep-measure queued=${queued}, beats assessed=${assessed}`);
   } catch (err) {
     console.warn('[backfill] failed (non-fatal):', (err as Error)?.message);
+  }
+}
+
+/**
+ * ADDENDUM C-3 — RE-FILE THE MISFILED HISTORY. Before the Listen-page genre
+ * picker, every session filed under hardcoded 'afrobeats' — the user's amapiano
+ * training landed in the wrong lake, starving amapiano's grounding and possibly
+ * polluting the afrobeats profile. This pass compares each heard/uploaded
+ * reference's FILED lane against the ear's own read across ALL lanes and queues
+ * RE-FILE PROPOSALS — it never silently moves anything (§1.5: the user's ear
+ * outranks the machine; approvals happen on the admin page). Idempotent: rows
+ * carry recipe.refile = { status, checkedAt, ... }; 'unverifiable' rows are
+ * re-checked when a measured read appears later (measure-backfill fills them).
+ */
+export async function processRefileReferences(opts?: { limit?: number }): Promise<void> {
+  const limit = opts?.limit ?? 25;
+  try {
+    const rows = await prisma.soundReference.findMany({
+      where: { NOT: [{ sourceUrl: { startsWith: 'lyric:' } }, { sourceUrl: { startsWith: 'trend:' } }, { sourceUrl: { startsWith: 'zap:' } }, { sourceUrl: { startsWith: 'facts:' } }] },
+      orderBy: { createdAt: 'asc' }, // oldest first — the misfiled era predates the picker
+      take: 400,
+      select: { id: true, workspaceId: true, genre: true, sourceUrl: true, recipe: true },
+    });
+    type Refile = { status: 'proposed' | 'approved' | 'rejected' | 'confirmed' | 'unverifiable'; checkedAt: string; proposedLane?: string; filedLane?: string | null; detectedScore?: number; filedScore?: number | null; reason?: string };
+    const candidates = rows.filter((r) => {
+      const rec = (r.recipe ?? {}) as { source?: string; refile?: Refile; measured?: { engineOk?: boolean } };
+      if (rec.source === 'generated') return false; // self rows aren't picker-misfiled
+      const st = rec.refile?.status;
+      if (!st) return true;
+      // Re-check unverifiable rows once a measured read exists; leave decided rows alone.
+      return st === 'unverifiable' && !!rec.measured?.engineOk;
+    }).slice(0, limit);
+    if (!candidates.length) { console.log('[refile] nothing to scan — history fully checked'); return; }
+
+    // Build every lane's profile ONCE per workspace (expert priors classify
+    // ungrounded lanes — method-tagged, correct for detection on day one).
+    const profileCache = new Map<string, Awaited<ReturnType<typeof loadLaneProfile>>>();
+    const profileFor = async (wsId: string, genre: string) => {
+      const k = `${wsId}:${genre}`;
+      if (!profileCache.has(k)) profileCache.set(k, await loadLaneProfile(wsId, genre));
+      return profileCache.get(k) ?? null;
+    };
+
+    let proposed = 0, confirmed = 0, unverifiable = 0;
+    for (const r of candidates) {
+      const rec = (r.recipe ?? {}) as Record<string, unknown> & { measured?: MeasuredAnalysis & { engineOk?: boolean }; refile?: Refile };
+      const stamp = async (refile: Refile) => prisma.soundReference.update({ where: { id: r.id }, data: { recipe: { ...rec, refile } as never } }).catch(() => undefined);
+      const measured = rec.measured;
+      if (!measured?.engineOk) {
+        await stamp({ status: 'unverifiable', checkedAt: new Date().toISOString(), filedLane: r.genre, reason: 'no measured read yet — left as filed (measure-backfill will fill it; re-checked then)' });
+        unverifiable++;
+        continue;
+      }
+      // Score against ALL lanes → detected distribution.
+      let best: { lane: string; score: number } | null = null;
+      let filedScore: number | null = null;
+      for (const g of GENRES) {
+        const profile = await profileFor(r.workspaceId, g);
+        if (!profile) continue;
+        try {
+          const s = scoreLaneCompliance(measured as MeasuredAnalysis, profile);
+          if (!best || s.overall > best.score) best = { lane: g, score: s.overall };
+          if (g === (r.genre ?? '')) filedScore = s.overall;
+        } catch { /* lane unscorable for this read — skip */ }
+      }
+      // The doc's margin rule: clear detection AND clear misfit → propose.
+      if (best && best.lane !== (r.genre ?? '') && best.score >= 60 && (filedScore ?? 0) <= 35) {
+        await stamp({ status: 'proposed', checkedAt: new Date().toISOString(), proposedLane: best.lane, filedLane: r.genre, detectedScore: best.score, filedScore });
+        proposed++;
+      } else {
+        await stamp({ status: 'confirmed', checkedAt: new Date().toISOString(), filedLane: r.genre, detectedScore: best?.score, filedScore });
+        confirmed++;
+      }
+    }
+    console.log(`[refile] ledger: scanned=${candidates.length} proposed=${proposed} confirmed=${confirmed} unverifiable=${unverifiable} (approve on /admin — nothing moves without your ear)`);
+  } catch (err) {
+    console.warn('[refile] failed (non-fatal):', (err as Error)?.message);
   }
 }
 
@@ -133,6 +210,57 @@ export async function processListenBack(opts?: { limit?: number }): Promise<void
       }
     }
     console.log(`[listen-back] listened to ${done}/${songs.length} songs this run`);
+
+    // C-3 KNOCK-ON — RETROACTIVE PROMOTION: once a lane becomes grounded (e.g.
+    // re-filed uploads reclaimed its refs), previously-measured self-generated
+    // takes that already pass the promotion law enter the reference lake with
+    // ZERO re-rendering. Same law as render-time (promotionEligible), bounded.
+    try {
+      const promoteMin = Number(process.env.LANE_PROMOTE_MIN ?? 70);
+      // laneScore is only ever written alongside measuredAnalysis (WO-4), so the
+      // score filter alone guarantees a measured take.
+      const eligible = await prisma.song.findMany({
+        where: { laneScore: { gte: promoteMin } },
+        orderBy: { createdAt: 'desc' },
+        take: 40,
+        select: {
+          id: true, workspaceId: true, laneScore: true, laneGaps: true, measuredAnalysis: true, title: true,
+          project: { select: { genre: true } },
+          masters: { orderBy: { createdAt: 'desc' }, take: 1, select: { url: true } },
+          beats: { orderBy: { createdAt: 'desc' }, take: 1, select: { url: true } },
+        },
+      });
+      const groundingCache = new Map<string, Awaited<ReturnType<typeof laneGrounding>>>();
+      let promoted = 0;
+      for (const s of eligible) {
+        if (promoted >= 3) break; // bounded — the lake compounds, it doesn't flood
+        const genre = s.project?.genre;
+        const url = s.masters[0]?.url ?? s.beats[0]?.url;
+        if (!genre || !url) continue;
+        const gaps = (s.laneGaps ?? {}) as { coverage?: number };
+        const gk = `${s.workspaceId}:${genre}`;
+        if (!groundingCache.has(gk)) groundingCache.set(gk, await laneGrounding(s.workspaceId, genre));
+        const grounding = groundingCache.get(gk)!;
+        if (!promotionEligible({ laneScore: s.laneScore, coverage: gaps.coverage, grounded: grounding.grounded, min: promoteMin })) continue;
+        const exists = await prisma.soundReference.count({ where: { workspaceId: s.workspaceId, sourceUrl: url } });
+        if (exists) continue; // idempotent — already in the lake
+        await prisma.soundReference.create({
+          data: {
+            workspaceId: s.workspaceId,
+            genre,
+            sourceUrl: url,
+            title: `generated · ${genre} · retro-promoted`,
+            recipe: { source: 'generated', retroPromoted: true, laneScore: s.laneScore, measured: s.measuredAnalysis } as never,
+            summary: `Retro-promoted ${genre} take (lane ${s.laneScore}/100) — passed the promotion law after the lane became grounded.`,
+          },
+        }).catch(() => undefined);
+        promoted++;
+        console.log(`[listen-back] retro-promoted "${s.title}" into the ${genre} lake (lane ${s.laneScore}/100)`);
+      }
+      if (promoted) console.log(`[listen-back] retro-promotion: ${promoted} previously-measured take(s) entered the lake — zero re-rendering`);
+    } catch (err) {
+      console.warn('[listen-back] retro-promotion failed (non-fatal):', (err as Error)?.message);
+    }
   } catch (err) {
     console.warn('[listen-back] failed (non-fatal):', (err as Error)?.message);
   }
@@ -461,6 +589,7 @@ export async function processNightlyCompound(): Promise<void> {
   await ensureSignatureKits();
   await processReportCard();
   await processLearnBackfill({ limit: 5 });
+  await processRefileReferences({ limit: 25 });
   await processListenBack({ limit: 8 });
   await processMeasureBackfill({ refLimit: 10, beatLimit: 4 });
   await processMineLexicon({ refLimit: 4 });

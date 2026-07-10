@@ -4,17 +4,16 @@
  * identifiers (lowercase enum values like 'suno') are allowed — they are code,
  * not copy; production builds strip comments.
  *
- * ALLOWLIST (documented residual): FlagshipBridge.tsx is the first-party bridge
- * modal, rendered ONLY behind the admin-key unlock (§1.11 authed surface).
- * Moving it to an admin-only lazy chunk is the follow-up that retires this
- * allowlist entry.
+ * ADDENDUM R-1: the allowlist is EMPTY — the bridge component ships zero vendor
+ * strings (brand/URL/tips arrive at runtime from the admin-gated bridge-export
+ * endpoint) and loads as an admin-only lazy chunk. Zero exceptions.
  */
 import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { join, relative } from 'node:path';
 
 const WEB_ROOT = join(__dirname, '..', '..', 'web');
-const VENDOR = /Suno|ElevenLabs|Eleven Labs|MiniMax|ACE-Step|Ace Step|Stable Audio|Replicate|sunoapi|replicate\.com/;
-const ALLOW = new Set(['components/FlagshipBridge.tsx']);
+const VENDOR = /Suno|ElevenLabs|Eleven Labs|MiniMax|ACE-Step|Ace Step|Stable Audio|Replicate|sunoapi|replicate\.com|suno\.com/;
+const ALLOW = new Set<string>();
 
 function walk(dir: string, out: string[] = []): string[] {
   for (const name of readdirSync(dir)) {
@@ -45,6 +44,6 @@ if (hits.length) {
   console.log('FAIL  wall-probe: vendor names in user-visible web sources:');
   for (const h of hits.slice(0, 20)) console.log('  ' + h);
 } else {
-  console.log('PASS  wall-probe: zero vendor names in user-visible web sources (allowlist: SunoBridge.tsx, first-party-gated)');
+  console.log('PASS  wall-probe: zero vendor names in user-visible web sources (allowlist EMPTY — R-1)');
 }
 process.exit(fail);

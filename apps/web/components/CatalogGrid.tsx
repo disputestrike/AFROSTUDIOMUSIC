@@ -4,7 +4,11 @@ import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { useApi } from '@/lib/api';
 import { Trash2, Download, Wand2, FileText, Copy, Recycle, Pencil, Sliders, X, Loader2, Music2, Layers, TrendingUp, RefreshCw, Mic, Disc3, Sparkles, GitCompare } from 'lucide-react';
-import { FlagshipBridge } from './FlagshipBridge';
+import dynamic from 'next/dynamic';
+// R-1: the bridge is an admin-only LAZY chunk — its code never loads in a
+// browser without the first-party unlock (and the component itself ships zero
+// vendor strings; they arrive from the admin-gated bridge-export endpoint).
+const FlagshipBridge = dynamic(() => import('./FlagshipBridge').then((m) => m.FlagshipBridge), { ssr: false });
 import { SongChat } from './SongChat';
 
 interface HitPrediction {

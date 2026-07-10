@@ -44,7 +44,7 @@ const grantSchema = z.object({
 
 export default async function admin(app: FastifyInstance) {
   // One-tap compounding: run the lake jobs NOW instead of waiting for tonight.
-  const runSchema = z.object({ task: z.enum(['nightly-compound', 'measure-backfill', 'learn-backfill', 'listen-back', 'mine-lexicon', 'lexicon-research', 'wiktionary-harvest', 'wiktionary-burst', 'lexicon-gloss']) });
+  const runSchema = z.object({ task: z.enum(['nightly-compound', 'measure-backfill', 'learn-backfill', 'listen-back', 'refile-references', 'mine-lexicon', 'lexicon-research', 'wiktionary-harvest', 'wiktionary-burst', 'lexicon-gloss']) });
   app.post('/run', { schema: { body: runSchema } }, async (req, reply) => {
     await requireAdmin(req);
     const { task } = runSchema.parse(req.body);
@@ -91,6 +91,72 @@ export default async function admin(app: FastifyInstance) {
       byEngine: [...byEngine.values()].map((e) => ({ ...e, costUsd: Math.round(e.costUsd * 100) / 100 })).sort((a, b) => b.renders - a.renders),
       note: 'rendersPerKeptSong is THE margin number — the ear lowering it is the moat (§E2). Costs are provider estimates recorded per job.',
     };
+  });
+
+  // ADDENDUM C-3 — the re-file review list. The scanner NEVER moves a reference
+  // itself; every move is approved here (§1.5 — the user's ear outranks).
+  app.get('/refile', async (req) => {
+    await requireAdmin(req);
+    const rows = await prisma.soundReference.findMany({
+      where: { recipe: { path: ['refile', 'status'], equals: 'proposed' } },
+      orderBy: { createdAt: 'asc' },
+      take: 200,
+      select: { id: true, title: true, genre: true, sourceUrl: true, createdAt: true, recipe: true },
+    });
+    return {
+      proposals: rows.map((r) => {
+        const rf = ((r.recipe ?? {}) as { refile?: { proposedLane?: string; detectedScore?: number; filedScore?: number | null } }).refile ?? {};
+        return { id: r.id, title: r.title, filedLane: r.genre, proposedLane: rf.proposedLane, detectedScore: rf.detectedScore, filedScore: rf.filedScore, learnedAt: r.createdAt };
+      }),
+      note: 'Approve moves the reference; BOTH lanes’ profiles rebuild on next read; grounding lines update. Run {"task":"refile-references"} to scan more history.',
+    };
+  });
+
+  const refileActSchema = z.object({ action: z.enum(['approve', 'reject']), lane: z.string().max(40).optional() });
+  app.post<{ Params: { id: string } }>('/refile/:id', { schema: { body: refileActSchema } }, async (req, reply) => {
+    await requireAdmin(req);
+    const { action, lane } = refileActSchema.parse(req.body);
+    const row = await prisma.soundReference.findUnique({ where: { id: req.params.id }, select: { id: true, workspaceId: true, genre: true, recipe: true } });
+    if (!row) return reply.code(404).send({ error: 'reference_not_found' });
+    const rec = (row.recipe ?? {}) as Record<string, unknown> & { refile?: { status?: string; proposedLane?: string } };
+    if (rec.refile?.status !== 'proposed') return reply.code(409).send({ error: 'not_proposed', status: rec.refile?.status ?? 'unchecked' });
+    if (action === 'reject') {
+      await prisma.soundReference.update({ where: { id: row.id }, data: { recipe: { ...rec, refile: { ...rec.refile, status: 'rejected', decidedAt: new Date().toISOString() } } as never } });
+      return { id: row.id, status: 'rejected' };
+    }
+    const target = lane ?? rec.refile?.proposedLane;
+    if (!target) return reply.code(400).send({ error: 'no_target_lane' });
+    await prisma.soundReference.update({
+      where: { id: row.id },
+      data: { genre: target, recipe: { ...rec, refile: { ...rec.refile, status: 'approved', movedFrom: row.genre, decidedAt: new Date().toISOString() } } as never },
+    });
+    // The ledger row — every move is on the record.
+    await prisma.analyticsEvent.create({
+      data: { workspaceId: row.workspaceId, name: 'refile.approved', properties: { referenceId: row.id, from: row.genre, to: target } as never },
+    }).catch(() => undefined);
+    return { id: row.id, status: 'approved', movedFrom: row.genre, movedTo: target, note: 'Both lanes’ profiles + grounding rebuild on next read.' };
+  });
+
+  app.post('/refile/bulk-approve', async (req) => {
+    await requireAdmin(req);
+    const rows = await prisma.soundReference.findMany({
+      where: { recipe: { path: ['refile', 'status'], equals: 'proposed' } },
+      take: 200,
+      select: { id: true, workspaceId: true, genre: true, recipe: true },
+    });
+    let moved = 0;
+    for (const row of rows) {
+      const rec = (row.recipe ?? {}) as Record<string, unknown> & { refile?: { proposedLane?: string } };
+      const target = rec.refile?.proposedLane;
+      if (!target) continue;
+      await prisma.soundReference.update({
+        where: { id: row.id },
+        data: { genre: target, recipe: { ...rec, refile: { ...rec.refile, status: 'approved', movedFrom: row.genre, decidedAt: new Date().toISOString() } } as never },
+      });
+      await prisma.analyticsEvent.create({ data: { workspaceId: row.workspaceId, name: 'refile.approved', properties: { referenceId: row.id, from: row.genre, to: target, bulk: true } as never } }).catch(() => undefined);
+      moved++;
+    }
+    return { approved: moved, ledger: 'AnalyticsEvent refile.approved rows written per move' };
   });
 
   app.get('/stats', async (req) => {

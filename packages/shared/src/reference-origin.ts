@@ -38,3 +38,14 @@ export function describeGrounding(g: LaneGrounding): string {
     ? `measured (${nonSelf + g.self} refs: ${nonSelf} external + ${g.self} self)`
     : `expert-prior (${nonSelf} external ref${nonSelf === 1 ? '' : 's'} — self-promotion locked)`;
 }
+
+/**
+ * ONE promotion law for render-time AND the retroactive nightly pass (C-3
+ * knock-on): a self-generated take may enter the reference lake only when its
+ * lane is grounded AND the take itself measured in-lane with real coverage.
+ */
+export function promotionEligible(opts: { laneScore: number | null | undefined; coverage: number | null | undefined; grounded: boolean; min?: number }): boolean {
+  if (!opts.grounded) return false; // C-2: never bootstrap an expert-prior lane from our own output
+  if (opts.laneScore == null || opts.coverage == null) return false; // unmeasured cannot promote
+  return opts.laneScore >= (opts.min ?? 70) && opts.coverage >= 0.8;
+}

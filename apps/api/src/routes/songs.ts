@@ -1,4 +1,4 @@
-import type { FastifyInstance } from 'fastify';
+import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import { z } from 'zod';
 import { blueprintFromMeasured, structureBrief, genreSignature, type MeasuredAnalysis, type SongBlueprint } from '@afrohit/shared';
 import { prisma } from '@afrohit/db';
@@ -13,6 +13,7 @@ import { improveSongOnce } from '../lib/will-it-blow';
 import { snapshotLyricVersion, readVersions } from '../lib/lyric-versions';
 import { recordFeedback } from '../services/artist-memory';
 import { languageVocalTag } from '../services/chat-tools';
+import { requireAdmin } from './admin';
 
 /** Freshest playable audio for a song: the most RECENT of master/mix/beat by
  *  createdAt — so a re-sing (new beat) or a re-master (new master) both become
@@ -122,7 +123,12 @@ export default async function songs(app: FastifyInstance) {
 
   // ---- SUNO BRIDGE: everything you need to generate this song in your own Suno
   // account (clean rights, top-tier audio), then bring it back to master + score.
-  app.get<{ Params: { id: string } }>('/:id/suno-export', async (req, reply) => {
+  // ADDENDUM R-1 — the bridge pack is FIRST-PARTY tooling: admin-gated, and the
+  // vendor identity (brand name, open URL, tips) lives HERE server-side so the
+  // public web bundle ships zero vendor strings. '/:id/bridge-export' is the
+  // clean route; '/:id/suno-export' stays as a legacy alias (also gated).
+  const bridgeExport = async (req: FastifyRequest<{ Params: { id: string } }>, reply: FastifyReply) => {
+    await requireAdmin(req); // §1.11: bridge = first-party only
     const { workspaceId } = requireAuth(req);
     const song = await prisma.song.findFirst({
       where: { id: req.params.id, workspaceId },
@@ -154,16 +160,23 @@ export default async function songs(app: FastifyInstance) {
     // hold invented production headers ([Drum Fill]) and stage directions Suno
     // would sing. Same render-time law as our own engines (whitelist section
     // tags, map production cues to [Break], strip the rest).
-    const lyricsForSuno = cleanLyricsForMinimax((song.lyric?.cleanVersion || song.lyric?.body || '').trim());
+    const lyrics = cleanLyricsForMinimax((song.lyric?.cleanVersion || song.lyric?.body || '').trim());
     return {
       songId: song.id,
       title: song.lyric?.title || song.title,
       stylePrompt,
-      lyricsForSuno,
-      hasLyrics: lyricsForSuno.length > 0,
-      tips: 'In Suno: Create → Custom Mode → turn "Instrumental" OFF → paste Style + Lyrics → Create. Download the WAV, then use "Bring it back from Suno" here to master + score it — your account, your rights.',
+      lyrics,
+      lyricsForSuno: lyrics, // legacy field name — kept for any old client
+      hasLyrics: lyrics.length > 0,
+      // Vendor identity lives ONLY in this admin-gated response (R-1): the web
+      // bundle renders whatever arrives here and ships no vendor strings itself.
+      brandName: 'Suno',
+      openUrl: 'https://suno.com/create',
+      tips: 'In Suno: Create → Custom Mode → turn "Instrumental" OFF → paste Style + Lyrics → Create. Download the WAV, then use "Bring it back" here to master + score it — your account, your rights.',
     };
-  });
+  };
+  app.get<{ Params: { id: string } }>('/:id/bridge-export', bridgeExport);
+  app.get<{ Params: { id: string } }>('/:id/suno-export', bridgeExport);
 
   // ---- General edit (rename / version / status) — "not one-shot" ----
   const patchSchema = z.object({

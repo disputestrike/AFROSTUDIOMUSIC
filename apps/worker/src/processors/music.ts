@@ -7,7 +7,7 @@ import { probeDurationS, measureAudioQuality, ffmpegAvailable, master as ffmpegM
 import { assessLaneCompliance, loadLaneProfile, laneGrounding } from '../lib/lane-assess';
 import { overlayFills } from '../lib/fills';
 import { measureAudio, dspAvailable } from '../lib/dsp';
-import { genreSignature, planFills, scoreLaneCompliance, engineAdequacy, structureMatch, blueprintFromMeasured, isFirstPartyWorkspace, resolveEngineForWorkspace, type LaneComplianceScore, type MeasuredAnalysis, type SongBlueprint } from '@afrohit/shared';
+import { genreSignature, planFills, scoreLaneCompliance, engineAdequacy, structureMatch, blueprintFromMeasured, isFirstPartyWorkspace, resolveEngineForWorkspace, promotionEligible, type LaneComplianceScore, type MeasuredAnalysis, type SongBlueprint } from '@afrohit/shared';
 
 /** Minimum measured coverage before a lane score is allowed to influence ranking. */
 const MIN_COVERAGE_FOR_RANKING = 0.5;
@@ -352,8 +352,11 @@ export async function processMusic(p: MusicPayload) {
       console.log(`[lane] ${p.input.genre}: self-promotion locked (${grounding.external + grounding.factsOnly} external refs — expert-prior lane)`);
     }
     const promoteMin = Number(process.env.LANE_PROMOTE_MIN ?? 70);
+    // ONE promotion law (shared promotionEligible) for render-time and the
+    // nightly retro pass; ear-blind renders may still add prose-only rows when
+    // the lane is grounded (they carry no measured field → can't touch profiles).
     const lanePromotable =
-      grounding.grounded && (winnerLane == null || (winnerLane.overall >= promoteMin && winnerLane.coverage >= 0.8));
+      grounding.grounded && (winnerLane == null || promotionEligible({ laneScore: winnerLane.overall, coverage: winnerLane.coverage, grounded: grounding.grounded, min: promoteMin }));
     if (wantsVocals && lanePromotable && (quality?.verdict === 'pass' || clipOnlyFinished)) {
       // Dedupe: at most ONE self-training row per workspace+genre per day —
       // otherwise generated rows flood the library and bury the artist's real

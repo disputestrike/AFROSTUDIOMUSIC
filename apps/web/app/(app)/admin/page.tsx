@@ -150,6 +150,8 @@ export default function AdminPage() {
           ))}
       </div>
 
+      <RefileReview />
+
       <h2 className="mt-10 font-display text-2xl">Workspaces</h2>
       <table className="mt-4 w-full text-left text-sm">
         <thead className="text-xs uppercase tracking-widest text-slate-400">
@@ -200,6 +202,102 @@ export default function AdminPage() {
           ))}
         </tbody>
       </table>
+    </div>
+  );
+}
+
+/**
+ * ADDENDUM C-3 — the re-file review list. The nightly scanner proposes lane
+ * moves for history misfiled before the teach-genre picker existed; NOTHING
+ * moves without approval here (§1.5 — your ear outranks the machine).
+ */
+interface RefileRow { id: string; title: string | null; filedLane: string | null; proposedLane?: string; detectedScore?: number; filedScore?: number | null; learnedAt: string }
+function RefileReview() {
+  const api = useApi();
+  const [rows, setRows] = useState<RefileRow[]>([]);
+  const [busy, setBusy] = useState('');
+  const [msg, setMsg] = useState('');
+
+  async function load() {
+    try {
+      const r = await api.get<{ proposals: RefileRow[] }>('/admin/refile');
+      setRows(r.proposals);
+    } catch { /* admin key missing/invalid — the page-level prompt handles it */ }
+  }
+  useEffect(() => { void load(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  async function act(id: string, action: 'approve' | 'reject', lane?: string) {
+    setBusy(id);
+    try {
+      await api.post(`/admin/refile/${id}`, { action, lane });
+      setRows((r) => r.filter((x) => x.id !== id));
+      setMsg(action === 'approve' ? 'Moved — both lanes rebuild on next read.' : 'Rejected — stays as filed.');
+    } catch (e) { setMsg((e as Error).message.slice(0, 120)); }
+    finally { setBusy(''); }
+  }
+
+  async function bulkApprove() {
+    setBusy('bulk');
+    try {
+      const r = await api.post<{ approved: number }>('/admin/refile/bulk-approve', {});
+      setMsg(`Approved ${r.approved} moves — profiles + grounding rebuild on next read.`);
+      setRows([]);
+    } catch (e) { setMsg((e as Error).message.slice(0, 120)); }
+    finally { setBusy(''); }
+  }
+
+  async function scanNow() {
+    setBusy('scan');
+    try {
+      await api.post('/admin/run', { task: 'refile-references' });
+      setMsg('Scan queued on the worker — refresh this list in ~1 min.');
+    } catch (e) { setMsg((e as Error).message.slice(0, 120)); }
+    finally { setBusy(''); }
+  }
+
+  return (
+    <div className="mt-10">
+      <div className="flex flex-wrap items-center gap-3">
+        <h2 className="font-display text-2xl">Re-file review</h2>
+        <button onClick={() => void scanNow()} disabled={busy === 'scan'} className="rounded-full border border-slate-700 px-3 py-1 text-xs hover:border-afrobrand-500 disabled:opacity-50">Scan history now</button>
+        {rows.length > 0 && (
+          <button onClick={() => void bulkApprove()} disabled={busy === 'bulk'} className="rounded-full bg-brand-gradient px-3 py-1 text-xs font-medium text-ink disabled:opacity-50">Approve all ({rows.length})</button>
+        )}
+        {msg && <span className="text-xs text-slate-400">{msg}</span>}
+      </div>
+      <p className="mt-1 text-xs text-slate-500">
+        References the ear believes were filed in the wrong lane (misfiled before the teach-genre picker). Nothing moves without your approval.
+      </p>
+      {rows.length === 0 ? (
+        <div className="mt-3 text-xs text-slate-600">No pending proposals — history is clean (or the scan hasn’t found any yet).</div>
+      ) : (
+        <table className="mt-3 w-full text-left text-sm">
+          <thead className="text-xs uppercase tracking-widest text-slate-400">
+            <tr><th className="py-2">Reference</th><th>Filed as</th><th>Ear says</th><th>Scores</th><th>Actions</th></tr>
+          </thead>
+          <tbody>
+            {rows.map((r) => (
+              <tr key={r.id} className="border-t border-slate-800">
+                <td className="py-2 max-w-[240px] truncate">{r.title || r.id}</td>
+                <td className="text-slate-400">{r.filedLane ?? '—'}</td>
+                <td className="text-afrobrand-300">{r.proposedLane}</td>
+                <td className="text-xs text-slate-500">{r.detectedScore ?? '—'} vs {r.filedScore ?? '—'}</td>
+                <td className="space-x-2">
+                  <button disabled={busy === r.id} onClick={() => void act(r.id, 'approve')} className="rounded-full border border-emerald-700 px-3 py-1 text-xs text-emerald-300 hover:bg-emerald-500/10 disabled:opacity-50">Approve</button>
+                  <button disabled={busy === r.id} onClick={() => void act(r.id, 'reject')} className="rounded-full border border-slate-700 px-3 py-1 text-xs hover:border-red-500 disabled:opacity-50">Reject</button>
+                  <button
+                    disabled={busy === r.id}
+                    onClick={() => { const lane = prompt('Move to which lane? (e.g. amapiano, afrobeats, highlife)'); if (lane) void act(r.id, 'approve', lane.trim()); }}
+                    className="rounded-full border border-slate-700 px-3 py-1 text-xs hover:border-afrobrand-500 disabled:opacity-50"
+                  >
+                    Reassign…
+                  </button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
     </div>
   );
 }

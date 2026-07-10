@@ -2,7 +2,7 @@
  * ADDENDUM §1.11 — THE WALL, acceptance tests (W-2 + W-1 mapping + C-1 gate).
  * Pure-function tests: the routing law must hold in code, not policy.
  */
-import { engineClass, resolveEngineForWorkspace, isFirstPartyWorkspace, recommendEngine, referenceOrigin, groundingOf, describeGrounding, buildLicenseCertificate, validateDatasetManifest } from '@afrohit/shared';
+import { engineClass, resolveEngineForWorkspace, isFirstPartyWorkspace, recommendEngine, referenceOrigin, groundingOf, describeGrounding, promotionEligible, buildLicenseCertificate, validateDatasetManifest } from '@afrohit/shared';
 import { readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 
@@ -69,6 +69,15 @@ check('C-2: ungrounded line names the lock', describeGrounding(unground).include
 const ground = groundingOf([{ origin: 'owned-upload' }, { origin: 'facts-only' }, { origin: 'facts-only' }, { origin: 'self-generated' }]);
 check('C-2: 3 non-self (1 owned + 2 facts) = grounded', ground.grounded);
 check('C-2: grounded line prints external + self split', describeGrounding(ground).includes('3 external + 1 self'));
+
+// C-3 KNOCK-ON: a previously-measured self take (85/0.85) is NOT promotable
+// while its lane is expert-prior — and becomes promotable, with ZERO
+// re-rendering, the moment the lane grounds (e.g. re-filed refs reclaimed).
+check('C-3: take 85/0.85 on UNgrounded lane → held on the gap map only', !promotionEligible({ laneScore: 85, coverage: 0.85, grounded: false }));
+check('C-3: SAME take once lane grounds → promotable retroactively', promotionEligible({ laneScore: 85, coverage: 0.85, grounded: true }));
+check('C-3: grounded but below bar (65) → still not promoted', !promotionEligible({ laneScore: 65, coverage: 0.85, grounded: true }));
+check('C-3: grounded, high score, thin coverage (0.5) → not promoted', !promotionEligible({ laneScore: 90, coverage: 0.5, grounded: true }));
+check('C-3: unmeasured can never promote', !promotionEligible({ laneScore: null, coverage: null, grounded: true }));
 
 // W-3: certificates — class-only, bridge never certifiable, standard = pass-through
 const certOk = buildLicenseCertificate({ songId: 's1', workspaceId: 'w1', engineClass: 'certified-clean', issuedAt: '2026-07-10', certificateId: 'c1' });
