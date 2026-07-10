@@ -64,7 +64,8 @@ export function logdrumCalibrationStatus(): Promise<LogdrumStatus> {
 
 function runPython(args: string[]): Promise<string> {
   return new Promise((resolve, reject) => {
-    const p = spawn(PYTHON, args);
+    // Capped math threads — a measurement must never starve the render lane.
+    const p = spawn(PYTHON, args, { env: { ...process.env, OMP_NUM_THREADS: '2', MKL_NUM_THREADS: '2', OPENBLAS_NUM_THREADS: '2' } });
     let out = '';
     let err = '';
     const timer = setTimeout(() => {

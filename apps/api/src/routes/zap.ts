@@ -111,7 +111,7 @@ export default async function zap(app: FastifyInstance) {
     // recipe.measured so "make in this lane" matches the actual record's speed,
     // not an LLM's guess. The preview is never stored; only numbers land.
     if (m.previewUrl) {
-      await enqueue({ queue: app.queues.music, name: 'deep-measure', payload: { referenceId: ref.id, url: m.previewUrl, workspaceId } }).catch(() => undefined);
+      await enqueue({ queue: app.queues.lake, name: 'deep-measure', payload: { referenceId: ref.id, url: m.previewUrl, workspaceId } }).catch(() => undefined);
     }
     void prisma.analyticsEvent
       .create({ data: { workspaceId, name: 'zap.learn', properties: { title: m.title, genre, measuredPreview: !!m.previewUrl } as never } })

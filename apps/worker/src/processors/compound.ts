@@ -74,7 +74,7 @@ export async function processMeasureBackfill(opts?: { refLimit?: number; beatLim
       const rec = (r.recipe ?? {}) as { measured?: { engineOk?: boolean }; deepMeasured?: boolean };
       if (rec.measured?.engineOk && rec.deepMeasured) continue;
       if (rec.measured?.engineOk && process.env.DSP_STEMS === '0') continue; // nothing to add
-      await enqueueJob('music', 'deep-measure', { referenceId: r.id, url: r.sourceUrl, workspaceId: r.workspaceId });
+      await enqueueJob('lake', 'deep-measure', { referenceId: r.id, url: r.sourceUrl, workspaceId: r.workspaceId });
       queued++;
     }
 
@@ -369,7 +369,7 @@ export async function processLearnBackfill(opts?: { limit?: number }): Promise<v
       const job = await prisma.providerJob.create({
         data: { workspaceId: u.project.workspaceId, projectId: u.projectId, kind: 'analyze', provider: 'replicate', status: 'QUEUED', inputJson: { url: u.url, source: 'learn-backfill' } as never },
       });
-      await enqueueJob('music', 'analyze-audio', { jobId: job.id, workspaceId: u.project.workspaceId, projectId: u.projectId, url: u.url }, { delayMs: queued * 30_000 });
+      await enqueueJob('lake', 'analyze-audio', { jobId: job.id, workspaceId: u.project.workspaceId, projectId: u.projectId, url: u.url }, { delayMs: queued * 30_000 });
       queued++;
     }
     console.log(`[learn-backfill] queued=${queued} of ${uploads.length} uploaded songs (${learned.size} already learned)`);

@@ -49,7 +49,8 @@ export default async function admin(app: FastifyInstance) {
   app.post('/run', { schema: { body: runSchema } }, async (req, reply) => {
     await requireAdmin(req);
     const { task } = runSchema.parse(req.body);
-    await enqueue({ queue: app.queues.music, name: task, payload: {} });
+    // Background tasks run on the LAKE queue — they never contend with renders.
+    await enqueue({ queue: app.queues.lake, name: task, payload: {} });
     reply.code(202);
     return { queued: task, note: 'Running on the worker now — watch worker logs; results land in /lanes/inventory.' };
   });

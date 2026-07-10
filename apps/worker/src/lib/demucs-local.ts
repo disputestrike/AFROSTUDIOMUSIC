@@ -56,7 +56,9 @@ export async function separateStemsLocal(opts: { audioUrl: string; mode?: 'instr
     if (opts.mode === 'instrumental') args.push('--two-stems', 'vocals');
     args.push(src);
     await new Promise<void>((resolve, reject) => {
-      const p = spawn(PYTHON, args);
+      // Cap math threads: htdemucs on torch grabs every core otherwise and
+      // starves the render lane sharing this container.
+      const p = spawn(PYTHON, args, { env: { ...process.env, OMP_NUM_THREADS: '2', MKL_NUM_THREADS: '2', OPENBLAS_NUM_THREADS: '2' } });
       let err = '';
       p.stderr.on('data', (d) => (err += d.toString().slice(0, 4000)));
       p.on('error', reject);

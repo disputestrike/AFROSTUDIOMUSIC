@@ -4,6 +4,10 @@ import IORedis from 'ioredis';
 
 export const QUEUES = {
   music: 'music',
+  // LAKE — background learning/measurement (deep-measure, listen-back,
+  // backfills, lexicon). Its worker runs CONCURRENCY 1 so heavy local DSP can
+  // never queue-block or CPU-starve a user's render (the "10-minute song" bug).
+  lake: 'lake',
   voice: 'voice',
   mix: 'mix',
   master: 'master',

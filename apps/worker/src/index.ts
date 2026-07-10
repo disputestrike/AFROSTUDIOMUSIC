@@ -24,9 +24,13 @@ import { processTransform } from './processors/transform';
 import { processOwnEngine } from './processors/own-engine';
 import { processSongEdit } from './processors/song-edit';
 import { processSynthMaterial } from './processors/synth-material';
+import { enqueueJob } from './lib/enqueue';
 import { processNightlyCompound, processMeasureBackfill, processLearnBackfill, processListenBack, processRefileReferences, processMineLexicon, processLexiconResearch, processWiktionaryHarvest, processGlossPass, processVerifyLexicon } from './processors/compound';
 
 const log = pino({ level: process.env.LOG_LEVEL ?? 'info' });
+
+// Job names that belong to the background LAKE lane (never the render lane).
+const LAKE_JOBS = new Set(['deep-measure', 'nightly-compound', 'measure-backfill', 'learn-backfill', 'listen-back', 'refile-references', 'mine-lexicon', 'lexicon-research', 'wiktionary-harvest', 'wiktionary-burst', 'lexicon-gloss', 'lexicon-verify']);
 
 if (process.env.SENTRY_DSN) {
   Sentry.init({
@@ -67,11 +71,21 @@ const workers = [
     else if (job.name === 'stems') await processStems(job.data as never);
     else if (job.name === 'forge-material') await processForgeMaterial(job.data as never);
     else if (job.name === 'assemble-beat') await processAssembleBeat(job.data as never);
-    else if (job.name === 'deep-measure') await processDeepMeasure(job.data as never);
     else if (job.name === 'transform') await processTransform(job.data as never);
     else if (job.name === 'own-engine') await processOwnEngine(job.data as never);
     else if (job.name === 'song-edit') await processSongEdit(job.data as never);
     else if (job.name === 'synth-material') await processSynthMaterial(job.data as never);
+    // BACKGROUND work found on the render queue (legacy enqueues) migrates to
+    // the LAKE queue — the render lane is for the user ("the 10-minute song").
+    else if (LAKE_JOBS.has(job.name)) await enqueueJob('lake', job.name, job.data);
+    else await processMusic(job.data as never);
+  }),
+  // THE LAKE — background learning/measurement lane. CONCURRENCY 1 by design:
+  // local Demucs/librosa are CPU-heavy on this shared container; one at a time
+  // keeps renders fast. Nothing user-facing ever waits on this queue.
+  new Worker('lake', (async (job: { data: never; name: string }) => {
+    if (job.name === 'deep-measure') await processDeepMeasure(job.data as never);
+    else if (job.name === 'analyze-audio') await processAnalyze(job.data as never);
     else if (job.name === 'nightly-compound') await processNightlyCompound();
     else if (job.name === 'measure-backfill') await processMeasureBackfill();
     else if (job.name === 'learn-backfill') await processLearnBackfill();
@@ -83,8 +97,7 @@ const workers = [
     else if (job.name === 'wiktionary-burst') await processWiktionaryHarvest({ all: true });
     else if (job.name === 'lexicon-gloss') await processGlossPass();
     else if (job.name === 'lexicon-verify') await processVerifyLexicon();
-    else await processMusic(job.data as never);
-  }),
+  }) as never, { connection, concurrency: 1 }),
   makeWorker('voice', async (job: { data: never; name: string }) => {
     if (job.name === 'setup-voice-profile') await processVoiceProfile(job.data as never);
     else await processVoice(job.data as never);
@@ -108,17 +121,9 @@ const workers = [
     if (job.name === 'morning-drop') await processMorningDrop();
     else if (job.name === 'release-radar') await processReleaseRadar();
     else if (job.name === 'zap-radar') await processZapRadar();
-    else if (job.name === 'nightly-compound') await processNightlyCompound();
-    else if (job.name === 'measure-backfill') await processMeasureBackfill();
-    else if (job.name === 'learn-backfill') await processLearnBackfill();
-    else if (job.name === 'listen-back') await processListenBack();
-    else if (job.name === 'refile-references') await processRefileReferences();
-    else if (job.name === 'mine-lexicon') await processMineLexicon();
-    else if (job.name === 'lexicon-research') await processLexiconResearch();
-    else if (job.name === 'wiktionary-harvest') await processWiktionaryHarvest();
-    else if (job.name === 'wiktionary-burst') await processWiktionaryHarvest({ all: true });
-    else if (job.name === 'lexicon-gloss') await processGlossPass();
-    else if (job.name === 'lexicon-verify') await processVerifyLexicon();
+    // All compound/backfill work runs on the LAKE lane (concurrency 1) so cron
+    // ticks never CPU-contend with renders.
+    else if (LAKE_JOBS.has(job.name)) await enqueueJob('lake', job.name, job.data);
   }),
 ];
 

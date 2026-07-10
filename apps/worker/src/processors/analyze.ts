@@ -58,7 +58,7 @@ export async function processAnalyze(p: AnalyzePayload) {
       // Deep pass (stems-grade log-drum) then PURGE the audio — the lake keeps
       // numbers, never a copy of a record the artist didn't make.
       if (reference?.id && measured.engineOk && process.env.DSP_STEMS !== '0') {
-        await enqueueJob('music', 'deep-measure', { referenceId: reference.id, url: p.url, workspaceId: p.workspaceId, purgeAfter: true })
+        await enqueueJob('lake', 'deep-measure', { referenceId: reference.id, url: p.url, workspaceId: p.workspaceId, purgeAfter: true })
           .catch(async () => { const { deleteObjectByUrl } = await import('../lib/storage'); await deleteObjectByUrl(p.url).catch(() => {}); });
       } else {
         const { deleteObjectByUrl } = await import('../lib/storage');
@@ -172,7 +172,7 @@ export async function processAnalyze(p: AnalyzePayload) {
     // Deep pass (stems + refined DSP) runs in the BACKGROUND — the reference
     // upgrades itself in place a few minutes after the artist already has results.
     if (reference?.id && process.env.DSP_STEMS !== '0' && measured.engineOk) {
-      await enqueueJob('music', 'deep-measure', { referenceId: reference.id, url: p.url, workspaceId: p.workspaceId })
+      await enqueueJob('lake', 'deep-measure', { referenceId: reference.id, url: p.url, workspaceId: p.workspaceId })
         .catch((e) => console.warn('[analyze] deep-measure enqueue failed:', (e as Error)?.message));
     }
 
