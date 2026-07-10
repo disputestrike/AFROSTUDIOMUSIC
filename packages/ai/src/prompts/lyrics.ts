@@ -7,6 +7,12 @@ LANGUAGE — HIGHEST PRIORITY (above every craft rule below):
 - If the genre is hip_hop, trap, or drill: write BARS, not melodies — flow-conscious line lengths, internal rhyme, punchlines that land, verse halves that switch cadence. The hook may be sung/chanted; the verses read like a rapper wrote them.
 - CRAFT CONTRACT (weak/simple lyrics are a hard fail): every verse carries ONE concrete image you can SEE (a street, a fabric, a meal, a name of a place) and ONE piece of wordplay or a flipped phrase. Verse 2 shifts perspective or time — never a restatement of verse 1. The hook contains a line that surprises on second listen. Use the vocabulary palette words as MOTIFS woven through, not sprinkles.
 - SECTION HEADERS: only [Intro] [Verse] [Verse 2] [Pre-Hook] [Hook] [Bridge] [Outro] — NEVER instrument or production markers like [Drum Fill]; those are audio cues the studio places, not words.
+- SUNG, NOT WRITTEN (the Blue-Tick law): read every line aloud — if it sounds like an essayist reaching for meaning ("replay am like sermon, e dey give me sight"), cut it. A line must sound like something a person would actually SAY over a beat. Forced proverbs and literary metaphors are a FAIL; one natural proverb beats three constructed ones.
+- ONE SCENE PER VERSE: a verse lives inside ONE moment (one night, one arrival hall, one phone screen) — not six locations. The emotional camera stays still.
+- HOLD THE TENSION: the song's central conflict stays ALIVE until the bridge. Never resolve it in verse 2 ("every reply dey correct now" kills a song titled around waiting).
+- THE HOOK NEEDS A LANDING DEVICE: an escalation motif (one tick… two tick…), a response line, or a percussive payoff word the drums can hit — not just the title repeated. Design ONE line listeners will use as a caption.
+- PAY OFF THE PROMISE: whatever the hook promises, the outro delivers ("e go land right" → "e don land"). A song that resolves beats a song that just ends.
+- GIVE THE OTHER PERSON PRESENCE: one line of what they say/do/sound like — a song at someone is weaker than a song with them.
 - BANNED CLICHÉS (never write these stock lines): "turn up tonight", "vibe with me", "party don't stop", "feeling the vibe", "dance all night", "shorty", "in the club tonight" — find the specific, cultural, surprising version instead.
 - If the primary is Yoruba (yo), WRITE YORUBA. If Igbo (ig), write Igbo. If Hausa (ha), write Hausa. If Zulu (zu), WRITE ISIZULU. If Xhosa (xh), write isiXhosa. Same hard rule for Sesotho (st), Setswana (tn), Tsotsitaal, Swahili (sw), Lingala (ln), Wolof (wo), Bambara (bm), Kreyòl (ht), Kriolu, Amharic (am), Patois, Arabic (ar), Spanish (es). Do NOT drift into Pidgin or English when the primary is an indigenous/native language. Only be Pidgin-forward when Pidgin (pcm) IS the primary.
 - A song delivered in the wrong language is a HARD FAIL — no matter how good the writing. Secondary languages appear ONLY as the mix allows (e.g. an English tagline, a Yoruba proverb inside a Pidgin song).
@@ -116,4 +122,34 @@ export function lyricUserPrompt(opts: {
     hook: opts.hookText,
     require_clean_version: opts.cleanVersion,
   });
+}
+
+
+/**
+ * THE CRAFT POLISH — the second pass that separates a good draft from the
+ * record (built from the Blue-Tick side-by-side: the same model, given its own
+ * draft plus an editor's critique, writes a clearly better song than any
+ * one-shot). This system prompt IS that editor: critique the draft against the
+ * craft laws, then rewrite it — one call, draft in, v2 out.
+ */
+export const LYRIC_POLISH_SYSTEM = `You are the most demanding Afrobeats A&R editor alive, and also the rewriter. You receive a DRAFT lyric. Do two things in one pass:
+
+FIRST, silently critique the draft against these tests:
+1. HOOK: does it have a landing device (escalation motif, response line, percussive payoff word) and one caption-quotable line — or does it just repeat the title?
+2. SUNG-NOT-WRITTEN: which lines sound composed on paper instead of said over a beat? Which Pidgin/vernacular phrases feel translated from English rather than native?
+3. SCENE FOCUS: does each verse live in ONE moment, or does the camera jump six places?
+4. TENSION: is the central conflict still alive until the bridge, or resolved too early?
+5. FAT: which ~30% of words can go so every remaining line earns its place?
+6. THE OTHER PERSON: do they exist as a voice/presence, or only as an object?
+7. PAYOFF: does the outro deliver what the hook promised?
+
+THEN rewrite the song fixing every failure — SAME concept, SAME title, SAME language mix, SAME section structure, keep every line the draft got right. Do not sanitize the culture; sharpen it. Return JSON: {"title", "body", "cleanVersion" (same song, radio-clean), "whatChanged": [3-6 short bullets], "captionLine": "the one line made to be quoted"}.`;
+
+export function lyricPolishPrompt(p: { draftTitle: string; draftBody: string; genre: string; mood?: string | null; languages?: string[] }): string {
+  return [
+    `GENRE: ${p.genre}${p.mood ? ` · MOOD: ${p.mood}` : ''}${p.languages?.length ? ` · LANGUAGES (law): ${p.languages.join(' + ')}` : ''}`,
+    `DRAFT TITLE: ${p.draftTitle}`,
+    `DRAFT:\n${p.draftBody}`,
+    'Critique silently, then return the rewritten song as JSON.',
+  ].join('\n\n');
 }

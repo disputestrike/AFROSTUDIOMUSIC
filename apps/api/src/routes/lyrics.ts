@@ -75,9 +75,27 @@ export default async function lyrics(app: FastifyInstance) {
       // ~1 in 3; regenerate up to 3x instead of failing.
       let output: LyricOut = { title: '', body: '' };
       for (let attempt = 0; attempt < 3; attempt++) {
-        const out = await generateJson<LyricOut>({ system: prompts.LYRIC_SYSTEM, user: lyricUser, temperature: 0.8, maxTokens: 4_500, timeoutMs: 90_000 }).catch(() => null);
+        const out = await generateJson<LyricOut>({ system: prompts.LYRIC_SYSTEM, user: lyricUser, temperature: 0.8, maxTokens: 4_500, timeoutMs: 90_000, model: process.env.WRITER_MODEL, task: 'lyrics-draft' }).catch(() => null);
         if (out && typeof out.body === 'string' && out.body.trim().length >= 20) { output = out; break; }
         output = out ?? output;
+      }
+
+      // THE CRAFT POLISH (the Blue-Tick lesson): draft → editor critique →
+      // rewrite, one extra call. Same brain, dramatically better song than any
+      // one-shot. WRITER_TWO_PASS=0 disables.
+      if (typeof output.body === 'string' && output.body.trim().length >= 200 && process.env.WRITER_TWO_PASS !== '0') {
+        const polished = await generateJson<{ title: string; body: string; cleanVersion?: string }>({
+          system: prompts.LYRIC_POLISH_SYSTEM,
+          user: prompts.lyricPolishPrompt({ draftTitle: output.title || hook.text.slice(0, 80), draftBody: output.body, genre: project.genre, mood: lmood, languages: reqLangs }),
+          temperature: 0.7,
+          maxTokens: 4_500,
+          timeoutMs: 90_000,
+          model: process.env.WRITER_MODEL,
+          task: 'lyric-polish',
+        }).catch(() => null);
+        if (polished?.body && polished.body.trim().length > 200) {
+          output = { ...output, title: polished.title || output.title, body: polished.body, cleanVersion: polished.cleanVersion ?? output.cleanVersion };
+        }
       }
 
       // GUARD: after 3 tries still empty → honest error (rare now).

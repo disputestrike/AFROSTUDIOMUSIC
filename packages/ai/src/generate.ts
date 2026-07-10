@@ -61,6 +61,8 @@ export interface GenerateOptions {
   tier?: 'judgment' | 'bulk';
   /** Task label for the economics log (A3-6). */
   task?: string;
+  /** Explicit Anthropic model override (e.g. WRITER_MODEL for lyric calls). */
+  model?: string;
 }
 
 const JSON_ONLY =
@@ -88,7 +90,7 @@ export async function generateJson<T>(opts: GenerateOptions): Promise<T> {
 
   const wantClaude = (opts.brain ?? (anthropicEnabled() ? 'claude' : 'openai')) === 'claude';
   const callClaude = () =>
-    claudeJson<T>({ system: opts.system + JSON_ONLY, user: opts.user, maxTokens: opts.maxTokens, temperature: opts.temperature, timeoutMs: opts.timeoutMs });
+    claudeJson<T>({ system: opts.system + JSON_ONLY, user: opts.user, maxTokens: opts.maxTokens, temperature: opts.temperature, timeoutMs: opts.timeoutMs, model: opts.model });
 
   // A3-5 — BULK TIER: Cerebras first for non-creative bulk work. Context guard:
   // ~7K tokens ≈ 28K chars auto-routes UP (never truncate to fit down). Ladder:

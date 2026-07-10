@@ -179,7 +179,7 @@ export async function lexiconPalette(opts: {
     if (!lines.length) return '';
     return (
       'WORD BANK — YOUR VOCABULARY FOR THIS SONG. These are authentic, specific terms from the studio word bank. ' +
-      'REACH FOR THESE instead of generic English filler: work AT LEAST 4-6 of them into the hook and verses where they fit the story naturally (not a list, not forced). ' +
+      'REACH FOR THESE instead of generic English filler — but ONLY where a real speaker would drop them mid-sentence. A forced-in vocabulary word is a FAILURE worse than plain language (the "written not sung" defect). Zero is acceptable; natural beats many. ' +
       'Specific, textured African words are what make the writing feel real — generic words ("baby, money, vibe, party, shine") are the failure to avoid.\n' +
       lines.join('\n')
     );
