@@ -8,6 +8,7 @@
  * the caller when no Anthropic key is set.
  */
 import { anthropicKey, anthropicEnabled, ANTHROPIC_MODEL, ANTHROPIC_FALLBACK_MODEL } from './anthropic-client';
+import { recordLlmUsage } from './llm-usage';
 import { chatWithTools, type ChatMessage, type ChatTurn } from './providers/text';
 
 export { anthropicEnabled as claudeChatAvailable };
@@ -115,7 +116,17 @@ export async function chatWithToolsClaude(opts: {
     });
     clearTimeout(timer);
     if (!res.ok) throw new Error(`anthropic-chat ${res.status}: ${(await res.text()).slice(0, 250)}`);
-    const data = (await res.json()) as { content?: Array<{ type: string; text?: string; id?: string; name?: string; input?: Record<string, unknown> }>; stop_reason?: string };
+    const data = (await res.json()) as { content?: Array<{ type: string; text?: string; id?: string; name?: string; input?: Record<string, unknown> }>; stop_reason?: string; usage?: { input_tokens?: number; output_tokens?: number } };
+    // Chat is the #2 judgment spender after songs — it must be VISIBLE in
+    // /admin/economics like everything else. Real token counts from the API
+    // (not estimates), Sonnet rates $3/$15 per MTok.
+    recordLlmUsage({
+      tier: 'judgment',
+      task: 'studio-chat',
+      brain: 'claude',
+      ms: 0,
+      estCostUsd: ((data.usage?.input_tokens ?? 0) * 3 + (data.usage?.output_tokens ?? 0) * 15) / 1_000_000,
+    });
     // Fable-5 classifier refusal (200 + stop_reason "refusal") → retry once on
     // the documented fallback model so Studio Chat never dead-airs the user.
     if (data.stop_reason === 'refusal') {
