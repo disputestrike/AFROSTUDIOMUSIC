@@ -1,8 +1,8 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
-import { blueprintFromMeasured, structureBrief, type MeasuredAnalysis, type SongBlueprint } from '@afrohit/shared';
+import { blueprintFromMeasured, structureBrief, genreSignature, type MeasuredAnalysis, type SongBlueprint } from '@afrohit/shared';
 import { prisma } from '@afrohit/db';
-import { predictHit, researchTrends, enrichLyricsForVocals, generateJson, prompts } from '@afrohit/ai';
+import { predictHit, researchTrends, enrichLyricsForVocals, generateJson, prompts, cleanLyricsForMinimax } from '@afrohit/ai';
 import { laneDna, laneDnaBrief } from '../lib/lane-pipeline';
 import { requireAuth } from '../middleware/auth';
 import { enqueue } from '../lib/queue';
@@ -12,6 +12,7 @@ import { arReadSong, arReadAfterRender } from '../lib/ar-read';
 import { improveSongOnce } from '../lib/will-it-blow';
 import { snapshotLyricVersion, readVersions } from '../lib/lyric-versions';
 import { recordFeedback } from '../services/artist-memory';
+import { languageVocalTag } from '../services/chat-tools';
 
 /** Freshest playable audio for a song: the most RECENT of master/mix/beat by
  *  createdAt — so a re-sing (new beat) or a re-master (new master) both become
@@ -149,9 +150,11 @@ export default async function songs(app: FastifyInstance) {
       .filter(Boolean)
       .join(', ')
       .slice(0, 380);
-    // The lyric body already carries [Verse]/[Chorus] structure and is clean (the
-    // ad-lib/stage-direction layer is only added at render time), so it's Suno-ready.
-    const lyricsForSuno = (song.lyric?.cleanVersion || song.lyric?.body || '').trim();
+    // The lyric body carries [Verse]/[Chorus] structure — but OLD drafts can still
+    // hold invented production headers ([Drum Fill]) and stage directions Suno
+    // would sing. Same render-time law as our own engines (whitelist section
+    // tags, map production cues to [Break], strip the rest).
+    const lyricsForSuno = cleanLyricsForMinimax((song.lyric?.cleanVersion || song.lyric?.body || '').trim());
     return {
       songId: song.id,
       title: song.lyric?.title || song.title,
@@ -173,7 +176,11 @@ export default async function songs(app: FastifyInstance) {
     const body = patchSchema.parse(req.body);
     const found = await prisma.song.findFirst({ where: { id: req.params.id, workspaceId }, select: { id: true } });
     if (!found) return reply.code(404).send({ error: 'song_not_found' });
-    return prisma.song.update({ where: { id: found.id }, data: body });
+    const updated = await prisma.song.update({ where: { id: found.id }, data: body });
+    // The catalog displays lyric.title ahead of song.title — keep them in step
+    // on rename, or the new name "never sticks" on screen.
+    if (body.title) await prisma.lyricDraft.updateMany({ where: { songId: found.id }, data: { title: body.title } });
+    return updated;
   });
 
   // ---- Lyrics: view + EDIT (persist) ----
@@ -444,7 +451,7 @@ export default async function songs(app: FastifyInstance) {
 
   app.post<{ Params: { id: string }; Body: { preset?: string } }>('/:id/master', async (req, reply) => {
     const { workspaceId } = requireAuth(req);
-    const preset = (req.body?.preset as string) || 'streaming_lufs_-14';
+    const requestedPreset = req.body?.preset as string | undefined;
     const song = await prisma.song.findFirst({
       where: { id: req.params.id, workspaceId },
       include: {
@@ -480,10 +487,18 @@ export default async function songs(app: FastifyInstance) {
     const charge = await app.chargeCredits({ workspaceId, key: 'master_preset', refTable: 'Song', refId: song.id });
     if (!charge.ok) return reply.code(402).send({ error: 'insufficient_credits', ...charge });
 
+    // HEADROOM LAW: a MiniMax/Suno render (or a re-master of an existing master)
+    // is a FINISHED record — light-touch conform, never the full EQ+comp chain
+    // that was "mastering a master" into dullness. Raw engines keep the chain.
+    const finished =
+      (!realMix && (['minimax', 'suno'].includes(latestBeat?.provider ?? '') || (!latestBeat?.url && !latestMix?.url && !!song.masters[0]?.url))) ||
+      realMix?.preset === 'uploaded';
+    const preset = requestedPreset || (finished ? 'breathe_-16.5' : 'streaming_lufs_-14');
+
     const job = await prisma.providerJob.create({
-      data: { workspaceId, projectId: song.projectId, kind: 'master', provider: 'internal', status: 'QUEUED', inputJson: { songId: song.id, mixId, preset } as never },
+      data: { workspaceId, projectId: song.projectId, kind: 'master', provider: 'internal', status: 'QUEUED', inputJson: { songId: song.id, mixId, preset, finished } as never },
     });
-    await enqueue({ queue: app.queues.master, name: 'create-master', payload: { jobId: job.id, workspaceId, projectId: song.projectId, songId: song.id, mixId, preset } });
+    await enqueue({ queue: app.queues.master, name: 'create-master', payload: { jobId: job.id, workspaceId, projectId: song.projectId, songId: song.id, mixId, preset, finished } });
     reply.code(202);
     return { jobId: job.id, mixId };
   });
@@ -664,9 +679,14 @@ export default async function songs(app: FastifyInstance) {
         jobId: job.id, workspaceId, projectId: song.projectId, songId: song.id,
         input: {
           genre, bpm: song.project.bpm ?? 103, withVocals: true, withStems: false, songEngine,
+          // A re-sing must stay FULL LENGTH: its own measured duration first,
+          // genre standard otherwise. With no durationS at all, ACE-Step fell to
+          // its 120s default — the will-it-blow gate's final re-sing was
+          // silently SHORTENING finished songs.
+          durationS: selfBp?.totalDurationS ?? genreSignature(genre).durationS,
           lyrics: lyricsForSong,
           artistTone: song.project.artist.vocalTone, languages: song.project.artist.languages,
-          dnaTags: [`language: strictly ${(song.project.artist.languages ?? []).join('/') || 'en'}`, ...(dna.tags ?? []), ...styleHints.slice(0, 3), ...laneSteer, ...(selfBp ? [`structure ${selfBp.sections.length} sections`] : [])].slice(0, 10),
+          dnaTags: [languageVocalTag(song.project.artist.languages), ...(dna.tags ?? []), ...styleHints.slice(0, 3), ...laneSteer, ...(selfBp ? [`structure ${selfBp.sections.length} sections`] : [])].slice(0, 12),
           blueprint: selfBp ?? undefined,
         },
       },

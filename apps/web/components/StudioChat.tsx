@@ -239,7 +239,7 @@ export default function StudioChat({ projectId }: { projectId?: string }) {
           <Plus className="h-4 w-4" /> New session
         </button>
         <div className="px-3 pb-1 text-[11px] font-medium uppercase tracking-widest text-slate-500">History</div>
-        <div ref={listRef} onScroll={(e) => { const el = e.currentTarget; stickRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 60; }} className="flex-1 overflow-y-auto px-2 pb-3">
+        <div className="flex-1 overflow-y-auto px-2 pb-3">
           {threads.length === 0 && <div className="px-2 py-3 text-xs text-slate-600">No sessions yet.</div>}
           {threads.map((t) => (
             <div
@@ -266,7 +266,9 @@ export default function StudioChat({ projectId }: { projectId?: string }) {
 
       {/* Chat column */}
       <div className="flex h-full min-h-0 flex-col">
-        <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-6 py-4">
+        {/* stick-to-bottom lives on the MESSAGES pane — it was wired to the
+            thread-history sidebar, so new messages scrolled the wrong element. */}
+        <div ref={listRef} onScroll={(e) => { const el = e.currentTarget; stickRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 60; }} className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-6 py-4">
           {messages.length === 0 && (
             <div className="mx-auto mt-12 max-w-2xl rounded-3xl border border-slate-800 bg-slate-900/40 p-6 text-sm text-slate-300">
               <div className="mb-1 font-display text-2xl text-slate-100">Ship <span className="text-gradient">your</span> Afrobeats.</div>

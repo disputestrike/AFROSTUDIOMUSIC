@@ -8,6 +8,7 @@
  * those directly.
  */
 import { prisma } from '@afrohit/db';
+import { MATERIAL_GAINS } from '@afrohit/shared';
 import { downloadToBuffer, uploadBytes } from '../lib/storage';
 import { mixBuffers, runFfmpeg } from '../lib/ffmpeg';
 import { markRunning, markSucceeded, markFailed } from '../lib/jobs';
@@ -213,8 +214,13 @@ export async function processSongEdit(p: SongEditPayload): Promise<void> {
       if (!vocalUrl || !instrUrl) throw new Error('separator returned no vocal/instrumental pair');
       // fresh owned section
       const rows = await prisma.materialAsset.findMany({ where: { workspaceId: p.workspaceId, genre: p.genre ?? undefined, role: { in: ['log_drum', 'drums', 'percussion', 'bass', 'chords'] } }, orderBy: { createdAt: 'desc' }, take: 40 });
-      const picks: typeof rows = [];
-      for (const role of ['log_drum', 'drums', 'percussion', 'bass', 'chords']) { const r0 = rows.find((r) => r.role === role); if (r0) picks.push(r0); }
+      // processAssembleBeat needs MAPPED picks {id,url,sourceBpm,role,gain} — raw
+      // Prisma rows (no gain) crashed the assembler (same bug as own-engine).
+      const picks: Array<{ id: string; url: string; sourceBpm: number; role: string; gain: number }> = [];
+      for (const role of ['log_drum', 'drums', 'percussion', 'bass', 'chords']) {
+        const r0 = rows.find((r) => r.role === role);
+        if (r0) picks.push({ id: r0.id, url: r0.url, sourceBpm: r0.bpm ?? bpm, role, gain: MATERIAL_GAINS[role] ?? 0.9 });
+      }
       if (picks.length < 2) throw new Error('kit too thin for a section re-play — the nightly forge stocks it');
       const child = await prisma.providerJob.create({ data: { workspaceId: p.workspaceId, projectId: p.projectId, kind: 'music', provider: 'material', status: 'QUEUED', inputJson: { resingChild: p.jobId } as never } });
       await processAssembleBeat({ jobId: child.id, workspaceId: p.workspaceId, projectId: p.projectId, songId: p.songId, bpm, genre: p.genre ?? 'afrobeats', picks, sections: [{ name: `S${p.op.index}`, bars, roles: picks.map((x) => x.role) }] } as never);

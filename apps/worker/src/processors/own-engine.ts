@@ -17,7 +17,7 @@
  * Nobody can fence this engine off.
  */
 import { prisma } from '@afrohit/db';
-import { blueprintFromMeasured, structureMatch, genreSignature, type SongBlueprint, type MeasuredAnalysis } from '@afrohit/shared';
+import { blueprintFromMeasured, structureMatch, genreSignature, MATERIAL_GAINS, type SongBlueprint, type MeasuredAnalysis } from '@afrohit/shared';
 import { downloadToBuffer, uploadBytes } from '../lib/storage';
 import { measureAudioQuality, mixBuffers } from '../lib/ffmpeg';
 import { measureAudio, dspAvailable } from '../lib/dsp';
@@ -36,10 +36,14 @@ const BED_ROLES = ['log_drum', 'drums', 'percussion', 'bass', 'chords'] as const
 
 async function pickKit(workspaceId: string, genre: string, bpm: number) {
   const rows = await prisma.materialAsset.findMany({ where: { workspaceId, genre }, orderBy: { createdAt: 'desc' }, take: 120 });
-  const picks: typeof rows = [];
+  // processAssembleBeat's contract is the MAPPED pick shape {id,url,sourceBpm,role,gain}
+  // — raw Prisma rows carry bpm (not sourceBpm) and no gain, which crashed the
+  // assembler (gain.toFixed) on every own-engine run.
+  const picks: Array<{ id: string; url: string; sourceBpm: number; role: string; gain: number }> = [];
   for (const role of BED_ROLES) {
     const ofRole = rows.filter((r) => r.role === role).sort((a, b) => Math.abs((a.bpm ?? bpm) - bpm) - Math.abs((b.bpm ?? bpm) - bpm));
-    if (ofRole[0]) picks.push(ofRole[0]);
+    const best = ofRole[0];
+    if (best) picks.push({ id: best.id, url: best.url, sourceBpm: best.bpm ?? bpm, role, gain: MATERIAL_GAINS[role] ?? 0.9 });
   }
   return picks;
 }
@@ -114,7 +118,7 @@ export async function processOwnEngine(p: OwnEnginePayload): Promise<void> {
     }
     // the fill rides ALONGSIDE the bed — the assembler overlays it at boundaries + 16-bar pulses
     const fillPick = (await prisma.materialAsset.findFirst({ where: { workspaceId: p.workspaceId, genre: p.genre, role: 'fill' }, orderBy: { createdAt: 'desc' } }));
-    if (fillPick) picks.push(fillPick);
+    if (fillPick) picks.push({ id: fillPick.id, url: fillPick.url, sourceBpm: fillPick.bpm ?? bpm, role: 'fill', gain: 0.9 });
     if (picks.length < 2) throw new Error('own-engine: could not build a kit (need >=2 bed roles)');
 
     // L1b — assemble on the grid via the existing renderer (child job, called inline).

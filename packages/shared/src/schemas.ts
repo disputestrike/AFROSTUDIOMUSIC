@@ -121,8 +121,14 @@ export const generateBeatInputSchema = z.object({
   pinnedReferenceId: z.string().cuid().optional(),
   bpm: z.number().int().min(60).max(180),
   keySignature: z.string().optional(),
-  durationS: z.number().int().min(15).max(240).default(60),
+  /** Omit for a sensible default: full-length (genre standard) for vocal songs,
+   *  60s for instrumental sketches. The old default(60) made every caller that
+   *  omitted duration render a 60-second "full song". */
+  durationS: z.number().int().min(15).max(240).optional(),
   vibePrompt: z.string().max(1000).optional(),
+  /** HARD language constraint — outranks the artist profile's defaults. */
+  languages: z.array(z.string().min(2).max(12)).max(5).optional(),
+  voice: z.enum(['auto', 'female', 'male', 'duet', 'group']).optional(),
   withStems: z.boolean().default(true),
   // Full song WITH AI vocals: set withVocals + provide lyrics (or let the API
   // pull the latest lyric for the song). Routes to the vocals model.
@@ -283,9 +289,11 @@ export const attachSongUploadSchema = z.object({
   key: z.string().min(4),
   songId: z.string().cuid().optional(),
   title: z.string().max(120).optional(),
-  // An uploaded finished song (Suno, or bring-your-own) → conform to COMPETITIVE
-  // Afro loudness (~-9) light-touch, not the quieter -14 with a full chain.
-  masterPreset: z.enum(MASTER_PRESETS).default('afro_stream_-9'),
+  // An uploaded finished song (Suno, or bring-your-own) → light-touch conform to
+  // the HEADROOM LAW target (-16.5, Suno's own measured range). The old default
+  // (-9) was the retired crusher — it squashed exactly the masters the bridge
+  // exists to preserve.
+  masterPreset: z.enum(MASTER_PRESETS).default('breathe_-16.5'),
   autoMaster: z.boolean().default(true),
 });
 
@@ -373,6 +381,9 @@ export const dropBatchSchema = z.object({
   languages: z.array(z.string().min(2).max(12)).max(5).optional(),
   // Roomy: album next-tracks prepend the anchor's styleBrief to the theme.
   theme: z.string().min(3).max(2000),
+  /** The RAW musical description alone (no title-anchor boilerplate) — this is
+   *  what reaches the music engine's style prompt. theme = the writers' brief. */
+  vibe: z.string().max(500).optional(),
   songTitle: z.string().max(80).optional(),
   voice: z.enum(['auto', 'female', 'male', 'duet', 'group']).optional(),
   count: z.number().int().min(1).max(6).default(3),

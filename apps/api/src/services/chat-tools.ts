@@ -42,6 +42,25 @@ const normLang = (l: string) => {
   const alias: Record<string, string> = { english: 'en', pidgin: 'pcm', 'nigerian pidgin': 'pcm', yoruba: 'yo', igbo: 'ig', hausa: 'ha', french: 'fr', portuguese: 'pt', swahili: 'sw', zulu: 'zu', spanish: 'es' };
   return alias[x] ?? x;
 };
+
+// Identity-class ENGINE tags, shared by every render path (chat, Create-page
+// drop, from-lyrics beats route, regenerate). They ride in dnaTags — NOT in
+// vibePrompt, whose 160-char anti-soup cap would truncate them away.
+export function voiceVocalTag(voice?: 'auto' | 'female' | 'male' | 'duet' | 'group' | null): string | null {
+  if (!voice || voice === 'auto') return null;
+  return {
+    female: 'female lead vocal',
+    male: 'male lead vocal',
+    duet: 'male and female duet, trading lines and harmonies',
+    group: 'group vocals, choir-style call-and-response',
+  }[voice] ?? null;
+}
+export function languageVocalTag(languages?: string[] | null): string {
+  const list = languages ?? [];
+  const names = list.map((l) => LANG_NAMES[normLang(l)] ?? l).join(' + ') || 'English';
+  const norm = list.map(normLang);
+  return `vocals sung strictly in ${names}${norm.includes('ig') ? ' — Igbo lines with authentic IGBO (Nigerian) pronunciation, never Swahili or Zulu phonetics' : ''}${norm.includes('yo') ? ' — Yoruba lines with true Yoruba tonality' : ''}`;
+}
 function hardConstraints(genre: string, languages?: string[] | null): string {
   const g = genre.replace(/_/g, ' ');
   const lines = [
@@ -59,8 +78,15 @@ function hardConstraints(genre: string, languages?: string[] | null): string {
 function languageViolations(reported: Record<string, number> | undefined, allowed?: string[] | null): string[] {
   if (!allowed?.length || !reported) return [];
   const ok = new Set(allowed.map(normLang));
+  // The writer reports FRACTIONS ({ yo: 0.7 }, per the prompt's example) but this
+  // guard was thresholding at 8 — i.e. 800% — so it could never fire. Normalize
+  // both scales (fractions and percentages) to percent, then flag >= 8%.
   return Object.entries(reported)
-    .filter(([lang, share]) => (Number(share) || 0) >= 8 && !ok.has(normLang(lang)))
+    .filter(([lang, share]) => {
+      const n = Number(share) || 0;
+      const pct = n <= 1 ? n * 100 : n;
+      return pct >= 8 && !ok.has(normLang(lang));
+    })
     .map(([lang]) => lang);
 }
 
@@ -519,18 +545,22 @@ async function createBeatJob(ctx: Ctx, a: { genre: string; fusionGenres?: string
         // Influence = steer the SOUND toward an artist's lane (vibe/energy),
         // never a clone and never named. Goes to the music model as a style cue.
         // ANTI-SOUP: vibe stays short (vibe + influence only); styleHints ride
-        // as tags on dnaTags where terse tokens belong.
-        vibePrompt: [`LANGUAGES: strictly ${(a.languages ?? []).join('/') || 'en'} — never drift into Pidgin unless pcm is listed.${(a.languages ?? []).includes('ig') ? ' Igbo lines: authentic IGBO (Nigerian) pronunciation — never Swahili/Zulu phonetics.' : ''}${(a.languages ?? []).includes('yo') ? ' Yoruba lines: true Yoruba tonality.' : ''}`, [a.vibePrompt].filter(Boolean).join(' '), a.influence ? `in the vibe/lane of ${a.influence} (capture the feel, not a copy)` : null].filter(Boolean).join(', ') || undefined,
+        // as tags on dnaTags where terse tokens belong. The LANGUAGE belt rides
+        // in dnaTags too — composeStyleTags caps vibePrompt at 160ch, and the
+        // belt alone is ~155ch with Igbo selected, so putting it here starved
+        // the engine of the vibe AND clipped the belt itself.
+        vibePrompt: [[a.vibePrompt].filter(Boolean).join(' '), a.influence ? `in the vibe/lane of ${a.influence} (capture the feel, not a copy)` : null].filter(Boolean).join(', ') || undefined,
         durationS: a.durationS ?? blueprint?.totalDurationS ?? (a.withVocals ? genreSignature(a.genre).durationS : 60),
         withStems: a.withStems ?? !a.withVocals,
         withVocals: a.withVocals ?? false,
         songEngine: a.songEngine,
         dnaTags: [
-          ...(a.voice && a.voice !== 'auto'
-            ? [{ female: 'female lead vocal', male: 'male lead vocal', duet: 'male and female duet, trading lines and harmonies', group: 'group vocals, choir-style call-and-response' }[a.voice]!]
-            : []),
+          // Voice + language identity as TAGS: uncapped by the vibe budget, so
+          // they always reach the engine. The Igbo/Yoruba pronunciation belts
+          // ride here — the whole reason "ig" was being sung with Bantu phonetics.
+          ...[voiceVocalTag(a.voice), languageVocalTag(a.languages)].filter((t): t is string => !!t),
           ...dnaTags, ...styleHints.slice(0, 3), ...laneSteer,
-        ].slice(0, 11),
+        ].slice(0, 12),
         languages: a.languages?.length ? a.languages : undefined,
         lyrics,
         blueprint: blueprint ?? undefined,
@@ -749,7 +779,9 @@ async function runDropTool(ctx: Ctx, a: { theme: string; count?: number; genre?:
   await polishBrief(ctx, a.theme);
   const drops: Array<{ songId?: string; hookText?: string; score: number | null; jobId?: string; error?: string }> = [];
   for (let i = 0; i < count; i++) {
-    const hk = (await generateHooks(ctx, 10)) as { hooks?: Array<{ id: string; text: string; score: number | null }> };
+    // Languages are LAW for the writers too — omitting them here left chat drops
+    // writing in the artist-profile defaults regardless of what the user picked.
+    const hk = (await generateHooks(ctx, 10, a.languages)) as { hooks?: Array<{ id: string; text: string; score: number | null }> };
     let hooks = hk?.hooks ?? [];
     if (!hooks.length) continue;
     if (hooks.every((h) => h.score == null)) {
@@ -759,9 +791,16 @@ async function runDropTool(ctx: Ctx, a: { theme: string; count?: number; genre?:
     }
     const best = hooks.slice().sort((x, y) => (y.score ?? 0) - (x.score ?? 0))[0]!;
     const ap = (await approveHook(ctx, best.id)) as { songId?: string };
-    await generateLyrics(ctx, best.id, true);
+    await generateLyrics(ctx, best.id, true, a.languages);
     const beat = (await createBeatJob(ctx, { genre, bpm, withVocals: a.withVocals ?? true, songEngine: a.songEngine, languages: a.languages, mood: a.mood, fusionGenres: a.fusionGenres, influence: a.influence, durationS: a.durationS, voice: a.voice, vibePrompt: a.theme })) as { jobId?: string; songId?: string; error?: string };
-    drops.push({ songId: ap?.songId ?? beat?.songId, hookText: best.text, score: best.score ?? null, jobId: beat?.jobId, error: beat?.error });
+    // The user's typed song name IS the title (songTitle was a dead field).
+    const producedSongId = ap?.songId ?? beat?.songId;
+    if (a.songTitle && producedSongId) {
+      const t = a.songTitle.slice(0, 80);
+      await prisma.song.update({ where: { id: producedSongId }, data: { title: t } }).catch(() => undefined);
+      await prisma.lyricDraft.updateMany({ where: { songId: producedSongId }, data: { title: t } }).catch(() => undefined);
+    }
+    drops.push({ songId: producedSongId, hookText: best.text, score: best.score ?? null, jobId: beat?.jobId, error: beat?.error });
     if (beat?.error === 'insufficient_credits') break;
   }
   drops.sort((x, y) => (y.score ?? 0) - (x.score ?? 0));
@@ -789,9 +828,13 @@ async function masterSongTool(ctx: Ctx, songId: string, preset?: string) {
   }
   const charge = await ctx.app.chargeCredits({ workspaceId: ctx.workspaceId, key: 'master_preset' });
   if (!charge.ok) return { error: 'insufficient_credits', ...charge };
-  const p = preset ?? 'streaming_lufs_-14';
-  const job = await prisma.providerJob.create({ data: { workspaceId: ctx.workspaceId, projectId: song.projectId, kind: 'master', provider: 'internal', status: 'QUEUED', inputJson: { songId, mixId, preset: p } as never } });
-  await enqueue({ queue: ctx.app.queues.master, name: 'create-master', payload: { jobId: job.id, workspaceId: ctx.workspaceId, projectId: song.projectId, songId, mixId, preset: p } });
+  // HEADROOM LAW: finished-engine renders and uploaded masters conform light-touch
+  // (see songs.ts /:id/master) — the full chain on a finished master dulls it.
+  const finished =
+    (!realMix && ['minimax', 'suno'].includes(latestBeat?.provider ?? '')) || realMix?.preset === 'uploaded';
+  const p = preset ?? (finished ? 'breathe_-16.5' : 'streaming_lufs_-14');
+  const job = await prisma.providerJob.create({ data: { workspaceId: ctx.workspaceId, projectId: song.projectId, kind: 'master', provider: 'internal', status: 'QUEUED', inputJson: { songId, mixId, preset: p, finished } as never } });
+  await enqueue({ queue: ctx.app.queues.master, name: 'create-master', payload: { jobId: job.id, workspaceId: ctx.workspaceId, projectId: song.projectId, songId, mixId, preset: p, finished } });
   return { jobId: job.id, status: 'queued', preset: p };
 }
 

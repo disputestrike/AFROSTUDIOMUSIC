@@ -41,7 +41,9 @@ export async function anthropicPing(): Promise<{ ok: boolean; model: string; err
   const model = ANTHROPIC_MODEL();
   if (!anthropicEnabled()) return { ok: false, model, error: 'no ANTHROPIC_API_KEY' };
   try {
-    await claudeJson<{ ok: boolean }>({ system: 'Reply with JSON {"ok":true} only.', user: 'ping', maxTokens: 20, temperature: 0 });
+    // Roomy cap: Fable 5's adaptive thinking counts against max_tokens — at 20
+    // the ping "fails" on a healthy account and the dashboard cries wolf.
+    await claudeJson<{ ok: boolean }>({ system: 'Reply with JSON {"ok":true} only.', user: 'ping', maxTokens: 500 });
     return { ok: true, model };
   } catch (e) {
     return { ok: false, model, error: (e as Error).message.slice(0, 300) };
@@ -168,12 +170,15 @@ export async function claudeJson<T>(opts: {
   maxTokens?: number;
   temperature?: number;
   /** Hard timeout (ms) so a hung/overloaded call fails fast instead of stalling
-   *  a song the user is waiting on. Default 55s. */
+   *  a song the user is waiting on. Default 90s — Fable 5's adaptive thinking on
+   *  our 10k-char fused briefs regularly needs more than the old Sonnet-era 55s. */
   timeoutMs?: number;
+  /** internal: set on the one automatic retry after a max_tokens truncation. */
+  _grew?: boolean;
 }): Promise<T> {
   const key = anthropicKey();
   if (!key) throw new Error('ANTHROPIC_API_KEY missing');
-  const timeoutMs = opts.timeoutMs ?? 55_000;
+  const timeoutMs = opts.timeoutMs ?? 90_000;
 
   // Retry on transient overload/timeout — Claude 529s under load. With OpenAI
   // billing exhausted, Claude is the only brain, so we try harder (3 attempts,
@@ -213,6 +218,14 @@ export async function claudeJson<T>(opts: {
         const fb = ANTHROPIC_FALLBACK_MODEL();
         if (current !== fb) return claudeJson<T>({ ...opts, model: fb });
         throw new Error('anthropic: refusal on fallback model too');
+      }
+      // TRUNCATION GUARD: stop_reason 'max_tokens' = the JSON got cut mid-emit
+      // (thinking also counts against the cap on Fable 5). Without this, the
+      // parse fails and generateJson silently falls to the billing-dead OpenAI —
+      // the exact failure class of the old hooks-429 bug. Retry once, doubled.
+      if (data.stop_reason === 'max_tokens' && !opts._grew) {
+        const grown = Math.min((opts.maxTokens ?? 4_000) * 2, 16_000);
+        return claudeJson<T>({ ...opts, maxTokens: grown, _grew: true });
       }
       const text = data.content?.map((c) => c.text ?? '').join('') ?? '';
       return parseJsonLoose<T>(extractJson(text));

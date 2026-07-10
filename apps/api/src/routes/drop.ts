@@ -120,11 +120,26 @@ export async function runDropPipeline(app: FastifyInstance, ctx: DropCtx, input:
           const beat = (await runChatTool({
             ...ctx,
             name: 'create_beat_job',
-            args: { genre: input.genre, fusionGenres: input.fusionGenres, mood: input.mood, pinnedReferenceId: input.pinnedReferenceId, bpm: input.bpm, withVocals: input.withVocals, songEngine: input.songEngine, influence: input.influence, languages: input.languages },
+            // THE CREATE-PAGE PATH: this is the render users actually hit. It must
+            // carry the SAME brief the chat path (runDropTool) carries — voice and
+            // vibe were silently dropped here while the fix landed only in chat.
+            // vibe (the raw musical description) is preferred over theme, which is
+            // wrapped in title-anchor boilerplate the music engine can't use.
+            args: { genre: input.genre, fusionGenres: input.fusionGenres, mood: input.mood, pinnedReferenceId: input.pinnedReferenceId, bpm: input.bpm, withVocals: input.withVocals, songEngine: input.songEngine, influence: input.influence, languages: input.languages, voice: input.voice, vibePrompt: input.vibe },
           })) as { jobId?: string; songId?: string; error?: string };
 
+          // The user's typed song name IS the title — the writers already treat it
+          // as the creative anchor (via theme); without this the field was dead
+          // and the song shipped under the AI's own title.
+          const producedSongId = ap?.songId ?? beat?.songId;
+          if (input.songTitle && producedSongId) {
+            const t = input.songTitle.slice(0, 80);
+            await prisma.song.update({ where: { id: producedSongId }, data: { title: t } }).catch(() => undefined);
+            await prisma.lyricDraft.updateMany({ where: { songId: producedSongId }, data: { title: t } }).catch(() => undefined);
+          }
+
           drops.push({
-            songId: ap?.songId ?? beat?.songId,
+            songId: producedSongId,
             hookId: best.id,
             hookText: best.text,
             score: best.score ?? null,

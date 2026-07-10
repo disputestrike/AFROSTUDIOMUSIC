@@ -1,5 +1,5 @@
 import type { FastifyInstance } from 'fastify';
-import { anthropicPing, openaiPing, tavilyKey, braveKey, tavilyPing, researchTrends, prompts, joinBriefs, claudeRaw } from '@afrohit/ai';
+import { anthropicPing, openaiPing, tavilyKey, braveKey, tavilyPing, researchTrends, prompts, joinBriefs, claudeRaw, getLastStudioChatClaudeError } from '@afrohit/ai';
 import { recommendEngine } from '@afrohit/shared';
 import { laneDnaBrief } from '../lib/lane-pipeline';
 import { requireAuth } from '../middleware/auth';
@@ -30,6 +30,9 @@ export default async function debug(app: FastifyInstance) {
         : 'DOWN — both Claude and OpenAI unreachable (usually exhausted credits). Top up Anthropic and/or OpenAI; lyrics/hooks/A&R/analysis/Zap-learn will fail until then.',
       anthropic,
       openai,
+      // Why the last chat turn fell off Claude (null = it didn't) — a swallowed
+      // billing 400 here used to read as "the chat is weak".
+      lastChatClaudeError: getLastStudioChatClaudeError(),
       audd: { configured: !!process.env.AUDD_API_TOKEN }, // Zap song ID needs this
       eleven: { configured: !!process.env.ELEVENLABS_API_KEY }, // voice clone + ElevenLabs Music engine
       tavily: { configured: !!tavilyKey(), ...tavily },

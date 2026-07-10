@@ -138,6 +138,39 @@ export default async function mixes(app: FastifyInstance) {
         },
       });
 
+      // LEARN from every finished song the artist brings back (Suno bridge or
+      // any upload): the artist chose to push this sound into the studio, so it
+      // must feed the lake like a /listen — otherwise "I pushed my Suno songs
+      // and it learned nothing". Best-effort: a failed charge or enqueue never
+      // blocks the upload itself.
+      try {
+        const learnCharge = await app.chargeCredits({
+          workspaceId,
+          key: 'analyze_audio',
+          refTable: 'Song',
+          refId: songId,
+        });
+        if (learnCharge.ok) {
+          const learnJob = await prisma.providerJob.create({
+            data: {
+              workspaceId,
+              projectId: project.id,
+              kind: 'analyze',
+              provider: 'replicate',
+              status: 'QUEUED',
+              inputJson: { url: mix.url, source: 'finished-upload' } as never,
+            },
+          });
+          await enqueue({
+            queue: app.queues.music,
+            name: 'analyze-audio',
+            payload: { jobId: learnJob.id, workspaceId, projectId: project.id, url: mix.url },
+          });
+        }
+      } catch (err) {
+        req.log.warn({ err }, 'finished-upload learn enqueue failed (upload still ok)');
+      }
+
       if (!input.autoMaster) {
         reply.code(201);
         return { mix, songId, mastered: false };

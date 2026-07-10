@@ -568,26 +568,65 @@ class AceStepSongAdapter implements MusicProviderAdapter {
  */
 const MINIMAX_SINGABLE =
   /^(?:ooh|oh|eh|ah|mmm|hmm|yeah|ya|hey|heh|woah|whoa|na|la|da|yee+|uh|chai|oya|ehen|omo+|baby|shout|gang|come on|let'?s go|gbedu|jeje|ehn)(?:[\s,!'-]+(?:ooh|oh|eh|ah|mmm|hmm|yeah|ya|hey|woah|whoa|na|la|da|yee+|uh|baby))*!?$/i;
-export function cleanLyricsForMinimax(raw: string, maxChars = 2400): string {
+// MiniMax music-2.6 officially accepts 1–3500 lyric chars (Replicate schema);
+// 3400 leaves margin. The old 2400 cap was 1100 chars of song left on the table.
+// MiniMax's OFFICIAL structure tags (Replicate schema) — anything else in
+// brackets is an invented header the engine may SING as words ("drum fill").
+const ENGINE_SECTION_TAGS =
+  /^(intro|verse|pre[- ]?chorus|chorus|interlude|bridge|outro|post[- ]?chorus|transition|break|hook|build[- ]?up|inst|solo|refrain|drop)(\s*\d+)?$/i;
+// Production cues our arranger/writers historically emitted as fake headers.
+const PRODUCTION_CUE = /(drum|fill|roll|percussion|riser|instrumental|beat[- ]?switch|ad[- ]?lib)/i;
+export function cleanLyricsForMinimax(raw: string, maxChars = 3400): string {
   const cleaned = raw
     .split('\n')
-    .map((line) =>
-      line
+    .map((line) => {
+      // RENDER-TIME header law (heals OLD stored drafts on every re-sing):
+      // official section tags pass; [Drum Fill]-class cues become [Break] (the
+      // intent — a transition — survives); any other invented header is dropped.
+      const header = line.trim().match(/^\[([^\]]{1,40})\]$/);
+      if (header) {
+        const inner = header[1]!.trim();
+        if (ENGINE_SECTION_TAGS.test(inner)) return line.trim();
+        return PRODUCTION_CUE.test(inner) ? '[Break]' : '';
+      }
+      return line
         // Keep only whitelisted singable parentheticals; drop stage directions.
         .replace(/\(([^)]*)\)/g, (_m, inner: string) =>
           MINIMAX_SINGABLE.test(inner.trim()) ? `(${inner.trim()})` : ''
         )
         .replace(/[ \t]{2,}/g, ' ')
-        .trim()
-    )
+        .trim();
+    })
     // Collapse the blank-line runs the drops leave behind.
     .filter((l, i, arr) => !(l.trim() === '' && (arr[i - 1]?.trim() ?? '') === ''))
     .join('\n')
     .trim();
   if (cleaned.length <= maxChars) return cleaned;
-  // Trim to whole lines so we never cut a word (or a [Section]) mid-way.
+  // Over budget: before touching the tail, drop INTERIOR repeats of identical
+  // sections (a hook sung 4× keeps its first and last outing). Plain tail-trim
+  // silently deleted OUTROS and final hooks — "it didn't sing all of it".
+  const parts = cleaned.split(/(?=^\[[^\]\n]+\]\s*$)/m);
+  const normBody = (p: string) =>
+    p.replace(/^\[[^\]\n]+\]\s*$/m, '').replace(/\s+/g, ' ').trim().toLowerCase();
+  const occurrences = new Map<string, number[]>();
+  parts.forEach((p, i) => {
+    const k = normBody(p);
+    if (k) occurrences.set(k, [...(occurrences.get(k) ?? []), i]);
+  });
+  const interior = [...occurrences.values()]
+    .filter((idx) => idx.length >= 3)
+    .flatMap((idx) => idx.slice(1, -1))
+    .sort((a, b) => b - a);
+  const total = () => parts.reduce((n, p) => n + p.length, 0);
+  for (const i of interior) {
+    if (total() <= maxChars) break;
+    parts[i] = '';
+  }
+  const dropped = parts.join('').replace(/\n{3,}/g, '\n\n').trim();
+  if (dropped.length <= maxChars) return dropped;
+  // Last resort: trim to whole lines so we never cut a word (or a [Section]).
   let acc = '';
-  for (const l of cleaned.split('\n')) {
+  for (const l of dropped.split('\n')) {
     if ((acc ? acc.length + 1 : 0) + l.length > maxChars) break;
     acc += (acc ? '\n' : '') + l;
   }

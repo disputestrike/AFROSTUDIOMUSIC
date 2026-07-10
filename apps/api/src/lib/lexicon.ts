@@ -138,11 +138,26 @@ export async function lexiconPalette(opts: {
     for (const l of langs) for (const b of LANG_BUCKETS[l] ?? [l]) buckets.add(b);
     const cats = MOOD_CATEGORIES[norm(opts.mood)] ?? ['love', 'street', 'party', 'slang', 'proverb', 'adlib'];
 
-    const rows = await prisma.lexiconEntry.findMany({
-      where: { OR: [{ workspaceId: null }, { workspaceId: opts.workspaceId }], language: { in: [...buckets] }, category: { in: cats } },
+    // QUALITY FIRST: curated rows (seed/research/user — meanings verified,
+    // categorized) fill the palette before the machine firehose. With 25k+
+    // unranked wiktionary rows and no orderBy, a single query let unglossed
+    // machine rows drown the curated bank the writers were meant to pull from.
+    const whereBase = { OR: [{ workspaceId: null }, { workspaceId: opts.workspaceId }], language: { in: [...buckets] }, category: { in: cats } };
+    const curated = await prisma.lexiconEntry.findMany({
+      where: { ...whereBase, source: { in: ['seed', 'research', 'user'] } },
       select: { term: true, category: true, language: true },
-      take: 1200,
+      take: 1000,
     });
+    const rows = curated.length >= 200
+      ? curated
+      : [
+          ...curated,
+          ...(await prisma.lexiconEntry.findMany({
+            where: { ...whereBase, source: { notIn: ['seed', 'research', 'user'] }, NOT: { tags: { has: 'unglossed' } } },
+            select: { term: true, category: true, language: true },
+            take: 1000 - curated.length,
+          })),
+        ];
     if (rows.length < 4) return '';
 
     const perCat = opts.perCategory ?? 10;

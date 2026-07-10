@@ -44,11 +44,14 @@ function RecordVocalButton({ projectId, onDone }: { projectId: string; onDone: (
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       const chunks: BlobPart[] = [];
       const r = new MediaRecorder(stream);
+      // onstop closes over THIS render's `secs` (always 0) — measure wall-clock
+      // instead, or every recorded take reported durationS=1.
+      const startedAt = Date.now();
       r.ondataavailable = (e) => { if (e.data.size) chunks.push(e.data); };
       r.onstop = async () => {
         stream.getTracks().forEach((tr) => tr.stop());
         setRec(null);
-        const dur = Math.max(1, secs);
+        const dur = Math.max(1, Math.round((Date.now() - startedAt) / 1000));
         setSecs(0);
         setStatus('Uploading your take…');
         try {

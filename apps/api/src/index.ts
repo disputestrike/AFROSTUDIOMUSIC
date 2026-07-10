@@ -62,6 +62,9 @@ const app = Fastify({
     level: process.env.LOG_LEVEL ?? 'info',
     transport: process.env.NODE_ENV === 'production' ? undefined : { target: 'pino-pretty' },
   },
+  // Behind Railway's proxy every request shares the proxy IP — without this the
+  // "per-IP" rate limit throttles all clients as one (and req.ip is useless in logs).
+  trustProxy: true,
 });
 
 // LAUNCH GUARDRAIL — dependency-free per-IP rate limit (token window). Real

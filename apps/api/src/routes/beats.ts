@@ -1,12 +1,13 @@
 import type { FastifyInstance } from 'fastify';
 import { prisma } from '@afrohit/db';
-import { generateBeatInputSchema, attachBeatUploadSchema } from '@afrohit/shared';
+import { generateBeatInputSchema, attachBeatUploadSchema, genreSignature } from '@afrohit/shared';
 import { enrichLyricsForVocals } from '@afrohit/ai';
 import { learnedReferenceBrief, learnedStyleTags } from '../lib/learned';
 import { laneDna } from '../lib/lane-pipeline';
 import { requireAuth } from '../middleware/auth';
 import { enqueue, QUEUES } from '../lib/queue';
 import { publicUrlFor, assertOwnedKey } from '../lib/storage';
+import { voiceVocalTag, languageVocalTag } from '../services/chat-tools';
 
 export default async function beats(app: FastifyInstance) {
   app.get<{ Params: { projectId: string } }>(
@@ -54,12 +55,18 @@ export default async function beats(app: FastifyInstance) {
       const learnedTags = await learnedStyleTags(workspaceId, project.genre, input.pinnedReferenceId);
       const dnaTags = [...(dna.tags ?? []), ...learnedTags];
 
+      // The user's SELECTED languages outrank the artist profile's defaults —
+      // this is the from-lyrics path where Igbo lyrics used to reach the engine
+      // with no language identity at all.
+      const langs = input.languages?.length ? input.languages : project.artist.languages;
+
       // Arrange the vocal to sound ALIVE (ad-libs, doubled/harmonized hook).
       if (input.withVocals && lyrics && input.richVocals) {
         const enriched = await enrichLyricsForVocals({
       genre: project.genre,
           lyricBody: lyrics,
-          languages: project.artist.languages,
+          voice: input.voice,
+          languages: langs,
           laneSummary: project.artist.laneSummary ?? undefined,
           soundDna: [dna.brief, learned].filter(Boolean).join('\n\n'),
         });
@@ -99,12 +106,20 @@ export default async function beats(app: FastifyInstance) {
           input: {
             ...input,
             lyrics,
+            // Vocal songs default to FULL LENGTH (genre standard) — the old
+            // schema default(60) rendered 60-second "full songs" for any caller
+            // that omitted duration. Instrumental sketches stay short.
+            durationS: input.durationS ?? (input.withVocals ? genreSignature(project.genre).durationS : 60),
             // ANTI-SOUP: styleHints are TAGS (they join dnaTags), not sentence glue —
             // an ever-growing vibePrompt used to drown the genre identity.
             vibePrompt: input.vibePrompt || undefined,
             artistTone: project.artist.vocalTone,
-            languages: project.artist.languages,
-            dnaTags: [...dnaTags, ...styleHints.slice(0, 3)],
+            languages: langs,
+            dnaTags: [
+              ...[voiceVocalTag(input.voice), input.withVocals ? languageVocalTag(langs) : null].filter((t): t is string => !!t),
+              ...dnaTags,
+              ...styleHints.slice(0, 3),
+            ],
           },
         },
       });

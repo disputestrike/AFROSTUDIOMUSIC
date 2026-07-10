@@ -23,12 +23,23 @@ type ChatOpts = {
  * THE studio-chat brain: Claude first (stronger co-producer taste + tool use),
  * OpenAI as the never-fail fallback. Drop-in for chatWithTools.
  */
+/** Why the last chat turn fell off Claude — surfaced on /debug/ai so a broken
+ *  brain (billing, stale model id) is visible instead of silently degrading
+ *  every conversation to the weak fallback. Getter (not a `let` export): CJS
+ *  compilation would freeze a re-assigned export at its import-time value. */
+let lastStudioChatClaudeError: string | null = null;
+export const getLastStudioChatClaudeError = (): string | null => lastStudioChatClaudeError;
+
 export async function studioChat(opts: ChatOpts): Promise<ChatTurn> {
   if (anthropicEnabled() && process.env.STUB_AI !== '1') {
     try {
-      return await chatWithToolsClaude(opts);
-    } catch {
-      // Claude overloaded / transient → fall back so the chat never dies.
+      const turn = await chatWithToolsClaude(opts);
+      lastStudioChatClaudeError = null;
+      return turn;
+    } catch (e) {
+      // Claude overloaded / transient → fall back so the chat never dies — but
+      // RECORD the reason; a swallowed billing 400 looked like "chat is weak".
+      lastStudioChatClaudeError = `${new Date().toISOString()} ${(e as Error).message.slice(0, 300)}`;
     }
   }
   return chatWithTools(opts);
@@ -86,14 +97,16 @@ export async function chatWithToolsClaude(opts: {
   const { system, msgs } = toAnthropic(opts.messages);
 
   const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), opts.timeoutMs ?? 60_000);
+  const timer = setTimeout(() => ctrl.abort(), opts.timeoutMs ?? 90_000);
   try {
     const res = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
       headers: { 'x-api-key': key, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' },
       body: JSON.stringify({
         model: opts.model ?? ANTHROPIC_MODEL(),
-        max_tokens: 2_000,
+        // Fable 5's adaptive thinking counts against max_tokens — 2k could be
+        // eaten before the reply, truncating tool calls mid-arguments.
+        max_tokens: 6_000,
         system,
         tools: opts.tools.map((t) => ({ name: t.name, description: t.description, input_schema: t.parameters })),
         messages: msgs,

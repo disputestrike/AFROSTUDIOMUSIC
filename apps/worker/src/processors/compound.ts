@@ -19,7 +19,9 @@ import { enqueueJob } from '../lib/enqueue';
 import { assessLaneCompliance } from '../lib/lane-assess';
 import { processSynthMaterial } from './synth-material';
 
-const skipSource = (u: string) => u.startsWith('lyric:') || u.startsWith('trend:');
+// 'zap:' rows are METADATA-learned lanes (no audio behind the sourceUrl) — the
+// measure-backfill was retrying them forever and wasting its whole batch.
+const skipSource = (u: string) => u.startsWith('lyric:') || u.startsWith('trend:') || u.startsWith('zap:');
 
 /** Enqueue deep-measure for owned references missing a measured read; inline
  *  lane-assess for rendered beats missing one. Bounded per run — never a stampede. */

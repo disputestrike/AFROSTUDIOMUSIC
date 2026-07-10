@@ -1,4 +1,5 @@
 import { getSoundDNA, generateJson } from '@afrohit/ai';
+import { MATERIAL_GAINS } from '@afrohit/shared';
 
 /**
  * MATERIAL PLANNING — one source of truth for the material layer's brain,
@@ -8,7 +9,9 @@ import { getSoundDNA, generateJson } from '@afrohit/ai';
  *   claudeArrangement() Claude authors the build for THIS material (validated)
  */
 
-export const MATERIAL_GAINS: Record<string, number> = { drums: 1.0, log_drum: 1.05, bass: 0.95, talking_drum: 0.85, percussion: 0.8, chords: 0.7 };
+// Gain doctrine now lives in @afrohit/shared (the worker needs it too) — re-export
+// so existing importers keep working.
+export { MATERIAL_GAINS };
 export const MELODIC_ROLES = new Set(['chords', 'bass', 'log_drum']);
 
 export function kitRolesFor(genre: string): string[] {

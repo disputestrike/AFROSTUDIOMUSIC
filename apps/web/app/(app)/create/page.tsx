@@ -243,7 +243,7 @@ export default function CreatePage() {
       // networks). We poll the drop job for the hook/lyrics result…
       const started = await api.post<{ jobId: string }>(
         `/projects/${project.id}/drop`,
-        { theme, songTitle: songName.trim() || undefined, voice: voice === 'auto' ? undefined : voice, count: 1, genre, fusionGenres: fusion.length ? fusion : undefined, mood, bpm, withVocals: true, songEngine: engine, influence: influence.trim() || undefined, languages: langs }
+        { theme, vibe: vibe.trim().slice(0, 500) || undefined, songTitle: songName.trim() || undefined, voice: voice === 'auto' ? undefined : voice, count: 1, genre, fusionGenres: fusion.length ? fusion : undefined, mood, bpm, withVocals: true, songEngine: engine, influence: influence.trim() || undefined, languages: langs }
       );
       saveProduce({ dropJobId: started.jobId, renderJobId: undefined });
       let item: { jobId?: string; hookText?: string; score: number | null; error?: string } | undefined;
@@ -363,11 +363,15 @@ export default function CreatePage() {
         genre,
         fusionGenres: fusion.length ? fusion : undefined,
         bpm,
-        durationS: 160,
         withStems: false,
         withVocals: true,
         lyrics: lyricsText.trim(),
         songEngine: engine,
+        // Language identity is law on this path too — Igbo lyrics used to sing
+        // with no language identity here (the Bantu-phonetics bug). The lyric's
+        // DETECTED languages outrank the page chips: the pasted words are the truth.
+        languages: decon?.languages?.length ? decon.languages : langs,
+        voice: voice === 'auto' ? undefined : voice,
         vibePrompt: [`${mood} energy`, decon?.vocalDirection, fusion.length ? `genre fusion: ${genreLabel}` : null].filter(Boolean).join('. '),
       });
       saveProduce({ renderJobId: r.jobId, projectId: project.id, title: 'Your song', hook: '', score: null });

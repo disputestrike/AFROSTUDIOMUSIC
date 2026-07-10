@@ -178,6 +178,9 @@ If nothing fits, op:null and coach them in reply (mixer, versions, adjust exist)
       const newTitle = String((op as { title?: unknown }).title ?? '').trim().slice(0, 80);
       if (!newTitle) return { reply: 'Give me the name.', dispatched: null };
       await prisma.song.update({ where: { id: song.id }, data: { title: newTitle } });
+      // The catalog displays lyric.title ahead of song.title — without this the
+      // rename "never sticks" on screen.
+      await prisma.lyricDraft.updateMany({ where: { songId: song.id }, data: { title: newTitle } });
       return { reply: `Renamed: “${newTitle}”.`, dispatched: 'rename' };
     }
 
@@ -195,10 +198,16 @@ ${song.lyric.body.slice(0, 4000)}`,
       }).catch(() => null);
       if (!rw?.body) return { reply: 'Hook surgery failed — try again.', dispatched: null };
       await snapshotLyricVersion(song.lyric.id, 'before hook rebuild');
-      await prisma.lyricDraft.update({ where: { id: song.lyric.id }, data: { body: rw.body, title: anchor } });
+      // cleanVersion outranks body at re-sing time — leaving the old one in
+      // place made the engine sing the PRE-rebuild lyric.
+      await prisma.lyricDraft.update({ where: { id: song.lyric.id }, data: { body: rw.body, title: anchor, cleanVersion: null } });
       await prisma.song.update({ where: { id: song.id }, data: { title: anchor } });
       const res = await app.inject({ method: 'POST', url: `/api/v1/songs/${song.id}/regenerate-beat`, headers, payload: {} });
       const body = res.json() as Record<string, unknown>;
+      if (res.statusCode >= 400) {
+        const why = String(body.message ?? body.error ?? `HTTP ${res.statusCode}`).slice(0, 160);
+        return { reply: `Rebuilt the hook around “${anchor}”, but the re-sing didn't start: ${why}`, dispatched: null, jobId: null, status: res.statusCode };
+      }
       return { reply: `Hook rebuilt around “${anchor}” — re-singing now.`, dispatched: 'rebuild_hook', jobId: (body.jobId as string) ?? null };
     }
 
@@ -206,12 +215,20 @@ ${song.lyric.body.slice(0, 4000)}`,
       const d = op.kind === 'transform'
         ? { url: `/api/v1/songs/${song.id}/transform`, payload: { tempo: op.tempo, semitones: op.semitones } }
         : op.kind === 'remaster'
-          ? { url: `/api/v1/songs/${song.id}/master`, payload: { preset: op.preset ?? 'warm' } }
+          // The chat speaks feel-words; the worker speaks MASTER_TARGETS keys —
+          // unmapped names silently fell back to -14, ignoring the user's ask.
+          ? { url: `/api/v1/songs/${song.id}/master`, payload: { preset: ({ warm: 'breathe_-16.5', loud: 'afro_stream_-9', club: 'club_-9', radio: 'streaming_lufs_-14' } as Record<string, string>)[String(op.preset ?? 'warm')] ?? op.preset } }
           : op.kind === 'make_bigger'
             ? { url: `/api/v1/songs/${song.id}/make-it-bigger`, payload: {} }
             : { url: `/api/v1/songs/${song.id}/regenerate-beat`, payload: {} };
       const res = await app.inject({ method: 'POST', url: d.url, headers, payload: d.payload as never });
       const body = res.json() as Record<string, unknown>;
+      // Honest failures: a 4xx here used to ride back inside a 200 with the
+      // upbeat plan.reply — the user saw "on it!" and nothing ever happened.
+      if (res.statusCode >= 400) {
+        const why = String(body.message ?? body.error ?? `HTTP ${res.statusCode}`).slice(0, 160);
+        return { reply: `Couldn't run ${op.kind}: ${why}`, dispatched: null, jobId: null, status: res.statusCode };
+      }
       return { reply: plan.reply, dispatched: op.kind, jobId: (body.jobId as string) ?? null, status: res.statusCode };
     }
 

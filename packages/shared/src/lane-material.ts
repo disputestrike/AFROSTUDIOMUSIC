@@ -56,6 +56,11 @@ export interface MaterialSelection {
   ready: boolean; // all CORE roles covered
 }
 
+/** Producer gain doctrine per material role — ONE source of truth for the API
+ *  arranger and the worker's own-engine/section-replay (which used to pass raw
+ *  DB rows with no gain at all and crash the assembler). */
+export const MATERIAL_GAINS: Record<string, number> = { drums: 1.0, log_drum: 1.05, bass: 0.95, talking_drum: 0.85, percussion: 0.8, chords: 0.7 };
+
 /**
  * Which material roles this lane needs, derived from measured facts. Every lane needs
  * a kick, bass and chords; measured signatures (log-drum, shakers) add signature roles.

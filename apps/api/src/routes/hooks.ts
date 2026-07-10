@@ -57,7 +57,9 @@ export default async function hooks(app: FastifyInstance) {
       const mood = (brief as { mood?: string } | undefined)?.mood;
       const soundDna = fuseSoundDna({
         freshness: await freshnessBrief(workspaceId),
-        palette: await lexiconPalette({ workspaceId, mood, rotate: input.count }),
+        // Languages steer the palette — without them the word bank served its
+        // default slice regardless of what the artist writes in.
+        palette: await lexiconPalette({ workspaceId, languages: project.artist.languages, mood, rotate: input.count }),
         dna: laneDnaBrief(project.genre),
         learnedRef: await learnedReferenceBrief(workspaceId, project.genre),
         learnedCraft: await learnedLyricCraftBrief(workspaceId, project.genre),

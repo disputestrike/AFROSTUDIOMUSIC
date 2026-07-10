@@ -32,12 +32,14 @@ import {
   researchTrends,
   type HitPrediction,
 } from '@afrohit/ai';
+import { genreSignature } from '@afrohit/shared';
 import { learnedReferenceBrief } from './learned';
 import { laneContext } from './lane-context';
 import { laneDna, laneDnaBrief } from './lane-pipeline';
 import { arReadSong } from './ar-read';
 import { enqueue } from './queue';
 import { snapshotLyricVersion } from './lyric-versions';
+import { languageVocalTag } from '../services/chat-tools';
 
 // Benjamin's call: the release bar is 90 ("it needs to be perfect"). NOTE: on the
 // current MiniMax engine, writing-driven scores top out ~65-70 (the A&R itself says
@@ -176,9 +178,13 @@ async function resing(
       jobId: job.id, workspaceId, projectId: song.projectId, songId: song.id,
       input: {
         genre, bpm: song.project.bpm ?? 103, withVocals: true, withStems: false, songEngine,
+        // The improved take must stay FULL LENGTH — match the take it replaces,
+        // genre standard otherwise. With no durationS, an ACE-Step fallback
+        // rendered 120s and the gate SHORTENED the shipped song.
+        durationS: song.beats[0]?.duration && song.beats[0].duration > 30 ? Math.round(song.beats[0].duration) : genreSignature(genre).durationS,
         lyrics: lyricsForSong,
         artistTone: song.project.artist.vocalTone, languages: song.project.artist.languages,
-        dnaTags: [...(dna.tags ?? []), ...styleHints.slice(0, 3), ...laneSteer],
+        dnaTags: [languageVocalTag(song.project.artist.languages), ...(dna.tags ?? []), ...styleHints.slice(0, 3), ...laneSteer],
       },
     },
   });

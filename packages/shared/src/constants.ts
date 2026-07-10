@@ -123,7 +123,8 @@ export type ImageProvider = (typeof IMAGE_PROVIDERS)[number];
 export const MIX_PRESETS = ['radio', 'club', 'tiktok', 'youtube', 'acapella', 'instrumental'] as const;
 export const MASTER_PRESETS = [
   'streaming_lufs_-14',
-  'afro_stream_-9', // competitive Afrobeats/Afropop loudness (~-9 LUFS, -1 dBTP safe)
+  'breathe_-16.5', // HEADROOM LAW: finished records breathe (Suno's own measured range) — default for finished/uploaded masters
+  'afro_stream_-9', // retired from default paths (the "-9 crusher") — still selectable for club-loud intent
   'club_-9',
   'reels_-16',
   'cd_-9',

@@ -59,7 +59,13 @@ export function scrubProductionJargon(body: string, genre?: string): string {
     .split('\n')
     .map((line) => {
       if (/^\s*\[[^\]]+\]\s*$/.test(line)) return line; // section header — engine cue, allowed
-      let out = line.replace(/\(([^)]*)\)/g, (m, inner) => (RX.test(inner) ? '' : m));
+      // RX is /g: reset lastIndex before EVERY .test() — inside this callback it
+      // otherwise carries over between parentheticals on the same line, making
+      // the jargon check start mid-string and randomly miss.
+      let out = line.replace(/\(([^)]*)\)/g, (m, inner) => {
+        RX.lastIndex = 0;
+        return RX.test(inner) ? '' : m;
+      });
       RX.lastIndex = 0;
       out = out.replace(RX, '').replace(/\s{2,}/g, ' ').replace(/\(\s*\)/g, '').trimEnd();
       RX.lastIndex = 0;

@@ -57,6 +57,7 @@ const TS: Array<[string, string]> = [
   ['P5  Fill insertion', 'test-fills.ts'],
   ['P6  Release gate', 'test-release-gate.ts'],
   ['P7  Engine ceilings', 'test-lane-engine.ts'],
+  ['Lyric render filter', 'test-clean-lyrics.ts'],
 ];
 for (const [name, file] of TS) {
   if (!existsSync(join(scripts, file))) { results.push({ name, status: 'SKIP', note: 'script missing', required: false }); continue; }
