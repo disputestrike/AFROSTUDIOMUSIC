@@ -1,5 +1,5 @@
 import { prisma } from '@afrohit/db';
-import { SEED_LEXICON, EXPANSION_LEXICON, SA_LEXICON } from '@afrohit/ai';
+import { SEED_LEXICON, EXPANSION_LEXICON, SA_LEXICON, PARITY_LEXICON } from '@afrohit/ai';
 
 /**
  * THE WORD BANK — thousands of authentic African/diaspora terms the writer
@@ -28,7 +28,7 @@ const LANG_BUCKETS: Record<string, string[]> = {
 /** Seed the shared library once. Cheap: skips entirely if already populated. */
 export async function seedLexiconIfEmpty(): Promise<number> {
   try {
-    const ALL = [...SEED_LEXICON, ...EXPANSION_LEXICON, ...SA_LEXICON];
+    const ALL = [...SEED_LEXICON, ...EXPANSION_LEXICON, ...SA_LEXICON, ...PARITY_LEXICON];
     const have = await prisma.lexiconEntry.count({ where: { source: { in: ['seed', 'research'] } } });
     if (have >= ALL.length * 0.95) return 0; // already seeded
     let n = 0;

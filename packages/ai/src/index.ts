@@ -19,4 +19,5 @@ export * from './hit-predictor';
 export * from './lexicon-seed';
 export * from './lexicon-expansion';
 export * from './lexicon-sa';
+export * from './lexicon-parity';
 export * from './chat-claude';
