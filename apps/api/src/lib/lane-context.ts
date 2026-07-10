@@ -66,13 +66,29 @@ export async function laneContext(
       }
       const profile = buildLaneProfile(genre, 'genre', measured, { minRefs: 3 });
       if (Object.keys(profile.features).length) {
-        laneTargets = `MEASURED LANE TARGET — the ${genre} lane, measured from your analyzed references. Build the beat to match these:\n${describeLaneProfile(profile)}`;
+        // Does THIS song have a stored repair (a prior take measured off-lane)?
+        // Only then does the FULL "match these" target set make sense.
+        let storedRepair = '';
+        if (songId) {
+          const beat = await prisma.beatAsset.findFirst({ where: { songId }, orderBy: { createdAt: 'desc' }, select: { meta: true } });
+          storedRepair = ((beat?.meta ?? {}) as { laneRepair?: string }).laneRepair ?? '';
+        }
+        const steerMode = (process.env.LANE_STEER ?? 'repair').toLowerCase();
+        if (storedRepair || steerMode === 'full') {
+          // REPAIR MODE (or explicit full-steer): pull the take back in-lane.
+          laneTargets = `MEASURED LANE TARGET — the ${genre} lane, measured from your analyzed references. Build the beat to match these:\n${describeLaneProfile(profile)}`;
+          repair = storedRepair;
+        } else {
+          // FRESH RENDER — LIGHT IDENTITY BAND ONLY. Feeding the full profile as
+          // "match these" into every new song made everything converge on the
+          // lane median ("only one direction, worse beats" — the owner heard the
+          // homogenization before the numbers showed it: takes scoring 96/100
+          // compliance are maximally SAME). Identity stays law; direction is free.
+          const tempo = profile.features['tempoBpm']?.numeric;
+          const band = tempo ? `keep the tempo between ${Math.round(tempo.p10)}–${Math.round(tempo.p90)} bpm` : '';
+          laneTargets = `LANE IDENTITY (light) — this is ${genre}: ${band ? band + ' and ' : ''}honor the lane's core groove. EVERYTHING ELSE IS YOURS: take a fresh direction on melody, energy, texture and arrangement — do NOT converge on previous takes.`;
+        }
       }
-    }
-    if (songId) {
-      const beat = await prisma.beatAsset.findFirst({ where: { songId }, orderBy: { createdAt: 'desc' }, select: { meta: true } });
-      const meta = (beat?.meta ?? {}) as { laneRepair?: string };
-      if (meta.laneRepair) repair = meta.laneRepair;
     }
   } catch {
     /* additive — never break generation */

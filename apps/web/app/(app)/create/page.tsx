@@ -128,6 +128,9 @@ export default function CreatePage() {
   const [songName, setSongName] = useState('');
   const [singName, setSingName] = useState(true);
   const [voice, setVoice] = useState<'auto' | 'female' | 'male' | 'duet' | 'group'>('auto');
+  // WO-5: takes rendered for this song — 1 = cheap draft; 2-3 = the ear picks
+  // among DIFFERENT directions (costs that many renders).
+  const [takes, setTakes] = useState<1 | 2 | 3>(1);
   const [influence, setInfluence] = useState('');
   const [engine, setEngine] = useState<'suno' | 'ace_step' | 'minimax'>('minimax');
 
@@ -243,7 +246,7 @@ export default function CreatePage() {
       // networks). We poll the drop job for the hook/lyrics result…
       const started = await api.post<{ jobId: string }>(
         `/projects/${project.id}/drop`,
-        { theme, vibe: vibe.trim().slice(0, 500) || undefined, songTitle: songName.trim() || undefined, voice: voice === 'auto' ? undefined : voice, count: 1, genre, fusionGenres: fusion.length ? fusion : undefined, mood, bpm, withVocals: true, songEngine: engine, influence: influence.trim() || undefined, languages: langs }
+        { theme, vibe: vibe.trim().slice(0, 500) || undefined, songTitle: songName.trim() || undefined, voice: voice === 'auto' ? undefined : voice, candidates: takes > 1 ? takes : undefined, count: 1, genre, fusionGenres: fusion.length ? fusion : undefined, mood, bpm, withVocals: true, songEngine: engine, influence: influence.trim() || undefined, languages: langs }
       );
       saveProduce({ dropJobId: started.jobId, renderJobId: undefined });
       let item: { jobId?: string; hookText?: string; score: number | null; error?: string } | undefined;
@@ -652,6 +655,16 @@ export default function CreatePage() {
           ] as const).map((e) => (
             <button key={e.value} onClick={() => setEngine(e.value)} className={`rounded-full px-4 py-2 text-sm ${engine === e.value ? 'bg-brand-gradient text-ink shadow-glow' : 'border border-white/10 bg-white/5 text-slate-300 hover:bg-white/10'}`}>
               {e.label} <span className="opacity-60">· {e.hint}</span>
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <div className="mt-4"><div className="mb-2 text-sm text-slate-400">Takes <span className="text-xs text-slate-500">— more takes = more directions; the ear keeps the one most in your lane</span></div>
+        <div className="flex gap-2">
+          {([1, 2, 3] as const).map((n) => (
+            <button key={n} onClick={() => setTakes(n)} className={`rounded-full px-4 py-2 text-sm ${takes === n ? 'bg-brand-gradient text-ink shadow-glow' : 'border border-white/10 bg-white/5 text-slate-300 hover:bg-white/10'}`}>
+              {n === 1 ? '1 · Draft' : `${n} directions`}
             </button>
           ))}
         </div>

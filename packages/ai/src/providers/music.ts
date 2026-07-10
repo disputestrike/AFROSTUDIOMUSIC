@@ -900,13 +900,21 @@ export function musicAdapter(override?: string, apiKey?: string): MusicProviderA
     case 'minimax_ref':
       return fal ? falMiniMaxRef(apiKey) : new MiniMaxSongAdapter(apiKey);
     case 'minimax':
-      return fal ? falMiniMax(apiKey) : new MiniMaxSongAdapter(apiKey);
+      // QUALITY GATE (owner: "beats got worse — is it replicate or fal?"): the
+      // fal MiniMax variant is NOT proven to be the same music-2.6 the studio's
+      // sound was tuned on (and its v2 contract 422'd on every live render).
+      // fal is OPT-IN here: set FAL_MINIMAX_MODEL explicitly after a bake-off
+      // win. Default stays the Replicate music-2.6 the owner's ear approved.
+      return fal && process.env.FAL_MINIMAX_MODEL ? falMiniMax(apiKey) : new MiniMaxSongAdapter(apiKey);
     case 'ace_step':
+      // fal-ACE stays auto: same underlying model, only the route differs.
       return fal ? falAce(apiKey) : new AceStepSongAdapter(apiKey);
     case 'suno':
       return new SunoAdapter(apiKey);
     case 'replicate':
-      return fal ? falMusicGen(apiKey) : new ReplicateMusicGenAdapter(apiKey);
+      // Same quality gate: fal's musicgen variant is unproven vs the Replicate
+      // model the beats were tuned on — opt-in via FAL_MUSICGEN_MODEL only.
+      return fal && process.env.FAL_MUSICGEN_MODEL ? falMusicGen(apiKey) : new ReplicateMusicGenAdapter(apiKey);
     case 'eleven':
       return new ElevenMusicAdapter();
     case 'stable_audio':
