@@ -172,7 +172,7 @@ function radarSlice(): string[] {
   const slice = pool.slice(idx * chunk, idx * chunk + chunk);
   return slice.length ? slice : RADAR_GENRES;
 }
-const RADAR_MAX_PER_RUN = Number(process.env.ZAP_RADAR_MAX ?? 6);
+const RADAR_MAX_PER_RUN = Number(process.env.ZAP_RADAR_MAX ?? 10);
 
 export async function processZapRadar() {
   const { backgroundLlmBudgetOk } = await import('./compound');

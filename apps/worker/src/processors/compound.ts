@@ -40,7 +40,12 @@ export async function backgroundLlmBudgetOk(taskName: string): Promise<boolean> 
     if (cap <= 0) return true; // explicit opt-out
     const since = new Date();
     since.setUTCHours(0, 0, 0, 0);
-    const used = await prisma.analyticsEvent.count({ where: { name: 'llm.call', createdAt: { gte: since } } });
+    // RELAXED LEARNING (owner directive): only calls that hit the JUDGMENT brain
+    // count against the cap — Cerebras bulk calls are pennies, and throttling
+    // them was starving the lake ("learning and learning for what's sake").
+    const used = await prisma.analyticsEvent.count({
+      where: { name: 'llm.call', createdAt: { gte: since }, NOT: { properties: { path: ['brain'], equals: 'cerebras' } } },
+    });
     if (used >= cap) {
       console.log(`[llm-budget] ${taskName} skipped — ${used}/${cap} LLM calls used today (BACKGROUND_LLM_DAILY_CAP)`);
       return false;
@@ -249,7 +254,7 @@ export async function processListenBack(opts?: { limit?: number }): Promise<void
       const withAge = measuredSongs
         .map((s) => ({ s, at: String(((s.laneGaps ?? {}) as { measuredAt?: string }).measuredAt ?? '') }))
         .sort((a, b) => a.at.localeCompare(b.at))
-        .slice(0, 4);
+        .slice(0, 8);
       let rescored = 0;
       for (const { s } of withAge) {
         const cands = [s.masters[0], s.mixes[0], s.beats[0]].filter((x): x is { url: string; createdAt: Date } => !!x?.url);
@@ -717,8 +722,8 @@ export async function processNightlyCompound(): Promise<void> {
   await processReportCard();
   await processLearnBackfill({ limit: 5 });
   await processRefileReferences({ limit: 25 });
-  await processListenBack({ limit: 8 });
-  await processMeasureBackfill({ refLimit: 10, beatLimit: 4 });
+  await processListenBack({ limit: 20 });
+  await processMeasureBackfill({ refLimit: 20, beatLimit: 8 });
   await processMineLexicon({ refLimit: 4 });
   await processLexiconResearch({ queries: 6 });
   await processWiktionaryHarvest();
