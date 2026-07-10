@@ -16,7 +16,7 @@ import { enqueue } from '../lib/queue';
 import { assertSafeUrl } from '../lib/url-guard';
 import { learnedReferenceBrief, learnedStyleTags, learnedLyricCraftBrief, snapshotTrend, freshnessBrief } from '../lib/learned';
 import { blueprintForReference } from '../lib/blueprint';
-import { structureBrief } from '@afrohit/shared';
+import { genreSignature, structureBrief } from '@afrohit/shared';
 import { learnLyricCraft, findLearnedLyric } from '../lib/lyric-learn';
 import { dataLakeReport } from '../lib/data-lake';
 import { lexiconPalette } from '../lib/lexicon';
@@ -520,7 +520,7 @@ async function createBeatJob(ctx: Ctx, a: { genre: string; fusionGenres?: string
         // ANTI-SOUP: vibe stays short (vibe + influence only); styleHints ride
         // as tags on dnaTags where terse tokens belong.
         vibePrompt: [`LANGUAGES: strictly ${(a.languages ?? []).join('/') || 'en'} — never drift into Pidgin unless pcm is listed.`, [a.vibePrompt].filter(Boolean).join(' '), a.influence ? `in the vibe/lane of ${a.influence} (capture the feel, not a copy)` : null].filter(Boolean).join(', ') || undefined,
-        durationS: a.durationS ?? blueprint?.totalDurationS ?? (a.withVocals ? 150 : 60),
+        durationS: a.durationS ?? blueprint?.totalDurationS ?? (a.withVocals ? genreSignature(a.genre).durationS : 60),
         withStems: a.withStems ?? !a.withVocals,
         withVocals: a.withVocals ?? false,
         songEngine: a.songEngine,

@@ -2,7 +2,7 @@
   "schemaVersion": 3,
   "gatesPassed": true,
   "separationMargin": 0.485,
-  "fittedOn": "2026-07-09",
+  "fittedOn": "2026-07-10",
   "calibratedOn": "synthetic-archetypes",
   "trackCount": 3,
   "note": "Calibrated on SYNTHETIC amapiano/house/afrobeats archetypes (controlled DSP, known ground truth) \u2014 proves the constants SEPARATE the genres. Drop 9 real rights-clean tracks + run eval-ear.ts to overwrite with real-audio calibration for full accuracy on real records.",
