@@ -307,6 +307,10 @@ export const MIX_PRESETS: Record<string, MixPreset> = {
 
 /** LUFS targets per master preset. */
 export const MASTER_TARGETS: Record<string, { lufs: number; tp: number }> = {
+  // HEADROOM LAW (measured, 3-point evidence): our takes crushed at -13..-15
+  // while Suno breathes at -17.3..-19 with MORE energy contrast. Streaming
+  // platforms normalize anyway — loudness wars only cost us dynamics.
+  'breathe_-16.5': { lufs: -16.5, tp: -1.2 },
   'streaming_lufs_-14': { lufs: -14, tp: -1.0 },
   // Competitive Afrobeats/Afropop delivery — loud like commercial records
   // (~-8 to -10 LUFS) but a -1.0 dBTP ceiling so it stays safe on lossy transcode

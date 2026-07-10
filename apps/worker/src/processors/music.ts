@@ -405,7 +405,7 @@ export async function processMusic(p: MusicPayload) {
           // don't master it DOWN to -14 with a full EQ/comp chain (that made the
           // catalog ~5 dB quieter and duller than the raw beat the Create page
           // plays — the "sounds weak" complaint). Raw engines keep the -14 chain.
-          const preset = finished ? 'afro_stream_-9' : 'streaming_lufs_-14';
+          const preset = finished ? 'breathe_-16.5' : 'streaming_lufs_-14'; // HEADROOM LAW: finished records breathe (-16.5); the -9 club crush retired from the default path (still selectable)
           const mixRow = await prisma.mix.create({
             data: { projectId: p.projectId, songId: p.songId, preset: 'source', url: ingestedMain, notes: 'Master source (auto, from render)', approved: true },
           });
