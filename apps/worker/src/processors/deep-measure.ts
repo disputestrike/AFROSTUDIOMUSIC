@@ -11,7 +11,12 @@ import { prisma } from '@afrohit/db';
 import { separateStems } from '@afrohit/ai';
 import { measureAudio, dspAvailable, type StemInputs } from '../lib/dsp';
 
-export interface DeepMeasurePayload { referenceId: string; url: string; workspaceId: string }
+export interface DeepMeasurePayload {
+  referenceId: string; url: string; workspaceId: string;
+  /** Facts-only references: delete the audio once the deep read lands (the lake
+   *  keeps NUMBERS, never a copy of a record the artist didn't make). */
+  purgeAfter?: boolean;
+}
 
 export async function processDeepMeasure(p: DeepMeasurePayload): Promise<void> {
   try {
@@ -40,6 +45,11 @@ export async function processDeepMeasure(p: DeepMeasurePayload): Promise<void> {
       data: { recipe: { ...recipe, measured, deepMeasured: true, deepMeasuredAt: new Date().toISOString() } as never },
     });
     console.log(`[deep-measure] ref ${p.referenceId} upgraded (stems=${!!stems?.bass})`);
+    if (p.purgeAfter) {
+      const { deleteObjectByUrl } = await import('../lib/storage');
+      await deleteObjectByUrl(p.url).catch(() => {});
+      console.log(`[deep-measure] purged facts-only audio for ref ${p.referenceId}`);
+    }
   } catch (err) {
     console.warn('[deep-measure] failed (non-fatal):', (err as Error)?.message);
   }

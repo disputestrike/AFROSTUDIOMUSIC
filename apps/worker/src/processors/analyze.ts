@@ -13,6 +13,11 @@ interface AnalyzePayload {
   projectId: string;
   url: string;  /** Training session: delete the uploaded audio after learning from it. */
   purgeAfter?: boolean;
+  /** FACTS-ONLY reference (a record the artist owns but didn't make): measure the
+   *  uncopyrightable NUMBERS (tempo/key/groove/log-drum/arrangement) into the lane
+   *  profile — NO transcription, NO prose recipe, NO stored audio. Expression is
+   *  never learned from someone else's record; facts are not expression. */
+  factsOnly?: boolean;
 }
 
 /**
@@ -29,6 +34,39 @@ export async function processAnalyze(p: AnalyzePayload) {
     });
     // Genre the uploader says this is — anchors the analysis (their own song).
     const project = await prisma.project.findUnique({ where: { id: p.projectId }, select: { artistId: true, genre: true } });
+
+    // FACTS-ONLY: measure the numbers, learn no expression, keep no audio.
+    if (p.factsOnly) {
+      let metrics: Awaited<ReturnType<typeof measureAudioQuality>> | null = null;
+      try { metrics = await measureAudioQuality(p.url); } catch { metrics = null; }
+      let measured = unknownAnalysis('engine-unavailable');
+      try { if (await dspAvailable()) measured = await measureAudio(p.url); } catch (err) {
+        console.warn('[analyze] facts-only DSP measure failed:', (err as Error)?.message);
+      }
+      const coverage = analysisCoverage(measured);
+      const reference = await prisma.soundReference.create({
+        data: {
+          workspaceId: p.workspaceId,
+          artistId: project?.artistId ?? null,
+          genre: project?.genre ?? null, // no LLM detection in facts mode — the teach-genre picker is the label
+          sourceUrl: `facts:${p.url}`,
+          title: `reference facts · ${project?.genre ?? 'unknown'}`,
+          recipe: { factsOnly: true, measured, metrics } as never,
+          summary: null, // NOTHING for the prose briefs to quote — numbers only, by design
+        },
+      }).catch((err) => { console.warn('[analyze] facts reference write failed:', (err as Error)?.message); return null; });
+      // Deep pass (stems-grade log-drum) then PURGE the audio — the lake keeps
+      // numbers, never a copy of a record the artist didn't make.
+      if (reference?.id && measured.engineOk && process.env.DSP_STEMS !== '0') {
+        await enqueueJob('music', 'deep-measure', { referenceId: reference.id, url: p.url, workspaceId: p.workspaceId, purgeAfter: true })
+          .catch(async () => { const { deleteObjectByUrl } = await import('../lib/storage'); await deleteObjectByUrl(p.url).catch(() => {}); });
+      } else {
+        const { deleteObjectByUrl } = await import('../lib/storage');
+        await deleteObjectByUrl(p.url).catch(() => {});
+      }
+      await markSucceeded(p.jobId, { factsOnly: true, referenceId: reference?.id ?? null, measured, coverage, profile: null });
+      return;
+    }
 
     // Trim to a ~60s representative clip (past the intro) before analysis — keeps
     // the transcription fast/cheap and the optional audio model light. Falls back

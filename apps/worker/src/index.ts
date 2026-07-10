@@ -24,7 +24,7 @@ import { processTransform } from './processors/transform';
 import { processOwnEngine } from './processors/own-engine';
 import { processSongEdit } from './processors/song-edit';
 import { processSynthMaterial } from './processors/synth-material';
-import { processNightlyCompound, processMeasureBackfill, processMineLexicon, processLexiconResearch, processWiktionaryHarvest, processGlossPass } from './processors/compound';
+import { processNightlyCompound, processMeasureBackfill, processLearnBackfill, processMineLexicon, processLexiconResearch, processWiktionaryHarvest, processGlossPass } from './processors/compound';
 
 const log = pino({ level: process.env.LOG_LEVEL ?? 'info' });
 
@@ -74,6 +74,7 @@ const workers = [
     else if (job.name === 'synth-material') await processSynthMaterial(job.data as never);
     else if (job.name === 'nightly-compound') await processNightlyCompound();
     else if (job.name === 'measure-backfill') await processMeasureBackfill();
+    else if (job.name === 'learn-backfill') await processLearnBackfill();
     else if (job.name === 'mine-lexicon') await processMineLexicon();
     else if (job.name === 'lexicon-research') await processLexiconResearch();
     else if (job.name === 'wiktionary-harvest') await processWiktionaryHarvest();
@@ -106,6 +107,7 @@ const workers = [
     else if (job.name === 'zap-radar') await processZapRadar();
     else if (job.name === 'nightly-compound') await processNightlyCompound();
     else if (job.name === 'measure-backfill') await processMeasureBackfill();
+    else if (job.name === 'learn-backfill') await processLearnBackfill();
     else if (job.name === 'mine-lexicon') await processMineLexicon();
     else if (job.name === 'lexicon-research') await processLexiconResearch();
     else if (job.name === 'wiktionary-harvest') await processWiktionaryHarvest();

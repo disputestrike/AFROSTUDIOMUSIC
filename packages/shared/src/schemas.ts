@@ -353,9 +353,14 @@ export const mixerAiSchema = z.object({
 
 // ---------- Listen / analyze a reference track -----------------------------
 
+// factsOnly: measure a record the artist OWNS but didn't make — uncopyrightable
+// NUMBERS (tempo/key/groove/log-drum/arrangement) into the lane profile; no
+// transcription, no prose recipe, audio purged after measuring. Expression is
+// never learned from someone else's record.
 export const analyzeAudioSchema = z.object({
   /** Training session: delete the uploaded audio after learning from it. */
   purgeAfter: z.boolean().optional(),
+  factsOnly: z.boolean().optional(),
   url: z.string().url(), // an uploaded/imported track url the artist has rights to
 });
 

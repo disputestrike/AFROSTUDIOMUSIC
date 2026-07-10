@@ -25,7 +25,8 @@ export default async function taste(app: FastifyInstance) {
       // Zap'd reference-lanes live in the same lake but are NOT the artist's sound.
       where: {
         workspaceId,
-        NOT: [{ sourceUrl: { startsWith: 'lyric:' } }, { sourceUrl: { startsWith: 'trend:' } }, { sourceUrl: { startsWith: 'zap:' } }],
+        // facts: rows are lane-profile numbers from records the artist didn't make — not "my sound"
+        NOT: [{ sourceUrl: { startsWith: 'lyric:' } }, { sourceUrl: { startsWith: 'trend:' } }, { sourceUrl: { startsWith: 'zap:' } }, { sourceUrl: { startsWith: 'facts:' } }],
       },
       orderBy: { createdAt: 'desc' },
       take: 100,

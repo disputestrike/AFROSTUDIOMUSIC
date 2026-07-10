@@ -60,6 +60,7 @@ export function ReferenceListen({ projectId }: { projectId: string }) {
   const fileRef = useRef<HTMLInputElement>(null);
   const [status, setStatus] = useState<string>('');
   const [busy, setBusy] = useState(false);
+  const [factsOnly, setFactsOnly] = useState(false);
   const [profile, setProfile] = useState<Profile | null>(null);
   // Visible production state — creating from a listen takes 2-4 minutes and MUST
   // look alive the whole time (a quiet status line reads as a dead button).
@@ -97,13 +98,19 @@ export function ReferenceListen({ projectId }: { projectId: string }) {
   // remake so the song rebuilds THIS record's sound, not a lucky-recent one.
   const referenceIdRef = useRef<string | null>(null);
 
-  async function poll(jobId: string): Promise<Profile> {
+  async function poll(jobId: string): Promise<Profile | null> {
     // Replicate can cold-start (first call after idle) for 2-3 min — poll up to
     // ~6 min and keep the user informed instead of giving up at 2 min.
     const MAX = 72; // 72 × 5s = 360s
     for (let i = 0; i < MAX; i++) {
       await new Promise((r) => setTimeout(r, 5000));
-      const job = await api.get<{ status: string; outputJson?: { profile?: Profile; referenceId?: string | null }; errorJson?: unknown }>(`/jobs/${jobId}`);
+      const job = await api.get<{ status: string; outputJson?: { profile?: Profile; referenceId?: string | null; factsOnly?: boolean }; errorJson?: unknown }>(`/jobs/${jobId}`);
+      if (job.status === 'SUCCEEDED' && job.outputJson?.factsOnly) {
+        // Facts-only: numbers landed in the lane profile; there is no vibe
+        // profile to show (by design — no expression was learned).
+        referenceIdRef.current = null;
+        return null;
+      }
       if (job.status === 'SUCCEEDED' && job.outputJson?.profile) {
         referenceIdRef.current = job.outputJson.referenceId ?? null;
         return job.outputJson.profile;
@@ -121,9 +128,13 @@ export function ReferenceListen({ projectId }: { projectId: string }) {
     try {
       // Proxy through our API (no R2 CORS needed) for the recording/reference.
       const { publicUrl } = await api.uploadAudioDirect(src, 'reference');
-      setStatus('🎧 The AI is listening…');
-      const { jobId } = await api.post<{ jobId: string }>(`/projects/${projectId}/analyze`, { url: publicUrl });
+      setStatus(factsOnly ? '📐 Measuring the numbers…' : '🎧 The AI is listening…');
+      const { jobId } = await api.post<{ jobId: string }>(`/projects/${projectId}/analyze`, { url: publicUrl, factsOnly: factsOnly || undefined });
       const p = await poll(jobId);
+      if (!p) {
+        setStatus('📐 Measured into the lane profile — tempo, groove, log-drum, arrangement. Numbers only: no words learned, audio deleted after measuring.');
+        return;
+      }
       setProfile(p);
       setStatus('Here’s what the AI heard:');
     } catch (e) {
@@ -321,6 +332,19 @@ export function ReferenceListen({ projectId }: { projectId: string }) {
         <p className="mt-2 text-xs text-slate-500">
           Play the song out loud from any phone, speaker, or device — hold your mic near it. The AI listens to the air (like Shazam), then builds a fresh original in that vibe.
         </p>
+        <label className="mt-3 flex cursor-pointer items-start gap-2 text-xs text-slate-400">
+          <input
+            type="checkbox"
+            checked={factsOnly}
+            onChange={(e) => setFactsOnly(e.target.checked)}
+            className="mt-0.5 accent-amber-400"
+          />
+          <span>
+            <span className="text-slate-200">📐 Facts-only reference</span> — a record you own but didn’t make. The ear measures the
+            NUMBERS (tempo, groove, log-drum, arrangement) into this lane’s profile so your songs hit the real target sound. No lyrics
+            transcribed, no recipe copied, audio deleted after measuring — facts, never someone else’s expression.
+          </span>
+        </label>
         {status && <div className="mt-3 text-xs text-slate-400">{status}</div>}
 
         {profile && (

@@ -6,8 +6,10 @@ import IORedis from 'ioredis';
 const connection = new IORedis(process.env.REDIS_URL ?? 'redis://localhost:6379', { maxRetriesPerRequest: null });
 const cache = new Map<string, Queue>();
 
-export async function enqueueJob(queue: string, name: string, payload: unknown): Promise<void> {
+export async function enqueueJob(queue: string, name: string, payload: unknown, opts?: { delayMs?: number }): Promise<void> {
   let q = cache.get(queue);
   if (!q) { q = new Queue(queue, { connection }); cache.set(queue, q); }
-  await q.add(name, payload, { removeOnComplete: 200, removeOnFail: 500 });
+  // delayMs staggers Replicate-bound jobs — this account creates predictions at
+  // BURST 1, so batch enqueues must space out or all but the first 429.
+  await q.add(name, payload, { removeOnComplete: 200, removeOnFail: 500, ...(opts?.delayMs ? { delay: opts.delayMs } : {}) });
 }

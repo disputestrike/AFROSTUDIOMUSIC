@@ -36,7 +36,7 @@ export const LAKE_ORCHESTRATION = {
 
 export interface DataLakeSummary {
   totalReferences: number;
-  byKind: { heardSongs: number; lyricCraft: number; trendSnapshots: number; selfTraining: number; zapped: number };
+  byKind: { heardSongs: number; lyricCraft: number; trendSnapshots: number; selfTraining: number; zapped: number; referenceFacts: number };
   /** Top genres among the artist's HEARD/trained sound (not lyric/trend rows). */
   topGenres: Array<{ genre: string; count: number }>;
   /** A few real trait lines so the chat can quote what it actually learned. */
@@ -49,16 +49,17 @@ export interface DataLakeSummary {
  * cheap (4 counts + one small read) so it doesn't slow the chat down.
  */
 export async function dataLakeSummary(workspaceId: string): Promise<DataLakeSummary> {
-  const [total, lyricCraftN, trendN, zapN, generatedN, recent] = await Promise.all([
+  const [total, lyricCraftN, trendN, zapN, factsN, generatedN, recent] = await Promise.all([
     prisma.soundReference.count({ where: { workspaceId } }),
     prisma.soundReference.count({ where: { workspaceId, sourceUrl: { startsWith: 'lyric:' } } }),
     prisma.soundReference.count({ where: { workspaceId, sourceUrl: { startsWith: 'trend:' } } }),
     prisma.soundReference.count({ where: { workspaceId, sourceUrl: { startsWith: 'zap:' } } }),
+    prisma.soundReference.count({ where: { workspaceId, sourceUrl: { startsWith: 'facts:' } } }),
     prisma.soundReference.count({ where: { workspaceId, recipe: { path: ['source'], equals: 'generated' } } }),
     prisma.soundReference.findMany({
       // "MY sound" = heard/trained rows only. Lyric-craft, trends, and Zap'd
       // reference-lanes live in the same table but aren't the artist's own sound.
-      where: { workspaceId, NOT: [{ sourceUrl: { startsWith: 'lyric:' } }, { sourceUrl: { startsWith: 'trend:' } }, { sourceUrl: { startsWith: 'zap:' } }] },
+      where: { workspaceId, NOT: [{ sourceUrl: { startsWith: 'lyric:' } }, { sourceUrl: { startsWith: 'trend:' } }, { sourceUrl: { startsWith: 'zap:' } }, { sourceUrl: { startsWith: 'facts:' } }] },
       orderBy: { createdAt: 'desc' },
       take: 50,
       select: { genre: true, summary: true, recipe: true, createdAt: true },
@@ -87,11 +88,13 @@ export async function dataLakeSummary(workspaceId: string): Promise<DataLakeSumm
   return {
     totalReferences: total,
     byKind: {
-      heardSongs: Math.max(0, total - lyricCraftN - trendN - zapN - generatedN),
+      heardSongs: Math.max(0, total - lyricCraftN - trendN - zapN - factsN - generatedN),
       lyricCraft: lyricCraftN,
       trendSnapshots: trendN,
       selfTraining: generatedN,
       zapped: zapN,
+      // facts-only reference records (numbers for lane profiles; no expression)
+      referenceFacts: factsN,
     },
     topGenres,
     sampleTraits,
@@ -121,6 +124,8 @@ export async function dataLakeReport(workspaceId: string) {
         ? 'trendSnapshots'
         : r.sourceUrl.startsWith('zap:')
           ? 'zapped'
+          : r.sourceUrl.startsWith('facts:')
+            ? 'referenceFacts'
           : ((r.recipe ?? {}) as { source?: string }).source === 'generated'
             ? 'selfTraining'
             : 'heardSongs';

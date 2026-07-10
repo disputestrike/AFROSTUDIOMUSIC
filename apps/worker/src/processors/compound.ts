@@ -21,7 +21,9 @@ import { processSynthMaterial } from './synth-material';
 
 // 'zap:' rows are METADATA-learned lanes (no audio behind the sourceUrl) — the
 // measure-backfill was retrying them forever and wasting its whole batch.
-const skipSource = (u: string) => u.startsWith('lyric:') || u.startsWith('trend:') || u.startsWith('zap:');
+// 'facts:' rows get their deep pass at creation and their audio is purged after
+// — and they must NEVER be lyric-mined (someone else's record).
+const skipSource = (u: string) => u.startsWith('lyric:') || u.startsWith('trend:') || u.startsWith('zap:') || u.startsWith('facts:');
 
 /** Enqueue deep-measure for owned references missing a measured read; inline
  *  lane-assess for rendered beats missing one. Bounded per run — never a stampede. */
@@ -64,6 +66,46 @@ export async function processMeasureBackfill(opts?: { refLimit?: number; beatLim
     console.log(`[backfill] deep-measure queued=${queued}, beats assessed=${assessed}`);
   } catch (err) {
     console.warn('[backfill] failed (non-fatal):', (err as Error)?.message);
+  }
+}
+
+/**
+ * LEARN-BACKFILL — the artist's OWN finished songs that entered the studio
+ * before the upload door learned (Suno-bridge returns / uploaded masters were
+ * mastered + scored but never analyzed into the lake). Finds every 'uploaded'
+ * mix with no SoundReference and queues a real analyze for it — bounded and
+ * staggered (Replicate BURST-1) so it never floods the queue. His songs, his
+ * training: this is exactly the audio the lake exists for.
+ */
+export async function processLearnBackfill(opts?: { limit?: number }): Promise<void> {
+  const limit = opts?.limit ?? 5;
+  try {
+    const uploads = await prisma.mix.findMany({
+      where: { preset: 'uploaded' },
+      orderBy: { createdAt: 'desc' },
+      take: 200,
+      select: { id: true, url: true, projectId: true, project: { select: { workspaceId: true } } },
+    });
+    if (!uploads.length) { console.log('[learn-backfill] no uploaded songs found'); return; }
+    const urls = uploads.map((u) => u.url);
+    const known = await prisma.soundReference.findMany({
+      where: { OR: [{ sourceUrl: { in: urls } }, { sourceUrl: { in: urls.map((u) => `facts:${u}`) } }] },
+      select: { sourceUrl: true },
+    });
+    const learned = new Set(known.map((k) => k.sourceUrl.replace(/^facts:/, '')));
+    let queued = 0;
+    for (const u of uploads) {
+      if (queued >= limit) break;
+      if (!u.url || learned.has(u.url) || !u.project?.workspaceId) continue;
+      const job = await prisma.providerJob.create({
+        data: { workspaceId: u.project.workspaceId, projectId: u.projectId, kind: 'analyze', provider: 'replicate', status: 'QUEUED', inputJson: { url: u.url, source: 'learn-backfill' } as never },
+      });
+      await enqueueJob('music', 'analyze-audio', { jobId: job.id, workspaceId: u.project.workspaceId, projectId: u.projectId, url: u.url }, { delayMs: queued * 30_000 });
+      queued++;
+    }
+    console.log(`[learn-backfill] queued=${queued} of ${uploads.length} uploaded songs (${learned.size} already learned)`);
+  } catch (err) {
+    console.warn('[learn-backfill] failed (non-fatal):', (err as Error)?.message);
   }
 }
 
@@ -349,6 +391,7 @@ export async function processNightlyCompound(): Promise<void> {
   console.log('[nightly-compound] start');
   await ensureSignatureKits();
   await processReportCard();
+  await processLearnBackfill({ limit: 5 });
   await processMeasureBackfill({ refLimit: 10, beatLimit: 4 });
   await processMineLexicon({ refLimit: 4 });
   await processLexiconResearch({ queries: 6 });

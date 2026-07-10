@@ -57,7 +57,9 @@ async function fetchRefs(workspaceId: string, genre: string, pinnedId?: string |
   const rows = await prisma.soundReference.findMany({
     where: {
       workspaceId,
-      NOT: [{ sourceUrl: { startsWith: 'lyric:' } }, { sourceUrl: { startsWith: 'trend:' } }],
+      // facts: rows are NUMBERS for the lane profile only — they carry no prose
+      // and must never occupy a brief slot (and never could leak expression).
+      NOT: [{ sourceUrl: { startsWith: 'lyric:' } }, { sourceUrl: { startsWith: 'trend:' } }, { sourceUrl: { startsWith: 'facts:' } }],
     },
     orderBy: { createdAt: 'desc' },
     take: 60,
