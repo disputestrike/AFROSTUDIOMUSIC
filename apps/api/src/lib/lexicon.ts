@@ -144,7 +144,9 @@ export async function lexiconPalette(opts: {
     // machine rows drown the curated bank the writers were meant to pull from.
     const whereBase = { OR: [{ workspaceId: null }, { workspaceId: opts.workspaceId }], language: { in: [...buckets] }, category: { in: cats } };
     const curated = await prisma.lexiconEntry.findMany({
-      where: { ...whereBase, source: { in: ['seed', 'research', 'user'] } },
+      // A3-5 guard (c): bulk-drafted rows are quarantined until the judgment
+      // brain verifies them — they never reach the writers.
+      where: { ...whereBase, source: { in: ['seed', 'research', 'user'] }, NOT: { tags: { has: 'bulk_unverified' } } },
       select: { term: true, category: true, language: true },
       take: 1000,
     });
@@ -153,7 +155,7 @@ export async function lexiconPalette(opts: {
       : [
           ...curated,
           ...(await prisma.lexiconEntry.findMany({
-            where: { ...whereBase, source: { notIn: ['seed', 'research', 'user'] }, NOT: { tags: { has: 'unglossed' } } },
+            where: { ...whereBase, source: { notIn: ['seed', 'research', 'user'] }, NOT: [{ tags: { has: 'unglossed' } }, { tags: { has: 'bulk_unverified' } }] },
             select: { term: true, category: true, language: true },
             take: 1000 - curated.length,
           })),

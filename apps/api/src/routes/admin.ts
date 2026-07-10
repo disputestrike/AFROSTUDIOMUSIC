@@ -7,6 +7,7 @@ import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 import { prisma } from '@afrohit/db';
 import { isInternalMode, requireAuth } from '../middleware/auth';
+import { isFirstPartyWorkspace, resolveEngineForWorkspace } from '@afrohit/shared';
 import { enqueue, QUEUES, type QueueName } from '../lib/queue';
 
 export async function requireAdmin(req: FastifyRequest): Promise<void> {
@@ -44,13 +45,71 @@ const grantSchema = z.object({
 
 export default async function admin(app: FastifyInstance) {
   // One-tap compounding: run the lake jobs NOW instead of waiting for tonight.
-  const runSchema = z.object({ task: z.enum(['nightly-compound', 'measure-backfill', 'learn-backfill', 'listen-back', 'refile-references', 'mine-lexicon', 'lexicon-research', 'wiktionary-harvest', 'wiktionary-burst', 'lexicon-gloss']) });
+  const runSchema = z.object({ task: z.enum(['nightly-compound', 'measure-backfill', 'learn-backfill', 'listen-back', 'refile-references', 'mine-lexicon', 'lexicon-research', 'wiktionary-harvest', 'wiktionary-burst', 'lexicon-gloss', 'lexicon-verify']) });
   app.post('/run', { schema: { body: runSchema } }, async (req, reply) => {
     await requireAdmin(req);
     const { task } = runSchema.parse(req.body);
     await enqueue({ queue: app.queues.music, name: task, payload: {} });
     reply.code(202);
     return { queued: task, note: 'Running on the worker now — watch worker logs; results land in /lanes/inventory.' };
+  });
+
+  // A3-3 — ENGINE STATUS CARD: "which engine is being used" answered at a
+  // glance, live. Admin-only (real vendor names live here — §1.11).
+  app.get('/engines', async (req) => {
+    await requireAdmin(req);
+    const fal = !!process.env.FAL_KEY;
+    const sunoAvailable = !!process.env.SUNO_API_KEY;
+    const firstParty = isFirstPartyWorkspace('(internal)');
+    const vocal = resolveEngineForWorkspace(undefined, { firstParty, sunoAvailable });
+    const since = new Date(Date.now() - 24 * 60 * 60 * 1000);
+    const spend = await prisma.providerJob.groupBy({
+      by: ['provider'],
+      where: { kind: 'music', status: 'SUCCEEDED', createdAt: { gte: since } },
+      _count: true,
+      _sum: { cost: true },
+    });
+    const llm24 = await prisma.analyticsEvent.findMany({
+      where: { name: 'llm.call', createdAt: { gte: since } },
+      select: { properties: true },
+      take: 2000,
+    });
+    const llmByBrain = new Map<string, { calls: number; estCostUsd: number }>();
+    for (const e of llm24) {
+      const p = (e.properties ?? {}) as { brain?: string; estCostUsd?: number | null };
+      const k = p.brain ?? 'unknown';
+      const cur = llmByBrain.get(k) ?? { calls: 0, estCostUsd: 0 };
+      cur.calls++;
+      cur.estCostUsd += p.estCostUsd ?? 0;
+      llmByBrain.set(k, cur);
+    }
+    return {
+      musicProvider: process.env.MUSIC_PROVIDER ?? '(unset)',
+      resolved: {
+        vocalDefault: vocal.engine,
+        draftFallback: 'ace_step',
+        instrumental: process.env.MUSIC_PROVIDER ?? 'stub',
+        stemsMode: (process.env.DEMUCS_MODE ?? '').toLowerCase() || 'default (measure=local, user=replicate)',
+        firstParty,
+        bridgeAvailable: sunoAvailable && firstParty,
+      },
+      falRouting: {
+        keyPresent: fal,
+        adapters: {
+          ace_step: { route: fal ? 'fal' : 'replicate', model: fal ? process.env.FAL_ACE_MODEL ?? 'fal-ai/ace-step' : 'lucataco/ace-step' },
+          minimax: { route: fal ? 'fal' : 'replicate', model: fal ? process.env.FAL_MINIMAX_MODEL ?? 'fal-ai/minimax-music/v2' : 'minimax/music-2.6' },
+          minimax_ref: { route: fal ? 'fal' : 'replicate (UNCONDITIONED fallback)', model: process.env.FAL_MINIMAX_REF_MODEL ?? 'fal-ai/minimax-music' },
+          musicgen: { route: fal ? 'fal' : 'replicate', model: fal ? process.env.FAL_MUSICGEN_MODEL ?? 'fal-ai/musicgen' : 'meta/musicgen' },
+        },
+        note: 'fal adapters fall back to Replicate inline on any failure — a fallback shows up as Replicate spend in the last-24h table below.',
+      },
+      brainTiers: {
+        judgment: { brain: 'anthropic', configured: !!(process.env.ANTHROPIC_API_KEY || process.env.CLAUDE_API_KEY) },
+        bulk: { brain: 'cerebras', configured: !!(process.env.CEREBRAS_API_KEY || process.env.CEREBRAS_API_KEYS), model: process.env.CEREBRAS_MODEL ?? 'gpt-oss-120b' },
+        last24h: Object.fromEntries(llmByBrain),
+      },
+      last24hRenderSpend: spend.map((s) => ({ engine: s.provider, renders: s._count, costUsd: Math.round(Number(s._sum.cost ?? 0) * 100) / 100 })),
+    };
   });
 
   // WO-15 — ECONOMICS: marginal cost per render and RENDERS-PER-KEPT-SONG (the
@@ -82,6 +141,52 @@ export default async function admin(app: FastifyInstance) {
       candidatesRendered += Math.max(1, bo?.rendered ?? 1);
     }
     const totalCost = Number(costAgg._sum.cost ?? 0);
+
+    // A3-6 — LLM spend by tier/task + stems by mode + projected savings vs the
+    // OLD routing (assumptions stated in the payload; costs are estimates).
+    const [llmEvents, stemEvents] = await Promise.all([
+      prisma.analyticsEvent.findMany({ where: { name: 'llm.call', createdAt: { gte: since } }, select: { properties: true }, take: 10_000 }),
+      prisma.analyticsEvent.findMany({ where: { name: 'stems.run', createdAt: { gte: since } }, select: { properties: true }, take: 10_000 }),
+    ]);
+    const llmByTier = new Map<string, { calls: number; estCostUsd: number }>();
+    const llmByTask = new Map<string, { calls: number; estCostUsd: number; tier: string }>();
+    let bulkCalls = 0;
+    for (const e of llmEvents) {
+      const p = (e.properties ?? {}) as { tier?: string; task?: string; brain?: string; estCostUsd?: number | null };
+      const tier = p.tier ?? 'judgment';
+      const t = llmByTier.get(tier) ?? { calls: 0, estCostUsd: 0 };
+      t.calls++; t.estCostUsd += p.estCostUsd ?? 0;
+      llmByTier.set(tier, t);
+      const taskKey = p.task ?? 'unlabeled';
+      const tk = llmByTask.get(taskKey) ?? { calls: 0, estCostUsd: 0, tier };
+      tk.calls++; tk.estCostUsd += p.estCostUsd ?? 0;
+      llmByTask.set(taskKey, tk);
+      if (tier === 'bulk' && p.brain === 'cerebras') bulkCalls++;
+    }
+    const stemsByMode = new Map<string, { runs: number; estCostUsd: number; avgWallS: number }>();
+    for (const e of stemEvents) {
+      const p = (e.properties ?? {}) as { mode?: string; estCostUsd?: number; wallMs?: number };
+      const m = p.mode ?? 'unknown';
+      const cur = stemsByMode.get(m) ?? { runs: 0, estCostUsd: 0, avgWallS: 0 };
+      cur.avgWallS = (cur.avgWallS * cur.runs + (p.wallMs ?? 0) / 1000) / (cur.runs + 1);
+      cur.runs++; cur.estCostUsd += p.estCostUsd ?? 0;
+      stemsByMode.set(m, cur);
+    }
+    // Projected savings vs the OLD routing. ASSUMPTIONS (stated, not billing truth):
+    // local stems would have cost ~$0.10/run on Replicate; a bulk-tier call would
+    // have run on the judgment brain at ~$0.01/call; per-engine render savings =
+    // assumed old Replicate price minus the recorded cost, floored at 0.
+    const OLD_RENDER_PRICE: Record<string, number> = { ace_step: 0.1, minimax: 0.12, replicate: 0.05 };
+    let renderSavings = 0;
+    for (const [k, v] of byEngine) {
+      const old = OLD_RENDER_PRICE[k];
+      if (old) renderSavings += Math.max(0, v.renders * old - v.costUsd);
+    }
+    const localStemRuns = stemsByMode.get('local')?.runs ?? 0;
+    const stemsSavings = localStemRuns * 0.1;
+    const llmSavings = Math.max(0, bulkCalls * 0.01 - (llmByTier.get('bulk')?.estCostUsd ?? 0));
+    const projectedSavingsUsd = Math.round((renderSavings + stemsSavings + llmSavings) * 100) / 100;
+
     return {
       windowDays: days,
       renders: { succeeded: renders.length, failed, candidatesRendered },
@@ -89,6 +194,16 @@ export default async function admin(app: FastifyInstance) {
       keptSongs,
       rendersPerKeptSong: keptSongs ? Math.round((candidatesRendered / keptSongs) * 100) / 100 : null,
       byEngine: [...byEngine.values()].map((e) => ({ ...e, costUsd: Math.round(e.costUsd * 100) / 100 })).sort((a, b) => b.renders - a.renders),
+      llm: {
+        byTier: Object.fromEntries([...llmByTier].map(([k, v]) => [k, { ...v, estCostUsd: Math.round(v.estCostUsd * 1000) / 1000, note: k === 'judgment' ? 'Anthropic costs read from billing, not estimated here — calls counted' : undefined }])),
+        byTask: [...llmByTask].map(([task, v]) => ({ task, ...v, estCostUsd: Math.round(v.estCostUsd * 1000) / 1000 })).sort((a, b) => b.calls - a.calls).slice(0, 12),
+      },
+      stems: { byMode: Object.fromEntries([...stemsByMode].map(([k, v]) => [k, { ...v, estCostUsd: Math.round(v.estCostUsd * 100) / 100, avgWallS: Math.round(v.avgWallS) }])) },
+      projectedSavings: {
+        usd: projectedSavingsUsd,
+        window: `${days}d`,
+        assumptions: 'old routing = Replicate renders (ace $0.10 / minimax $0.12 / musicgen $0.05), paid stems $0.10/run, bulk LLM calls on the judgment brain ~$0.01/call. Estimates for pricing sign-off (§7.4), not billing truth.',
+      },
       note: 'rendersPerKeptSong is THE margin number — the ear lowering it is the moat (§E2). Costs are provider estimates recorded per job.',
     };
   });

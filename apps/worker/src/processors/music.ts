@@ -99,6 +99,14 @@ export async function processMusic(p: MusicPayload) {
     let adapter = wantsVocals
       ? musicAdapter(engine, engineKey)
       : musicAdapter(ws?.musicProvider ?? undefined, ws?.musicApiKey ?? undefined);
+    // A3-2 — REFERENCE-AUDIO ADJUST: when the job carries the song's own audio,
+    // condition the render on it (audio in, repaired audio out) instead of
+    // re-rolling from tags. The reference id is logged so every Adjust run is
+    // traceable to its source sound (internal log — wall-safe).
+    if (p.input.referenceAudioUrl && wantsVocals) {
+      adapter = musicAdapter('minimax_ref', engineKey);
+      console.log(`[adjust] reference-conditioned render — reference-input=${String(p.input.referenceAudioUrl).slice(0, 80)}`);
+    }
     type GenResult = Awaited<ReturnType<typeof adapter.generate>>;
 
     // minimax/suno DELIVER a finished, loudness-maximised master (they ship hot on

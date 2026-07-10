@@ -736,42 +736,50 @@ class StubMusicAdapter implements MusicProviderAdapter {
  * adapter so a fal outage (or an input-contract drift) never kills a render.
  * [PENDING live verification — needs FAL_KEY on the worker (§7.3).]
  */
-class FalAceStepAdapter implements MusicProviderAdapter {
-  readonly name = 'ace_step'; // same engine — the ROUTE is the only difference
-  private model = process.env.FAL_ACE_MODEL ?? 'fal-ai/ace-step';
-  private fallback: AceStepSongAdapter;
-  constructor(apiKey?: string) {
-    this.fallback = new AceStepSongAdapter(apiKey);
-  }
+/**
+ * A3-1 — ONE fal queue adapter for every fal-routed engine (ACE-Step, MiniMax,
+ * MusicGen). Same laws for all three: auto-route when FAL_KEY exists, inline
+ * Replicate fallback on ANY fal failure (submit error, contract drift, missing
+ * output), fallback reason logged INTERNALLY only (§1.11 — it never reaches a
+ * user payload; the worker's fallbackReason stays class-level/generic).
+ * Model slugs are env-overridable. [Live verification pending FAL_KEY — §7.3.]
+ */
+class FalQueueAdapter implements MusicProviderAdapter {
+  constructor(
+    public readonly name: string,
+    private model: string,
+    private buildInput: (input: MusicGenerationInput) => Record<string, unknown>,
+    private estCostUsd: number,
+    private fallback: MusicProviderAdapter
+  ) {}
 
   async generate(input: MusicGenerationInput): Promise<ProviderJobResult<MusicGenerationOutput>> {
     const key = process.env.FAL_KEY;
     if (!key) return this.fallback.generate(input);
-    const duration = Math.min(Math.max(Math.round(input.durationS ?? 120), 30), 240);
-    const tags = composeStyleTags(input, {
-      fallbackLiteral: 'catchy, melodic vocals, punchy drums, warm bass, radio-ready',
-    }).join(', ');
     try {
       const res = await fetch(`https://queue.fal.run/${this.model}`, {
         method: 'POST',
         headers: { authorization: `Key ${key}`, 'content-type': 'application/json' },
-        body: JSON.stringify({ tags, lyrics: input.lyrics ?? '', duration }),
+        body: JSON.stringify(this.buildInput(input)),
       });
       if (!res.ok) {
-        console.warn(`[fal-ace] submit ${res.status} — falling back to Replicate:`, (await res.text()).slice(0, 160));
+        console.warn(`[fal-${this.name}] submit ${res.status} — falling back to Replicate:`, (await res.text()).slice(0, 160));
         return this.fallback.generate(input);
       }
       const data = (await res.json()) as { request_id?: string };
       if (!data.request_id) return this.fallback.generate(input);
       return { externalId: `fal:${data.request_id}`, status: 'running', pollAfterMs: 5_000 };
     } catch (err) {
-      console.warn('[fal-ace] submit error — falling back to Replicate:', (err as Error)?.message);
+      console.warn(`[fal-${this.name}] submit error — falling back to Replicate:`, (err as Error)?.message);
       return this.fallback.generate(input);
     }
   }
 
   async poll(externalId: string): Promise<ProviderJobResult<MusicGenerationOutput>> {
-    if (!externalId.startsWith('fal:')) return this.fallback.poll(externalId);
+    if (!externalId.startsWith('fal:')) {
+      if (this.fallback.poll) return this.fallback.poll(externalId);
+      return { externalId, status: 'failed', error: 'fallback adapter has no poll' };
+    }
     const key = process.env.FAL_KEY;
     if (!key) return { status: 'failed', error: 'FAL_KEY missing at poll time' };
     const id = externalId.slice(4);
@@ -790,22 +798,87 @@ class FalAceStepAdapter implements MusicProviderAdapter {
       externalId,
       status: 'succeeded',
       output: { mainAudioUrl: url, format: 'wav', durationS: 0 },
-      estimatedCostUsd: Math.max(0.01, 0.0002 * 180),
+      estimatedCostUsd: this.estCostUsd,
     };
   }
 }
 
+const falAce = (apiKey?: string) =>
+  new FalQueueAdapter(
+    'ace_step',
+    process.env.FAL_ACE_MODEL ?? 'fal-ai/ace-step',
+    (input) => ({
+      tags: composeStyleTags(input, { fallbackLiteral: 'catchy, melodic vocals, punchy drums, warm bass, radio-ready' }).join(', '),
+      lyrics: input.lyrics ?? '',
+      duration: Math.min(Math.max(Math.round(input.durationS ?? 120), 30), 240),
+    }),
+    Math.max(0.01, 0.0002 * 180), // ≈ cents per song
+    new AceStepSongAdapter(apiKey)
+  );
+
+const falMiniMax = (apiKey?: string) =>
+  new FalQueueAdapter(
+    'minimax',
+    process.env.FAL_MINIMAX_MODEL ?? 'fal-ai/minimax-music/v2',
+    (input) => {
+      const style = composeStyleTags(input, { fallbackLiteral: 'catchy, melodic vocals, radio-ready' }).join(', ');
+      const hasLyrics = !!input.lyrics?.trim();
+      return hasLyrics ? { prompt: style, lyrics: cleanLyricsForMinimax(input.lyrics!) } : { prompt: style };
+    },
+    0.03, // fal MiniMax ≈ $0.03/gen vs ~$0.12 via Replicate
+    new MiniMaxSongAdapter(apiKey)
+  );
+
+/**
+ * A3-2 — REFERENCE-AUDIO MiniMax (fal v1, ≈$0.035/gen): the user's existing
+ * take goes IN as audio; the render matches its groove/tempo/key instead of
+ * re-rolling from tags. Selected by the worker whenever referenceAudioUrl is
+ * present + FAL_KEY set. Fallback = plain MiniMax (unconditioned — logged
+ * internally so an Adjust that lost its conditioning is never silent).
+ */
+const falMiniMaxRef = (apiKey?: string) =>
+  new FalQueueAdapter(
+    'minimax',
+    process.env.FAL_MINIMAX_REF_MODEL ?? 'fal-ai/minimax-music',
+    (input) => {
+      const style = composeStyleTags(input, { fallbackLiteral: 'catchy, melodic vocals, radio-ready' }).join(', ');
+      const body: Record<string, unknown> = { prompt: style, reference_audio_url: input.referenceAudioUrl };
+      if (input.lyrics?.trim()) body.lyrics = cleanLyricsForMinimax(input.lyrics);
+      return body;
+    },
+    0.035,
+    new MiniMaxSongAdapter(apiKey)
+  );
+
+const falMusicGen = (apiKey?: string) =>
+  new FalQueueAdapter(
+    'replicate', // instrumental beat path keeps its internal id; the route changes
+    process.env.FAL_MUSICGEN_MODEL ?? 'fal-ai/musicgen',
+    (input) => ({
+      prompt: composeStyleTags(input, { fallbackLiteral: 'catchy instrumental, punchy drums, warm bass' }).join(', '),
+      duration: Math.min(Math.max(Math.round(input.durationS ?? 30), 5), 30),
+    }),
+    0.02,
+    new ReplicateMusicGenAdapter(apiKey)
+  );
+
 export function musicAdapter(override?: string, apiKey?: string): MusicProviderAdapter {
+  // A3-1: every fal-routable engine auto-routes through fal when FAL_KEY exists
+  // (MiniMax ≈$0.03/gen vs ~$0.12, ACE ≈cents, MusicGen ≈$0.02) with inline
+  // Replicate fallback — a fal outage or contract drift never kills a render.
+  const fal = !!process.env.FAL_KEY;
   switch (override ?? provider()) {
+    // A3-2: reference-conditioned renders (Adjust) — audio in, repaired audio out.
+    case 'minimax_ref':
+      return fal ? falMiniMaxRef(apiKey) : new MiniMaxSongAdapter(apiKey);
     case 'minimax':
-      return new MiniMaxSongAdapter(apiKey);
+      return fal ? falMiniMax(apiKey) : new MiniMaxSongAdapter(apiKey);
     case 'ace_step':
-      // WO-9: fal route when the key exists (~10× cheaper), Replicate otherwise.
-      return process.env.FAL_KEY ? new FalAceStepAdapter(apiKey) : new AceStepSongAdapter(apiKey);
+      return fal ? falAce(apiKey) : new AceStepSongAdapter(apiKey);
     case 'suno':
       return new SunoAdapter(apiKey);
     case 'replicate':
-      return new ReplicateMusicGenAdapter(apiKey);
+      return fal ? falMusicGen(apiKey) : new ReplicateMusicGenAdapter(apiKey);
     case 'eleven':
       return new ElevenMusicAdapter();
     case 'stable_audio':

@@ -8,7 +8,7 @@
  * log-drum facts, nobody waiting on a stepper. Idempotent via recipe.deepMeasured.
  */
 import { prisma } from '@afrohit/db';
-import { separateStems } from '@afrohit/ai';
+import { separateStemsRouted } from '../lib/demucs-local';
 import { measureAudio, dspAvailable, type StemInputs } from '../lib/dsp';
 
 export interface DeepMeasurePayload {
@@ -30,7 +30,9 @@ export async function processDeepMeasure(p: DeepMeasurePayload): Promise<void> {
     if (process.env.DSP_STEMS !== '0') {
       try {
         const ws = await prisma.workspace.findUnique({ where: { id: p.workspaceId }, select: { musicApiKey: true } });
-        const sep = await separateStems({ audioUrl: p.url, mode: 'full', apiKey: ws?.musicApiKey ?? undefined });
+        // A3-4: nightly/backfill separation runs LOCAL by default (≈$0) — the
+        // paid path is the fallback, not the habit.
+        const sep = await separateStemsRouted({ audioUrl: p.url, mode: 'full', apiKey: ws?.musicApiKey ?? undefined, purpose: 'measure', workspaceId: p.workspaceId });
         const byRole = (r: string) => sep.stems.find((s) => s.role === r)?.url;
         stems = { bass: byRole('bass'), drums: byRole('drums'), other: byRole('other'), vocals: byRole('vocals') };
       } catch (e) {

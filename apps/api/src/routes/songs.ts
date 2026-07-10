@@ -633,7 +633,7 @@ export default async function songs(app: FastifyInstance) {
   // ---- Re-sing the song with the CURRENT (edited) lyrics — the surgical edit ----
   // Edit lyrics → save → re-sing: renders a fresh vocal over the same lane, and
   // because the new beat is the freshest audio it becomes the song's current take.
-  app.post<{ Params: { id: string }; Body: { songEngine?: 'suno' | 'ace_step' | 'minimax' } }>('/:id/regenerate-beat', async (req, reply) => {
+  app.post<{ Params: { id: string }; Body: { songEngine?: 'suno' | 'ace_step' | 'minimax'; conditionOnCurrent?: boolean } }>('/:id/regenerate-beat', async (req, reply) => {
     const { workspaceId } = requireAuth(req);
     const song = await prisma.song.findFirst({
       where: { id: req.params.id, workspaceId },
@@ -692,6 +692,9 @@ export default async function songs(app: FastifyInstance) {
         jobId: job.id, workspaceId, projectId: song.projectId, songId: song.id,
         input: {
           genre, bpm: song.project.bpm ?? 103, withVocals: true, withStems: false, songEngine,
+          // A3-2: Adjust passes conditionOnCurrent — the song's own audio goes IN
+          // as the reference so the repair builds from the sound, not from tags.
+          referenceAudioUrl: req.body?.conditionOnCurrent ? song.beats[0]?.url ?? undefined : undefined,
           // A re-sing must stay FULL LENGTH: its own measured duration first,
           // genre standard otherwise. With no durationS at all, ACE-Step fell to
           // its 120s default — the will-it-blow gate's final re-sing was

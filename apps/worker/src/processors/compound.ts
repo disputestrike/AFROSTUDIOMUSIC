@@ -13,7 +13,7 @@
  *                      while Benjamin sleeps (roadmap #3, now real).
  */
 import { prisma } from '@afrohit/db';
-import { generateJson, tavilySearchRaw } from '@afrohit/ai';
+import { generateJson, tavilySearchRaw, lastBrain } from '@afrohit/ai';
 import { LANGUAGES, GENRES, genreSignature, scoreLaneCompliance, planRepairs, promotionEligible, type MeasuredAnalysis } from '@afrohit/shared';
 import { enqueueJob } from '../lib/enqueue';
 import { assessLaneCompliance, loadLaneProfile, laneGrounding } from '../lib/lane-assess';
@@ -340,11 +340,16 @@ export async function processMineLexicon(opts?: { refLimit?: number }): Promise<
       // The classifier keeps ONLY terms it is confident belong to the target
       // languages — everything English/uncertain is dropped, honesty over volume.
       const out = await generateJson<{ entries: Array<{ term: string; language: string; category: string; meaning: string }> }>({
+        tier: 'bulk',
+        task: 'lexicon-mine',
         system:
           `You are a careful African-languages lexicographer. From a raw song transcript's word list, extract ONLY words/short phrases you are CONFIDENT belong to one of: ${MINE_LANGS.join(', ')} (tsotsitaal = SA township slang). Exclude English, names, and anything uncertain. Category must be one of: ${MINE_CATS.join(', ')}. Give a short plain-English meaning. Return {"entries":[{"term","language","category","meaning"}]} — empty array if nothing qualifies.`,
         user: tokens.join(' '),
         maxTokens: 1200,
       }).catch(() => ({ entries: [] as Array<{ term: string; language: string; category: string; meaning: string }> }));
+      // A3-5 guard (c): African-language content drafted on the bulk tier is
+      // QUARANTINED until an Anthropic verification pass clears it — never seeded.
+      const minedBulk = lastBrain === 'cerebras';
 
       for (const e of out.entries ?? []) {
         const term = (e.term ?? '').trim().toLowerCase();
@@ -362,7 +367,7 @@ export async function processMineLexicon(opts?: { refLimit?: number }): Promise<
             register: 'casual',
             meaning: (e.meaning ?? '').slice(0, 300) || null,
             source: 'learned',
-            tags: ['mined', 'needs_native_review'],
+            tags: minedBulk ? ['mined', 'needs_native_review', 'bulk_unverified'] : ['mined', 'needs_native_review'],
           },
         }).catch(() => undefined);
         inserted++;
@@ -411,11 +416,14 @@ export async function processLexiconResearch(opts?: { queries?: number }): Promi
       if (!results.length) continue;
       const corpus = results.map((r) => `${r.title}\n${r.content}`).join('\n---\n').slice(0, 6000);
       const out = await generateJson<{ entries: Array<{ term: string; meaning: string; example?: string; register?: string }> }>({
+        tier: 'bulk',
+        task: 'lexicon-research',
         system:
           `You are a careful ${name} lexicographer. From the research notes, extract up to 35 REAL ${name} words/short phrases fitting the theme "${cat}" that you are CONFIDENT are correct. For each: paraphrase the meaning in your OWN plain English (never copy the source wording) and write ONE short ORIGINAL example line (never quote the source, never a real lyric). register in [casual|chant|poetic|sacred|flex]. Skip anything uncertain, offensive-without-context, or not actually ${name}. Return {"entries":[...]}; empty if nothing qualifies.`,
         user: corpus,
         maxTokens: 1800,
       }).catch(() => ({ entries: [] as Array<{ term: string; meaning: string; example?: string; register?: string }> }));
+      const researchedBulk = lastBrain === 'cerebras';
       for (const e of out.entries ?? []) {
         const term = (e.term ?? '').trim().toLowerCase();
         if (!term || term.length > 48) continue;
@@ -429,7 +437,7 @@ export async function processLexiconResearch(opts?: { queries?: number }): Promi
             meaning: (e.meaning ?? '').slice(0, 300) || null,
             example: (e.example ?? '').slice(0, 200) || null,
             source: 'research',
-            tags: ['researched', 'needs_native_review'],
+            tags: researchedBulk ? ['researched', 'needs_native_review', 'bulk_unverified'] : ['researched', 'needs_native_review'],
           },
         }).catch(() => undefined);
         inserted++;
@@ -514,6 +522,8 @@ export async function processGlossPass(opts?: { limit?: number }): Promise<void>
         const entries = entriesAll.slice(ci, ci + 22);
       const name = (LANGUAGES as Record<string, string>)[lang] ?? lang;
       const out = await generateJson<{ glosses: Array<{ term: string; meaning: string; category?: string; register?: string }> }>({
+        tier: 'bulk',
+        task: 'lexicon-gloss',
         system: `You are a ${name} lexicographer. For each REAL ${name} term below, give a short plain-English meaning IN YOUR OWN WORDS, a category from [${MINE_CATS.join('|')}|general], and register [casual|chant|poetic|sacred|flex]. If you don't confidently know a term, OMIT it. Return {"glosses":[...]}.`,
         user: entries.map((e) => e.term).join('\n'),
         maxTokens: 1400,
@@ -525,7 +535,7 @@ export async function processGlossPass(opts?: { limit?: number }): Promise<void>
         if (!g?.meaning) continue;
         await prisma.lexiconEntry.update({
           where: { id: e.id },
-          data: { meaning: g.meaning.slice(0, 300), category: g.category && g.category !== 'general' ? g.category : e.category, register: g.register ?? e.register, tags: e.tags.filter((t) => t !== 'unglossed') },
+          data: { meaning: g.meaning.slice(0, 300), category: g.category && g.category !== 'general' ? g.category : e.category, register: g.register ?? e.register, tags: [...e.tags.filter((t) => t !== 'unglossed'), ...(lastBrain === 'cerebras' && !e.tags.includes('bulk_unverified') ? ['bulk_unverified'] : [])] },
         }).catch(() => undefined);
         done++;
       }
@@ -583,6 +593,52 @@ export async function processReportCard(): Promise<void> {
   } catch (err) { console.warn('[report-card] failed (non-fatal):', (err as Error)?.message); }
 }
 
+/**
+ * A3-5 guard (c) — VERIFY THE QUARANTINE. African-language lexicon rows drafted
+ * on the bulk tier carry 'bulk_unverified' and never reach the word palette.
+ * This nightly pass re-verifies them on the JUDGMENT brain (Anthropic): correct
+ * rows are cleared into service; wrong rows are DELETED — never seeded.
+ */
+export async function processVerifyLexicon(opts?: { limit?: number }): Promise<void> {
+  const limit = opts?.limit ?? 30;
+  try {
+    const rows = await prisma.lexiconEntry.findMany({
+      where: { tags: { has: 'bulk_unverified' } },
+      take: limit,
+      orderBy: { createdAt: 'asc' },
+    });
+    if (!rows.length) { console.log('[verify-lexicon] quarantine empty'); return; }
+    const byLang = new Map<string, typeof rows>();
+    for (const r of rows) byLang.set(r.language, [...(byLang.get(r.language) ?? []), r]);
+    let cleared = 0, deleted = 0;
+    for (const [lang, entries] of byLang) {
+      const name = (LANGUAGES as Record<string, string>)[lang] ?? lang;
+      const out = await generateJson<{ verdicts: Array<{ term: string; correct: boolean }> }>({
+        tier: 'judgment', // NEVER bulk — this pass exists to check the bulk tier's language work
+        task: 'lexicon-verify',
+        system: `You are a native-level ${name} reviewer. For each term+meaning pair, answer whether the term is REAL ${name} and the meaning is correct. Be strict: uncertain = incorrect. Return {"verdicts":[{"term","correct"}]}.`,
+        user: entries.map((e) => `${e.term} = ${e.meaning ?? '(no meaning)'}`).join('\n'),
+        maxTokens: 1200,
+      }).catch(() => null);
+      if (!out) continue; // judgment brain unavailable — quarantine stays quarantined
+      const verdict = new Map(out.verdicts?.map((v) => [v.term.toLowerCase(), v.correct] as const) ?? []);
+      for (const e of entries) {
+        const ok = verdict.get(e.term.toLowerCase());
+        if (ok === true) {
+          await prisma.lexiconEntry.update({ where: { id: e.id }, data: { tags: e.tags.filter((t) => t !== 'bulk_unverified') } }).catch(() => undefined);
+          cleared++;
+        } else if (ok === false) {
+          await prisma.lexiconEntry.delete({ where: { id: e.id } }).catch(() => undefined);
+          deleted++;
+        } // omitted by the model = stays quarantined for the next pass
+      }
+    }
+    console.log(`[verify-lexicon] cleared=${cleared} deleted=${deleted} (judgment brain; quarantined rows never reach the palette)`);
+  } catch (err) {
+    console.warn('[verify-lexicon] failed (non-fatal):', (err as Error)?.message);
+  }
+}
+
 /** Roadmap #3 — the nightly compounding job. Cost-capped by the batch limits. */
 export async function processNightlyCompound(): Promise<void> {
   console.log('[nightly-compound] start');
@@ -596,5 +652,6 @@ export async function processNightlyCompound(): Promise<void> {
   await processLexiconResearch({ queries: 6 });
   await processWiktionaryHarvest();
   await processGlossPass();
+  await processVerifyLexicon({ limit: 30 });
   console.log('[nightly-compound] done');
 }

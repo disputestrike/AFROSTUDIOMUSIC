@@ -1,5 +1,5 @@
 import { prisma } from '@afrohit/db';
-import { separateStems } from '@afrohit/ai';
+import { separateStemsRouted } from '../lib/demucs-local';
 import { markFailed, markRunning, markSucceeded } from '../lib/jobs';
 import { ingestRemoteFile } from '../lib/storage';
 
@@ -29,7 +29,8 @@ export async function processStems(p: StemsPayload) {
 
     // Separate the requested version's audio when given (per-version instrumental),
     // else the beat. Result stems still attach to the beat row for download/remix.
-    const result = await separateStems({ audioUrl: p.sourceUrl || beat.url, apiKey: ws?.musicApiKey ?? undefined, mode: p.mode ?? 'instrumental' });
+    // A3-4: user-facing stems stay on the fast paid path by default; DEMUCS_MODE=local forces local.
+    const result = await separateStemsRouted({ audioUrl: p.sourceUrl || beat.url, apiKey: ws?.musicApiKey ?? undefined, mode: p.mode ?? 'instrumental', purpose: 'user', workspaceId: p.workspaceId });
     if (!result.stems.length) throw new Error('stem separation returned no audio');
 
     // Re-host to our bucket (parallel), then persist as Stem rows.

@@ -21,6 +21,16 @@ RUN pip3 install --break-system-packages --no-cache-dir \
   llvmlite==0.43.0 numba==0.60.0 librosa==0.10.2.post1 \
   scikit-learn==1.5.1 pyloudnorm==0.1.1
 
+# A3-4 — LOCAL DEMUCS (htdemucs, CPU): the nightly stem separations that fed
+# deep-measure were paying Replicate per track — the largest steady drain.
+# CPU-only torch (no GPU on Railway) + demucs, pinned; weights pre-baked into
+# the image so runs never re-download (~80MB) at 3am. Slow is fine at night;
+# cash cost ≈ $0.
+RUN pip3 install --break-system-packages --no-cache-dir \
+  torch==2.4.1 torchaudio==2.4.1 --index-url https://download.pytorch.org/whl/cpu \
+  && pip3 install --break-system-packages --no-cache-dir demucs==4.0.1 \
+  && python3 -c "from demucs.pretrained import get_model; get_model('htdemucs')"
+
 RUN npm install -g pnpm@9.12.0
 
 WORKDIR /app

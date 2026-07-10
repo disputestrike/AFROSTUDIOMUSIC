@@ -80,7 +80,8 @@ export default async function adjust(app: FastifyInstance) {
     const headers = { authorization: (req.headers.authorization as string) ?? '', 'content-type': 'application/json', cookie: (req.headers.cookie as string) ?? '' };
     const dispatch: Record<AdjustRoute['route'], { method: 'POST'; url: string; payload: unknown }> = {
       rebuild_beat_material: { method: 'POST', url: '/api/v1/materials/auto', payload: { projectId: song.projectId, genre, bpm: song.project.bpm ?? undefined, songId: song.id } },
-      rerender_steered: { method: 'POST', url: `/api/v1/songs/${song.id}/regenerate-beat`, payload: {} },
+      // A3-2: steered re-renders are CONDITIONED on the song's current audio.
+      rerender_steered: { method: 'POST', url: `/api/v1/songs/${song.id}/regenerate-beat`, payload: { conditionOnCurrent: true } },
       remix_only: { method: 'POST', url: `/api/v1/songs/${song.id}/master`, payload: {} },
       rewrite_hook: { method: 'POST', url: `/api/v1/projects/${song.projectId}/hooks`, payload: {} },
     };

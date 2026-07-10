@@ -24,7 +24,7 @@ import { processTransform } from './processors/transform';
 import { processOwnEngine } from './processors/own-engine';
 import { processSongEdit } from './processors/song-edit';
 import { processSynthMaterial } from './processors/synth-material';
-import { processNightlyCompound, processMeasureBackfill, processLearnBackfill, processListenBack, processRefileReferences, processMineLexicon, processLexiconResearch, processWiktionaryHarvest, processGlossPass } from './processors/compound';
+import { processNightlyCompound, processMeasureBackfill, processLearnBackfill, processListenBack, processRefileReferences, processMineLexicon, processLexiconResearch, processWiktionaryHarvest, processGlossPass, processVerifyLexicon } from './processors/compound';
 
 const log = pino({ level: process.env.LOG_LEVEL ?? 'info' });
 
@@ -82,6 +82,7 @@ const workers = [
     else if (job.name === 'wiktionary-harvest') await processWiktionaryHarvest();
     else if (job.name === 'wiktionary-burst') await processWiktionaryHarvest({ all: true });
     else if (job.name === 'lexicon-gloss') await processGlossPass();
+    else if (job.name === 'lexicon-verify') await processVerifyLexicon();
     else await processMusic(job.data as never);
   }),
   makeWorker('voice', async (job: { data: never; name: string }) => {
@@ -117,6 +118,7 @@ const workers = [
     else if (job.name === 'wiktionary-harvest') await processWiktionaryHarvest();
     else if (job.name === 'wiktionary-burst') await processWiktionaryHarvest({ all: true });
     else if (job.name === 'lexicon-gloss') await processGlossPass();
+    else if (job.name === 'lexicon-verify') await processVerifyLexicon();
   }),
 ];
 
@@ -202,4 +204,21 @@ void (async () => {
   } catch (err) {
     log.warn({ err }, 'logdrum: could not read calibration status');
   }
+})();
+
+// A3-6 — LLM usage sink (worker side): radar/gloss/verify calls log tier + task
+// + brain + est cost as AnalyticsEvent 'llm.call' for /admin/economics.
+void (async () => {
+  try {
+    const { setLlmUsageSink } = await import('@afrohit/ai');
+    const { prisma } = await import('@afrohit/db');
+    let wsId: string | null = null;
+    setLlmUsageSink((rec) => {
+      void (async () => {
+        wsId ??= (await prisma.workspace.findFirst({ select: { id: true } }))?.id ?? null;
+        if (!wsId) return;
+        await prisma.analyticsEvent.create({ data: { workspaceId: wsId, name: 'llm.call', properties: rec as never } }).catch(() => undefined);
+      })();
+    });
+  } catch { /* telemetry never blocks boot */ }
 })();

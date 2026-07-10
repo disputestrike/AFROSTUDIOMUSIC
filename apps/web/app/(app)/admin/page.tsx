@@ -150,6 +150,8 @@ export default function AdminPage() {
           ))}
       </div>
 
+      <EngineStatus />
+
       <RefileReview />
 
       <h2 className="mt-10 font-display text-2xl">Workspaces</h2>
@@ -298,6 +300,39 @@ function RefileReview() {
           </tbody>
         </table>
       )}
+    </div>
+  );
+}
+
+/** A3-3 — ENGINE STATUS: which engine is used, per path, live (admin-only). */
+function EngineStatus() {
+  const api = useApi();
+  const [d, setD] = useState<Record<string, unknown> | null>(null);
+  useEffect(() => { api.get<Record<string, unknown>>('/admin/engines').then(setD).catch(() => {}); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  if (!d) return null;
+  const resolved = (d.resolved ?? {}) as Record<string, unknown>;
+  const fal = (d.falRouting ?? {}) as { keyPresent?: boolean; adapters?: Record<string, { route?: string; model?: string }> };
+  const brains = (d.brainTiers ?? {}) as { judgment?: { configured?: boolean }; bulk?: { configured?: boolean; model?: string } };
+  const spend = (d.last24hRenderSpend ?? []) as Array<{ engine: string; renders: number; costUsd: number }>;
+  return (
+    <div className="mt-10 rounded-2xl border border-slate-800 bg-slate-900/40 p-4">
+      <h2 className="font-display text-2xl">Engine status</h2>
+      <div className="mt-3 grid gap-3 text-sm sm:grid-cols-2 lg:grid-cols-4">
+        <div><div className="text-xs uppercase tracking-widest text-slate-500">Vocal default</div><div className="text-afrobrand-300">{String(resolved.vocalDefault ?? '—')}</div></div>
+        <div><div className="text-xs uppercase tracking-widest text-slate-500">Stems mode</div><div className="text-slate-200">{String(resolved.stemsMode ?? '—')}</div></div>
+        <div><div className="text-xs uppercase tracking-widest text-slate-500">fal routing</div><div className={fal.keyPresent ? 'text-emerald-400' : 'text-amber-300'}>{fal.keyPresent ? 'ACTIVE (paid fallback ready)' : 'OFF — set FAL_KEY'}</div></div>
+        <div><div className="text-xs uppercase tracking-widest text-slate-500">Brains</div><div className="text-slate-200">judgment: {brains.judgment?.configured ? 'anthropic ✓' : '✗'} · bulk: {brains.bulk?.configured ? `cerebras ✓ (${brains.bulk?.model})` : 'not set'}</div></div>
+      </div>
+      <div className="mt-3 grid gap-2 text-xs text-slate-400 sm:grid-cols-2">
+        <div>
+          <div className="text-slate-500 uppercase tracking-widest">Adapters</div>
+          {Object.entries(fal.adapters ?? {}).map(([k, v]) => <div key={k}>{k}: <span className="text-slate-200">{v.route}</span> ({v.model})</div>)}
+        </div>
+        <div>
+          <div className="text-slate-500 uppercase tracking-widest">Last 24h render spend</div>
+          {spend.length === 0 ? <div>no renders</div> : spend.map((s2) => <div key={s2.engine}>{s2.engine}: {s2.renders} renders · ${s2.costUsd}</div>)}
+        </div>
+      </div>
     </div>
   );
 }

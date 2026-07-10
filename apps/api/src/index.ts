@@ -181,6 +181,20 @@ async function bootstrap() {
     if (n) app.log.info(`lexicon seeded: ${n} entries`);
     await assertLexiconCoverage(app.log);
   }).catch((err) => app.log.warn({ err }, 'lexicon seed skipped'));
+
+  // A3-6 — LLM usage sink: every generateJson call (tier/task/brain/cost) lands
+  // as AnalyticsEvent 'llm.call' so /admin/economics can show spend by tier.
+  void import('@afrohit/ai').then(async ({ setLlmUsageSink }) => {
+    const { prisma } = await import('@afrohit/db');
+    let wsId: string | null = null;
+    setLlmUsageSink((rec) => {
+      void (async () => {
+        wsId ??= (await prisma.workspace.findFirst({ select: { id: true } }))?.id ?? null;
+        if (!wsId) return;
+        await prisma.analyticsEvent.create({ data: { workspaceId: wsId, name: 'llm.call', properties: rec as never } }).catch(() => undefined);
+      })();
+    });
+  }).catch(() => undefined);
 }
 
 bootstrap().catch((err) => {

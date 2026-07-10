@@ -1,5 +1,7 @@
 export * from './openai-client';
 export * from './anthropic-client';
+export * from './cerebras-client';
+export * from './llm-usage';
 export * from './providers';
 export * as prompts from './prompts';
 export * from './taste';

@@ -11,8 +11,10 @@
  */
 import { claudeJson, anthropicEnabled } from './anthropic-client';
 import { responsesJson } from './providers/text';
+import { cerebrasJson, cerebrasEnabled, lastCerebrasUsage } from './cerebras-client';
+import { recordLlmUsage } from './llm-usage';
 
-export type Brain = 'claude' | 'openai' | 'stub';
+export type Brain = 'claude' | 'openai' | 'cerebras' | 'stub';
 
 /**
  * Assemble prompt briefs with a HARD total cap. Stacking every brief (sound DNA
@@ -48,6 +50,17 @@ export interface GenerateOptions {
   brain?: 'claude' | 'openai';
   /** Longer Claude timeout for big/slow calls (e.g. lyrics). Default 55s. */
   timeoutMs?: number;
+  /**
+   * A3-5 BRAIN TIERS. 'judgment' (default) = Anthropic, ALWAYS — lyrics, hooks,
+   * A&R, anything user-facing creative; quality work never routes down.
+   * 'bulk' = Cerebras first (radar craft extraction, gloss/classification,
+   * caption drafting, internal summaries), laddering to Anthropic on failure —
+   * never a silent drop. Guards: prompts > ~7K tokens auto-route up (Cerebras
+   * context is small — size defensively).
+   */
+  tier?: 'judgment' | 'bulk';
+  /** Task label for the economics log (A3-6). */
+  task?: string;
 }
 
 const JSON_ONLY =
@@ -77,10 +90,31 @@ export async function generateJson<T>(opts: GenerateOptions): Promise<T> {
   const callClaude = () =>
     claudeJson<T>({ system: opts.system + JSON_ONLY, user: opts.user, maxTokens: opts.maxTokens, temperature: opts.temperature, timeoutMs: opts.timeoutMs });
 
+  // A3-5 — BULK TIER: Cerebras first for non-creative bulk work. Context guard:
+  // ~7K tokens ≈ 28K chars auto-routes UP (never truncate to fit down). Ladder:
+  // any Cerebras failure falls to the judgment path below with a logged reason.
+  const promptChars = opts.system.length + opts.user.length;
+  if (opts.tier === 'bulk' && cerebrasEnabled() && promptChars < 28_000) {
+    const t0 = Date.now();
+    try {
+      const data = await cerebrasJson<T>({ system: opts.system + JSON_ONLY, user: opts.user, maxTokens: opts.maxTokens });
+      lastBrain = 'cerebras';
+      recordLlmUsage({ tier: 'bulk', task: opts.task ?? 'unlabeled', brain: 'cerebras', ms: Date.now() - t0, estCostUsd: lastCerebrasUsage?.estCostUsd ?? null });
+      return data;
+    } catch (err) {
+      console.warn(`[brains] bulk tier failed (${(err as Error).message.slice(0, 120)}) — laddering to judgment brain`);
+      recordLlmUsage({ tier: 'bulk', task: opts.task ?? 'unlabeled', brain: 'cerebras', ms: Date.now() - t0, estCostUsd: null, degraded: (err as Error).message.slice(0, 160) });
+    }
+  } else if (opts.tier === 'bulk' && cerebrasEnabled()) {
+    console.log(`[brains] bulk prompt ${promptChars} chars > context guard — routed to judgment brain`);
+  }
+
   if (wantClaude && anthropicEnabled()) {
+    const t0 = Date.now();
     try {
       const data = await callClaude();
       lastBrain = 'claude';
+      recordLlmUsage({ tier: opts.tier ?? 'judgment', task: opts.task ?? 'unlabeled', brain: 'claude', ms: Date.now() - t0, estCostUsd: null });
       return data;
     } catch {
       // Claude erred (transient/parse) → try OpenAI so we don't hard-fail.

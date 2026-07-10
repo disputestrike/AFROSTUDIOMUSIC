@@ -37,7 +37,10 @@ export async function extractSongCraft(song: {
   genre?: string;
   releaseDate?: string;
 }): Promise<SongCraft | null> {
+  // A3-5: radar craft extraction is BULK work — Cerebras first, Anthropic ladder.
   const out = await generateJson<SongCraft>({
+    tier: 'bulk',
+    task: 'zap-craft-extraction',
     system:
       `You are an A&R / producer studying the CRAFT of records. From a song's METADATA ONLY (title, artist, genre, era — NEVER its lyrics or recording), extract the UNCOPYRIGHTABLE craft worth studying: production techniques, groove/pocket, arrangement moves, hook mechanics, energy, what makes this LANE and era of record work. The artist is a LANE REFERENCE ONLY — never to clone, copy melodies/lyrics, or name in any output. Return facts a producer would study to make THEIR OWN fresh record better, not the song itself. Strict JSON only.`,
     user:

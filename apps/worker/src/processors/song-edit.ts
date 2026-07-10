@@ -13,7 +13,7 @@ import { downloadToBuffer, uploadBytes } from '../lib/storage';
 import { mixBuffers, runFfmpeg } from '../lib/ffmpeg';
 import { markRunning, markSucceeded, markFailed } from '../lib/jobs';
 import { melodyLayer } from './own-engine';
-import { separateStems } from '@afrohit/ai';
+import { separateStemsRouted } from '../lib/demucs-local';
 import { processAssembleBeat } from './material';
 import { mkdtemp, writeFile, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -117,7 +117,7 @@ const FX_CHAIN: Record<string, (amt: number) => string> = {
 
 /** Demucs the record, apply an fx chain to ONE stem (or gate a region on vocals), remix all four. */
 async function stemSurgery(sourceUrl: string, target: 'vocals' | 'drums' | 'bass' | 'other', chain: string): Promise<Buffer> {
-  const res = await separateStems({ audioUrl: sourceUrl, mode: 'full' });
+  const res = await separateStemsRouted({ audioUrl: sourceUrl, mode: 'full', purpose: 'user' });
   const byRole = new Map(res.stems.map((st) => [st.role.toLowerCase(), st.url]));
   const urls: Record<string, string | undefined> = {
     vocals: byRole.get('vocals') ?? byRole.get('vocal'),
@@ -207,7 +207,7 @@ export async function processSongEdit(p: SongEditPayload): Promise<void> {
       const segLen = seg.e - seg.s;
       const bars = Math.max(2, Math.round(segLen / secPerBar));
       // stems: vocal + instrumental bed
-      const res = await separateStems({ audioUrl: p.sourceUrl, mode: 'full' });
+      const res = await separateStemsRouted({ audioUrl: p.sourceUrl, mode: 'full', purpose: 'user', workspaceId: p.workspaceId });
       const byRole = new Map(res.stems.map((st) => [st.role.toLowerCase(), st.url]));
       const vocalUrl = byRole.get('vocals') ?? byRole.get('vocal');
       const instrUrl = res.instrumentalUrl ?? byRole.get('instrumental');

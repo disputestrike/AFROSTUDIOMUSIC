@@ -42,6 +42,13 @@ export interface MusicGenerationInput {
    * style prompt instead of homogenizing filler. See packages/ai/sound-dna.
    */
   dnaTags?: string[];
+  /**
+   * A3-2 — REFERENCE-AUDIO ADJUST: when set, the render is CONDITIONED on this
+   * audio (the user's existing take goes IN as sound, not just tags) via a
+   * reference-matching model. Repairs build from the record's own groove/tempo/
+   * key instead of re-rolling from text.
+   */
+  referenceAudioUrl?: string;
 }
 
 export interface MusicGenerationOutput {
