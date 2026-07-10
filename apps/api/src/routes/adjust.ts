@@ -158,10 +158,12 @@ SECTION MAP: ${sectionMap || 'not measured yet'}.\nParse the artist's instructio
 - {"kind":"resing_section","index":3}                        // re-play a section: FRESH beat under the ORIGINAL vocal
 - {"kind":"rename","title":"Midnight in Lekki"}              // rename ONLY (label surgery, instant)
 - {"kind":"rebuild_hook","title":"Midnight in Lekki"}        // creative surgery: rewrite the HOOK around this name, then re-sing
+- {"kind":"make_bigger"}                                     // "make it longer / add a verse / more complex": A&R rewrite grows the song, then re-sings
 If nothing fits, op:null and coach them in reply (mixer, versions, adjust exist). Return {"reply","op"} ONLY. reply is UNDER 15 WORDS — no preamble, no explaining, just the move.`,
       user: message,
-      maxTokens: 400,
-    }).catch(() => ({ reply: 'I could not parse that — try "add a fill at 1:20" or "make it 1.1x faster".', op: null as null }));
+      maxTokens: 700,
+      temperature: 0.2,
+    }).catch((err: unknown) => ({ reply: `The chat brain errored — ${String((err as Error)?.message ?? err).slice(0, 140)}`, op: null as null }));
 
     const op = plan.op as (null | { kind?: string } & Record<string, unknown>);
     if (!op?.kind) return { reply: plan.reply, dispatched: null };
@@ -200,12 +202,14 @@ ${song.lyric.body.slice(0, 4000)}`,
       return { reply: `Hook rebuilt around “${anchor}” — re-singing now.`, dispatched: 'rebuild_hook', jobId: (body.jobId as string) ?? null };
     }
 
-    if (op.kind === 'transform' || op.kind === 'remaster' || op.kind === 'regen_beat') {
+    if (op.kind === 'transform' || op.kind === 'remaster' || op.kind === 'regen_beat' || op.kind === 'make_bigger') {
       const d = op.kind === 'transform'
         ? { url: `/api/v1/songs/${song.id}/transform`, payload: { tempo: op.tempo, semitones: op.semitones } }
         : op.kind === 'remaster'
           ? { url: `/api/v1/songs/${song.id}/master`, payload: { preset: op.preset ?? 'warm' } }
-          : { url: `/api/v1/songs/${song.id}/regenerate-beat`, payload: {} };
+          : op.kind === 'make_bigger'
+            ? { url: `/api/v1/songs/${song.id}/make-it-bigger`, payload: {} }
+            : { url: `/api/v1/songs/${song.id}/regenerate-beat`, payload: {} };
       const res = await app.inject({ method: 'POST', url: d.url, headers, payload: d.payload as never });
       const body = res.json() as Record<string, unknown>;
       return { reply: plan.reply, dispatched: op.kind, jobId: (body.jobId as string) ?? null, status: res.statusCode };
