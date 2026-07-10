@@ -175,6 +175,8 @@ function radarSlice(): string[] {
 const RADAR_MAX_PER_RUN = Number(process.env.ZAP_RADAR_MAX ?? 6);
 
 export async function processZapRadar() {
+  const { backgroundLlmBudgetOk } = await import('./compound');
+  if (!(await backgroundLlmBudgetOk('zap-radar'))) return;
   const workspaces = await prisma.workspace.findMany({
     where: { suspendedAt: null, deletedAt: null },
     select: { id: true },

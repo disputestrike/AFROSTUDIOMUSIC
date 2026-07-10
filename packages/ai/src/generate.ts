@@ -114,7 +114,14 @@ export async function generateJson<T>(opts: GenerateOptions): Promise<T> {
     try {
       const data = await callClaude();
       lastBrain = 'claude';
-      recordLlmUsage({ tier: opts.tier ?? 'judgment', task: opts.task ?? 'unlabeled', brain: 'claude', ms: Date.now() - t0, estCostUsd: null });
+      // ESTIMATED judgment cost (the $20-day lesson: null hid the burn). Sonnet
+      // rates ~$3/M in, $15/M out; tokens ≈ chars/4. Rough by design — the
+      // economics payload labels it an estimate, billing truth lives in the
+      // Anthropic console.
+      const inTok = (opts.system.length + opts.user.length) / 4;
+      const outTok = JSON.stringify(data ?? '').length / 4;
+      const estCostUsd = (inTok * 3 + outTok * 15) / 1_000_000;
+      recordLlmUsage({ tier: opts.tier ?? 'judgment', task: opts.task ?? 'unlabeled', brain: 'claude', ms: Date.now() - t0, estCostUsd });
       return data;
     } catch {
       // Claude erred (transient/parse) → try OpenAI so we don't hard-fail.

@@ -26,6 +26,31 @@ import { processSynthMaterial } from './synth-material';
 // — and they must NEVER be lyric-mined (someone else's record).
 const skipSource = (u: string) => u.startsWith('lyric:') || u.startsWith('trend:') || u.startsWith('zap:') || u.startsWith('facts:');
 
+/**
+ * COST LAW (2026-07-10, the $20-in-a-day incident): BACKGROUND brain work is
+ * hard-capped per day. The compounding tasks (mine/research/gloss/verify, zap
+ * radar) collectively stop once today's LLM-call count crosses the cap — the
+ * lake grows slower on a tight day, but the balance can never be drained by
+ * machinery the user isn't watching. User-facing creative work is NOT gated
+ * here (it's charged + capped by WO-1 already).
+ */
+export async function backgroundLlmBudgetOk(taskName: string): Promise<boolean> {
+  try {
+    const cap = Number(process.env.BACKGROUND_LLM_DAILY_CAP ?? 150);
+    if (cap <= 0) return true; // explicit opt-out
+    const since = new Date();
+    since.setUTCHours(0, 0, 0, 0);
+    const used = await prisma.analyticsEvent.count({ where: { name: 'llm.call', createdAt: { gte: since } } });
+    if (used >= cap) {
+      console.log(`[llm-budget] ${taskName} skipped — ${used}/${cap} LLM calls used today (BACKGROUND_LLM_DAILY_CAP)`);
+      return false;
+    }
+    return true;
+  } catch {
+    return true; // telemetry failure never blocks the pipeline
+  }
+}
+
 /** Enqueue deep-measure for owned references missing a measured read; inline
  *  lane-assess for rendered beats missing one. Bounded per run — never a stampede. */
 export async function processMeasureBackfill(opts?: { refLimit?: number; beatLimit?: number }): Promise<void> {
@@ -354,6 +379,7 @@ const MINE_CATS = ['love', 'street', 'party', 'faith', 'slang', 'adlib', 'prover
 /** Harvest vocabulary from OWNED upload transcripts into the global word bank. */
 export async function processMineLexicon(opts?: { refLimit?: number }): Promise<void> {
   const refLimit = opts?.refLimit ?? 4;
+  if (!(await backgroundLlmBudgetOk('mine-lexicon'))) return;
   try {
     const refs = await prisma.soundReference.findMany({
       orderBy: { createdAt: 'desc' },
@@ -439,6 +465,7 @@ const REGION_HINT: Record<string, string> = {
  *  LEXICON_RESEARCH_QUERIES per run. Facts about a language are minable;
  *  a dictionary's prose is not — we take the words, never the wording. */
 export async function processLexiconResearch(opts?: { queries?: number }): Promise<void> {
+  if (!(await backgroundLlmBudgetOk('lexicon-research'))) return;
   const perRun = Math.max(1, Math.min(20, opts?.queries ?? (parseInt(process.env.LEXICON_RESEARCH_QUERIES ?? '6', 10) || 6)));
   try {
     const slots: Array<{ lang: string; cat: string }> = [];
@@ -551,6 +578,7 @@ export async function processWiktionaryHarvest(opts?: { langs?: string[]; perLan
 
 /** Gloss pass — paraphrased meanings for unglossed harvested terms, in batches. */
 export async function processGlossPass(opts?: { limit?: number }): Promise<void> {
+  if (!(await backgroundLlmBudgetOk('lexicon-gloss'))) return;
   const limit = Math.max(10, Math.min(200, opts?.limit ?? (parseInt(process.env.LEXICON_GLOSS_PER_RUN ?? '80', 10) || 80)));
   try {
     const rows = await prisma.lexiconEntry.findMany({ where: { workspaceId: null, tags: { has: 'unglossed' } }, take: limit, orderBy: { createdAt: 'asc' } });
@@ -642,6 +670,7 @@ export async function processReportCard(): Promise<void> {
  * rows are cleared into service; wrong rows are DELETED — never seeded.
  */
 export async function processVerifyLexicon(opts?: { limit?: number }): Promise<void> {
+  if (!(await backgroundLlmBudgetOk('lexicon-verify'))) return;
   const limit = opts?.limit ?? 30;
   try {
     const rows = await prisma.lexiconEntry.findMany({
