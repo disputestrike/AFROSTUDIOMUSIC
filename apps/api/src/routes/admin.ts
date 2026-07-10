@@ -55,6 +55,28 @@ export default async function admin(app: FastifyInstance) {
     return { queued: task, note: 'Running on the worker now — watch worker logs; results land in /lanes/inventory.' };
   });
 
+  // WRITER A/B — blind bench: same hook/brief/polish, Claude vs OpenAI writer
+  // (OPENAI_TEXT_MODEL picks the GPT). The judge's ear decides (§1.5); the
+  // reveal is base64 so nobody peeks before picking.
+  const abSchema = z.object({
+    genre: z.string().min(2).max(40),
+    mood: z.string().max(40).optional(),
+    languages: z.array(z.string().max(12)).max(5).optional(),
+    theme: z.string().max(400).optional(),
+    hookText: z.string().max(300).optional(),
+  });
+  app.post('/writer-ab', { schema: { body: abSchema } }, async (req, reply) => {
+    await requireAdmin(req);
+    const { workspaceId } = requireAuth(req);
+    const input = abSchema.parse(req.body);
+    const charge = await app.chargeCredits({ workspaceId, key: 'lyrics_full', multiplier: 2, refTable: 'WriterAb' });
+    if (!charge.ok) return reply.code(402).send({ error: 'insufficient_credits', ...charge });
+    const { runWriterAb } = await import('../lib/writer-ab');
+    const out = await runWriterAb({ workspaceId, ...input });
+    if ('error' in out) return reply.code(503).send(out);
+    return { ...out, note: 'Judge blind, pick A or B, THEN decode reveal (base64). Same hook, same brief, same polish — the model is the only variable.' };
+  });
+
   // A3-3 — ENGINE STATUS CARD: "which engine is being used" answered at a
   // glance, live. Admin-only (real vendor names live here — §1.11).
   app.get('/engines', async (req) => {

@@ -150,6 +150,8 @@ export default function AdminPage() {
           ))}
       </div>
 
+      <WriterAb />
+
       <EngineStatus />
 
       <RefileReview />
@@ -333,6 +335,61 @@ function EngineStatus() {
           {spend.length === 0 ? <div>no renders</div> : spend.map((s2) => <div key={s2.engine}>{s2.engine}: {s2.renders} renders · ${s2.costUsd}</div>)}
         </div>
       </div>
+    </div>
+  );
+}
+
+/** WRITER A/B — blind bench: which brain writes the better song? Your ear decides. */
+function WriterAb() {
+  const api = useApi();
+  const [genre, setGenre] = useState('afrobeats');
+  const [mood, setMood] = useState('love');
+  const [langs, setLangs] = useState('pcm,en');
+  const [theme, setTheme] = useState('');
+  const [busy2, setBusy2] = useState(false);
+  const [res, setRes] = useState<{ hookText: string; blind: Array<{ label: string; title: string; body: string }>; reveal: string } | null>(null);
+  const [revealed, setRevealed] = useState('');
+  const [msg, setMsg] = useState('');
+
+  async function run() {
+    setBusy2(true); setMsg(''); setRes(null); setRevealed('');
+    try {
+      const r = await api.post<{ hookText: string; blind: Array<{ label: string; title: string; body: string }>; reveal: string }>('/admin/writer-ab', {
+        genre, mood, languages: langs.split(',').map((x) => x.trim()).filter(Boolean), theme: theme || undefined,
+      });
+      setRes(r);
+    } catch (e) { setMsg((e as Error).message.slice(0, 160)); }
+    finally { setBusy2(false); }
+  }
+
+  return (
+    <div className="mt-10 rounded-2xl border border-slate-800 bg-slate-900/40 p-4">
+      <h2 className="font-display text-2xl">Writer A/B <span className="text-sm font-normal text-slate-500">— blind: same hook, same brief, same polish; only the brain differs. Judge FIRST, reveal after.</span></h2>
+      <div className="mt-3 flex flex-wrap gap-2">
+        <input value={genre} onChange={(e) => setGenre(e.target.value)} placeholder="genre" className="w-32 rounded border border-slate-700 bg-slate-900 px-2 py-1 text-sm" />
+        <input value={mood} onChange={(e) => setMood(e.target.value)} placeholder="mood" className="w-28 rounded border border-slate-700 bg-slate-900 px-2 py-1 text-sm" />
+        <input value={langs} onChange={(e) => setLangs(e.target.value)} placeholder="languages (csv)" className="w-32 rounded border border-slate-700 bg-slate-900 px-2 py-1 text-sm" />
+        <input value={theme} onChange={(e) => setTheme(e.target.value)} placeholder="theme (optional)" className="flex-1 min-w-40 rounded border border-slate-700 bg-slate-900 px-2 py-1 text-sm" />
+        <button onClick={() => void run()} disabled={busy2} className="rounded-full bg-brand-gradient px-4 py-1.5 text-sm font-medium text-ink disabled:opacity-50">{busy2 ? 'Writing both…' : 'Run A/B'}</button>
+      </div>
+      {msg && <div className="mt-2 text-xs text-red-300">{msg}</div>}
+      {res && (
+        <div className="mt-4">
+          <div className="mb-2 text-xs text-slate-400">Shared hook: <span className="text-slate-200">{res.hookText}</span></div>
+          <div className="grid gap-3 md:grid-cols-2">
+            {res.blind.map((v) => (
+              <div key={v.label} className="rounded-xl border border-slate-800 bg-slate-950/60 p-3">
+                <div className="mb-1 text-sm font-bold text-afrobrand-300">{v.label} — {v.title}</div>
+                <pre className="max-h-80 overflow-y-auto whitespace-pre-wrap text-xs text-slate-300">{v.body}</pre>
+              </div>
+            ))}
+          </div>
+          <div className="mt-3 flex items-center gap-3">
+            <button onClick={() => setRevealed(atob(res.reveal))} className="rounded-full border border-slate-700 px-3 py-1 text-xs hover:border-afrobrand-500">Reveal (after judging!)</button>
+            {revealed && <span className="text-sm text-emerald-300">{revealed}</span>}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
