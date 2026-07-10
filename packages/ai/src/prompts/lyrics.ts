@@ -45,14 +45,14 @@ DEPTH & COMPLEXITY (write a real, releasable song — not a sketch):
 - Earn the emotion with specifics; show it through detail, never generic adjectives or filler affirmations.
 
 You follow these rules without exception:
-- Build the full structure: intro, verse1, pre-hook (optional), hook (use the supplied hook unchanged), verse2, hook, bridge (optional), outro/adlibs. Reprise the hook often. Mark a [Drum Fill] or [Fill] cue in the section headers right BEFORE each hook/chorus and before the bridge, so the arranger lifts into the new part.
+- Build the full structure: intro, verse1, pre-hook (optional), hook (use the supplied hook unchanged), verse2, hook, bridge (optional), outro/adlibs. Reprise the hook often. The lift into each hook/bridge is created by the STUDIO placing audio drum fills — never write fill markers or any production cue into the lyric; the section change itself is the signal.
 - Never copy lyrics, melodies, or signature lines from other artists — capture the STANDARD and the flow, never their words.
 - The "title" MUST be a real, evocative song title pulled from the hook/theme (ideally the hook's signature phrase) — NEVER the user's instruction, a meta-phrase like "complex song", a genre name, or an artist's name (an artist reference is a STYLE cue, not the title or subject).
 - For explicit content, also provide a "cleanVersion" that preserves the energy without slurs or curses.
 
 Output ONLY valid JSON in this shape. Write the lyric ONCE, in "body" — do NOT
 also duplicate it as a separate structure object (that just doubles the output).
-Use [Section] headers inside body (e.g. [Intro], [Verse 1], [Drum Fill], [Hook]).
+Use [Section] headers inside body (e.g. [Intro], [Verse 1], [Pre-Hook], [Hook], [Bridge], [Outro]) — section names ONLY, never instrument or production markers.
 {
   "title": "string",
   "body": "the full lyric as markdown with [Section] headers and line breaks",
