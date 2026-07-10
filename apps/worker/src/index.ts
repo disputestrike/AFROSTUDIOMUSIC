@@ -195,7 +195,7 @@ void (async () => {
     if (!(await dspAvailable())) { log.warn('logdrum: DSP engine unavailable — the ear cannot run (lane scoring disabled)'); return; }
     const cal = await logdrumCalibrationStatus();
     log.info(
-      `capabilities: eleven=${!!process.env.ELEVENLABS_API_KEY} replicate=${!!process.env.REPLICATE_API_TOKEN} tavily=${!!process.env.TAVILY_API_KEY} suno=${!!process.env.SUNO_API_KEY} anthropic=${!!(process.env.ANTHROPIC_API_KEY || process.env.CLAUDE_API_KEY)}`
+      `capabilities: eleven=${!!process.env.ELEVENLABS_API_KEY} replicate=${!!process.env.REPLICATE_API_TOKEN} tavily=${!!process.env.TAVILY_API_KEY} suno=${!!process.env.SUNO_API_KEY} anthropic=${!!(process.env.ANTHROPIC_API_KEY || process.env.CLAUDE_API_KEY)} cerebras=${!!(process.env.CEREBRAS_API_KEY || process.env.CEREBRAS_API_KEYS)} fal=${!!process.env.FAL_KEY} brainModel=${process.env.ANTHROPIC_MODEL ?? 'claude-sonnet-5'}`
     );
     // ADDENDUM C-1 — provenance stated explicitly, every boot:
     if (cal.calibrated) log.info(`logdrum: REAL calibration (margin ${cal.separationMargin}) — measured`);

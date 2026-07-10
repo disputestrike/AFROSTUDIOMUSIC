@@ -818,7 +818,7 @@ class FalQueueAdapter implements MusicProviderAdapter {
     if (status === 'IN_QUEUE' || status === 'IN_PROGRESS') return { externalId, status: 'running', pollAfterMs: 5_000 };
     if (status !== 'COMPLETED') return this.resubmitOnFallback(this.lastInput, `terminal fal status ${status ?? 'unknown'}`);
     const rs = await fetch(`https://queue.fal.run/${base}/requests/${id}`, { headers: auth });
-    if (!rs.ok) return this.resubmitOnFallback(this.lastInput, `response fetch ${rs.status}`);
+    if (!rs.ok) return this.resubmitOnFallback(this.lastInput, `response fetch ${rs.status}: ${(await rs.text().catch(() => '')).slice(0, 220)}`);
     const out = (await rs.json()) as { audio?: { url?: string } | string; audio_url?: string; audio_file?: { url?: string } };
     const url = typeof out.audio === 'string' ? out.audio : out.audio?.url ?? out.audio_url ?? out.audio_file?.url;
     if (!url) return this.resubmitOnFallback(this.lastInput, 'completed but no audio url in response');

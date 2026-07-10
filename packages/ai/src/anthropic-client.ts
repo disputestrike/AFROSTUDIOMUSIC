@@ -17,14 +17,17 @@ export function anthropicEnabled(): boolean {
 }
 
 /**
- * THE BRAIN. Fable 5 (Mythos-class, launched 2026-06-09) is Anthropic's most
- * capable generally-available model — the quality ceiling for hooks/lyrics/A&R.
- * NOTE: a deploy env var OVERRIDES this default. If Railway still carries an
- * old ANTHROPIC_MODEL (e.g. claude-3-5-sonnet-20241022 from a stale
- * .env.example), the app silently runs the old brain — delete or update it.
+ * THE BRAIN — SONNET 5 by owner directive (2026-07-10). The Fable 5 default
+ * burned a $20 top-up in under two songs (Mythos-class per-token pricing: the
+ * Jul-09/10 console bars were the whole balance each day, vs Sonnet's $6-16
+ * days before). Sonnet 5 is the price/quality point the studio runs on;
+ * Cerebras takes the bulk tier. Set ANTHROPIC_MODEL=claude-fable-5 explicitly
+ * only for a deliberate, budgeted flagship pass — never as the daily driver.
+ * NOTE: a deploy env var OVERRIDES this default — if Railway carries a stale
+ * ANTHROPIC_MODEL, the app silently runs that brain instead.
  */
 export const ANTHROPIC_MODEL = (): string =>
-  process.env.ANTHROPIC_MODEL ?? 'claude-fable-5';
+  process.env.ANTHROPIC_MODEL ?? 'claude-sonnet-5';
 
 /**
  * Fable 5 ships with safety classifiers that can decline a request: the API
