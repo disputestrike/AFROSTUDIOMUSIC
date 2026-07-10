@@ -149,7 +149,7 @@ export async function runDropPipeline(app: FastifyInstance, ctx: DropCtx, input:
     data: {
       status: 'SUCCEEDED',
       finishedAt: new Date(),
-      outputJson: { theme: input.theme, requested: input.count, produced: drops.length, drop: drops } as never,
+      outputJson: { theme: input.theme, voice: input.voice, title: input.songTitle, requested: input.count, produced: drops.length, drop: drops } as never,
     },
   });
 
