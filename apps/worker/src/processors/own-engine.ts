@@ -92,7 +92,16 @@ export async function melodyLayer(groove: string, prompt: string, durationS: num
         },
       }),
     });
-    const data = (await res.json()) as { status?: string; output?: string | string[]; error?: string };
+    let data = (await res.json()) as { id?: string; status?: string; output?: string | string[]; error?: string };
+    // prefer:wait only holds 60s — a slower render comes back 'processing' while
+    // Replicate keeps working. POLL it out (up to ~5 min) instead of dropping a
+    // render we already paid for.
+    const deadline = Date.now() + 5 * 60_000;
+    while (data.id && (data.status === 'starting' || data.status === 'processing') && Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 5_000));
+      const poll = await fetch(`https://api.replicate.com/v1/predictions/${data.id}`, { headers: { authorization: `Bearer ${token}` } });
+      data = (await poll.json()) as typeof data;
+    }
     const out = Array.isArray(data.output) ? data.output[0] : data.output;
     if (data.status === 'succeeded' && out) return { url: out, note: 'melody: musicgen conditioned on our groove' };
     return { url: null, note: `melody skipped: ${data.error ?? data.status ?? 'no output'}` };
