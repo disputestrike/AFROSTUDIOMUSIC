@@ -363,6 +363,7 @@ model Song {
   laneScore        Int?   // 0-100 measured lane compliance of the current audio
   measuredAnalysis Json?  // MeasuredAnalysis of the current audio (provenance-tagged)
   laneGaps         Json?  // { coverage, failedCritical[], topGaps[], drift, measuredAt }
+  proofPack        Json?  // per-song evidence bundle, persisted at green-light (lib/proof-pack.ts)
   createdAt   DateTime @default(now()) @db.Timestamptz(6)
 
   workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)

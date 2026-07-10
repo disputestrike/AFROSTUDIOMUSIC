@@ -22,6 +22,7 @@ import { dataLakeReport } from '../lib/data-lake';
 import { lexiconPalette } from '../lib/lexicon';
 import { laneContext } from '../lib/lane-context';
 import { fuseSoundDna } from '../lib/fuse';
+import { presongIntelligence } from '../lib/presong';
 import { kitRolesFor, homeKeyFor, pickMaterial, claudeArrangement } from '../lib/material-plan';
 import { autoMaterialBeat } from '../lib/material-auto';
 import { memoryContext, recordFeedback } from './artist-memory';
@@ -246,7 +247,9 @@ async function generateHooks(ctx: Ctx, count: number, languages?: string[], refi
   void snapshotTrend(ctx.workspaceId, project.genre, trendData);
   const hmood = (project.briefs[0] as { mood?: string } | undefined)?.mood;
   const hookLane = await laneContext(ctx.workspaceId, project.genre);
-  const soundDna = fuseSoundDna({ laneTargets: hookLane.laneTargets, extra: hardConstraints(project.genre, languages), freshness: await freshnessBrief(ctx.workspaceId), palette: await lexiconPalette({ workspaceId: ctx.workspaceId, languages, mood: hmood, rotate: count }), dna: laneDnaBrief(project.genre), learnedRef: await learnedReferenceBrief(ctx.workspaceId, project.genre), learnedCraft: await learnedLyricCraftBrief(ctx.workspaceId, project.genre), hitCraft: prompts.hitCraftBrief('hook', hmood) });
+  // Pre-song recall rides with the hard constraints in the extra slot (leads the fuse).
+  const presong = await presongIntelligence(ctx.workspaceId, project.genre, hmood);
+  const soundDna = fuseSoundDna({ laneTargets: hookLane.laneTargets, extra: [hardConstraints(project.genre, languages), presong].filter(Boolean).join('\n\n'), freshness: await freshnessBrief(ctx.workspaceId), palette: await lexiconPalette({ workspaceId: ctx.workspaceId, languages, mood: hmood, rotate: count }), dna: laneDnaBrief(project.genre), learnedRef: await learnedReferenceBrief(ctx.workspaceId, project.genre), learnedCraft: await learnedLyricCraftBrief(ctx.workspaceId, project.genre), hitCraft: prompts.hitCraftBrief('hook', hmood) });
   // FAST + RELIABLE: OpenAI writes (word-palette gives the vocab), Claude scores
   // lean. The drop pipeline runs this per song, so speed here is what kills the
   // "nothing's happening" feel.

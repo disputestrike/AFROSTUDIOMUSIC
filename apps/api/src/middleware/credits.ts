@@ -11,6 +11,7 @@ declare module 'fastify' {
       multiplier?: number;
       refTable?: string;
       refId?: string;
+      idempotencyKey?: string;
     }): Promise<{ ok: true; balance: number } | { ok: false; needed: number; balance: number; reason?: string }>;
 
     refundCredits(opts: {
@@ -34,7 +35,16 @@ export const creditsPlugin = fp(async function (app) {
     multiplier?: number;
     refTable?: string;
     refId?: string;
+    /** Crucib lesson: a retried/double-submitted request must never charge
+     *  twice. Same key + workspace + action = one ledger row, ever. */
+    idempotencyKey?: string;
   }) => {
+    // Deterministic ledger id when an idempotency key is given — the unique PK
+    // makes the double-charge structurally impossible (P2002 = already charged).
+    const { createHash } = await import('node:crypto');
+    const ledgerId = opts.idempotencyKey
+      ? 'idem_' + createHash('sha256').update(`${opts.workspaceId}|${opts.key}|${opts.idempotencyKey}`).digest('hex').slice(0, 24)
+      : undefined;
     // Internal single-owner mode: the operator pays provider costs directly via
     // their own API keys — no internal credit wall. WO-1 SAFETY RAIL: spend is
     // CAPPED BY DEFAULT (daily + monthly) so a runaway loop can never exceed it
@@ -68,41 +78,60 @@ export const creditsPlugin = fp(async function (app) {
         }
       }
       // Ledger the charge so the cap has a uniform unit across all generation types.
-      await prisma.creditLedger.create({
-        data: {
-          workspaceId: opts.workspaceId,
-          delta: -(costOf(opts.key) * (opts.multiplier ?? 1)),
-          reason: opts.key,
-          refTable: opts.refTable,
-          refId: opts.refId,
-        },
-      });
+      try {
+        await prisma.creditLedger.create({
+          data: {
+            ...(ledgerId ? { id: ledgerId } : {}),
+            workspaceId: opts.workspaceId,
+            delta: -(costOf(opts.key) * (opts.multiplier ?? 1)),
+            reason: opts.key,
+            refTable: opts.refTable,
+            refId: opts.refId,
+          },
+        });
+      } catch (e) {
+        if ((e as { code?: string }).code === 'P2002') return { ok: true as const, balance: Number.MAX_SAFE_INTEGER }; // already charged — idempotent
+        throw e;
+      }
       return { ok: true as const, balance: Number.MAX_SAFE_INTEGER };
     }
     const cost = costOf(opts.key) * (opts.multiplier ?? 1);
     return prisma.$transaction(async (tx) => {
-      const ws = await tx.workspace.findUnique({
-        where: { id: opts.workspaceId },
-        select: { creditsCents: true },
-      });
-      if (!ws) throw new Error('workspace missing');
-      if (ws.creditsCents < cost) {
-        return { ok: false as const, needed: cost, balance: ws.creditsCents };
-      }
-      const updated = await tx.workspace.update({
-        where: { id: opts.workspaceId },
+      // ATOMIC CONDITIONAL DEBIT (Crucib P0-6 lesson): read-check-then-write let
+      // two concurrent charges both pass the balance check. One guarded UPDATE
+      // is the whole check — 0 rows touched = insufficient funds, race-free.
+      const debited = await tx.workspace.updateMany({
+        where: { id: opts.workspaceId, creditsCents: { gte: cost } },
         data: { creditsCents: { decrement: cost } },
       });
-      await tx.creditLedger.create({
-        data: {
-          workspaceId: opts.workspaceId,
-          delta: -cost,
-          reason: opts.key,
-          refTable: opts.refTable,
-          refId: opts.refId,
-        },
-      });
-      return { ok: true as const, balance: updated.creditsCents };
+      if (debited.count === 0) {
+        const ws = await tx.workspace.findUnique({ where: { id: opts.workspaceId }, select: { creditsCents: true } });
+        if (!ws) throw new Error('workspace missing');
+        return { ok: false as const, needed: cost, balance: ws.creditsCents };
+      }
+      try {
+        await tx.creditLedger.create({
+          data: {
+            ...(ledgerId ? { id: ledgerId } : {}),
+            workspaceId: opts.workspaceId,
+            delta: -cost,
+            reason: opts.key,
+            refTable: opts.refTable,
+            refId: opts.refId,
+          },
+        });
+      } catch (e) {
+        // Idempotent replay: the charge already exists — undo this debit and
+        // report success (money mutations atomic; success only on full success).
+        if ((e as { code?: string }).code === 'P2002') {
+          await tx.workspace.update({ where: { id: opts.workspaceId }, data: { creditsCents: { increment: cost } } });
+          const ws = await tx.workspace.findUnique({ where: { id: opts.workspaceId }, select: { creditsCents: true } });
+          return { ok: true as const, balance: ws?.creditsCents ?? 0 };
+        }
+        throw e;
+      }
+      const ws = await tx.workspace.findUnique({ where: { id: opts.workspaceId }, select: { creditsCents: true } });
+      return { ok: true as const, balance: ws?.creditsCents ?? 0 };
     });
   });
 

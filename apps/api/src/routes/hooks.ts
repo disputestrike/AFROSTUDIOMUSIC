@@ -9,6 +9,7 @@ import { memoryContext, recordFeedback } from '../services/artist-memory';
 import { learnedReferenceBrief, learnedLyricCraftBrief, snapshotTrend, freshnessBrief } from '../lib/learned';
 import { lexiconPalette } from '../lib/lexicon';
 import { fuseSoundDna } from '../lib/fuse';
+import { presongIntelligence } from '../lib/presong';
 
 export default async function hooks(app: FastifyInstance) {
   app.get<{ Params: { projectId: string } }>(
@@ -56,6 +57,8 @@ export default async function hooks(app: FastifyInstance) {
       // ALL of it reaches the writer (not just the first two).
       const mood = (brief as { mood?: string } | undefined)?.mood;
       const soundDna = fuseSoundDna({
+        // Pre-song recall: measured lessons from THIS lane's own winners/losers.
+        extra: await presongIntelligence(workspaceId, project.genre, mood),
         freshness: await freshnessBrief(workspaceId),
         // Languages steer the palette — without them the word bank served its
         // default slice regardless of what the artist writes in.

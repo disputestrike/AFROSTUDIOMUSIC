@@ -237,6 +237,13 @@ export default async function release(app: FastifyInstance) {
         where: { id: song.id },
         data: { splitSheet: splits as never, isrc, upc, nativeReviewOk, releaseReady: gl.ready },
       });
+      // PROOF PACK: a green-lit song carries its evidence bundle from stored
+      // measurements — "why this song passed", inspectable forever. Best-effort.
+      if (gl.ready) {
+        const { assembleProofPack } = await import('../lib/proof-pack');
+        const pack = await assembleProofPack(workspaceId, song.id).catch(() => null);
+        if (pack) await prisma.song.update({ where: { id: song.id }, data: { proofPack: pack as never } }).catch(() => undefined);
+      }
 
       return {
         song: { id: updated.id, title: updated.title, isrc: updated.isrc, upc: updated.upc, splitSheet: updated.splitSheet, releaseReady: updated.releaseReady, nativeReviewOk: updated.nativeReviewOk },

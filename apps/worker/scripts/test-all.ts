@@ -60,6 +60,8 @@ const TS: Array<[string, string]> = [
   ['Lyric render filter', 'test-clean-lyrics.ts'],
   ['The Wall (W-2/C-1)', 'test-wall.ts'],
   ['Wall probe (no vendor names)', 'test-wall-probe.ts'],
+  ['Golden briefs (pipeline gate)', 'test-golden-briefs.ts'],
+  ['Claims-evidence probe', 'test-claims.ts'],
 ];
 for (const [name, file] of TS) {
   if (!existsSync(join(scripts, file))) { results.push({ name, status: 'SKIP', note: 'script missing', required: false }); continue; }

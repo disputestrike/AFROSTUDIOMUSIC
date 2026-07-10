@@ -175,6 +175,19 @@ export default async function songs(app: FastifyInstance) {
       tips: 'In Suno: Create → Custom Mode → turn "Instrumental" OFF → paste Style + Lyrics → Create. Download the WAV, then use "Bring it back" here to master + score it — your account, your rights.',
     };
   };
+  // PROOF PACK — "why did this song pass?" from stored measurements only.
+  // Returns the green-light-persisted bundle when present, else assembles fresh.
+  app.get<{ Params: { id: string } }>('/:id/proof', async (req, reply) => {
+    const { workspaceId } = requireAuth(req);
+    const song = await prisma.song.findFirst({ where: { id: req.params.id, workspaceId }, select: { proofPack: true } });
+    if (!song) return reply.code(404).send({ error: 'song_not_found' });
+    if (song.proofPack) return { proof: song.proofPack, persisted: true };
+    const { assembleProofPack } = await import('../lib/proof-pack');
+    const pack = await assembleProofPack(workspaceId, req.params.id);
+    if (!pack) return reply.code(404).send({ error: 'song_not_found' });
+    return { proof: pack, persisted: false, note: 'assembled on demand — persists automatically at green-light' };
+  });
+
   app.get<{ Params: { id: string } }>('/:id/bridge-export', bridgeExport);
   app.get<{ Params: { id: string } }>('/:id/suno-export', bridgeExport);
 
