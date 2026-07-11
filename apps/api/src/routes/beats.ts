@@ -2,7 +2,7 @@ import type { FastifyInstance } from 'fastify';
 import { prisma } from '@afrohit/db';
 import { generateBeatInputSchema, attachBeatUploadSchema, genreSignature } from '@afrohit/shared';
 import { enrichLyricsForVocals, defaultSongEngine, defaultInstrumentalEngine } from '@afrohit/ai';
-import { learnedReferenceBrief, learnedStyleTags } from '../lib/learned';
+import { learnedReferenceBrief, learnedStyleTags, learnedUsage } from '../lib/learned';
 import { laneDna } from '../lib/lane-pipeline';
 import { requireAuth } from '../middleware/auth';
 import { enqueue, QUEUES } from '../lib/queue';
@@ -57,6 +57,12 @@ export default async function beats(app: FastifyInstance) {
         : laneDna(genre, { mood: input.mood });
       const learned = await learnedReferenceBrief(workspaceId, genre, input.pinnedReferenceId);
       const learnedTags = await learnedStyleTags(workspaceId, genre, input.pinnedReferenceId);
+      // TRACEABILITY: capture exactly which of the artist's references this render
+      // draws on, so "have my beats been used?" is provable per beat. Stored on
+      // the job (below) and logged. measured<total = training that hasn't been
+      // deep-measured yet contributes little — the honest signal to backfill.
+      const trainingUsage = await learnedUsage(workspaceId, genre, input.pinnedReferenceId);
+      req.log.info({ workspaceId, genre, usedRefs: trainingUsage.referenceIds.length, measured: `${trainingUsage.measured}/${trainingUsage.total}`, pin: trainingUsage.pinnedReferenceId }, '[training] references applied to this render');
       const dnaTags = [...(dna.tags ?? []), ...learnedTags];
 
       // The user's SELECTED languages outrank the artist profile's defaults —
@@ -97,7 +103,7 @@ export default async function beats(app: FastifyInstance) {
           kind: 'music',
           provider: input.withVocals ? input.songEngine ?? defaultSongEngine() : defaultInstrumentalEngine(),
           status: 'QUEUED',
-          inputJson: input as never,
+          inputJson: { ...input, trainingUsage } as never,
         },
       });
 
@@ -114,6 +120,7 @@ export default async function beats(app: FastifyInstance) {
             // Pin the SELECTED genre so the worker's tags/kit render THIS lane,
             // not the project's (audit #4).
             genre,
+            trainingUsage,
             lyrics,
             // Vocal songs default to FULL LENGTH (genre standard) — the old
             // schema default(60) rendered 60-second "full songs" for any caller

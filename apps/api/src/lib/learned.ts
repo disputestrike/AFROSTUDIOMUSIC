@@ -124,6 +124,36 @@ export async function learnedReferenceBrief(
 }
 
 /**
+ * TRAINING USAGE (traceability) — exactly which of the artist's references a
+ * render for this genre actually draws on, so "have my beats been used?" has a
+ * provable answer per beat instead of a vibe. Returns the same refs the brief +
+ * tags use, plus how many are MEASURED (a reference with no measured recipe
+ * contributes little — that's why unmeasured training feels inert).
+ */
+export interface TrainingUsage {
+  referenceIds: string[];
+  titles: string[];
+  pinnedReferenceId: string | null;
+  total: number; // refs considered in-genre
+  measured: number; // of the used refs, how many carry a measured recipe
+  genre: string;
+}
+export async function learnedUsage(workspaceId: string, genre?: string | null, pinnedReferenceId?: string | null): Promise<TrainingUsage> {
+  const g = genre ?? '';
+  if (!g) return { referenceIds: [], titles: [], pinnedReferenceId: pinnedReferenceId ?? null, total: 0, measured: 0, genre: g };
+  const refs = await fetchRefs(workspaceId, g, pinnedReferenceId);
+  const isMeasured = (r: RefRow) => !!(r.recipe.drums || r.recipe.bass || r.recipe.percussion || r.recipe.groove);
+  return {
+    referenceIds: refs.map((r) => r.id),
+    titles: refs.map((r) => r.title ?? '(untitled)'),
+    pinnedReferenceId: pinnedReferenceId ?? null,
+    total: refs.length,
+    measured: refs.filter(isMeasured).length,
+    genre: g,
+  };
+}
+
+/**
  * Terse learned tokens for the MUSIC MODEL (≤4, short) — the sound it heard must
  * shape the AUDIO prompt, not just the lyric prompts. Pulled from the newest
  * REAL reference in genre (or the pinned one).

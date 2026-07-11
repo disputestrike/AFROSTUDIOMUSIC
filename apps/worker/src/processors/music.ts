@@ -357,6 +357,9 @@ export async function processMusic(p: MusicPayload) {
               : undefined,
           },
           blueprint: srcBlueprint ?? undefined,
+          // TRACEABILITY: which of the artist's trained references shaped this beat
+          // (proves "my beats were used" — and measured/total flags backfill need).
+          trainingUsage: (p.input as { trainingUsage?: unknown }).trainingUsage ?? undefined,
           qc: quality
             ? { ...quality, durationS: durationS || quality.durationS }
             : { durationS: durationS || null, verdict: durationS >= 12 ? 'pass' : 'fail', ok: durationS >= 12, flags: [] },
