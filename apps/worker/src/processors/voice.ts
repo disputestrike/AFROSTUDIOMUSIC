@@ -1,7 +1,7 @@
 import { prisma } from '@afrohit/db';
 import { voiceAdapter } from '@afrohit/ai';
 import { markFailed, markRunning, markSucceeded } from '../lib/jobs';
-import { ingestRemoteFile } from '../lib/storage';
+import { ingestRemoteFile, uploadBytes } from '../lib/storage';
 
 interface VoicePayload {
   jobId: string;
@@ -59,17 +59,30 @@ export async function processVoice(p: VoicePayload) {
       return;
     }
 
-    // Some adapters return a sentinel "inline:bytes:N" + bytes side-channel;
-    // others return a real URL. Always re-host into our bucket.
-    let storedUrl = result.output.audioUrl;
-    if (!storedUrl.startsWith('inline:')) {
+    // Re-host into our bucket. Adapters return EITHER raw bytes (upload them) OR a
+    // real URL (ingest it). A sentinel/empty URL with no bytes is a hard failure —
+    // never store an unplayable "inline:bytes:N" as the vocal (audit #7).
+    const contentType = result.output.format === 'wav' ? 'audio/wav' : 'audio/mpeg';
+    let storedUrl: string;
+    if (result.output.audioBytes?.byteLength) {
+      storedUrl = await uploadBytes({
+        workspaceId: p.workspaceId,
+        kind: 'vocals',
+        bytes: result.output.audioBytes,
+        contentType,
+        ext: result.output.format,
+      });
+    } else if (result.output.audioUrl && !result.output.audioUrl.startsWith('inline:')) {
       storedUrl = await ingestRemoteFile({
         workspaceId: p.workspaceId,
         url: result.output.audioUrl,
         kind: 'vocals',
         ext: result.output.format,
-        contentType: result.output.format === 'wav' ? 'audio/wav' : 'audio/mpeg',
+        contentType,
       });
+    } else {
+      await markFailed(p.jobId, 'voice_render_failed: engine returned no playable audio');
+      return;
     }
 
     if (p.projectId) {

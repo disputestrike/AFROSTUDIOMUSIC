@@ -1,6 +1,7 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { prisma } from '@afrohit/db';
+import { costOf } from '@afrohit/shared';
 import { requireAuth } from '../middleware/auth';
 import {
   approveUrlOf,
@@ -73,8 +74,10 @@ export default async function billing(app: FastifyInstance) {
       return { ok: remaining > 0, mode: 'internal', usedToday, cap, remainingToday: remaining };
     }
     const ws = await prisma.workspace.findUniqueOrThrow({ where: { id: workspaceId }, select: { creditsCents: true } });
-    // A full sung song is the most expensive common action — use it as the bar.
-    const estimatedCostCents = 2 * 100 * 100; // $2.00 in micro-cents (full_song_demo ceiling)
+    // A full sung song is the most expensive common action — use its REAL cost as
+    // the bar (audit #10: preflight hardcoded $2.00 while the charge is $7.50, so
+    // it green-lit renders the user couldn't afford). One cost function everywhere.
+    const estimatedCostCents = costOf('full_song_demo');
     return { ok: ws.creditsCents >= estimatedCostCents, mode: 'credits', balanceCents: ws.creditsCents, estimatedCostCents };
   });
 

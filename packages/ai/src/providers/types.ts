@@ -95,6 +95,11 @@ export interface VoiceRenderInput {
 
 export interface VoiceRenderOutput {
   audioUrl: string;
+  /** Raw rendered audio, when the adapter has bytes but no hosted URL. The worker
+   *  uploads these to storage and replaces audioUrl. The adapter runs in-process
+   *  so a Buffer crosses fine. (Was a broken "inline:bytes:N" sentinel with no
+   *  bytes attached — the stored URL never played.) */
+  audioBytes?: Buffer;
   durationS: number;
   format: 'wav' | 'mp3';
 }

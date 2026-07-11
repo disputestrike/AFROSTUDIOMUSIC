@@ -86,18 +86,19 @@ class ElevenVoiceAdapter implements VoiceProviderAdapter {
       }
     );
     if (!res.ok) return { status: 'failed', error: `eleven render ${res.status}` };
-    // In a real deployment, stream the response into our S3/MinIO bucket and
-    // return that URL. For now we trust caller to provide an upload hook.
     const buf = Buffer.from(await res.arrayBuffer());
-    // Worker will pipe `buf` into storage. We return a sentinel signaling that.
+    if (!buf.byteLength) return { status: 'failed', error: 'eleven render returned no audio' };
+    // Return the actual BYTES — the worker uploads them to storage and sets the
+    // real URL. (Was a broken "inline:bytes:N" sentinel with no bytes, so the
+    // stored vocalRender.url never played.)
     return {
       status: 'succeeded',
       output: {
-        audioUrl: `inline:bytes:${buf.byteLength}`,
+        audioUrl: '',
+        audioBytes: buf,
         durationS: 0,
         format: 'mp3',
       },
-      // pass bytes via side-channel — worker reads it after the call
       estimatedCostUsd: Math.max(0.05, input.lyricBody.length * 0.00006),
     };
   }

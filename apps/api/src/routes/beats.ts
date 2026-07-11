@@ -45,14 +45,18 @@ export default async function beats(app: FastifyInstance) {
         lyrics = lyric?.cleanVersion ?? lyric?.body ?? undefined;
         if (!lyrics) return reply.code(400).send({ error: 'no_lyrics — write lyrics first for a vocal song' });
       }
+      // SELECTED genre wins (audit #4): the render path used project.genre — so
+      // picking amapiano on an afrobeats project rendered afrobeats. The user's
+      // request genre is the truth; the project genre is only the fallback.
+      const genre = input.genre ?? project.genre;
       // Genre Sound DNA (blended when mixing genres, colored by mood) + learned
       // references (the pinned just-listened one FIRST) so the beat rebuilds the
       // real sound it heard — learned tokens join the music-model tags.
       const dna = input.fusionGenres?.length
-        ? laneDna(input.genre, { mood: input.mood, fusionGenres: input.fusionGenres })
-        : laneDna(project.genre, { mood: input.mood });
-      const learned = await learnedReferenceBrief(workspaceId, project.genre, input.pinnedReferenceId);
-      const learnedTags = await learnedStyleTags(workspaceId, project.genre, input.pinnedReferenceId);
+        ? laneDna(genre, { mood: input.mood, fusionGenres: input.fusionGenres })
+        : laneDna(genre, { mood: input.mood });
+      const learned = await learnedReferenceBrief(workspaceId, genre, input.pinnedReferenceId);
+      const learnedTags = await learnedStyleTags(workspaceId, genre, input.pinnedReferenceId);
       const dnaTags = [...(dna.tags ?? []), ...learnedTags];
 
       // The user's SELECTED languages outrank the artist profile's defaults —
@@ -63,7 +67,7 @@ export default async function beats(app: FastifyInstance) {
       // Arrange the vocal to sound ALIVE (ad-libs, doubled/harmonized hook).
       if (input.withVocals && lyrics && input.richVocals) {
         const enriched = await enrichLyricsForVocals({
-      genre: project.genre,
+          genre,
           lyricBody: lyrics,
           voice: input.voice,
           languages: langs,
@@ -107,11 +111,14 @@ export default async function beats(app: FastifyInstance) {
           songId: input.songId,
           input: {
             ...input,
+            // Pin the SELECTED genre so the worker's tags/kit render THIS lane,
+            // not the project's (audit #4).
+            genre,
             lyrics,
             // Vocal songs default to FULL LENGTH (genre standard) — the old
             // schema default(60) rendered 60-second "full songs" for any caller
             // that omitted duration. Instrumental sketches stay short.
-            durationS: input.durationS ?? (input.withVocals ? genreSignature(project.genre).durationS : 60),
+            durationS: input.durationS ?? (input.withVocals ? genreSignature(genre).durationS : 60),
             // ANTI-SOUP: styleHints are TAGS (they join dnaTags), not sentence glue —
             // an ever-growing vibePrompt used to drown the genre identity.
             vibePrompt: input.vibePrompt || undefined,
