@@ -16,18 +16,26 @@ function check(cond: boolean, msg: string): void {
   if (!cond) { console.error(`FAIL: ${msg}`); failures++; }
 }
 
-const AFRO_GENRES = ['afrobeats', 'afro_fusion', 'amapiano', 'afro_dancehall', 'afro_pop'];
-// The exact Latin-signifier tokens the Afrobeats DNA carries — these must be
-// scrubbed before they reach the audio engine.
+// Each Afro lane must get its OWN correct origin anchor — NOT a blanket
+// "Nigerian/Ghanaian Afrobeats" (that mislabels amapiano, which is South African).
+const AFRO_EXPECT: Record<string, RegExp> = {
+  afrobeats: /west african/i,
+  afro_fusion: /west african/i,
+  afro_pop: /west african/i,
+  amapiano: /south african amapiano/i,
+  afro_dancehall: /afro-dancehall/i,
+  afro_rnb: /afro-r&b|afrosoul/i,
+};
+// Latin-signifier tokens the DNA carries — must be scrubbed before the engine.
 const LATIN_POISON = /\bclave\b|woodblock\s*\/\s*clave|\btresillo\b|\breggaeton\b|\bdembow\b|\bperreo\b/i;
 
-for (const genre of AFRO_GENRES) {
+for (const [genre, anchorRe] of Object.entries(AFRO_EXPECT)) {
   const tags = composeStyleTags(
     {
       genre,
       bpm: 107,
       // Simulate the DNA tokens that actually reach the engine — clave-laden.
-      dnaTags: ['prominent Congas', 'Woodblock / clave', "the Afrobeats 'pocket' built on a 3-2 / 2-3 clave feel", 'off-beat syncopated kick'],
+      dnaTags: ['prominent Congas', 'Woodblock / clave', "the pocket built on a 3-2 / 2-3 clave feel", 'off-beat syncopated kick'],
       vibePrompt: 'warm hypnotic groove on a 2-3 clave',
     } as never,
     { fallbackLiteral: 'radio-ready' }
@@ -35,12 +43,17 @@ for (const genre of AFRO_GENRES) {
   const joined = tags.join(' , ');
   // Poison must be judged on the POSITIVE tags only — the deliberate "NOT
   // reggaeton, NOT dembow" exclusion clause obviously contains those words.
-  const positive = tags.filter((t) => !/^NOT /i.test(t.trim())).join(' , ');
+  const positive = tags.filter((t) => !/^NOT /i.test(t.trim()) && !/\bNOT\b/.test(t)).join(' , ');
 
   check(!LATIN_POISON.test(positive), `[${genre}] Latin-signifier token leaked to engine tags: "${positive.match(LATIN_POISON)?.[0]}"`);
-  check(/west african/i.test(joined), `[${genre}] missing West-African identity anchor`);
+  check(anchorRe.test(joined), `[${genre}] missing/incorrect origin anchor (want ${anchorRe})`);
   check(/not reggaeton/i.test(joined), `[${genre}] missing explicit NOT-reggaeton exclusion`);
-  check(/log drum|talking drum|shekere|highlife/i.test(joined), `[${genre}] missing an unmistakable West-African signature instrument`);
+}
+// Amapiano must NOT be mislabelled as Nigerian/Ghanaian Afrobeats (the bug).
+{
+  const ama = composeStyleTags({ genre: 'amapiano', bpm: 112, dnaTags: ['log drum'] } as never, { fallbackLiteral: 'radio-ready' }).join(' , ');
+  check(!/nigerian\/ghanaian afrobeats/i.test(ama.replace(/NOT Nigerian Afrobeats/i, '')), 'amapiano wrongly anchored as Nigerian/Ghanaian Afrobeats');
+  check(/piano/i.test(ama), 'amapiano missing its signature piano');
 }
 
 // A non-Afro genre must be UNTOUCHED — the scrub/anchor is Afro-only.
@@ -52,4 +65,4 @@ if (failures > 0) {
   console.error(`genre-identity: ${failures} failure(s)`);
   process.exit(1);
 }
-console.log(`genre-identity: Afrobeats family ships West-African anchored, reggaeton-excluded, clave-free tags (${AFRO_GENRES.length} genres); non-Afro untouched`);
+console.log(`genre-identity: each Afro lane ships its OWN origin anchor (amapiano=South African, afrobeats=West African), reggaeton-excluded, clave-free (${Object.keys(AFRO_EXPECT).length} genres); non-Afro untouched`);

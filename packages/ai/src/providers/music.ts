@@ -31,6 +31,37 @@ function provider(): string {
  * DNA is present that filler is exactly the homogenizing phrase we drop. This is
  * the core fix for "same-y sound".
  */
+/**
+ * Per-genre Afro identity — the correct origin + signature kit for each lane, so
+ * the audio engine is anchored to THIS genre, not a blanket "Afrobeats". Wrong
+ * anchoring is why amapiano (South African, piano-led) was rendering as generic
+ * Nigerian Afrobeats. Returns null for non-Afro genres (left untouched).
+ */
+function afroIdentity(genre: string): { anchor: string; signature: string } | null {
+  const g = genre.toLowerCase();
+  if (/amapiano|afropiano/.test(g))
+    return {
+      anchor: 'South African amapiano',
+      signature: 'signature sound: deep booming log-drum sub-bass, jazzy sustained piano and soulful Rhodes, airy shakers, percussive vocal chops; spacious swung groove — NOT four-on-the-floor house, NOT Nigerian Afrobeats',
+    };
+  if (/dancehall/.test(g))
+    return {
+      anchor: 'Afro-dancehall',
+      signature: 'signature sound: Jamaican dancehall riddim bounce under African percussion, deep rolling bass, synth plucks and horn stabs',
+    };
+  if (/rnb|r&b|soul/.test(g))
+    return {
+      anchor: 'Afro-R&B / Afrosoul',
+      signature: 'signature sound: lush Rhodes and warm pads, smooth sub-bass, soft Afro percussion under intimate R&B vocals',
+    };
+  if (/afro|highlife|street_pop|gospel/.test(g))
+    return {
+      anchor: 'West African Afrobeats (Nigerian/Ghanaian)',
+      signature: 'signature sound: log drum, talking drum, shekere and interlocking highlife guitar; laid-back off-beat kick and busy 16th shaker — NOT four-on-the-floor',
+    };
+  return null;
+}
+
 export function composeStyleTags(
   input: MusicGenerationInput,
   opts: { fallbackLiteral: string; genreLabel?: string; genreSuffix?: string; keyPrefix?: string; tonePrefix?: string }
@@ -57,17 +88,22 @@ export function composeStyleTags(
   // learned tokens, then a CAPPED vibe (an uncapped vibePrompt used to drown the
   // identity), then tone. Near-duplicate tokens are deduped.
   const vibe = deLatin((input.vibePrompt ?? '').trim().slice(0, 160));
-  // For Afro genres, LEAD with an unmistakable West-African anchor + an explicit
-  // exclusion, both BEFORE the DNA tokens so truncation can never drop them. The
-  // anchor instruments (log drum, talking drum, shekere, highlife guitar) have
-  // almost no reggaeton overlap — they are the strongest pull away from Latin.
-  const genreLine = isAfro
-    ? `West African ${genreLabel} — modern Nigerian/Ghanaian Afrobeats, ${input.bpm} bpm${input.keySignature ? `, ${opts.keyPrefix ?? 'key '}${input.keySignature}` : ''}`
+  // For Afro genres, LEAD with the CORRECT per-genre identity anchor + signature
+  // instruments, both BEFORE the DNA tokens so truncation can't drop them. This
+  // used to blanket-label EVERY Afro genre "Nigerian/Ghanaian Afrobeats" — which
+  // is WRONG for amapiano (South African), afro-dancehall (Jamaican-rooted) and
+  // afro-R&B. Each lane now gets its own origin + kit; the anchor instruments
+  // (log drum / piano / dancehall bounce) also pull hard away from reggaeton.
+  const afro = afroIdentity(input.genre ?? '');
+  const genreLine = afro
+    ? `${afro.anchor} — ${genreLabel}, ${input.bpm} bpm${input.keySignature ? `, ${opts.keyPrefix ?? 'key '}${input.keySignature}` : ''}`
     : `${genreLabel}, ${input.bpm} bpm${input.keySignature ? `, ${opts.keyPrefix ?? 'key '}${input.keySignature}` : ''}`;
   const raw = [
     genreLine,
-    isAfro ? 'signature sound: log drum, talking drum, shekere and interlocking highlife guitar; straight-4 with a laid-back off-beat kick and busy 16th shaker' : null,
-    isAfro ? 'NOT reggaeton, NOT dembow, NOT tresillo/dembow kick, NOT Latin, NOT Spanish, NOT perreo, NOT four-on-the-floor' : null,
+    afro ? afro.signature : null,
+    // Anti-Latin exclusion applies to every Afro lane (none are reggaeton). The
+    // groove note (four-on-the-floor or not) is per-genre in the signature above.
+    isAfro ? 'NOT reggaeton, NOT dembow, NOT tresillo/dembow kick, NOT Latin, NOT Spanish, NOT perreo' : null,
     opts.genreSuffix ?? null,
     ...(input.dnaTags ?? []).map(deLatin),
     vibe || null,

@@ -134,7 +134,10 @@ export default function CreatePage() {
   // among DIFFERENT directions (costs that many renders).
   const [takes, setTakes] = useState<1 | 2 | 3>(1);
   const [influence, setInfluence] = useState('');
-  const [engine, setEngine] = useState<'suno' | 'ace_step' | 'minimax'>('minimax');
+  // 'auto' = let the backend's defaultSongEngine() choose (Suno when a key
+  // exists, else the fallback). Hardcoding 'minimax' here used to OVERRIDE that
+  // — so full songs never upgraded to Suno even with a key. Auto is the default.
+  const [engine, setEngine] = useState<'auto' | 'suno' | 'ace_step' | 'minimax'>('auto');
 
   // Three ways in: describe it / bring your own lyrics / listen & recreate.
   const [path, setPath] = useState<'song' | 'lyrics' | 'mumble'>('song');
@@ -250,7 +253,7 @@ export default function CreatePage() {
       // networks). We poll the drop job for the hook/lyrics result…
       const started = await api.post<{ jobId: string }>(
         `/projects/${project.id}/drop`,
-        { theme, vibe: vibe.trim().slice(0, 500) || undefined, songTitle: songName.trim() || undefined, voice: voice === 'auto' ? undefined : voice, candidates: takes > 1 ? takes : undefined, pinnedReferenceId: pinnedRef || undefined, count: 1, genre, fusionGenres: fusion.length ? fusion : undefined, mood, bpm, withVocals: true, songEngine: engine, influence: influence.trim() || undefined, languages: langs }
+        { theme, vibe: vibe.trim().slice(0, 500) || undefined, songTitle: songName.trim() || undefined, voice: voice === 'auto' ? undefined : voice, candidates: takes > 1 ? takes : undefined, pinnedReferenceId: pinnedRef || undefined, count: 1, genre, fusionGenres: fusion.length ? fusion : undefined, mood, bpm, withVocals: true, songEngine: engine === 'auto' ? undefined : engine, influence: influence.trim() || undefined, languages: langs }
       );
       saveProduce({ dropJobId: started.jobId, renderJobId: undefined });
       let item: { jobId?: string; hookText?: string; score: number | null; error?: string } | undefined;
@@ -376,7 +379,7 @@ export default function CreatePage() {
         withStems: false,
         withVocals: true,
         lyrics: lyricsText.trim(),
-        songEngine: engine,
+        songEngine: engine === 'auto' ? undefined : engine,
         // Language identity is law on this path too — Igbo lyrics used to sing
         // with no language identity here (the Bantu-phonetics bug). The lyric's
         // DETECTED languages outrank the page chips: the pasted words are the truth.
@@ -656,6 +659,7 @@ export default function CreatePage() {
           {([
             // §1.11 THE WALL: public surfaces speak in ENGINE CLASSES, never
             // vendor names. Values stay internal identifiers; labels are classes.
+            { value: 'auto', label: 'Auto', hint: 'Best engine available (recommended)' },
             { value: 'suno', label: 'Flagship', hint: 'Best quality (first-party releases)' },
             { value: 'minimax', label: 'Standard A', hint: 'High vocal realism' },
             { value: 'ace_step', label: 'Standard B', hint: 'Fast draft' },
