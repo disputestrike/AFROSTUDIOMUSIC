@@ -289,19 +289,33 @@ export default function CreatePage() {
       let netFails = 0;
       let dropErr: string | undefined;
       let dropFailReason = '';
-      for (let i = 0; i < 96; i++) {
+      let lastDropStatus = '';
+      // LIVE-MEASURED: a full write (hooks → A&R → 2-pass lyrics) took 11 min on
+      // prod while this window was 8 — the screen quit before the writer finished
+      // and LIED "couldn't finish". Window now 16 min, and a still-RUNNING job at
+      // the end hands off calmly instead of erroring.
+      for (let i = 0; i < 192; i++) {
         await sleep(5000);
         if (i === 10) setStepIdx(2); // hooks done-ish → writing lyrics
         let j: { status: string; errorJson?: { message?: string } | null; outputJson?: { drop?: Array<typeof item>; error?: string } };
         try { j = await api.get(`/jobs/${started.jobId}`); netFails = 0; }
         catch { if (++netFails >= 24) break; continue; }
         // Top-level error carries WHY when no take rendered (brain down, no hooks).
+        lastDropStatus = j.status;
         if (j.status === 'SUCCEEDED') { item = j.outputJson?.drop?.[0]; dropErr = j.outputJson?.error; break; }
         if (j.status === 'FAILED') { dropFailed = true; dropFailReason = j.errorJson?.message ?? ''; break; }
       }
       // Show the SERVER'S reason (e.g. "the studio restarted while writing this
       // song") — the generic line hid restarts/zombies as a brain-keys mystery.
       if (dropFailed) throw new Error(dropFailReason || 'Could not write the song — try again.');
+      if (!item?.jobId && lastDropStatus === 'RUNNING') {
+        // NOT a failure: the writer is still working past our window. Hand off
+        // calmly — the sticky state stays, so reopening resumes the watch, and
+        // the song lands in the Catalog when done.
+        setSong({ title, hook: undefined, score: null, url: '', projectId: project.id });
+        setPhase('finishing');
+        return;
+      }
       if (!item?.jobId) {
         const e = item?.error || dropErr || '';
         if (!e && netFails >= 24) throw new Error('Connection dropped while the studio kept working — your song did NOT fail; it will land in the Catalog. Reopen this page to resume watching it.');
