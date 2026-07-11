@@ -179,6 +179,32 @@ async function bootstrap() {
   const port = Number(process.env.PORT ?? 4000);
   await app.listen({ port, host: '0.0.0.0' });
   app.log.info(`API listening on :${port}`);
+
+  // ZOMBIE-DROP SWEEP. The drop pipeline runs DETACHED IN THIS PROCESS
+  // (drop.ts: void runDropPipeline...), so a redeploy/restart kills it mid-write
+  // and the ProviderJob stays RUNNING forever — the client polls 8 minutes, then
+  // shows the misleading "check the API brain keys" error. Two-part fix:
+  //  (a) on BOOT: every kind:'drop' still RUNNING is definitionally dead (its
+  //      pipeline lived in the previous process) → fail it honestly;
+  //  (b) WATCHDOG every 5 min: fail drops running >30 min (hung LLM call etc.).
+  const failZombieDrops = async (where: Record<string, unknown>, reason: string) => {
+    try {
+      const n = await prisma.providerJob.updateMany({
+        where: { kind: 'drop', status: 'RUNNING', ...where },
+        data: { status: 'FAILED', finishedAt: new Date(), errorJson: { message: reason } as never },
+      });
+      if (n.count) app.log.warn({ count: n.count }, `[drop-sweep] ${reason}`);
+    } catch (e) {
+      app.log.warn({ err: (e as Error)?.message }, '[drop-sweep] failed (non-fatal)');
+    }
+  };
+  await failZombieDrops({}, 'the studio restarted while writing this song — it did not finish. Start another take.');
+  setInterval(() => {
+    void failZombieDrops(
+      { startedAt: { lt: new Date(Date.now() - 30 * 60 * 1000) } },
+      'the writer took too long and was stopped — try again.'
+    );
+  }, 5 * 60 * 1000).unref();
   // The API runs the WRITERS (hooks/lyrics/A&R) — its brain config must be as
   // loud as the worker's: a stale Railway ANTHROPIC_MODEL here burns silently.
   app.log.info(

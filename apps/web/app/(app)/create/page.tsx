@@ -288,17 +288,20 @@ export default function CreatePage() {
       let dropFailed = false;
       let netFails = 0;
       let dropErr: string | undefined;
+      let dropFailReason = '';
       for (let i = 0; i < 96; i++) {
         await sleep(5000);
         if (i === 10) setStepIdx(2); // hooks done-ish → writing lyrics
-        let j: { status: string; outputJson?: { drop?: Array<typeof item>; error?: string } };
+        let j: { status: string; errorJson?: { message?: string } | null; outputJson?: { drop?: Array<typeof item>; error?: string } };
         try { j = await api.get(`/jobs/${started.jobId}`); netFails = 0; }
         catch { if (++netFails >= 24) break; continue; }
         // Top-level error carries WHY when no take rendered (brain down, no hooks).
         if (j.status === 'SUCCEEDED') { item = j.outputJson?.drop?.[0]; dropErr = j.outputJson?.error; break; }
-        if (j.status === 'FAILED') { dropFailed = true; break; }
+        if (j.status === 'FAILED') { dropFailed = true; dropFailReason = j.errorJson?.message ?? ''; break; }
       }
-      if (dropFailed) throw new Error('Could not write the song — try again.');
+      // Show the SERVER'S reason (e.g. "the studio restarted while writing this
+      // song") — the generic line hid restarts/zombies as a brain-keys mystery.
+      if (dropFailed) throw new Error(dropFailReason || 'Could not write the song — try again.');
       if (!item?.jobId) {
         const e = item?.error || dropErr || '';
         if (!e && netFails >= 24) throw new Error('Connection dropped while the studio kept working — your song did NOT fail; it will land in the Catalog. Reopen this page to resume watching it.');
