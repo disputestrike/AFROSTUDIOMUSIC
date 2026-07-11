@@ -71,7 +71,8 @@ export async function processMeasureBackfill(opts?: { refLimit?: number; beatLim
     for (const r of refs) {
       if (queued >= refLimit) break;
       if (skipSource(r.sourceUrl)) continue;
-      const rec = (r.recipe ?? {}) as { measured?: { engineOk?: boolean }; deepMeasured?: boolean };
+      const rec = (r.recipe ?? {}) as { measured?: { engineOk?: boolean }; deepMeasured?: boolean; audioMissing?: boolean };
+      if (rec.audioMissing) continue; // source audio 404'd — tombstoned, never retry
       if (rec.measured?.engineOk && rec.deepMeasured) continue;
       if (rec.measured?.engineOk && process.env.DSP_STEMS === '0') continue; // nothing to add
       await enqueueJob('lake', 'deep-measure', { referenceId: r.id, url: r.sourceUrl, workspaceId: r.workspaceId });

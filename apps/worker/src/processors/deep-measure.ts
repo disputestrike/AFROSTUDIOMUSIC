@@ -27,6 +27,7 @@ export async function processDeepMeasure(p: DeepMeasurePayload): Promise<void> {
     if (recipe.deepMeasured) return;
 
     let stems: StemInputs | undefined;
+    let sourceGone = false;
     if (process.env.DSP_STEMS !== '0') {
       try {
         const ws = await prisma.workspace.findUnique({ where: { id: p.workspaceId }, select: { musicApiKey: true } });
@@ -36,12 +37,36 @@ export async function processDeepMeasure(p: DeepMeasurePayload): Promise<void> {
         const byRole = (r: string) => sep.stems.find((s) => s.role === r)?.url;
         stems = { bass: byRole('bass'), drums: byRole('drums'), other: byRole('other'), vocals: byRole('vocals') };
       } catch (e) {
-        console.warn('[deep-measure] stems failed — full-mix refine only:', (e as Error)?.message);
+        const msg = (e as Error)?.message ?? '';
+        // A 404/not-found means the source audio is PERMANENTLY gone from storage
+        // (deleted, expired, or a purged facts-only ref). measureAudio would 404
+        // too — no point trying, and the nightly backfill must stop re-queuing it.
+        if (/\b404\b|not found|no such|does not exist|nosuchkey/i.test(msg)) sourceGone = true;
+        console.warn('[deep-measure] stems failed — full-mix refine only:', msg);
       }
     }
 
+    // TOMBSTONE: the file is gone. Mark the ref so the backfill selector skips it
+    // forever instead of hammering the same 404 every nightly run.
+    if (sourceGone) {
+      await prisma.soundReference.update({
+        where: { id: p.referenceId },
+        data: { recipe: { ...recipe, deepMeasured: true, audioMissing: true, deepMeasureError: 'source audio 404 — no longer in storage', deepMeasuredAt: new Date().toISOString() } as never },
+      }).catch(() => {});
+      console.warn(`[deep-measure] ref ${p.referenceId} tombstoned — source audio gone (404); will not retry`);
+      return;
+    }
+
     const measured = await measureAudio(p.url, stems);
-    if (!measured.engineOk) return; // never overwrite a good read with an engine failure
+    if (!measured.engineOk) {
+      // Not a clean 404, but still unmeasurable. Count the miss and give up after
+      // 3 tries so a quietly-broken ref can't spin the backfill indefinitely.
+      const attempts = ((recipe.deepMeasureAttempts as number) ?? 0) + 1;
+      const patch: Record<string, unknown> = { ...recipe, deepMeasureAttempts: attempts };
+      if (attempts >= 3) { patch.deepMeasured = true; patch.audioMissing = true; patch.deepMeasureError = `measure failed ${attempts}× — giving up`; }
+      await prisma.soundReference.update({ where: { id: p.referenceId }, data: { recipe: patch as never } }).catch(() => {});
+      return; // never overwrite a good read with an engine failure
+    }
     await prisma.soundReference.update({
       where: { id: p.referenceId },
       data: { recipe: { ...recipe, measured, deepMeasured: true, deepMeasuredAt: new Date().toISOString() } as never },
