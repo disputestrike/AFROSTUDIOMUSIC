@@ -62,6 +62,19 @@ export async function processExport(p: ExportPayload) {
           orderBy: { createdAt: 'desc' },
         });
 
+    // RIGHTS + GREEN-LIGHT GATE (audit DANGEROUS): never export a song that
+    // hasn't passed the green-light gate, and never export when the rights review
+    // said not-clear. The old code stamped RELEASED with no such check.
+    if (!song.releaseReady) {
+      await markFailed(p.jobId, 'export_blocked: song has not passed the green-light gate (rights/split-sheet/coverage). Run the release check first.');
+      return;
+    }
+    const rightsVerdict = (receipt?.prompts ?? {}) as { rightsCheck?: { okToExport?: boolean; overallRisk?: string } };
+    if (rightsVerdict.rightsCheck && (rightsVerdict.rightsCheck.okToExport === false || rightsVerdict.rightsCheck.overallRisk === 'high')) {
+      await markFailed(p.jobId, 'export_blocked: rights review is not clear (okToExport=false / high risk). Resolve the flagged rights issues first.');
+      return;
+    }
+
     // Provenance + AI disclosure — what DSPs (Spotify/Apple/Audiomack) and PROs
     // require, and the proof behind the "we never rip" position: which models
     // made what, plus an attestation that no third-party audio was copied.
@@ -108,7 +121,9 @@ export async function processExport(p: ExportPayload) {
       },
     });
 
-    await prisma.song.update({ where: { id: song.id }, data: { status: 'RELEASED' } });
+    // EXPORTED, not RELEASED: a bundle was built + is downloadable. RELEASED is
+    // reserved for a confirmed distributor submission (distributeRelease → Release row).
+    await prisma.song.update({ where: { id: song.id }, data: { status: 'EXPORTED' } });
 
     await markSucceeded(p.jobId, { exportId: exp.id, bundle });
   } catch (err) {

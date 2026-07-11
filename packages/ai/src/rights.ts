@@ -29,8 +29,10 @@ export interface RightsFinding {
 
 export interface RightsCheckResult {
   findings: RightsFinding[];
-  overallRisk: 'low' | 'medium' | 'high';
+  overallRisk: 'low' | 'medium' | 'high' | 'unknown';
   okToExport: boolean;
+  /** true when the reviewer was unavailable — treated as NOT clear (fail closed). */
+  degraded?: boolean;
 }
 
 const RED_FLAG_PHRASES = [
@@ -87,18 +89,22 @@ export async function runRightsCheck(opts: {
       maxTokens: 1_500,
     });
   } catch {
-    llm = { findings: [], overallRisk: 'low', okToExport: true };
+    // FAIL CLOSED (audit DANGEROUS): if the rights reviewer is unavailable, do NOT
+    // emit okToExport:true — an outage must never green-light a distribution.
+    llm = { findings: [{ type: 'uncleared_sample', severity: 'medium', reason: 'rights review unavailable (provider error) — could not verify; retry before exporting' }], overallRisk: 'unknown', okToExport: false, degraded: true };
   }
 
   const findings = [...heuristic, ...(llm.findings ?? [])];
-  const overallRisk = rollupRisk(findings, llm.overallRisk);
-  const okToExport = overallRisk !== 'high';
+  const degraded = (llm as { degraded?: boolean }).degraded === true;
+  const overallRisk = degraded ? 'unknown' : rollupRisk(findings, llm.overallRisk);
+  // Clear ONLY on a real low/medium verdict — never when degraded or high.
+  const okToExport = !degraded && overallRisk !== 'high' && overallRisk !== 'unknown';
   return { findings, overallRisk, okToExport };
 }
 
 function rollupRisk(
   findings: RightsFinding[],
-  llmOverall: 'low' | 'medium' | 'high'
+  llmOverall: 'low' | 'medium' | 'high' | 'unknown'
 ): 'low' | 'medium' | 'high' {
   if (findings.some((f) => f.severity === 'high')) return 'high';
   if (llmOverall === 'high') return 'high';

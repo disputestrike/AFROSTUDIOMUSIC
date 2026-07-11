@@ -55,6 +55,13 @@ export async function processStems(p: StemsPayload) {
     // A stripped full INSTRUMENTAL is filed under its own 'instrumental' role (was
     // 'other', which orphaned it) so the Instrumental Library can find + reuse it.
     const ROLE_MAP: Record<string, string> = { drums: 'drums', bass: 'bass', other: 'chords', instrumental: 'instrumental' };
+    // TRUE PROVENANCE (audit DANGEROUS): only a beat the ARTIST uploaded/imported
+    // yields rights-clean 'artist_stem' material. Stems split from a PROVIDER
+    // render (Suno/MiniMax/etc.) are 'provider_stem' — never mislabel a
+    // third-party generation as the artist's own owned material.
+    const beatMetaP = (beat.meta ?? {}) as { uploaded?: boolean; imported?: boolean };
+    const isOwned = beatMetaP.uploaded === true || beatMetaP.imported === true || beat.provider === 'upload' || beat.provider === 'import';
+    const stemSource = isOwned ? 'artist_stem' : 'provider_stem';
     await Promise.all(
       ingested
         .filter((s) => s.role !== 'vocals')
@@ -70,8 +77,8 @@ export async function processStems(p: StemsPayload) {
                 keySignature: beat.keySignature,
                 durationS: beat.duration,
                 url: s.url,
-                source: 'artist_stem',
-                meta: { fromBeatId: beat.id, fromSongId: p.songId, stemRole: s.role } as never,
+                source: stemSource,
+                meta: { fromBeatId: beat.id, fromSongId: p.songId, stemRole: s.role, provider: beat.provider, owned: isOwned } as never,
               },
             })
             .catch((err) => console.warn('[stems] material harvest failed:', (err as Error)?.message))

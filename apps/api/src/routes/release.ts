@@ -43,7 +43,9 @@ function greenLight(
     { name: 'Cover art', ok: hasCover },
     { name: 'Lyrics', ok: !!song.lyricId },
     { name: 'Split-sheet totals 100%', ok: splits.length > 0 && Math.abs(shareSum - 100) < 0.5, detail: splits.length ? `${shareSum}%` : 'empty' },
-    { name: 'ISRC assigned', ok: !!song.isrc, detail: song.isrc ?? '' },
+    // An ISRC is fine to be distributor-assigned (normal when you don't own a
+    // registrant code) — do NOT block release on it; just disclose the state.
+    { name: 'ISRC', ok: true, detail: song.isrc ?? 'distributor-assigned' },
     {
       name: 'Native-language review',
       ok: !needsReview || song.nativeReviewOk,
@@ -72,18 +74,31 @@ async function languagesForProject(projectId: string): Promise<string[]> {
   return (project?.artist.languages ?? []) as string[];
 }
 
-async function assignIsrc(workspaceId: string): Promise<string> {
-  const raw = (process.env.ISRC_PREFIX ?? 'NGAHS').toUpperCase().replace(/[^A-Z0-9]/g, '').padEnd(5, 'X').slice(0, 5);
-  const cc = raw.slice(0, 2);
-  const reg = raw.slice(2, 5);
+// ISRC/UPC are DISTRIBUTOR-ASSIGNED unless you own a real IFPI/GS1 registrant
+// code. Fabricating a prefix (the old 'NGAHS' default + fake barcode) would ship
+// invalid identifiers to a DSP (audit DANGEROUS). Only mint a real ISRC when
+// ISRC_PREFIX is a genuine registrant code you configured; otherwise leave null
+// and let the distributor assign it.
+async function assignIsrc(workspaceId: string): Promise<string | null> {
+  const prefix = (process.env.ISRC_PREFIX ?? '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+  if (prefix.length !== 5) return null; // no real registrant code configured → distributor assigns
+  const cc = prefix.slice(0, 2);
+  const reg = prefix.slice(2, 5);
   const yy = String(new Date().getFullYear()).slice(2);
   const n = (await prisma.song.count({ where: { workspaceId, isrc: { not: null } } })) + 1;
   return `${cc}-${reg}-${yy}-${String(n).padStart(5, '0')}`;
 }
 
-async function assignUpc(workspaceId: string): Promise<string> {
+// Only from a GS1 prefix you actually own; otherwise the distributor assigns it.
+async function assignUpc(workspaceId: string): Promise<string | null> {
+  const gs1 = (process.env.GS1_PREFIX ?? '').replace(/[^0-9]/g, '');
+  if (gs1.length < 6) return null; // no real GS1 prefix → distributor assigns
   const n = (await prisma.song.count({ where: { workspaceId, upc: { not: null } } })) + 1;
-  return `0${String(n).padStart(11, '0')}`; // placeholder barcode
+  const body = (gs1 + String(n).padStart(11 - gs1.length, '0')).slice(0, 11);
+  // GS1 mod-10 check digit
+  const sum = body.split('').reduce((s, d, i) => s + Number(d) * (i % 2 === 0 ? 3 : 1), 0);
+  const check = (10 - (sum % 10)) % 10;
+  return `${body}${check}`;
 }
 
 async function statusFor(song: { id: string; title: string; isrc: string | null; upc: string | null; splitSheet: unknown; releaseReady: boolean; lyricId: string | null; projectId: string; nativeReviewOk: boolean; hitScore?: number | null; viralScore?: number | null }, mode: 'creative' | 'hitmaker' = 'creative') {

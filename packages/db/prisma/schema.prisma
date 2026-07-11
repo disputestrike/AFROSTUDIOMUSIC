@@ -394,7 +394,8 @@ enum SongStatus {
   FULL
   MIXED
   MASTERED
-  RELEASED
+  EXPORTED // bundle built + downloaded — NOT distributed
+  RELEASED // only after a confirmed distributor submission
 }
 
 // ===========================================================================
