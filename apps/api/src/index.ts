@@ -52,6 +52,7 @@ import analyze from './routes/analyze';
 import snippet from './routes/snippet';
 import drop from './routes/drop';
 import release from './routes/release';
+import benchmark from './routes/benchmark';
 import publicRoutes from './routes/public';
 import debug from './routes/debug';
 
@@ -154,6 +155,7 @@ async function bootstrap() {
       await api.register(adjust, { prefix: '/songs' }); // §9 lane-report + §10 Adjust-Song
       await api.register(albums, { prefix: '/albums' });
       await api.register(materials, { prefix: '/materials' });
+      await api.register(benchmark, { prefix: '/benchmark' });
       await api.register(instrumentals, { prefix: '/instrumentals' });
       await api.register(lexicon, { prefix: '/lexicon' });
       await api.register(zap, { prefix: '/zap' });

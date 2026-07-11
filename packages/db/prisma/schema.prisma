@@ -55,6 +55,7 @@ model Workspace {
   artistMemoryChunks ArtistMemoryChunk[]
   approvals     Approval[]
   releases      Release[]
+  benchmarkRatings BenchmarkRating[]
   chatThreads   ChatThread[]
   ledgerEntries CreditLedger[]
   analyticsEvents AnalyticsEvent[]
@@ -769,6 +770,30 @@ model Release {
   workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
   artist      Artist    @relation(fields: [artistId], references: [id], onDelete: Cascade)
   song        Song      @relation("ReleaseSong", fields: [songId], references: [id], onDelete: Cascade)
+}
+
+/// LISTENING BENCHMARK — the ear-vs-machine ground truth. Each row is a rendered
+/// track (ours or a reference) rated 1–5 by a human, tagged with the machine's
+/// lane score, so per-genre we can see whether "lane 87" matches the ear and
+/// whether we actually beat a reference in a blind A/B. This is the app's real
+/// improvement loop (no more trusting a score the ear disagrees with).
+model BenchmarkRating {
+  id          String   @id @default(cuid())
+  workspaceId String
+  genre       String
+  source      String   @default("afrohit") // afrohit | reference | suno
+  songId      String?
+  audioUrl    String
+  engine      String?  // which engine rendered it (minimax/own/suno...)
+  laneScore   Int?     // the machine's measured lane compliance at render time
+  humanRating Int      // 1..5 the ear
+  blindLabel  String?  // 'A'/'B' when captured via a blind A/B
+  notes       String?  @db.Text
+  createdAt   DateTime @default(now()) @db.Timestamptz(6)
+
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@index([workspaceId, genre])
 }
 
 // ===========================================================================
