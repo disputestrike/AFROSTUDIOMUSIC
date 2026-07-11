@@ -40,5 +40,12 @@ check('default cap now 3400 (was 2400)', big.length <= 3400 && big.length > 2400
 const short = cleanLyricsForMinimax('[Hook]\nshort song\n');
 check('short lyric passthrough', short.includes('short song'));
 
+// Audit fix: [Pre-Hook] boundary must survive as [Pre-Chorus] (not vanish), and
+// the arranger's call-and-response backing phrases must reach the engine.
+const ph = cleanLyricsForMinimax('[Verse]\nline one\n[Pre-Hook]\nrising line\n[Hook]\nthe hook (na so!) (tell them!)\n');
+check('[Pre-Hook] boundary kept as [Pre-Chorus]', ph.includes('[Pre-Chorus]'));
+check('pre-hook lyrics not merged into the verse', ph.includes('rising line'));
+check('call-and-response backing kept', ph.includes('(na so!)') && ph.includes('(tell them!)'));
+
 console.log(fail === 0 ? '\nALL GREEN' : `\n${fail} FAILURES`);
 process.exit(fail === 0 ? 0 : 1);

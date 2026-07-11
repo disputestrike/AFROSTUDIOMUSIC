@@ -601,7 +601,10 @@ class AceStepSongAdapter implements MusicProviderAdapter {
       headers: { ...auth, 'content-type': 'application/json', prefer: 'wait' },
       body: JSON.stringify({
         version,
-        input: { tags, lyrics: input.lyrics ?? '', duration },
+        // Clean the lyrics the SAME way MiniMax does — ACE-Step got the RAW
+        // enriched performance script and SANG the stage directions ("enter late",
+        // "soft hazy", "Pre-Hook") as words. Strip them; keep singable ad-libs.
+        input: { tags, lyrics: input.lyrics ? cleanLyricsForMinimax(input.lyrics) : '', duration },
       }),
     });
     if (!res.ok) return { status: 'failed', error: `ace_step ${res.status}: ${(await res.text()).slice(0, 200)}` };
@@ -659,6 +662,11 @@ class AceStepSongAdapter implements MusicProviderAdapter {
  */
 const MINIMAX_SINGABLE =
   /^(?:ooh|oh|eh|ah|mmm|hmm|yeah|ya|hey|heh|woah|whoa|na|la|da|yee+|uh|chai|oya|ehen|omo+|baby|shout|gang|come on|let'?s go|gbedu|jeje|ehn)(?:[\s,!'-]+(?:ooh|oh|eh|ah|mmm|hmm|yeah|ya|hey|woah|whoa|na|la|da|yee+|uh|baby))*!?$/i;
+// Short call-and-RESPONSE backing phrases the arranger plants — MiniMax renders
+// these as backing vocals (the "alive" layer). Kept alongside the single-word
+// interjections above; still tight so stage directions never sneak through.
+const MINIMAX_CALL_RESPONSE =
+  /^(?:na so|tell (?:them|dem)|shout it|shout out|one time|to the world|oya now|sing it|say it|we dey|we move|no be lie|for real|come on|let'?s go|big vibe|as e dey hot|no dulling)!?$/i;
 // MiniMax music-2.6 officially accepts 1–3500 lyric chars (Replicate schema);
 // 3400 leaves margin. The old 2400 cap was 1100 chars of song left on the table.
 // MiniMax's OFFICIAL structure tags (Replicate schema) — anything else in
@@ -677,14 +685,20 @@ export function cleanLyricsForMinimax(raw: string, maxChars = 3400): string {
       const header = line.trim().match(/^\[([^\]]{1,40})\]$/);
       if (header) {
         const inner = header[1]!.trim();
+        // Pre-hook IS a pre-chorus in MiniMax's vocabulary — keep the section
+        // BOUNDARY in a tag the engine renders instead of dropping the header and
+        // silently merging the pre-hook lyrics into the previous verse.
+        if (/^pre[- ]?hook$/i.test(inner)) return '[Pre-Chorus]';
         if (ENGINE_SECTION_TAGS.test(inner)) return line.trim();
         return PRODUCTION_CUE.test(inner) ? '[Break]' : '';
       }
       return line
-        // Keep only whitelisted singable parentheticals; drop stage directions.
-        .replace(/\(([^)]*)\)/g, (_m, inner: string) =>
-          MINIMAX_SINGABLE.test(inner.trim()) ? `(${inner.trim()})` : ''
-        )
+        // Keep whitelisted singable interjections AND short call-and-response
+        // backing phrases; drop everything else in parens (stage directions).
+        .replace(/\(([^)]*)\)/g, (_m, inner: string) => {
+          const t = inner.trim();
+          return MINIMAX_SINGABLE.test(t) || MINIMAX_CALL_RESPONSE.test(t) ? `(${t})` : '';
+        })
         .replace(/[ \t]{2,}/g, ' ')
         .trim();
     })
