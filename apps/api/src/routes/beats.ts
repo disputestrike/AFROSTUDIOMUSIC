@@ -102,6 +102,28 @@ export default async function beats(app: FastifyInstance) {
       });
       if (!charge.ok) return reply.code(402).send({ error: 'insufficient_credits', ...charge });
 
+      // OUR OWN ENGINE (Feature: both MiniMax AND ours). When the user picks
+      // 'own', build the instrumental by ASSEMBLING the artist's harvested +
+      // synthesized material (processOwnEngine) instead of renting a provider
+      // model — the "hard musical control" path. Full sung vocals aren't wired to
+      // the own engine yet, so 'own' produces the INSTRUMENTAL bed (vocals via
+      // upload or a separate render).
+      if (input.songEngine === 'own') {
+        const ownBpm = input.bpm ?? genreSignature(genre).bpm;
+        const ownJob = await prisma.providerJob.create({
+          data: {
+            workspaceId, projectId: project.id, kind: 'music', provider: 'afrohit-own', status: 'QUEUED',
+            inputJson: { ownEngine: true, genre, bpm: ownBpm, _charge: { key: 'beat_idea_short_30s', multiplier: 1 } } as never,
+          },
+        });
+        await enqueue({
+          queue: app.queues.music, name: 'own-engine',
+          payload: { jobId: ownJob.id, workspaceId, projectId: project.id, songId: input.songId, genre, bpm: ownBpm, melodyPrompt: genreSignature(genre).melodyPrompt },
+        });
+        reply.code(202);
+        return { jobId: ownJob.id, status: 'queued', engine: 'afrohit-own-v1', note: 'Building the beat from your own + synthesized material (owned engine). Poll the job.' };
+      }
+
       const job = await prisma.providerJob.create({
         data: {
           workspaceId,

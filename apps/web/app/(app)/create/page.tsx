@@ -137,7 +137,7 @@ export default function CreatePage() {
   // 'auto' = let the backend's defaultSongEngine() choose (Suno when a key
   // exists, else the fallback). Hardcoding 'minimax' here used to OVERRIDE that
   // — so full songs never upgraded to Suno even with a key. Auto is the default.
-  const [engine, setEngine] = useState<'auto' | 'suno' | 'ace_step' | 'minimax'>('auto');
+  const [engine, setEngine] = useState<'auto' | 'suno' | 'ace_step' | 'minimax' | 'own'>('auto');
 
   // Three ways in: describe it / bring your own lyrics / listen & recreate.
   const [path, setPath] = useState<'song' | 'lyrics' | 'mumble'>('song');
@@ -663,6 +663,7 @@ export default function CreatePage() {
             { value: 'suno', label: 'Flagship', hint: 'Best quality (first-party releases)' },
             { value: 'minimax', label: 'Standard A', hint: 'High vocal realism' },
             { value: 'ace_step', label: 'Standard B', hint: 'Fast draft' },
+            { value: 'own', label: 'Our Engine', hint: 'Instrumental built from YOUR + synth material (owned)' },
           ] as const).map((e) => (
             <button key={e.value} onClick={() => setEngine(e.value)} className={`rounded-full px-4 py-2 text-sm ${engine === e.value ? 'bg-brand-gradient text-ink shadow-glow' : 'border border-white/10 bg-white/5 text-slate-300 hover:bg-white/10'}`}>
               {e.label} <span className="opacity-60">· {e.hint}</span>
