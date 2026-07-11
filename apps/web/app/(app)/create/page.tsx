@@ -9,6 +9,7 @@ import { genreSignature } from '@afrohit/shared';
 
 import { useEffect, useRef, useState } from 'react';
 import { MumbleBooth } from '@/components/MumbleBooth';
+import WorkspaceLibrary from '@/components/WorkspaceLibrary';
 import { useRouter } from 'next/navigation';
 import { useApi } from '@/lib/api';
 
@@ -116,7 +117,9 @@ export default function CreatePage() {
               } catch { /* land in Catalog */ }
             }
             setSong({ title, hook, score, url, projectId: projectId ?? '' });
-            setPhase(url ? 'done' : 'finishing'); clearProduce(); return;
+            if (url) { setNowPlaying({ title, url }); setLibRefresh((n) => n + 1); setPhase('form'); }
+            else setPhase('finishing');
+            clearProduce(); return;
           }
           await sleep(5000);
         }
@@ -173,6 +176,10 @@ export default function CreatePage() {
   const [stepIdx, setStepIdx] = useState(0);
   const [err, setErr] = useState('');
   const [song, setSong] = useState<{ title: string; hook?: string; score: number | null; url: string; projectId: string } | null>(null);
+  // CONSOLE PLAYER (T2): what's playing on the left half under the Create
+  // button. New renders land here; library rows play here.
+  const [nowPlaying, setNowPlaying] = useState<{ title: string; url: string } | null>(null);
+  const [libRefresh, setLibRefresh] = useState(0);
 
   // Prefill from links like /create?genre=...&mood=...&bpm=...&vibe=...&produce=1
   // e.g. "Make a song that outdoes this" after learning a lyric on /listen.
@@ -357,7 +364,11 @@ export default function CreatePage() {
         return; // storage kept — reopening resumes the watch
       }
       setSong({ title, hook: item.hookText, score: item.score, url, projectId: project.id });
-      setPhase('done');
+      // CONSOLE FLOW (T2): play the finished song INLINE under the Create button
+      // (console flow) instead of a takeover page; the library refreshes to show it.
+      setNowPlaying({ title, url });
+      setLibRefresh((n) => n + 1);
+      setPhase('form');
       clearProduce();
     } catch (e) {
       setErr((e as Error).message);
@@ -454,7 +465,9 @@ export default function CreatePage() {
         return;
       }
       setSong({ title, hook: decon?.hookLine ?? undefined, score: null, url, projectId: project.id });
-      setPhase('done');
+      setNowPlaying({ title, url });
+      setLibRefresh((n) => n + 1);
+      setPhase('form');
     } catch (e) {
       setErr((e as Error).message);
       setPhase('error');
@@ -563,9 +576,11 @@ export default function CreatePage() {
     );
   }
 
-  // ---- Form ----
+  // ---- The CONSOLE (T2, console layout): create panel LEFT with the player under
+  // the Create button; workspace library RIGHT. Stacks on mobile. ----
   return (
-    <div className="mx-auto max-w-3xl px-6 py-10">
+    <div className="mx-auto max-w-6xl px-6 py-10 lg:grid lg:grid-cols-[minmax(0,1fr)_340px] lg:items-start lg:gap-8">
+    <div className="min-w-0">
       <div className="flex items-start justify-between gap-3">
         <div>
           <h1 className="font-display text-5xl">Make a song</h1>
@@ -748,6 +763,27 @@ export default function CreatePage() {
           : 'It sings EXACTLY your words — deconstruct first so the production matches what your lyrics actually are.'}
         {' '}“Bring my own” opens the studio to upload a beat or record your voice.
       </p>
+
+      {/* THE CONSOLE PLAYER — on the left half, right under the Create button
+          (the console layout). New songs auto-play here; library rows
+          play here too. */}
+      {nowPlaying && (
+        <div className="mt-5 rounded-2xl border-gradient glass p-4">
+          <div className="flex items-center justify-between">
+            <div className="min-w-0">
+              <div className="text-xs text-slate-500">Now playing</div>
+              <div className="truncate font-display text-lg">{nowPlaying.title}</div>
+            </div>
+            <button onClick={() => setNowPlaying(null)} className="ml-3 shrink-0 text-xs text-slate-500 hover:text-slate-300">✕</button>
+          </div>
+          <audio controls autoPlay src={nowPlaying.url} className="mt-3 w-full" />
+        </div>
+      )}
+    </div>
+
+    <div className="mt-8 lg:mt-0">
+      <WorkspaceLibrary onPlay={(s) => setNowPlaying(s)} refreshKey={libRefresh} />
+    </div>
     </div>
   );
 }
