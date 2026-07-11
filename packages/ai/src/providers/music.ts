@@ -752,6 +752,25 @@ class StubMusicAdapter implements MusicProviderAdapter {
 
 
 
+/**
+ * THE default engine for a VOCAL song — one source of truth for every path.
+ *
+ * This is the single biggest lever on how the studio SOUNDS. Suno V5 is the only
+ * engine here that renders like a real record; ACE-Step and MiniMax are
+ * open-source Replicate models — useful sketches, but they cannot match Suno on
+ * full sung songs. The create page, studio chat, and regenerate paths were each
+ * defaulting to a DIFFERENT engine (ace_step / minimax / suno), so the sound was
+ * inconsistent and usually the weak one. Now they all call this:
+ *   - SONG_ENGINE set → honor it (explicit override, any engine).
+ *   - else a SUNO_API_KEY exists → 'suno' automatically (the quality path).
+ *   - else 'ace_step' so renders still work before the key is set.
+ * Set SUNO_API_KEY + (optionally) MUSIC_PROVIDER=suno and every path upgrades at
+ * once — no code change, no per-route drift.
+ */
+export function defaultSongEngine(): string {
+  return process.env.SONG_ENGINE || (sunoKey() ? 'suno' : 'ace_step');
+}
+
 export function musicAdapter(override?: string, apiKey?: string): MusicProviderAdapter {
   // fal was REMOVED ENTIRELY (owner directive 2026-07-11) — every render runs
   // on the exact provider configuration the owner's ear approved. If a cheaper

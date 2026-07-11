@@ -1,7 +1,7 @@
 import type { FastifyInstance } from 'fastify';
 import { prisma } from '@afrohit/db';
 import { generateBeatInputSchema, attachBeatUploadSchema, genreSignature } from '@afrohit/shared';
-import { enrichLyricsForVocals } from '@afrohit/ai';
+import { enrichLyricsForVocals, defaultSongEngine } from '@afrohit/ai';
 import { learnedReferenceBrief, learnedStyleTags } from '../lib/learned';
 import { laneDna } from '../lib/lane-pipeline';
 import { requireAuth } from '../middleware/auth';
@@ -91,7 +91,7 @@ export default async function beats(app: FastifyInstance) {
           workspaceId,
           projectId: project.id,
           kind: 'music',
-          provider: input.withVocals ? input.songEngine ?? 'ace_step' : process.env.MUSIC_PROVIDER ?? 'stub',
+          provider: input.withVocals ? input.songEngine ?? defaultSongEngine() : process.env.MUSIC_PROVIDER ?? 'stub',
           status: 'QUEUED',
           inputJson: input as never,
         },

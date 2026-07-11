@@ -10,7 +10,7 @@
  */
 import type { FastifyInstance } from 'fastify';
 import { prisma } from '@afrohit/db';
-import { joinBriefs, prompts, generateJson, scoreItems, runRightsCheck, canonicalReceiptHash, directorRefineHooks, researchTrends, enrichLyricsForVocals, predictHit} from '@afrohit/ai';
+import { joinBriefs, prompts, generateJson, scoreItems, runRightsCheck, canonicalReceiptHash, directorRefineHooks, researchTrends, enrichLyricsForVocals, predictHit, defaultSongEngine} from '@afrohit/ai';
 import { laneDna, laneDnaBrief } from '../lib/lane-pipeline';
 import { enqueue } from '../lib/queue';
 import { assertSafeUrl } from '../lib/url-guard';
@@ -552,7 +552,7 @@ async function createBeatJob(ctx: Ctx, a: { genre: string; fusionGenres?: string
       workspaceId: ctx.workspaceId,
       projectId: ctx.projectId,
       kind: 'music',
-      provider: a.withVocals ? a.songEngine ?? 'minimax' : process.env.MUSIC_PROVIDER ?? 'stub',
+      provider: a.withVocals ? a.songEngine ?? defaultSongEngine() : process.env.MUSIC_PROVIDER ?? 'stub',
       status: 'QUEUED',
       inputJson: a as never,
     },

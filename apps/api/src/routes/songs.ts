@@ -2,7 +2,7 @@ import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import { z } from 'zod';
 import { blueprintFromMeasured, structureBrief, genreSignature, type MeasuredAnalysis, type SongBlueprint } from '@afrohit/shared';
 import { prisma } from '@afrohit/db';
-import { predictHit, researchTrends, enrichLyricsForVocals, generateJson, prompts, cleanLyricsForMinimax } from '@afrohit/ai';
+import { predictHit, researchTrends, enrichLyricsForVocals, generateJson, prompts, cleanLyricsForMinimax, defaultSongEngine } from '@afrohit/ai';
 import { laneDna, laneDnaBrief } from '../lib/lane-pipeline';
 import { requireAuth } from '../middleware/auth';
 import { enqueue } from '../lib/queue';
@@ -696,7 +696,7 @@ export default async function songs(app: FastifyInstance) {
 
 
     const job = await prisma.providerJob.create({
-      data: { workspaceId, projectId: song.projectId, kind: 'music', provider: songEngine ?? 'suno', status: 'QUEUED', inputJson: { regenerate: true, songId: song.id } as never },
+      data: { workspaceId, projectId: song.projectId, kind: 'music', provider: songEngine ?? defaultSongEngine(), status: 'QUEUED', inputJson: { regenerate: true, songId: song.id } as never },
     });
     await enqueue({
       queue: app.queues.music,
