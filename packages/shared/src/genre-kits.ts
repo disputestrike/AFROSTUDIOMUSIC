@@ -10,7 +10,7 @@
  * genre-accurate tokens for the render engine). This is the material contract the
  * synth, the arranger, the engine brief and the verifier all read from.
  */
-import { jobOf, type MaterialRole } from './material-roles';
+import { jobOf, familyOf, isMaterialRole, type MaterialRole } from './material-roles';
 
 export interface GenreKit {
   genre: string;
@@ -10707,6 +10707,35 @@ export function synthKitFor(genre?: string | null): string[] {
   if (has('piano', 'rhodes', 'wurlitzer', 'organ', 'hammond', 'gospel_organ', 'guitar_chords', 'highlife_guitar', 'house_piano_stab', 'synth_pad', 'warm_pad')) out.push('chords');
   out.push('fill');
   return out.length > 1 ? [...new Set(out)] : ['drums', 'bass', 'chords', 'percussion', 'fill'];
+}
+
+// Roles never forged as material: real lead performances belong to the artist/
+// engine, not the shelf. (Textural chants/hums/chops ARE forgeable.)
+const UNFORGEABLE = new Set(['lead_vocal', 'double', 'harmony_vocal', 'adlib', 'call_response', 'spoken_word', 'hype_vocal', 'vocal_pad']);
+
+/**
+ * The genre's FORGE KIT (Executive-Summary spec) — the rich, prioritized role
+ * list the shelf should hold, derived from the genre's kit definition, never a
+ * hand-maintained list. Signature roles lead (talking drum, shekere, log drum,
+ * highlife guitar…), then required roles rhythm-first (the layering law wants
+ * 3-5 concurrent percussion), capped so a kit forge stays affordable — the cap
+ * can never drop a signature. Every kit carries a section fill.
+ */
+export function forgeKitFor(genre: string, cap = 12): string[] {
+  const kit = getGenreKit(genre);
+  if (!kit) {
+    const base = /drill|trap|hip_hop/.test(genre) ? ['drums', 'bass', 'chords'] : ['drums', 'percussion', 'bass', 'chords'];
+    return [...base, 'fill'];
+  }
+  const ordered: string[] = [];
+  const push = (r: string) => {
+    if (!ordered.includes(r) && !UNFORGEABLE.has(r) && isMaterialRole(r)) ordered.push(r);
+  };
+  for (const r of kit.signatureRoles) push(r);
+  const famRank: Record<string, number> = { drumkit: 0, african_perc: 0, global_perc: 0, bass: 1, harmony: 2, melody: 3, mallets: 3, vocals: 4, fx: 5 };
+  const req = [...kit.requiredRoles].filter((r) => isMaterialRole(r)).sort((a, b) => (famRank[familyOf(a as MaterialRole)] ?? 9) - (famRank[familyOf(b as MaterialRole)] ?? 9));
+  for (const r of req) push(r);
+  return [...ordered.slice(0, cap), 'fill'];
 }
 
 /**

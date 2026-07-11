@@ -20,23 +20,12 @@ import { join } from 'node:path';
  *           Deterministic: the exact beat, not a hallucination.
  */
 
-// Role → forge prompt. ISOLATION keeps one instrument group per loop (so it's
-// arrangeable), but NOT lifeless: the old prompts said "completely dry" and asked
-// for bare "kick snare hats" / "shakers woodblock", which is exactly why the loops
-// sounded dull and thin. These ask for CHARACTER — punch, swing, human timing,
-// warmth and a little natural room — plus the real African hand-drums (talking
-// drum, shekere, agogo) so Afro beats have their signature texture. Melodic roles
-// are forged IN KEY so separately-forged loops fit together.
-const FORGE_PROMPTS: Record<string, (genre: string, bpm: number, key?: string) => string> = {
-  drums: (g, b) => `solo ${g.replace(/_/g, ' ')} drum groove, ${b} bpm — punchy tuned kick, crisp snare and rimshots, lively swung hi-hats with ghost notes, a real human pocket and a little room so it breathes; drums only, no melody, no bass, no vocals, seamless loop`,
-  talking_drum: (g, b) => `solo Nigerian talking drum (gángan / dùndún) groove for ${g.replace(/_/g, ' ')}, ${b} bpm — expressive pitch-bending talking-drum phrases with call-and-response, warm resonant hand-played skin tone; talking drum only, no drum kit, no melody, no vocals, seamless loop`,
-  log_drum: (g, b, k) => `solo amapiano log drum bassline${k ? ` in ${k}` : ''}, ${b} bpm — deep round woody log drum with real punch, bounce and tuneful glides, a little air around it; log drum only, no other instruments, no vocals, seamless loop`,
-  bass: (g, b, k) => `solo ${g.replace(/_/g, ' ')} bassline${k ? ` in ${k}` : ''}, ${b} bpm — warm round sub-bass with genuine groove and movement, fingered feel sitting in the pocket; bass only, no drums, no melody, no vocals, seamless loop`,
-  percussion: (g, b) => `solo African percussion bed for ${g.replace(/_/g, ' ')}, ${b} bpm — interlocking shekere, agogo bells, congas and shaker with organic groove, space and human timing; percussion only, no kick, no snare, no melody, no vocals, seamless loop`,
-  chords: (g, b, k) => `solo ${g.replace(/_/g, ' ')} chord bed${k ? ` in ${k}` : ''}, ${b} bpm — warm rich keys or clean guitar chords with gentle movement, emotive and musical with natural space; chords only, no drums, no bass, no vocals, seamless loop`,
-  fill: (g, b) => `solo ${g.replace(/_/g, ' ')} DRUM FILL, ${b} bpm — a short 1-2 bar drum roll/tumble that BUILDS and lifts into a new section: rising tom rolls, snare buzz and a crash-style accent landing on the downbeat; drums only, no melody, no bass, no vocals — a one-shot fill, not a repeating loop`,
-};
-const MELODIC_ROLES = new Set(['log_drum', 'bass', 'chords']);
+// Role → forge prompt: the FULL taxonomy library (Executive-Summary spec).
+// Every role — conga, shekere, cowbell, talking drum, highlife guitar, brass,
+// flute, chants, risers — forges as its OWN isolated, characterful loop, melodic
+// roles IN KEY so separately-forged loops fit together. Curated descriptors +
+// family fallbacks live in lib/forge-prompts.ts (one source for forge + tests).
+import { forgePromptFor, isKeyedRole } from '../lib/forge-prompts';
 
 interface ForgePayload {
   jobId: string;
@@ -51,9 +40,9 @@ interface ForgePayload {
 export async function processForgeMaterial(p: ForgePayload) {
   await markRunning(p.jobId);
   try {
-    const promptFor = FORGE_PROMPTS[p.role];
-    if (!promptFor) throw new Error(`unknown material role: ${p.role}`);
-    const key = MELODIC_ROLES.has(p.role) ? p.keySignature : undefined;
+    const prompt = forgePromptFor(p.role, p.genre, p.bpm, p.keySignature);
+    if (!prompt) throw new Error(`unknown material role: ${p.role}`);
+    const key = isKeyedRole(p.role) ? p.keySignature : undefined;
     const bars = p.bars ?? 8;
     const loopDur = Math.ceil((60 / p.bpm) * 4 * bars) + 3; // headroom for trim
     const ws = await prisma.workspace.findUnique({ where: { id: p.workspaceId }, select: { musicProvider: true, musicApiKey: true } });
@@ -77,7 +66,7 @@ export async function processForgeMaterial(p: ForgePayload) {
         bpm: p.bpm,
         durationS: Math.min(loopDur, 30),
         withStems: false,
-        vibePrompt: promptFor(p.genre, p.bpm, key),
+        vibePrompt: prompt,
       });
       let attempts = 0;
       while (r.status === 'queued' || r.status === 'running') {
@@ -123,7 +112,7 @@ export async function processForgeMaterial(p: ForgePayload) {
         durationS: (60 / p.bpm) * 4 * bars,
         url,
         source: 'forged',
-        meta: { qc, prompt: promptFor(p.genre, p.bpm, key), engine: adapter.name } as never,
+        meta: { qc, prompt, engine: adapter.name, origin: 'forged', license: 'owned-generation' } as never,
       },
     });
     await markSucceeded(p.jobId, { materialId: material.id, role: p.role, url, qc: qc?.verdict ?? 'unmeasured' }, result.estimatedCostUsd);

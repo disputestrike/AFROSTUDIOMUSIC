@@ -13,8 +13,8 @@
  *                      while Benjamin sleeps (roadmap #3, now real).
  */
 import { prisma, isAutonomyEnabled } from '@afrohit/db';
-import { generateJson, tavilySearchRaw, lastBrain } from '@afrohit/ai';
-import { LANGUAGES, GENRES, genreSignature, synthKitFor, scoreLaneCompliance, planRepairs, promotionEligible, type MeasuredAnalysis } from '@afrohit/shared';
+import { generateJson, tavilySearchRaw, lastBrain, replicateToken, getSoundDNA } from '@afrohit/ai';
+import { LANGUAGES, GENRES, genreSignature, synthKitFor, forgeKitFor, scoreLaneCompliance, planRepairs, promotionEligible, type MeasuredAnalysis } from '@afrohit/shared';
 import { enqueueJob } from '../lib/enqueue';
 import { assessLaneCompliance, loadLaneProfile, laneGrounding } from '../lib/lane-assess';
 import { measureAudio, dspAvailable } from '../lib/dsp';
@@ -626,21 +626,49 @@ export async function processGlossPass(opts?: { limit?: number }): Promise<void>
 
 /** Every genre in active use keeps a full SIGNATURE KIT on the shelf — including
  *  the FILL, whose absence silently disabled fill overlays on every rendered
- *  song ("no drum fills anywhere" — Benjamin). Synth-forged, owned, seconds. */
+ *  song ("no drum fills anywhere" — Benjamin). Two tiers, both AUTOMATED (owner
+ *  directive: no manual one-by-one forging):
+ *   1. synth primitives (free, seconds) — always ensured;
+ *   2. the RICH forge kit (Executive-Summary spec: conga/shekere/talking-drum/
+ *      highlife-guitar… via forgeKitFor) — auto-forged on the real engine when a
+ *      Replicate key exists, PACED (30s apart) and CAPPED per night
+ *      (KIT_FORGES_PER_NIGHT, default 10 ≈ $1/night max) so the shelf fills
+ *      itself over a few nights with zero clicks. */
 export async function ensureSignatureKits(): Promise<void> {
   try {
     const projects = await prisma.project.findMany({ orderBy: { createdAt: 'desc' }, take: 40, select: { workspaceId: true, genre: true } });
     const seen = new Set<string>();
+    let forgeBudget = Math.max(0, parseInt(process.env.KIT_FORGES_PER_NIGHT ?? '10', 10) || 10);
     for (const pr of projects) {
       if (!pr.genre) continue;
       const key = `${pr.workspaceId}|${pr.genre}`;
       if (seen.has(key) || seen.size >= 6) continue;
       seen.add(key);
       const have = new Set((await prisma.materialAsset.findMany({ where: { workspaceId: pr.workspaceId, genre: pr.genre }, select: { role: true } })).map((m: { role: string }) => m.role));
+      // Tier 1 — synth primitives (free): never let a lane sit loop-less.
       const missing = synthKitFor(pr.genre).filter((r) => !have.has(r));
       if (missing.length) {
-        console.log(`[kits] ${pr.genre}: forging ${missing.join('+')}`);
+        console.log(`[kits] ${pr.genre}: synth-forging ${missing.join('+')}`);
         await processSynthMaterial({ workspaceId: pr.workspaceId, genre: pr.genre, roles: missing });
+      }
+      // Tier 2 — the RICH kit (real engine, paced, budget-capped).
+      if (forgeBudget > 0 && replicateToken()) {
+        const ws = await prisma.workspace.findUnique({ where: { id: pr.workspaceId }, select: { musicApiKey: true } });
+        const richMissing = forgeKitFor(pr.genre).filter((r) => !have.has(r) && r !== 'fill');
+        const bpm = genreSignature(pr.genre).bpm;
+        // Melodic roles forge in the genre's HOME key so separately-forged loops fit.
+        const dnaKey = getSoundDNA(pr.genre)?.commonKeys?.[0] ?? 'A minor';
+        let queued = 0;
+        for (const role of richMissing) {
+          if (forgeBudget <= 0) break;
+          forgeBudget--;
+          const job = await prisma.providerJob.create({
+            data: { workspaceId: pr.workspaceId, kind: 'material', provider: 'replicate', status: 'QUEUED', inputJson: { genre: pr.genre, role, bpm, auto: 'nightly-kit' } as never },
+          });
+          await enqueueJob('music', 'forge-material', { jobId: job.id, workspaceId: pr.workspaceId, genre: pr.genre, role, bpm, keySignature: dnaKey, apiKeyHint: !!ws?.musicApiKey }, { delayMs: queued * 30_000 });
+          queued++;
+        }
+        if (queued) console.log(`[kits] ${pr.genre}: auto-forging ${queued} rich role(s) on the real engine (nightly budget left: ${forgeBudget})`);
       }
     }
   } catch (err) { console.warn('[kits] failed (non-fatal):', (err as Error)?.message); }

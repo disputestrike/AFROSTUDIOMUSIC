@@ -1,5 +1,5 @@
 import { getSoundDNA, generateJson } from '@afrohit/ai';
-import { MATERIAL_GAINS } from '@afrohit/shared';
+import { MATERIAL_GAINS, forgeKitFor } from '@afrohit/shared';
 
 /**
  * MATERIAL PLANNING — one source of truth for the material layer's brain,
@@ -14,18 +14,13 @@ import { MATERIAL_GAINS } from '@afrohit/shared';
 export { MATERIAL_GAINS };
 export const MELODIC_ROLES = new Set(['chords', 'bass', 'log_drum']);
 
-export function kitRolesFor(genre: string): string[] {
-  const base = ((): string[] => {
-    if (/amapiano/.test(genre)) return ['log_drum', 'drums', 'percussion', 'chords'];
-    // Afro genres get the real African hand-drums — the talking drum (gángan) is the
-    // signature "side drum" that was missing, on top of the shekere/agogo perc bed.
-    if (/afro|street_pop|highlife|gospel/.test(genre)) return ['drums', 'talking_drum', 'percussion', 'bass', 'chords'];
-    if (/drill|trap|hip_hop/.test(genre)) return ['drums', 'bass', 'chords'];
-    if (/house|edm/.test(genre)) return ['drums', 'percussion', 'bass', 'chords'];
-    return ['drums', 'percussion', 'bass', 'chords'];
-  })();
-  // Every kit carries a section-transition drum FILL (the lift Benjamin keeps missing).
-  return [...base, 'fill'];
+/**
+ * The genre's REAL kit — delegates to the shared forgeKitFor (Executive-Summary
+ * spec: signature roles first, rhythm-first required roles, capped, +fill) so the
+ * API, worker nightly self-provisioning, and tests all read ONE definition.
+ */
+export function kitRolesFor(genre: string, cap = 12): string[] {
+  return forgeKitFor(genre, cap);
 }
 
 /** The genre's home key — melodic loops forge + assemble in it by default. */
