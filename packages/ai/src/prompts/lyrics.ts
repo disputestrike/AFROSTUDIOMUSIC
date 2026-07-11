@@ -29,6 +29,18 @@ THE HIT ENGINE (permanent laws — a song is a RECORD, not a poem with rhymes):
 - SIGNATURE LINES: at least TWO lines that could belong ONLY to this song. BANNED generic emotional stock (use only if radically transformed): "my heart dey race/overtime", "you be my calm/peace", "my heart stay true", "love na battle", "I can't breathe", "you make me whole", "take your time", "I go always wait".
 - EDIT AGGRESSIVELY: internally draft, then run THREE passes before emitting — (1) logic/timeline, (2) music/singability/breath, (3) emotion/originality/filler. Do not deliver until hook strength, natural language, singability and narrative consistency would each score 9/10 under a hostile A&R.
 
+NATURAL SPEECH & LOGIC LAWS (the last mile from 8/10 to 10/10 — each is a hard fail):
+- PARTICLE DISCIPLINE: the Pidgin particle "o" (or any filler particle) may end at most TWO consecutive lines — vary the line endings. A word invented to force a rhyme ("click-o") is an instant fail.
+- NO RHYME PLACEHOLDERS: never park a word at a line end mainly for its sound ("...like film wey slide", "my mind begin ride", "finish my cause", "before the night done"). Test every line: would a real speaker say this exact phrase unprompted? "Before the night done" fails; "before this night go end" passes. Natural language ALWAYS outranks rhyme — re-word the EARLIER line instead.
+- COMPLETE EVERY THOUGHT: no line trails off unfinished ("no come pretend say —") unless a written call-and-response answer completes it on the page.
+- POINT OF VIEW: every detail is described from the correct character's eyes. The SENDER sees ticks turn blue; the person who read the message says "I read am since", never "I see the tick turn blue". Run the tech/timeline audit once per character.
+- SYMPATHETIC NARRATOR: the listener must root for the singer. If the story holds conflict or distance, ONE line establishes why the singer's presence is welcome (invited, an agreed meeting place) — never uninvited-outside-your-gate energy after a fight.
+- BRIDGE OWNERSHIP: when the singer caused the hurt, the bridge OWNS it — confession, apology, coming to make it right — never "make we both stop vexing". Ownership is the emotional peak of the record.
+- QUOTED MESSAGES ARE REAL TEXTS: any text/reply quoted in the lyric reads exactly like a message that character would type — short, imperfect, in-voice — never a songwriter's explanation of their feelings.
+- EARNED PROVERBS ONLY: a proverb or idiom appears only when this character in this moment would reach for it. Cultural decoration (a famous saying dropped for flavor) is a fail — the culture must live in the story, not the garnish.
+- INTRO BELONGS TO THE CONCEPT: every intro phrase connects to the premise or the hook. An orphaned musical-sounding phrase that never returns is cut.
+- HOOK PAYOFF LINES: internally draft THREE hook payoffs and keep the one whose FINAL TWO LINES are as memorable as the opening line — strongest sing-back rhythm, simplest words, clearest emotional payoff, most distinctive last line. An escalation motif must track the song's real mechanic and emotion, never counting for counting's sake.
+
 VOCABULARY — SPAN WIDE, NEVER REPEAT (this is a top complaint to fix):
 - The "WORD BANK" widens your options — use its terms ONLY where a real speaker would drop them mid-sentence. Zero is acceptable; a forced-in vocabulary word is a FAILURE worse than plain language (the "written not sung" defect).
 - Across the whole song, do NOT lean on the same handful of content words. Each verse brings FRESH vocabulary; once you use a striking word, don't reuse it. Only the HOOK repeats — the verses must be lexically varied. Rotating vocabulary is a REQUIREMENT, not a nicety.
@@ -161,7 +173,19 @@ THEN, silently critique the draft against these tests:
 
 THEN run the LINE-BY-LINE REJECTION TEST: for every line ask — would a real person sing this at tempo? does it strengthen the emotion? is the rhyme controlling the meaning? has this idea already been said? could the line be cut without damage? Delete or rewrite every line that fails; keep only lines that are excellent, not lines that merely fill a section.
 
-THEN rewrite the song fixing every failure — perform three internal passes (logic → music → emotion) and do not emit until hook strength, natural language, singability and narrative consistency would each score 9/10 under a hostile A&R — SAME concept, SAME title, SAME language mix, SAME section structure, keep every line the draft got right. Do not sanitize the culture; sharpen it. Return JSON: {"title", "body", "cleanVersion" (same song, radio-clean), "whatChanged": [3-6 short bullets], "captionLine": "the one line made to be quoted"}.`;
+THEN run the FINAL HUMAN SONGWRITER AUDIT — every item found is a mandatory REVISE, not a note:
+8. PARTICLE CHECK: if 3+ consecutive lines end in "o" (or any filler particle), or any word exists only to catch a rhyme ("click-o"), quote those lines to yourself and rewrite them.
+9. FORCED RHYME: find every line written mainly to reach a rhyme ("...like film wey slide", "my mind begin ride", "finish my cause", "I no mean am right") and replace it with what a real speaker would actually say. Reject rhyme-placeholder words ("cause", "slide", "ride", "done") outright.
+10. LOGIC & POV: verify every tech mechanic, timestamp, and location FROM EACH SPEAKER'S POINT OF VIEW — the sender sees blue ticks; the person who read says "I read am since", never "I see the tick turn blue".
+11. SYMPATHY: the narrator must remain someone to root for — if their behavior could read intrusive or controlling, add the one clarifying line (invited, agreed meeting spot) that protects the character.
+12. UNFINISHED THOUGHTS: complete every interrupted line unless a written response on the page answers it.
+13. DECORATIVE CULTURE: delete every proverb or slang phrase that exists only to signal identity; keep only what this character in this moment would say.
+14. HOOK FINAL LINES: rewrite the chorus until its LAST TWO lines are as memorable as its opening — internally draft three payoff options and keep the strongest sing-back with the most distinctive final line.
+15. BRIDGE OWNERSHIP: if the singer caused the hurt, the bridge must own it (confession, apology, making it right) — never a request that both sides stop being upset.
+16. MOUTH TEST AT TEMPO: read every line aloud at the song's BPM and shorten anything crowded or constructed — a 14-syllable line is a rewrite, not a keep.
+17. REAL TEXTS: every quoted reply must sound like a message that character would actually type, not an explanation written by a lyric generator.
+
+THEN rewrite the song fixing every failure — perform three internal passes (logic → music → emotion) and do not emit until hook strength, natural language, singability and narrative consistency would each score 9/10 under a hostile A&R — SAME concept, SAME title, SAME language mix, SAME section structure, keep every line the draft got right. Never consider the song finished while ANY forced line, logic error, unfinished phrase, generic expression, or culturally decorative filler remains: the mark of this editor is recognizing and DELETING an almost-good line instead of defending it. Do not sanitize the culture; sharpen it. Return JSON: {"title", "body", "cleanVersion" (same song, radio-clean), "whatChanged": [3-6 short bullets], "captionLine": "the one line made to be quoted"}.`;
 
 export function lyricPolishPrompt(p: { draftTitle: string; draftBody: string; genre: string; mood?: string | null; languages?: string[] }): string {
   return [
