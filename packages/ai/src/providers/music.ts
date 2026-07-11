@@ -840,6 +840,20 @@ export function defaultSongEngine(): string {
   return process.env.SONG_ENGINE || (sunoKey() ? 'suno' : 'ace_step');
 }
 
+/**
+ * THE default engine for an INSTRUMENTAL beat (no vocals). This was the gap that
+ * broke "just the beat" for a Replicate-only operator: the instrumental path used
+ * MUSIC_PROVIDER (eleven/stub), never the Replicate key the user actually has —
+ * so it fell to the stub (now a hard failure). Route it to a real engine on the
+ * key that exists:
+ *   - MUSIC_PROVIDER set → honor it.
+ *   - else a Replicate token exists → 'replicate' (MusicGen — real audio, no Suno needed).
+ *   - else 'stub' (dev; the render processors then fail loudly).
+ */
+export function defaultInstrumentalEngine(): string {
+  return process.env.MUSIC_PROVIDER || (replicateToken() ? 'replicate' : 'stub');
+}
+
 export function musicAdapter(override?: string, apiKey?: string): MusicProviderAdapter {
   // fal was REMOVED ENTIRELY (owner directive 2026-07-11) — every render runs
   // on the exact provider configuration the owner's ear approved. If a cheaper

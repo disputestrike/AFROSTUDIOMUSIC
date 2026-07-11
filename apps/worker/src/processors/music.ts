@@ -1,5 +1,5 @@
 import { prisma } from '@afrohit/db';
-import { musicAdapter, sunoKey } from '@afrohit/ai';
+import { musicAdapter, sunoKey, defaultInstrumentalEngine } from '@afrohit/ai';
 import type { MusicGenerationInput } from '@afrohit/ai';
 import { markFailed, markRunning, markSucceeded } from '../lib/jobs';
 import { ingestRemoteFile, downloadToBuffer, uploadBytes } from '../lib/storage';
@@ -81,6 +81,15 @@ export async function processMusic(p: MusicPayload) {
     // Full song WITH AI vocals → vocals-capable model (ACE-Step on the same
     // Replicate key). Otherwise the configured instrumental beat engine.
     const wantsVocals = !!(p.input.withVocals && p.input.lyrics);
+    // AUDIT FIX: a sung song requested with NO lyrics used to be SILENTLY demoted
+    // to an instrumental (which could be the stub) and stored as an approved
+    // "song" — a confusing "it didn't work". If vocals were asked for but the
+    // writer produced nothing, fail with the real reason instead of faking a beat.
+    if (p.input.withVocals && !p.input.lyrics) {
+      console.warn('[music] vocal song requested but lyrics are empty — writer/brain likely failed upstream');
+      await markFailed(p.jobId, 'music_generation_failed: the lyrics were not written (the writer may be unavailable) — try again.');
+      return;
+    }
     // FULL-SONG ENGINE: prefer Suno V5 (the strongest full-production model) when a
     // Engine ladder for SUNG songs: Suno (best, needs SUNO_API_KEY) → MiniMax
     // (strong, on the workspace Replicate key) → ACE-Step (last resort). MiniMax
@@ -98,7 +107,11 @@ export async function processMusic(p: MusicPayload) {
     const engineKey = engine === 'suno' ? undefined : ws?.musicApiKey ?? undefined;
     let adapter = wantsVocals
       ? musicAdapter(engine, engineKey)
-      : musicAdapter(ws?.musicProvider ?? undefined, ws?.musicApiKey ?? undefined);
+      // INSTRUMENTAL: route to a REAL engine on the key that exists. A
+      // Replicate-only operator (no Suno) got the stub here because the
+      // instrumental path ignored their Replicate key — now it falls to
+      // Replicate MusicGen instead of a dead stub.
+      : musicAdapter(ws?.musicProvider ?? defaultInstrumentalEngine(), ws?.musicApiKey ?? undefined);
     // A3-2 — REFERENCE-AUDIO ADJUST: when the job carries the song's own audio,
     // condition the render on it (audio in, repaired audio out) instead of
     // re-rolling from tags. The reference id is logged so every Adjust run is
