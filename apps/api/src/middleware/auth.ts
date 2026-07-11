@@ -68,9 +68,16 @@ export const authPlugin = fp(async function (app: FastifyInstance) {
   // instance is reachable from the public internet, anyone gets the owner's
   // workspace + spends the owner's provider budget. Keep it private until real
   // auth (Phase 2) exists. (Warn, don't crash — the operator runs this on purpose.)
-  if (isInternalMode() && process.env.NODE_ENV === 'production') {
-    app.log.warn(
-      '⚠️  AUTH_MODE=internal in production — the API does NOT authenticate. Do not expose it publicly without a proxy/network gate in front. See PATH-TO-MILLIONS roadmap.'
+  // HARD-FAIL, don't just warn (audit P0 denial-of-wallet + takeover): in
+  // production, unauthenticated internal mode means anyone who reaches the URL is
+  // the owner and can drain the provider budget. Refuse to boot unless the
+  // operator consciously accepts it (they've put a network gate in front) via
+  // ALLOW_PUBLIC_INTERNAL=1. This makes the SAFE state the default.
+  if (isInternalMode() && process.env.NODE_ENV === 'production' && process.env.ALLOW_PUBLIC_INTERNAL !== '1') {
+    throw new Error(
+      'REFUSING TO BOOT: AUTH_MODE=internal in production authenticates NO ONE (anyone becomes the owner and can spend your provider keys). ' +
+      'Put a network gate/proxy in front and set ALLOW_PUBLIC_INTERNAL=1 to accept the risk, or implement real auth. ' +
+      'Also set ENFORCE_GENERATION_CAP=1 with sane MAX_DAILY_GENERATIONS before any public exposure.'
     );
   }
 

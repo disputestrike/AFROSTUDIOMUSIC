@@ -110,10 +110,11 @@ export const TASTE_DIMENSIONS = [
 ] as const;
 export type TasteDimension = (typeof TASTE_DIMENSIONS)[number];
 
-// NOTE: 'beatoven' was removed — it was advertised here but had NO adapter, so
-// selecting it silently fell through to the SoundHelix stub. Re-add only with a
-// real BeatovenAdapter. Every string here MUST have a case in musicAdapter().
-export const MUSIC_PROVIDERS = ['eleven', 'stable_audio', 'mubert', 'stub'] as const;
+// Instrumental-beat providers. 'replicate' (MusicGen) is the VALIDATED default
+// for a Replicate-only operator; eleven/stable_audio/mubert are UNVERIFIED
+// scaffolds. 'beatoven' was removed (advertised with no adapter → silent stub).
+// Every string here MUST have a case in musicAdapter().
+export const MUSIC_PROVIDERS = ['replicate', 'eleven', 'stable_audio', 'mubert', 'stub'] as const;
 export const VOICE_PROVIDERS = ['eleven', 'openai', 'stub'] as const;
 export const VIDEO_PROVIDERS = ['veo', 'sora', 'stub'] as const;
 export const IMAGE_PROVIDERS = ['openai', 'stub'] as const;

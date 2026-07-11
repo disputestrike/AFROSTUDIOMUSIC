@@ -16,8 +16,10 @@ async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
   // app (song/project/lexicon/lake all 400'd before the row was ever touched).
   const hasBody = init?.body != null;
   // WO-1: admin/trigger routes require x-admin-secret (set once via the /admin
-  // page, kept in localStorage). Sent on every request — harmless elsewhere.
-  const adminKey = typeof localStorage !== 'undefined' ? localStorage.getItem('afrohit.adminKey') : null;
+  // page, kept in localStorage). ONLY attach it to /admin + /debug requests —
+  // sending the operator secret on every call needlessly exposed it (audit).
+  const needsAdmin = path.startsWith('/admin') || path.startsWith('/debug');
+  const adminKey = needsAdmin && typeof localStorage !== 'undefined' ? localStorage.getItem('afrohit.adminKey') : null;
   const res = await fetch(`${API_URL}/api/v1${path}`, {
     ...init,
     headers: {

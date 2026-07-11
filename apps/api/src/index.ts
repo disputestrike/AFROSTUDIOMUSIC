@@ -111,7 +111,11 @@ async function bootstrap() {
     },
     transform: jsonSchemaTransform,
   });
-  await app.register(swaggerUI, { routePrefix: '/docs' });
+  // Don't publish the full API schema/Swagger UI publicly in production (audit):
+  // it maps every endpoint for an attacker. Enable with EXPOSE_DOCS=1 if wanted.
+  if (process.env.NODE_ENV !== 'production' || process.env.EXPOSE_DOCS === '1') {
+    await app.register(swaggerUI, { routePrefix: '/docs' });
+  }
 
   await app.register(queuePlugin);
   await app.register(authPlugin);

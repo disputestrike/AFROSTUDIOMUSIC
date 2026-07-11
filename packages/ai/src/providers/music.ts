@@ -1,11 +1,14 @@
 /**
  * Music generation adapter. Selects backend from env MUSIC_PROVIDER.
  *
- * Production-ready integrations expected:
+ * VALIDATED engines (wired + used in production):
+ *  - replicate    — MusicGen (instrumental; the Replicate-only default)
+ *  - suno / minimax / ace_step — full-song WITH vocals (via songEngine)
+ * UNVERIFIED scaffolds (endpoints guessed — confirm against live docs before use):
  *  - eleven       — Eleven Labs Music API
- *  - stable_audio — Stability Stable Audio 3
+ *  - stable_audio — Stability Stable Audio
  *  - mubert       — Mubert API
- *  - stub         — synthesized silence / placeholder (dev/local without keys)
+ *  - stub         — SoundHelix placeholder (dev only; blocked in prod unless ALLOW_STUB_AUDIO=1)
  *
  * Every adapter must implement MusicProviderAdapter and return a stable
  * ProviderJobResult so the worker can poll or finalize uniformly.

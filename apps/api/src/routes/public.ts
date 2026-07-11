@@ -13,7 +13,10 @@ export default async function publicRoutes(app: FastifyInstance) {
       where: { id: req.params.songId },
       include: { project: { include: { artist: true } }, lyric: true },
     });
-    if (!song) return reply.code(404).send({ error: 'not_found' });
+    // Only expose songs the artist has green-lit (audit: an unauthenticated,
+    // un-scoped endpoint was leaking title/artist/cover/ISRC for ANY song id in
+    // ANY workspace). An unreleased song is 404 to the public.
+    if (!song || !song.releaseReady) return reply.code(404).send({ error: 'not_found' });
 
     const [master, mix, cover, snippet] = await Promise.all([
       prisma.master.findFirst({ where: { songId: song.id }, orderBy: { createdAt: 'desc' } }),
