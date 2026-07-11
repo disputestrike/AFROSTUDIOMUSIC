@@ -35,6 +35,10 @@ export async function predictHit(opts: {
   if (!anthropicEnabled() && process.env.STUB_AI !== '1' && !process.env.OPENAI_API_KEY) return null;
   try {
     const out = await generateJson<HitPrediction>({
+      // JUDGMENT tier (owner's policy): hit prediction is A&R scoring — the
+      // specific brain, never the bulk tier.
+      tier: 'judgment',
+      task: 'hit-prediction',
       system: HIT_PREDICTOR_SYSTEM,
       user: hitPredictorUserPrompt(opts),
       maxTokens: 1_500,

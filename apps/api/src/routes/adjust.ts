@@ -171,6 +171,8 @@ export default async function adjust(app: FastifyInstance) {
     const bpm = measured?.tempoBpm?.value ?? null;
 
     const plan = await generateJson<{ reply: string; op: null | Record<string, unknown> }>({
+      tier: 'bulk',
+      task: 'adjust-op-parse',
       system: `You are this song's producer at the desk. Song: genre ${song.project?.genre ?? 'unknown'}, duration ${Math.round(durationS)}s${bpm ? `, ~${Math.round(bpm)} BPM` : ''}.
 SECTION MAP: ${sectionMap || 'not measured yet'}.\nParse the artist's instruction into EXACTLY ONE op (the FIRST actionable step if they asked for several — say what's next in reply). Times like "1:20" become SECONDS. Ops:
 - {"kind":"transform","tempo":0.5-1.5?,"semitones":-6..6?}  // speed / key
@@ -217,6 +219,8 @@ If nothing fits, op:null and coach them in reply (mixer, versions, adjust exist)
       if (!anchor) return { reply: 'Give me the name to build the hook around.', dispatched: null };
       if (!song.lyric?.body) return { reply: 'No lyric on this song yet — generate one first.', dispatched: null };
       const rw = await generateJson<{ body: string }>({
+        tier: 'bulk',
+        task: 'hook-surgery',
         system: 'You are a hit songwriter performing HOOK SURGERY. Rewrite ONLY the hook/chorus sections of the lyric so the given TITLE is sung as their centerpiece (or a natural in-language variant). Keep every verse, bridge, section header, and language EXACTLY as-is. No production words in lyrics. Return {"body"} = the FULL lyric with only hooks changed.',
         user: `TITLE: "${anchor}"
 

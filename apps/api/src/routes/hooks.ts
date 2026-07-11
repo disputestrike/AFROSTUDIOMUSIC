@@ -74,9 +74,12 @@ export default async function hooks(app: FastifyInstance) {
       // scores them in a LEAN A&R pass (~10s). Two heavy Claude calls were the
       // 67-104s stall; this is ~25s and the A&R score is reliable.
       type DraftHook = { text: string; language?: string[]; syllablePattern?: string; melodyNotes?: string; callResponse?: boolean };
-      // Claude-first (OpenAI account is quota-exhausted → must not depend on it).
-      // Lean prompt + tokens keep it fast; the lean A&R scorer follows.
+      // BULK tier (owner's cost law): hook DRAFTS are heavy lifting — Cerebras
+      // first, laddering up on any failure. The A&R refine below stays Claude
+      // (directorRefineHooks) — that's the specific brain.
       const result = await generateJson<{ hooks?: DraftHook[] }>({
+        tier: 'bulk',
+        task: 'hooks-draft',
         system: prompts.HOOK_SYSTEM,
         user: prompts.hookUserPrompt({ artist: project.artist as never, brief: brief as never, count: input.count, tasteMemory, trends, soundDna }),
         temperature: 0.95,

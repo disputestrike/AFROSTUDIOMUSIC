@@ -48,6 +48,8 @@ export default async function briefs(app: FastifyInstance) {
         references: Array<{ name: string; lane: string }>;
         notes: string;
       }>({
+        tier: 'bulk',
+        task: 'brief-polish',
         system: prompts.BRIEF_POLISH_SYSTEM,
         user: JSON.stringify({ rawIdea }),
         temperature: 0.4,

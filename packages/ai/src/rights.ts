@@ -72,12 +72,15 @@ export async function runRightsCheck(opts: {
   const all = [opts.lyricBody, opts.hookText, opts.producerNotes].filter(Boolean).join('\n\n');
   const heuristic = heuristicScan(all);
 
-  // Claude-first (OpenAI is a dead 429 on the owner's account). If the LLM can't
-  // run at all, fall back to the deterministic heuristic scan alone — a rights
-  // check must NEVER hard-break the release pipeline with a provider error.
+  // BULK tier (owner's cost law): Cerebras-first, laddering up to Claude/OpenAI
+  // on any failure — never a silent quality drop. If no LLM can run at all, fall
+  // back to the deterministic heuristic scan alone — a rights check must NEVER
+  // hard-break the release pipeline with a provider error (and it fails CLOSED).
   let llm: RightsCheckResult;
   try {
     llm = await generateJson<RightsCheckResult>({
+      tier: 'bulk',
+      task: 'rights-check',
       system: RIGHTS_CHECK_SYSTEM,
       user: JSON.stringify({
         lyric: opts.lyricBody ?? '',

@@ -210,6 +210,8 @@ async function polishBrief(ctx: Ctx, rawIdea: string) {
     mood: string; topic: string; language: string[]; audience: string;
     bpm: number; references: Array<{ name: string; lane: string }>; notes: string;
   }>({
+    tier: 'bulk',
+    task: 'brief-polish',
     system: prompts.BRIEF_POLISH_SYSTEM,
     user: JSON.stringify({ rawIdea }),
     temperature: 0.4,
@@ -305,10 +307,13 @@ async function generateHooks(ctx: Ctx, count: number, languages?: string[], refi
   // Pre-song recall rides with the hard constraints in the extra slot (leads the fuse).
   const presong = await presongIntelligence(ctx.workspaceId, project.genre, hmood);
   const soundDna = fuseSoundDna({ laneTargets: hookLane.laneTargets, extra: [hardConstraints(project.genre, languages), presong].filter(Boolean).join('\n\n'), freshness: await freshnessBrief(ctx.workspaceId), palette: await lexiconPalette({ workspaceId: ctx.workspaceId, languages, mood: hmood, rotate: count }), dna: laneDnaBrief(project.genre), learnedRef: await learnedReferenceBrief(ctx.workspaceId, project.genre), learnedCraft: await learnedLyricCraftBrief(ctx.workspaceId, project.genre), hitCraft: prompts.hitCraftBrief('hook', hmood) });
-  // FAST + RELIABLE: OpenAI writes (word-palette gives the vocab), Claude scores
-  // lean. The drop pipeline runs this per song, so speed here is what kills the
-  // "nothing's happening" feel.
+  // BULK tier (owner's cost law): hook DRAFTS are heavy lifting — Cerebras
+  // first, laddering up on any failure; the A&R refine below (directorRefineHooks)
+  // stays Claude. The drop pipeline runs this per song, so speed here is what
+  // kills the "nothing's happening" feel.
   const result = await generateJson<{ hooks?: Array<{ text: string; language?: string[]; syllablePattern?: string }> }>({
+    tier: 'bulk',
+    task: 'hooks-draft',
     system: prompts.HOOK_SYSTEM,
     user: prompts.hookUserPrompt({ artist: project.artist as never, brief: project.briefs[0] as never, count, tasteMemory, trends, soundDna, refineFrom: refine.length ? refine : undefined, selections, storiesTold: storiesTold.length ? storiesTold : undefined }),
     temperature: 0.95,
@@ -459,12 +464,13 @@ async function generateLyrics(ctx: Ctx, hookId: string, cleanVersion: boolean, l
   // instead of failing the take. The last good attempt wins.
   let firstOutput: LyricOut = { title: '', body: '' };
   for (let attempt = 0; attempt < 3; attempt++) {
-    let out = await generateJson<LyricOut>({ system: prompts.LYRIC_SYSTEM, user: lyricUser, temperature: 0.8, maxTokens: 5_000, timeoutMs: 90_000, model: process.env.WRITER_MODEL, task: 'lyrics-draft' }).catch(() => null);
+    let out = await generateJson<LyricOut>({ tier: 'judgment', system: prompts.LYRIC_SYSTEM, user: lyricUser, temperature: 0.8, maxTokens: 5_000, timeoutMs: 90_000, model: process.env.WRITER_MODEL, task: 'lyrics-draft' }).catch(() => null);
     // THE CRAFT POLISH (the Blue-Tick lesson): the same brain, shown its own
     // draft through an editor's eyes, writes a clearly better song than any
     // one-shot. One extra call (~2-3c) buys the v2. WRITER_TWO_PASS=0 disables.
     if (out?.body && process.env.WRITER_TWO_PASS !== '0') {
       const polished = await generateJson<{ title: string; body: string; cleanVersion?: string; whatChanged?: string[]; captionLine?: string; premise?: string; hookCell?: string; anchors?: string[]; sectionPurposes?: Record<string, string> }>({
+        tier: 'judgment',
         system: prompts.LYRIC_POLISH_SYSTEM,
         user: prompts.lyricPolishPrompt({ draftTitle: out.title, draftBody: out.body, genre: laneGenre, mood: lmood, languages: languages?.length ? languages : hook.project.artist.languages }),
         temperature: 0.7,
@@ -499,6 +505,9 @@ async function generateLyrics(ctx: Ctx, hookId: string, cleanVersion: boolean, l
   let langViolation = languageViolations(output.languageMix, languages);
   if (langViolation.length) {
     const retry = await generateJson<typeof firstOutput>({
+      // JUDGMENT tier: this rewrites the WHOLE lyric — final lyric writing.
+      tier: 'judgment',
+      task: 'lyrics-language-retry',
       system: prompts.LYRIC_SYSTEM,
       user:
         `YOUR PREVIOUS ATTEMPT FAILED THE LANGUAGE RULE — it used: ${langViolation.join(', ')}. ` +
@@ -837,6 +846,8 @@ async function generateStoryboard(ctx: Ctx, a: { durationS?: number; format?: 'v
     include: { artist: true, briefs: { take: 1, orderBy: { createdAt: 'desc' } } },
   });
   const result = await generateJson<{ title: string; shots: Array<{ index: number; prompt: string; duration_s: number; motion?: string; lighting?: string }> }>({
+    tier: 'bulk',
+    task: 'storyboard',
     system: prompts.STORYBOARD_SYSTEM,
     user: JSON.stringify({
       artist: { stageName: project.artist.stageName, lane: project.artist.laneSummary },

@@ -75,7 +75,7 @@ export default async function lyrics(app: FastifyInstance) {
       // ~1 in 3; regenerate up to 3x instead of failing.
       let output: LyricOut = { title: '', body: '' };
       for (let attempt = 0; attempt < 3; attempt++) {
-        const out = await generateJson<LyricOut>({ system: prompts.LYRIC_SYSTEM, user: lyricUser, temperature: 0.8, maxTokens: 4_500, timeoutMs: 90_000, model: process.env.WRITER_MODEL, task: 'lyrics-draft' }).catch(() => null);
+        const out = await generateJson<LyricOut>({ tier: 'judgment', system: prompts.LYRIC_SYSTEM, user: lyricUser, temperature: 0.8, maxTokens: 4_500, timeoutMs: 90_000, model: process.env.WRITER_MODEL, task: 'lyrics-draft' }).catch(() => null);
         if (out && typeof out.body === 'string' && out.body.trim().length >= 20) { output = out; break; }
         output = out ?? output;
       }
@@ -85,6 +85,7 @@ export default async function lyrics(app: FastifyInstance) {
       // one-shot. WRITER_TWO_PASS=0 disables.
       if (typeof output.body === 'string' && output.body.trim().length >= 200 && process.env.WRITER_TWO_PASS !== '0') {
         const polished = await generateJson<{ title: string; body: string; cleanVersion?: string }>({
+          tier: 'judgment',
           system: prompts.LYRIC_POLISH_SYSTEM,
           user: prompts.lyricPolishPrompt({ draftTitle: output.title || hook.text.slice(0, 80), draftBody: output.body, genre: project.genre, mood: lmood, languages: reqLangs }),
           temperature: 0.7,
@@ -182,6 +183,10 @@ export default async function lyrics(app: FastifyInstance) {
         vocalDirection: string;
         notes: string;
       }>({
+        // BULK tier (owner's cost law): deconstruction is structuring, not
+        // lyric writing — Cerebras first, laddering up on any failure.
+        tier: 'bulk',
+        task: 'lyrics-deconstruct',
         system:
           'You are a top producer DECONSTRUCTING an artist\'s own lyrics so the studio can produce them correctly. Read the lyrics and return strict JSON: ' +
           'title (from the hook/theme, never an instruction), languages (ISO-ish codes like en/pcm/yo/ig/ha/es/fr among those present), ' +
@@ -307,6 +312,10 @@ export default async function lyrics(app: FastifyInstance) {
       const out = await generateJson<{
         candidates: Array<{ title: string; hookLine: string; lyric: string; flowNotes: string }>;
       }>({
+        // JUDGMENT tier (owner's policy): this WRITES the lyric candidates the
+        // artist will sing — final lyric writing stays on the taste brain.
+        tier: 'judgment',
+        task: 'mumble-to-lyrics',
         system:
           'You are a songwriter converting a singer\'s MUMBLE TAKE into real words — the artist found the melody and rhythm with their body first; your job is language that fits THAT groove exactly. ' +
           'RULES: (1) PRESERVE THE FLOW — match each mumbled line\'s syllable count, stresses and line length as closely as possible; the words must sing on the same contour. ' +

@@ -52,12 +52,14 @@ export interface GenerateOptions {
   /** Longer Claude timeout for big/slow calls (e.g. lyrics). Default 55s. */
   timeoutMs?: number;
   /**
-   * A3-5 BRAIN TIERS. 'judgment' (default) = Anthropic, ALWAYS — lyrics, hooks,
-   * A&R, anything user-facing creative; quality work never routes down.
-   * 'bulk' = Cerebras first (radar craft extraction, gloss/classification,
-   * caption drafting, internal summaries), laddering to Anthropic on failure —
-   * never a silent drop. Guards: prompts > ~7K tokens auto-route up (Cerebras
-   * context is small — size defensively).
+   * A3-5 BRAIN TIERS — owner's cost law: Cerebras for the heavy lifting, Claude
+   * for just the specific brain. 'judgment' (default) = Anthropic — final lyric
+   * writing + the critic/polish pass, and A&R scoring/refinement (taste, hit
+   * prediction, director) ONLY; that work never routes down. 'bulk' = Cerebras
+   * first (EVERYTHING else: hook drafts, brief polish, enrichment, structuring,
+   * craft extraction, gloss/classification, nightly work), laddering to
+   * Anthropic on failure — never a silent drop. Guards: prompts > ~7K tokens
+   * auto-route up (Cerebras context is small — size defensively).
    */
   tier?: 'judgment' | 'bulk';
   /** Task label for the economics log (A3-6). */

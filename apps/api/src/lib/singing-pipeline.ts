@@ -113,10 +113,13 @@ export async function applySingingBrain(opts: {
   let best: { take: SungConversion; score: SungLyricScore } = { take: first, score: scoreOf(first, hookCell) };
   let retries = 0;
   if (!best.score.pass) {
-    // ONE retry, told exactly which laws broke — never more (cost law).
+    // ONE retry, told exactly which laws broke — never more (cost law). The
+    // retry ESCALATES to the judgment brain (owner's tier ladder: the first
+    // take is cheap bulk; a scorecard failure earns the taste brain).
     retries = 1;
     const second = await singingBrain({
       ...brainOpts,
+      tier: 'judgment',
       sectionNotes: `PREVIOUS ATTEMPT FAILED THE SCORECARD: ${best.score.failures.join('; ')}. Fix exactly these while keeping everything else.`,
     });
     if (second) {

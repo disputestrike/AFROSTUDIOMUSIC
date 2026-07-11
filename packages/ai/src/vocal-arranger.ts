@@ -97,6 +97,8 @@ export async function enrichLyricsForVocals(opts: {
       ? `\nRAP DELIVERY LAW — this is ${opts.genre}: VERSES ARE RAPPED, not sung — rhythmic spoken flow, bars with internal rhyme and punchlines, a cadence switch between verse halves. The HOOK may sing or chant. Ad-libs punctuate the bars ("uh", "yeah", "talk!"). Melodic delivery on verses is a HARD FAIL.`
       : '';
     const out0 = await generateJson<EnrichedVocal>({
+      tier: 'bulk',
+      task: 'vocal-enrichment',
       system: ARRANGER_SYSTEM + rapLaw + voiceLaw,
       user: [
         `LANGUAGES: ${opts.languages?.join(', ') || 'english, pidgin'}`,

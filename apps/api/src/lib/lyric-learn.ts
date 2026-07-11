@@ -101,6 +101,8 @@ export async function learnLyricCraft(opts: {
   }
   const modes = prompts.lyricModes().map((m) => `${m.id}: ${m.whenToUse}`).join('\n');
   const out = await generateJson<LyricCraft>({
+    tier: 'bulk',
+    task: 'lyric-craft-learn',
     system:
       'You are a master songwriting analyst building a CRAFT LIBRARY. Study the lyrics and extract ONLY the craft — techniques, patterns, structure. ' +
       'HARD RULE: never quote, reproduce, or closely paraphrase ANY line; describe every technique abstractly (e.g. "3-syllable chant repeated 4x with call-response echo", never the words themselves). ' +

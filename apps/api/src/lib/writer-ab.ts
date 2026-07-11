@@ -57,9 +57,11 @@ async function writeOnBrain(brain: 'claude' | 'openai', input: AbInput, hookText
 }
 
 export async function runWriterAb(input: AbInput): Promise<{ blind: Array<{ label: 'A' | 'B'; title: string; body: string }>; reveal: string; hookText: string } | { error: string }> {
-  // ONE shared hook (Claude-written) so both sides write the SAME song.
+  // ONE shared hook so both sides write the SAME song — bulk tier (owner's cost
+  // law: hook DRAFTS are heavy lifting); the bench measures the WRITERS, not the hook.
   const hookText = input.hookText?.trim() || (
     await generateJson<{ hooks?: Array<{ text: string }> }>({
+      tier: 'bulk',
       system: prompts.HOOK_SYSTEM,
       user: `Write 1 hook for a ${input.genre} song. Mood: ${input.mood ?? 'love'}. Languages: ${(input.languages ?? ['pcm', 'en']).join(' + ')}. Theme: ${input.theme ?? 'a fresh original'}. Return {"hooks":[{"text"}]}.`,
       maxTokens: 600,

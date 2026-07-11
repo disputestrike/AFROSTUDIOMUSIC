@@ -236,6 +236,8 @@ export async function analyzeAudio(url: string, apiKey?: string, ctx?: AnalyzeCo
 
   try {
     const structured = await generateJson<Omit<AudioProfile, 'raw'>>({
+      tier: 'bulk',
+      task: 'audio-profile-structuring',
       system,
       user: `Observed evidence about the record:\n${raw}`,
       temperature: 0.3,

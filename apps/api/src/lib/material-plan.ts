@@ -111,15 +111,19 @@ export interface ArrangementSection {
 }
 
 /**
- * Claude authors the arrangement for the material actually on hand — the
- * creative half of the material layer. Hard-validated: sections 3-8, bars 2-16
- * each, total 12-48, roles ⊆ available, at least one full-stack peak. Any
- * failure → null (worker uses the classic template), never a broken beat.
+ * The brain authors the arrangement for the material actually on hand — the
+ * creative half of the material layer. BULK tier (owner's cost law): Cerebras
+ * first, laddering up on any failure — the hard validation below is the
+ * quality gate. Hard-validated: sections 3-8, bars 2-16 each, total 12-48,
+ * roles ⊆ available, at least one full-stack peak. Any failure → null (worker
+ * uses the classic template), never a broken beat.
  */
 export async function claudeArrangement(genre: string, bpm: number, available: string[], vibe?: string): Promise<ArrangementSection[] | null> {
   try {
     const dna = getSoundDNA(genre);
     const out = await generateJson<{ sections: Array<{ name: string; bars: number; roles: string[] }> }>({
+      tier: 'bulk',
+      task: 'beat-arrangement',
       system:
         'You are a top producer ARRANGING a beat from real, already-rendered loops. You control ONLY: section order, section length in bars, and which layers play in each section. ' +
         'Think like the genre: how does energy enter, build, breathe, and leave? Strip-downs and drops are your tools. ' +

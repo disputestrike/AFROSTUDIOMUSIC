@@ -88,7 +88,10 @@ async function rewriteLyric(
   read: { toMakeItBigger?: string[]; risks?: string[] }
 ): Promise<{ title: string; body: string; whatChanged: string[] } | null> {
   // PASS 1 — rewrite implementing the A&R notes (bigger, not a patch).
+  // JUDGMENT tier (owner's policy): final lyric writing stays on the taste brain.
   const out = await generateJson<{ title: string; body: string; whatChanged: string[] }>({
+    tier: 'judgment',
+    task: 'lyric-rewrite',
     system: prompts.LYRIC_SYSTEM,
     user:
       `REWRITE this song implementing the A&R notes — a NEW, BIGGER version, not a patch. Keep the song's identity (same story, mood, language mix) but execute EVERY note.\n\n` +
@@ -107,6 +110,8 @@ async function rewriteLyric(
   // like the create flow. Skippable via WRITER_TWO_PASS=0.
   if (process.env.WRITER_TWO_PASS !== '0') {
     const polished = await generateJson<{ title: string; body: string; whatChanged?: string[] }>({
+      tier: 'judgment',
+      task: 'lyric-rewrite-polish',
       system: prompts.LYRIC_POLISH_SYSTEM,
       user: prompts.lyricPolishPrompt({ draftTitle: out.title, draftBody: out.body, genre }),
       temperature: 0.7,

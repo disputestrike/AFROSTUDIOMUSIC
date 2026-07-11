@@ -75,9 +75,16 @@ export async function singingBrain(opts: {
   genre: string;
   languages?: string[];
   sectionNotes?: string;
+  /**
+   * Owner's cost law: the first take runs 'bulk' (Cerebras-first, laddering up
+   * on any failure), and callers escalate to 'judgment' (Anthropic) only on a
+   * scorecard-failure retry — cheap first, taste on retry. Default 'bulk'.
+   */
+  tier?: 'judgment' | 'bulk';
 }): Promise<SungConversion | null> {
   try {
     const out = await generateJson<SungConversion>({
+      tier: opts.tier ?? 'bulk',
       system: SINGING_BRAIN_SYSTEM,
       user: [
         `GENRE: ${opts.genre}`,
