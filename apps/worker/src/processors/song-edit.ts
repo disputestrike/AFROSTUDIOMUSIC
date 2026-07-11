@@ -218,7 +218,7 @@ export async function processSongEdit(p: SongEditPayload): Promise<void> {
       // Prisma rows (no gain) crashed the assembler (same bug as own-engine).
       const picks: Array<{ id: string; url: string; sourceBpm: number; role: string; gain: number }> = [];
       for (const role of ['log_drum', 'drums', 'percussion', 'bass', 'chords']) {
-        const r0 = rows.find((r) => r.role === role);
+        const r0 = rows.find((r: { role: string }) => r.role === role);
         if (r0) picks.push({ id: r0.id, url: r0.url, sourceBpm: r0.bpm ?? bpm, role, gain: MATERIAL_GAINS[role] ?? 0.9 });
       }
       if (picks.length < 2) throw new Error('kit too thin for a section re-play — the nightly forge stocks it');
@@ -269,7 +269,7 @@ export async function processSongEdit(p: SongEditPayload): Promise<void> {
       });
       const stale = chatVersions.slice(2);
       if (stale.length) {
-        await prisma.master.deleteMany({ where: { id: { in: stale.map((m) => m.id) } } });
+        await prisma.master.deleteMany({ where: { id: { in: stale.map((m: { id: string }) => m.id) } } });
         console.log(`[song-edit] pruned ${stale.length} old chat version(s) — current + 1 previous kept, original untouched`);
       }
     } catch (err) {

@@ -17,6 +17,16 @@ import { prisma } from '@afrohit/db';
 
 const norm = (g?: string | null) => (g ?? '').toLowerCase().trim().replace(/[\s/-]+/g, '_');
 
+// Shape of the `select` on prisma.song.findMany below (shim types @afrohit/db as any).
+type ScoredSong = {
+  title: string;
+  laneScore: number | null;
+  hitScore: number | null;
+  laneGaps: unknown;
+  lyric: { title: string | null } | null;
+  project: { genre: string | null; bpm: number | null } | null;
+};
+
 export async function presongIntelligence(workspaceId: string, genre?: string | null, mood?: string | null): Promise<string> {
   try {
     if (!genre) return '';
@@ -30,17 +40,17 @@ export async function presongIntelligence(workspaceId: string, genre?: string | 
         project: { select: { genre: true, bpm: true } },
       },
     });
-    const lane = songs.filter((s) => norm(s.project?.genre) === norm(genre));
+    const lane = songs.filter((s: ScoredSong) => norm(s.project?.genre) === norm(genre));
     if (lane.length < 3) return ''; // too little history — say nothing rather than guess
-    const winners = lane.filter((s) => (s.laneScore ?? 0) >= 80 || (s.hitScore ?? 0) >= 70).slice(0, 5);
-    const losers = lane.filter((s) => s.laneScore != null && s.laneScore < 40).slice(0, 4);
+    const winners = lane.filter((s: ScoredSong) => (s.laneScore ?? 0) >= 80 || (s.hitScore ?? 0) >= 70).slice(0, 5);
+    const losers = lane.filter((s: ScoredSong) => s.laneScore != null && s.laneScore < 40).slice(0, 4);
     if (!winners.length && !losers.length) return '';
 
     const parts: string[] = [`PRESONG INTELLIGENCE — measured lessons from YOUR own ${genre.replace(/_/g, ' ')} catalog (${lane.length} scored songs), not theory:`];
     if (winners.length) {
-      const bpms = winners.map((w) => w.project?.bpm).filter((b): b is number => !!b);
+      const bpms = winners.map((w: ScoredSong) => w.project?.bpm).filter((b: number | null | undefined): b is number => !!b);
       const bpmLine = bpms.length ? ` Tempos that worked: ${Math.min(...bpms)}–${Math.max(...bpms)} bpm.` : '';
-      const hooks = winners.map((w) => `“${(w.lyric?.title || w.title).slice(0, 42)}” (lane ${w.laneScore ?? '—'}${w.hitScore ? `, A&R ${w.hitScore}` : ''})`).slice(0, 3);
+      const hooks = winners.map((w: ScoredSong) => `“${(w.lyric?.title || w.title).slice(0, 42)}” (lane ${w.laneScore ?? '—'}${w.hitScore ? `, A&R ${w.hitScore}` : ''})`).slice(0, 3);
       parts.push(`WINNERS:${bpmLine} Titles/hooks that scored: ${hooks.join('; ')}. Channel what made these land — do NOT copy their words.`);
     }
     if (losers.length) {

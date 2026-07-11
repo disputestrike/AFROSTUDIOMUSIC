@@ -98,7 +98,7 @@ export async function processExport(p: ExportPayload) {
     const bundle = {
       mp3: master?.url ?? mix?.url ?? null,
       wav: master?.url ?? null,
-      stems: beat?.stems.map((s) => ({ role: s.role, url: s.url })) ?? [],
+      stems: beat?.stems.map((s: { role: string; url: string }) => ({ role: s.role, url: s.url })) ?? [],
       coverArt: cover?.url ?? null,
       lyrics: song.lyric?.body ?? null,
       cleanLyrics: song.lyric?.cleanVersion ?? null,

@@ -127,7 +127,7 @@ export default async function lanes(app: FastifyInstance) {
       prisma.materialAsset.groupBy({ by: ['role'], where: { workspaceId }, _count: true }).catch(() => []),
     ]);
     const recentBeats = await prisma.beatAsset.findMany({ where: { project: { workspaceId } }, orderBy: { createdAt: 'desc' }, take: 200, select: { meta: true } });
-    const beatsMeasured = recentBeats.filter((b) => ((b.meta ?? {}) as { measured?: { engineOk?: boolean } }).measured?.engineOk).length;
+    const beatsMeasured = recentBeats.filter((b: { meta: unknown }) => ((b.meta ?? {}) as { measured?: { engineOk?: boolean } }).measured?.engineOk).length;
     return {
       totals: { songs, beats: beatsTotal, beatsApproved, beatsMeasuredOfRecent200: beatsMeasured, hooks, tasteEvents },
       lexicon: Object.fromEntries((lexByLang as Array<{ language: string; _count: number }>).map((l) => [l.language, l._count])),
@@ -149,7 +149,7 @@ export default async function lanes(app: FastifyInstance) {
       take: 300,
       select: { id: true, title: true, laneScore: true, laneGaps: true, hitScore: true, createdAt: true, project: { select: { genre: true } } },
     });
-    const rows = songs.map((s) => {
+    const rows = songs.map((s: { id: string; title: string | null; laneScore: number | null; laneGaps: unknown; hitScore: number | null; createdAt: Date; project: { genre: string | null } | null }) => {
       const gaps = (s.laneGaps ?? {}) as { coverage?: number; failedCritical?: string[]; topGaps?: unknown[]; drift?: { severity?: string }; unmeasured?: boolean; reason?: string; measuredAt?: string };
       return {
         songId: s.id,
@@ -167,7 +167,7 @@ export default async function lanes(app: FastifyInstance) {
         createdAt: s.createdAt,
       };
     });
-    const measured = rows.filter((r) => r.measured);
+    const measured = rows.filter((r: { measured: boolean }) => r.measured);
     const byLane = new Map<string, { lane: string; n: number; avg: number; failing: number }>();
     for (const r of measured) {
       const k = r.lane ?? 'unknown';

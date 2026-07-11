@@ -81,7 +81,7 @@ export async function processStems(p: StemsPayload) {
                 meta: { fromBeatId: beat.id, fromSongId: p.songId, stemRole: s.role, provider: beat.provider, owned: isOwned } as never,
               },
             })
-            .catch((err) => console.warn('[stems] material harvest failed:', (err as Error)?.message))
+            .catch((err: unknown) => console.warn('[stems] material harvest failed:', (err as Error)?.message))
         )
     );
 

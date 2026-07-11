@@ -22,7 +22,7 @@ export default async function instrumentals(app: FastifyInstance) {
     });
     return {
       total: rows.length,
-      instrumentals: rows.map((m) => {
+      instrumentals: rows.map((m: { id: string; url: string; genre: string | null; bpm: number | null; keySignature: string | null; durationS: number | null; source: string; meta: unknown; createdAt: Date }) => {
         const meta = (m.meta ?? {}) as { fromSongId?: string; fromSongTitle?: string };
         return {
           id: m.id,

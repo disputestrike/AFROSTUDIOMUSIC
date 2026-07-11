@@ -73,7 +73,7 @@ export async function processSnippet(p: SnippetPayload) {
       orderBy: { createdAt: 'desc' },
     });
     const captionRaw =
-      hook?.text?.split('(')[0] ?? song.lyric?.title ?? song.lyric?.body?.split('\n').find((l) => l.trim()) ?? song.title;
+      hook?.text?.split('(')[0] ?? song.lyric?.title ?? song.lyric?.body?.split('\n').find((l: string) => l.trim()) ?? song.title;
 
     const [audio, coverBuf, fontPath] = await Promise.all([
       downloadToBuffer(audioUrl),

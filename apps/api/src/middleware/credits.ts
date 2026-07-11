@@ -3,6 +3,12 @@ import { prisma } from '@afrohit/db';
 import { costOf, PLAN_LIMITS, type CreditKey } from '@afrohit/shared';
 import { isInternalMode } from './auth';
 
+/** What prisma.$transaction hands an interactive callback: the client minus the
+ *  session-level methods (mirrors Prisma's ITXClientDenyList). Written via
+ *  `typeof prisma` so it stays correct under both the real client types and the
+ *  sandbox compile shim (where prisma is `any`). */
+type Tx = Omit<typeof prisma, '$connect' | '$disconnect' | '$on' | '$transaction' | '$use' | '$extends'>;
+
 // Map a credit action → the PLAN_LIMITS monthly category it counts against, and
 // the ledger reasons that make up that category's usage. Keys not listed are
 // uncapped (charged on balance only).
@@ -143,7 +149,7 @@ export const creditsPlugin = fp(async function (app) {
       }
     }
     const cost = costOf(opts.key) * (opts.multiplier ?? 1);
-    return prisma.$transaction(async (tx) => {
+    return prisma.$transaction(async (tx: Tx) => {
       // ATOMIC CONDITIONAL DEBIT (Crucib P0-6 lesson): read-check-then-write let
       // two concurrent charges both pass the balance check. One guarded UPDATE
       // is the whole check — 0 rows touched = insufficient funds, race-free.
@@ -190,7 +196,7 @@ export const creditsPlugin = fp(async function (app) {
     refId?: string;
   }) => {
     const amount = costOf(opts.key) * (opts.multiplier ?? 1);
-    await prisma.$transaction(async (tx) => {
+    await prisma.$transaction(async (tx: Tx) => {
       await tx.workspace.update({
         where: { id: opts.workspaceId },
         data: { creditsCents: { increment: amount } },

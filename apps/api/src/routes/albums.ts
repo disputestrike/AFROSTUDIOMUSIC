@@ -32,7 +32,16 @@ export default async function albums(app: FastifyInstance) {
         },
       },
     });
-    return rows.map((a) => ({
+    type AlbumSongRow = {
+      id: string; title: string | null; status: string; projectId: string;
+      masters: Array<{ url: string }>; mixes: Array<{ url: string }>; beats: Array<{ url: string }>;
+      lyric: { title: string | null } | null;
+    };
+    type AlbumRow = {
+      id: string; title: string; anchorSongId: string | null; styleBrief: unknown; createdAt: Date;
+      songs: AlbumSongRow[];
+    };
+    return rows.map((a: AlbumRow) => ({
       id: a.id,
       title: a.title,
       anchorSongId: a.anchorSongId,

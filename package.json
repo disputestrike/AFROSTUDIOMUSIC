@@ -25,7 +25,7 @@
     "infra:up": "docker compose -f docker-compose.dev.yml up -d",
     "infra:down": "docker compose -f docker-compose.dev.yml down",
     "format": "prettier --write \"**/*.{ts,tsx,md,json}\"",
-    "verify": "pnpm --filter @afrohit/shared build && pnpm --filter @afrohit/ai typecheck && pnpm --filter @afrohit/web typecheck && pnpm --filter @afrohit/api typecheck:shim && pnpm --filter @afrohit/worker typecheck:shim && pnpm --filter @afrohit/worker test"
+    "verify": "pnpm --filter @afrohit/shared build && pnpm --filter @afrohit/ai build && pnpm --filter @afrohit/web typecheck && pnpm --filter @afrohit/api typecheck:shim && pnpm --filter @afrohit/worker typecheck:shim && pnpm --filter @afrohit/worker test"
   },
   "devDependencies": {
     "turbo": "^2.3.0",

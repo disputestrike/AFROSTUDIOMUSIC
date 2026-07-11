@@ -115,7 +115,9 @@ export async function unseededForLane(genre?: string | null): Promise<string[]> 
   if (!langs.length) return [];
   try {
     const byLang = await prisma.lexiconEntry.groupBy({ by: ['language'], where: { workspaceId: null }, _count: true });
-    const counts = new Map(byLang.map((l) => [l.language, l._count as unknown as number]));
+    const counts = new Map<string, number>(
+      byLang.map((l: { language: string; _count: unknown }): [string, number] => [l.language, l._count as unknown as number])
+    );
     return langs.filter((l) => (counts.get(l) ?? 0) < THIN_LEXICON);
   } catch { return []; } // lexicon table absent on first boot — never block on infra
 }

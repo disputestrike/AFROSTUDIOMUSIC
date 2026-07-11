@@ -14,7 +14,7 @@ import { joinBriefs, prompts, generateJson, scoreItems, runRightsCheck, canonica
 import { laneDna, laneDnaBrief } from '../lib/lane-pipeline';
 import { enqueue } from '../lib/queue';
 import { assertSafeUrl } from '../lib/url-guard';
-import { learnedReferenceBrief, learnedStyleTags, learnedLyricCraftBrief, snapshotTrend, freshnessBrief } from '../lib/learned';
+import { learnedReferenceBrief, learnedStyleTags, learnedMeasuredTags, learnedUsage, learnedLyricCraftBrief, snapshotTrend, freshnessBrief } from '../lib/learned';
 import { blueprintForReference } from '../lib/blueprint';
 import { genreSignature, structureBrief } from '@afrohit/shared';
 import { learnLyricCraft, findLearnedLyric } from '../lib/lyric-learn';
@@ -285,12 +285,12 @@ async function generateHooks(ctx: Ctx, count: number, languages?: string[], refi
       })
     )
   );
-  created.sort((a, b) => (b.score ?? 0) - (a.score ?? 0));
+  created.sort((a: { score: number | null }, b: { score: number | null }) => (b.score ?? 0) - (a.score ?? 0));
   return {
     // projectId lets the UI approve/edit a hook DIRECTLY (deterministic), instead
     // of relying on the model to parse "use hook 3" from a chat message.
     projectId: project.id,
-    hooks: created.map((c) => {
+    hooks: created.map((c: { id: string; text: string; score: number | null; meta: unknown }) => {
       const m = (c.meta as { viralScore?: number; tiktokMoment?: string } | null) ?? null;
       return { id: c.id, text: c.text, score: c.score, viralScore: m?.viralScore ?? null, tiktokMoment: m?.tiktokMoment ?? null };
     }),
@@ -313,7 +313,7 @@ async function scoreHooks(ctx: Ctx, hookIds: string[]) {
 
   const scores = await scoreItems({
     artist: hooks[0]!.project.artist as never,
-    items: hooks.map((h) => ({ id: h.id, text: h.text, kind: 'hook' })),
+    items: hooks.map((h: { id: string; text: string }) => ({ id: h.id, text: h.text, kind: 'hook' })),
   });
   await Promise.all(
     scores.map((s) =>
@@ -504,11 +504,15 @@ async function createBeatJob(ctx: Ctx, a: { genre: string; fusionGenres?: string
   const dna = a.fusionGenres?.length ? laneDna(a.genre, { mood: a.mood, fusionGenres: a.fusionGenres }) : laneDna(a.genre, { mood: a.mood });
   const learned = await learnedReferenceBrief(ctx.workspaceId, a.genre, a.pinnedReferenceId);
   const learnedTags = await learnedStyleTags(ctx.workspaceId, a.genre, a.pinnedReferenceId);
+  // PARITY with the REST path (audit: the chat path skipped both): DSP-measured
+  // facts reach the render, and the job records WHICH references it used.
+  const measuredTags = await learnedMeasuredTags(ctx.workspaceId, a.genre, a.pinnedReferenceId);
+  const trainingUsage = await learnedUsage(ctx.workspaceId, a.genre, a.pinnedReferenceId);
   // BLUEPRINT (precision mode): a PINNED, MEASURED reference contributes its
   // SKELETON as a hard contract — same section count/lengths/BPM, all-new flesh.
   const blueprint = a.pinnedReferenceId ? await blueprintForReference(ctx.workspaceId, a.pinnedReferenceId) : null;
   const bpBrief = blueprint ? structureBrief(blueprint) : '';
-  const dnaTags = [...(dna.tags ?? []), ...learnedTags, ...(blueprint ? [`structure ${blueprint.sections.length} sections`, ...(blueprint.bpm ? [`${blueprint.bpm} bpm exact`] : [])] : [])];
+  const dnaTags = [...measuredTags, ...(dna.tags ?? []), ...learnedTags, ...(blueprint ? [`structure ${blueprint.sections.length} sections`, ...(blueprint.bpm ? [`${blueprint.bpm} bpm exact`] : [])] : [])];
 
   // Arrange the vocal to sound ALIVE — ad-libs, doubled/harmonized hook.
   let styleHints: string[] = [];
@@ -554,7 +558,9 @@ async function createBeatJob(ctx: Ctx, a: { genre: string; fusionGenres?: string
       kind: 'music',
       provider: a.withVocals ? a.songEngine ?? defaultSongEngine() : defaultInstrumentalEngine(),
       status: 'QUEUED',
-      inputJson: a as never,
+      // trainingUsage = proof of which references shaped this render (parity with
+      // the REST path); _charge lets the worker REFUND on failure.
+      inputJson: { ...a, trainingUsage, _charge: { key: a.withVocals || a.withStems ? 'full_song_demo' : 'beat_idea_short_30s', multiplier: Math.max(1, a.candidates ?? 1) } } as never,
     },
   });
   await enqueue({
@@ -723,7 +729,7 @@ async function rightsCheck(ctx: Ctx, songId: string) {
     data: {
       workspaceId: ctx.workspaceId, projectId: song.projectId, songId,
       providers: [], prompts: { rightsCheck: check } as never,
-      approvals: approvals.map((a) => ({ id: a.id, gate: a.gate, decision: a.decision })) as never,
+      approvals: approvals.map((a: { id: string; gate: string; decision: string }) => ({ id: a.id, gate: a.gate, decision: a.decision })) as never,
       aiDisclosure: { distroDisclosure: 'GenAI-assisted, human-edited', credits: { lyrics: 'AI-assisted, human-edited' } } as never,
       hash,
     },
@@ -887,7 +893,7 @@ async function rejectHookTool(ctx: Ctx, hookId: string) {
 async function listBeatsTool(ctx: Ctx) {
   if (!ctx.projectId) return { error: 'no_project_in_thread' };
   const beats = await prisma.beatAsset.findMany({ where: { projectId: ctx.projectId }, orderBy: { createdAt: 'desc' }, take: 20, include: { stems: { select: { role: true } } } });
-  return { beats: beats.map((b) => ({ id: b.id, provider: b.provider, bpm: b.bpm, key: b.keySignature, durationS: b.duration, stems: b.stems.map((s) => s.role), url: b.url })) };
+  return { beats: beats.map((b: { id: string; provider: string; bpm: number | null; keySignature: string | null; duration: number | null; stems: Array<{ role: string }>; url: string }) => ({ id: b.id, provider: b.provider, bpm: b.bpm, key: b.keySignature, durationS: b.duration, stems: b.stems.map((s: { role: string }) => s.role), url: b.url })) };
 }
 
 async function listCatalogTool(ctx: Ctx) {
@@ -899,7 +905,7 @@ async function listCatalogTool(ctx: Ctx) {
   });
   return {
     count: songs.length,
-    songs: songs.map((s) => ({ id: s.id, title: s.lyric?.title || s.title, status: s.status, releaseReady: s.releaseReady, audioUrl: s.masters[0]?.url ?? s.mixes[0]?.url ?? s.beats[0]?.url ?? null })),
+    songs: songs.map((s: { id: string; title: string; status: string; releaseReady: boolean; lyric: { title: string | null } | null; masters: Array<{ url: string }>; mixes: Array<{ url: string }>; beats: Array<{ url: string }> }) => ({ id: s.id, title: s.lyric?.title || s.title, status: s.status, releaseReady: s.releaseReady, audioUrl: s.masters[0]?.url ?? s.mixes[0]?.url ?? s.beats[0]?.url ?? null })),
   };
 }
 

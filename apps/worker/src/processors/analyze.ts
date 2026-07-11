@@ -54,7 +54,7 @@ export async function processAnalyze(p: AnalyzePayload) {
           recipe: { factsOnly: true, measured, metrics } as never,
           summary: null, // NOTHING for the prose briefs to quote — numbers only, by design
         },
-      }).catch((err) => { console.warn('[analyze] facts reference write failed:', (err as Error)?.message); return null; });
+      }).catch((err: unknown) => { console.warn('[analyze] facts reference write failed:', (err as Error)?.message); return null; });
       // Deep pass (stems-grade log-drum) then PURGE the audio — the lake keeps
       // numbers, never a copy of a record the artist didn't make.
       if (reference?.id && measured.engineOk && process.env.DSP_STEMS !== '0') {
@@ -164,7 +164,7 @@ export async function processAnalyze(p: AnalyzePayload) {
         },
       })
       // A failed write here silently loses a LEARNED reference — log it.
-      .catch((err) => {
+      .catch((err: unknown) => {
         console.warn('[analyze] SoundReference write failed:', (err as Error)?.message);
         return null;
       });
@@ -185,7 +185,7 @@ export async function processAnalyze(p: AnalyzePayload) {
           properties: { bpm: profile.bpm, genre: profile.genre, mood: profile.mood, energy: profile.energy } as never,
         },
       })
-      .catch((err) => console.warn('[analyze] taste event write failed:', (err as Error)?.message));
+      .catch((err: unknown) => console.warn('[analyze] taste event write failed:', (err as Error)?.message));
     // referenceId lets the UI PIN this exact reference for the remake — the song
     // made next must rebuild THIS record's sound, not a lucky-recent one.
     await markSucceeded(p.jobId, { profile, referenceId: reference?.id ?? null, measured, coverage });

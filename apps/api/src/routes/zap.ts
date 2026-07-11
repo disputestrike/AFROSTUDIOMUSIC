@@ -129,7 +129,7 @@ export default async function zap(app: FastifyInstance) {
       take: 60,
       select: { id: true, genre: true, summary: true, recipe: true, createdAt: true },
     });
-    return rows.map((r) => {
+    return rows.map((r: { id: string; genre: string | null; summary: string | null; recipe: unknown; createdAt: Date }) => {
       const rec = (r.recipe ?? {}) as { title?: string; artist?: string; vibe?: string; craft?: string[]; radar?: boolean; bpm?: number; mood?: string; languages?: string[] };
       return {
         id: r.id,

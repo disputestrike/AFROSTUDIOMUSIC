@@ -122,7 +122,7 @@ export async function processRefileReferences(opts?: { limit?: number }): Promis
       select: { id: true, workspaceId: true, genre: true, sourceUrl: true, recipe: true },
     });
     type Refile = { status: 'proposed' | 'approved' | 'rejected' | 'confirmed' | 'unverifiable'; checkedAt: string; proposedLane?: string; filedLane?: string | null; detectedScore?: number; filedScore?: number | null; reason?: string };
-    const candidates = rows.filter((r) => {
+    const candidates = rows.filter((r: { id: string; workspaceId: string; genre: string | null; sourceUrl: string; recipe: unknown }) => {
       const rec = (r.recipe ?? {}) as { source?: string; refile?: Refile; measured?: { engineOk?: boolean } };
       if (rec.source === 'generated') return false; // self rows aren't picker-misfiled
       const st = rec.refile?.status;
@@ -252,9 +252,10 @@ export async function processListenBack(opts?: { limit?: number }): Promise<void
         take: 200,
         select: { id: true, workspaceId: true, laneGaps: true, project: { select: { genre: true } }, masters: { orderBy: { createdAt: 'desc' }, take: 1, select: { url: true, createdAt: true } }, mixes: { orderBy: { createdAt: 'desc' }, take: 1, select: { url: true, createdAt: true } }, beats: { orderBy: { createdAt: 'desc' }, take: 1, select: { url: true, createdAt: true } } },
       });
+      type MeasuredSongRow = { id: string; workspaceId: string; laneGaps: unknown; project: { genre: string | null } | null; masters: Array<{ url: string; createdAt: Date }>; mixes: Array<{ url: string; createdAt: Date }>; beats: Array<{ url: string; createdAt: Date }> };
       const withAge = measuredSongs
-        .map((s) => ({ s, at: String(((s.laneGaps ?? {}) as { measuredAt?: string }).measuredAt ?? '') }))
-        .sort((a, b) => a.at.localeCompare(b.at))
+        .map((s: MeasuredSongRow) => ({ s, at: String(((s.laneGaps ?? {}) as { measuredAt?: string }).measuredAt ?? '') }))
+        .sort((a: { at: string }, b: { at: string }) => a.at.localeCompare(b.at))
         .slice(0, 8);
       let rescored = 0;
       for (const { s } of withAge) {
@@ -357,12 +358,12 @@ export async function processLearnBackfill(opts?: { limit?: number }): Promise<v
       select: { id: true, url: true, projectId: true, project: { select: { workspaceId: true } } },
     });
     if (!uploads.length) { console.log('[learn-backfill] no uploaded songs found'); return; }
-    const urls = uploads.map((u) => u.url);
+    const urls = uploads.map((u: { url: string }) => u.url);
     const known = await prisma.soundReference.findMany({
-      where: { OR: [{ sourceUrl: { in: urls } }, { sourceUrl: { in: urls.map((u) => `facts:${u}`) } }] },
+      where: { OR: [{ sourceUrl: { in: urls } }, { sourceUrl: { in: urls.map((u: string) => `facts:${u}`) } }] },
       select: { sourceUrl: true },
     });
-    const learned = new Set(known.map((k) => k.sourceUrl.replace(/^facts:/, '')));
+    const learned = new Set(known.map((k: { sourceUrl: string }) => k.sourceUrl.replace(/^facts:/, '')));
     let queued = 0;
     for (const u of uploads) {
       if (queued >= limit) break;
@@ -392,7 +393,7 @@ export async function processMineLexicon(opts?: { refLimit?: number }): Promise<
       take: 60,
       select: { id: true, sourceUrl: true, recipe: true },
     });
-    const candidates = refs.filter((r) => {
+    const candidates = refs.filter((r: { id: string; sourceUrl: string; recipe: unknown }) => {
       if (skipSource(r.sourceUrl)) return false;
       const rec = (r.recipe ?? {}) as { raw?: string; source?: string; lexMinedAt?: string };
       return !!rec.raw && rec.source !== 'generated' && !rec.lexMinedAt;
@@ -401,7 +402,7 @@ export async function processMineLexicon(opts?: { refLimit?: number }): Promise<
 
     // Existing bank (global) — never re-insert what we already have.
     const existing = await prisma.lexiconEntry.findMany({ where: { workspaceId: null }, select: { term: true, language: true } });
-    const have = new Set(existing.map((e) => `${e.term.toLowerCase()}|${e.language}`));
+    const have = new Set(existing.map((e: { term: string; language: string }) => `${e.term.toLowerCase()}|${e.language}`));
 
     let inserted = 0;
     for (const r of candidates) {
@@ -481,7 +482,7 @@ export async function processLexiconResearch(opts?: { queries?: number }): Promi
     const picked = Array.from({ length: perRun }, (_v, i) => slots[(start + i) % slots.length]!);
 
     const existing = await prisma.lexiconEntry.findMany({ where: { workspaceId: null }, select: { term: true, language: true } });
-    const have = new Set(existing.map((e) => `${e.term.toLowerCase()}|${e.language}`));
+    const have = new Set(existing.map((e: { term: string; language: string }) => `${e.term.toLowerCase()}|${e.language}`));
     let inserted = 0;
     for (const { lang, cat } of picked) {
       const name = (LANGUAGES as Record<string, string>)[lang] ?? lang;
@@ -544,7 +545,7 @@ export async function processWiktionaryHarvest(opts?: { langs?: string[]; perLan
   const langs = burst ? all : (opts?.langs ?? Array.from({ length: 3 }, (_v, i) => all[(start + i) % all.length]!));
   try {
     const existing = await prisma.lexiconEntry.findMany({ where: { workspaceId: null }, select: { term: true, language: true } });
-    const have = new Set(existing.map((e) => `${e.term.toLowerCase()}|${e.language}`));
+    const have = new Set(existing.map((e: { term: string; language: string }) => `${e.term.toLowerCase()}|${e.language}`));
     let inserted = 0;
     for (const lang of langs) {
       const cat = WIKI_CATEGORY[lang];
@@ -601,7 +602,7 @@ export async function processGlossPass(opts?: { limit?: number }): Promise<void>
         tier: 'bulk',
         task: 'lexicon-gloss',
         system: `You are a ${name} lexicographer. For each REAL ${name} term below, give a short plain-English meaning IN YOUR OWN WORDS, a category from [${MINE_CATS.join('|')}|general], and register [casual|chant|poetic|sacred|flex]. If you don't confidently know a term, OMIT it. Return {"glosses":[...]}.`,
-        user: entries.map((e) => e.term).join('\n'),
+        user: entries.map((e: { term: string }) => e.term).join('\n'),
         maxTokens: 1400,
       }).catch(() => ({ glosses: [] as Array<{ term: string; meaning: string; category?: string; register?: string }> }));
       const map = new Map(out.glosses?.map((g) => [g.term.toLowerCase(), g] as const) ?? []);
@@ -611,7 +612,7 @@ export async function processGlossPass(opts?: { limit?: number }): Promise<void>
         if (!g?.meaning) continue;
         await prisma.lexiconEntry.update({
           where: { id: e.id },
-          data: { meaning: g.meaning.slice(0, 300), category: g.category && g.category !== 'general' ? g.category : e.category, register: g.register ?? e.register, tags: [...e.tags.filter((t) => t !== 'unglossed'), ...(lastBrain === 'cerebras' && !e.tags.includes('bulk_unverified') ? ['bulk_unverified'] : [])] },
+          data: { meaning: g.meaning.slice(0, 300), category: g.category && g.category !== 'general' ? g.category : e.category, register: g.register ?? e.register, tags: [...e.tags.filter((t: string) => t !== 'unglossed'), ...(lastBrain === 'cerebras' && !e.tags.includes('bulk_unverified') ? ['bulk_unverified'] : [])] },
         }).catch(() => undefined);
         done++;
       }
@@ -635,7 +636,7 @@ export async function ensureSignatureKits(): Promise<void> {
       const key = `${pr.workspaceId}|${pr.genre}`;
       if (seen.has(key) || seen.size >= 6) continue;
       seen.add(key);
-      const have = new Set((await prisma.materialAsset.findMany({ where: { workspaceId: pr.workspaceId, genre: pr.genre }, select: { role: true } })).map((m) => m.role));
+      const have = new Set((await prisma.materialAsset.findMany({ where: { workspaceId: pr.workspaceId, genre: pr.genre }, select: { role: true } })).map((m: { role: string }) => m.role));
       const missing = synthKitFor(pr.genre).filter((r) => !have.has(r));
       if (missing.length) {
         console.log(`[kits] ${pr.genre}: forging ${missing.join('+')}`);
@@ -694,7 +695,7 @@ export async function processVerifyLexicon(opts?: { limit?: number }): Promise<v
         tier: 'judgment', // NEVER bulk — this pass exists to check the bulk tier's language work
         task: 'lexicon-verify',
         system: `You are a native-level ${name} reviewer. For each term+meaning pair, answer whether the term is REAL ${name} and the meaning is correct. Be strict: uncertain = incorrect. Return {"verdicts":[{"term","correct"}]}.`,
-        user: entries.map((e) => `${e.term} = ${e.meaning ?? '(no meaning)'}`).join('\n'),
+        user: entries.map((e: { term: string; meaning: string | null }) => `${e.term} = ${e.meaning ?? '(no meaning)'}`).join('\n'),
         maxTokens: 1200,
       }).catch(() => null);
       if (!out) continue; // judgment brain unavailable — quarantine stays quarantined
@@ -702,7 +703,7 @@ export async function processVerifyLexicon(opts?: { limit?: number }): Promise<v
       for (const e of entries) {
         const ok = verdict.get(e.term.toLowerCase());
         if (ok === true) {
-          await prisma.lexiconEntry.update({ where: { id: e.id }, data: { tags: e.tags.filter((t) => t !== 'bulk_unverified') } }).catch(() => undefined);
+          await prisma.lexiconEntry.update({ where: { id: e.id }, data: { tags: e.tags.filter((t: string) => t !== 'bulk_unverified') } }).catch(() => undefined);
           cleared++;
         } else if (ok === false) {
           await prisma.lexiconEntry.delete({ where: { id: e.id } }).catch(() => undefined);

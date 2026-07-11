@@ -9,4 +9,9 @@ declare module '@afrohit/db' {
   export type JobStatus = any;
   export const VoiceProfileStatus: any;
   export type VoiceProfileStatus = any;
+  // Autonomy flag helpers (packages/db/src/index.ts) — real exports, mirrored here.
+  export type AutonomyJob = any;
+  export const isAutonomyEnabled: any;
+  export const setAutonomyEnabled: any;
+  export const allAutonomyFlags: any;
 }

@@ -34,10 +34,11 @@ export async function assembleProofPack(workspaceId: string, songId: string): Pr
     take: 300,
     select: { genre: true, sourceUrl: true, recipe: true },
   });
+  type RefRow = { genre: string | null; sourceUrl: string; recipe: unknown };
   const origins = refs
-    .filter((r) => norm(r.genre) === norm(song.project?.genre))
-    .filter((r) => ((r.recipe ?? {}) as { measured?: { engineOk?: boolean } }).measured?.engineOk)
-    .map((r) => ({ origin: referenceOrigin(r.sourceUrl, (r.recipe ?? {}) as { source?: string }) }));
+    .filter((r: RefRow) => norm(r.genre) === norm(song.project?.genre))
+    .filter((r: RefRow) => ((r.recipe ?? {}) as { measured?: { engineOk?: boolean } }).measured?.engineOk)
+    .map((r: RefRow) => ({ origin: referenceOrigin(r.sourceUrl, (r.recipe ?? {}) as { source?: string }) }));
   const grounding = groundingOf(origins);
 
   // Credits actually ledgered against this song (renders charged to the project

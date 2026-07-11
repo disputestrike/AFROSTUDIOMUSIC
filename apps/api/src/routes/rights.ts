@@ -45,7 +45,7 @@ export default async function rights(app: FastifyInstance) {
         projectId,
         songId,
         rightsCheck: check,
-        approvals: approvals.map((a) => ({ id: a.id, gate: a.gate, decision: a.decision })),
+        approvals: approvals.map((a: { id: string; gate: string; decision: string }) => ({ id: a.id, gate: a.gate, decision: a.decision })),
         artistReferences: song.project.artist.references,
         timestamp: new Date().toISOString(),
       };

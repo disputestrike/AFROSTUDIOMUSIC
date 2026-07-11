@@ -55,7 +55,7 @@ export async function memoryContext(artistId: string, limit = 15): Promise<Memor
     }),
   ]);
   return {
-    approvedExamples: approved.map((c) => c.content),
-    rejectedExamples: rejected.map((c) => c.content),
+    approvedExamples: approved.map((c: { content: string }) => c.content),
+    rejectedExamples: rejected.map((c: { content: string }) => c.content),
   };
 }

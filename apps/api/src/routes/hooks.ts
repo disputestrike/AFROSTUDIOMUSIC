@@ -130,7 +130,7 @@ export default async function hooks(app: FastifyInstance) {
         )
       );
       // Best-first when the A&R director scored them.
-      created.sort((a, b) => (b.score ?? 0) - (a.score ?? 0));
+      created.sort((a: { score: number | null }, b: { score: number | null }) => (b.score ?? 0) - (a.score ?? 0));
 
       reply.code(201);
       return {

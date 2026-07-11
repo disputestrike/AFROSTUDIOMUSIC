@@ -5,7 +5,17 @@
  */
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { z } from 'zod';
-import { prisma, allAutonomyFlags, setAutonomyEnabled, type AutonomyJob } from '@afrohit/db';
+import { prisma } from '@afrohit/db';
+import * as db from '@afrohit/db';
+
+/** The sandbox compile shim (tools/shim/db-shim.d.ts) only declares the prisma
+ *  exports, so the autonomy helpers are pulled through a typed view of the
+ *  module. The union + signatures mirror packages/db/src/index.ts exactly. */
+type AutonomyJob = 'morning_drop' | 'zap_radar' | 'nightly_compound';
+const { allAutonomyFlags, setAutonomyEnabled } = db as unknown as {
+  allAutonomyFlags(): Promise<Record<AutonomyJob, boolean>>;
+  setAutonomyEnabled(job: AutonomyJob, enabled: boolean): Promise<void>;
+};
 import { isInternalMode, requireAuth } from '../middleware/auth';
 import { isFirstPartyWorkspace, resolveEngineForWorkspace } from '@afrohit/shared';
 import { enqueue, QUEUES, type QueueName } from '../lib/queue';
@@ -129,7 +139,7 @@ export default async function admin(app: FastifyInstance) {
         bulk: { brain: 'cerebras', configured: !!(process.env.CEREBRAS_API_KEY || process.env.CEREBRAS_API_KEYS), model: process.env.CEREBRAS_MODEL ?? 'gpt-oss-120b' },
         last24h: Object.fromEntries(llmByBrain),
       },
-      last24hRenderSpend: spend.map((s) => ({ engine: s.provider, renders: s._count, costUsd: Math.round(Number(s._sum.cost ?? 0) * 100) / 100 })),
+      last24hRenderSpend: spend.map((s: { provider: string | null; _count: number; _sum: { cost: unknown } }) => ({ engine: s.provider, renders: s._count, costUsd: Math.round(Number(s._sum.cost ?? 0) * 100) / 100 })),
     };
   });
 
@@ -281,7 +291,7 @@ export default async function admin(app: FastifyInstance) {
       select: { id: true, title: true, genre: true, sourceUrl: true, createdAt: true, recipe: true },
     });
     return {
-      proposals: rows.map((r) => {
+      proposals: rows.map((r: { id: string; title: string | null; genre: string | null; sourceUrl: string; createdAt: Date; recipe: unknown }) => {
         const rf = ((r.recipe ?? {}) as { refile?: { proposedLane?: string; detectedScore?: number; filedScore?: number | null } }).refile ?? {};
         return { id: r.id, title: r.title, filedLane: r.genre, proposedLane: rf.proposedLane, detectedScore: rf.detectedScore, filedScore: rf.filedScore, learnedAt: r.createdAt };
       }),

@@ -6,6 +6,11 @@
 import { prisma } from '@afrohit/db';
 import { costOf, type CreditKey } from '@afrohit/shared';
 
+// Interactive-transaction client — same shape as Prisma.TransactionClient
+// (Omit<PrismaClient, ITXClientDenyList>), spelled via typeof so it also
+// resolves under the sandbox db-shim where prisma is `any`.
+type Tx = Omit<typeof prisma, '$connect' | '$disconnect' | '$on' | '$transaction' | '$use' | '$extends'>;
+
 export async function debitCredits(opts: {
   workspaceId: string;
   key: CreditKey;
@@ -13,7 +18,7 @@ export async function debitCredits(opts: {
   reasonSuffix?: string;
 }): Promise<{ ok: true; balance: number } | { ok: false; needed: number; balance: number }> {
   const cost = costOf(opts.key) * (opts.multiplier ?? 1);
-  return prisma.$transaction(async (tx) => {
+  return prisma.$transaction(async (tx: Tx) => {
     const ws = await tx.workspace.findUnique({
       where: { id: opts.workspaceId },
       select: { creditsCents: true },

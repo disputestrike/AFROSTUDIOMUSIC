@@ -34,16 +34,17 @@ export default async function benchmark(app: FastifyInstance) {
   // Songs rendered recently that still need a rating — the queue to listen through.
   app.get('/queue', async (req) => {
     const { workspaceId } = requireAuth(req);
-    const rated = new Set((await prisma.benchmarkRating.findMany({ where: { workspaceId }, select: { songId: true } })).map((r) => r.songId).filter(Boolean));
+    const rated = new Set((await prisma.benchmarkRating.findMany({ where: { workspaceId }, select: { songId: true } })).map((r: { songId: string | null }) => r.songId).filter(Boolean));
     const beats = await prisma.beatAsset.findMany({
       where: { project: { workspaceId }, approved: true },
       orderBy: { createdAt: 'desc' },
       take: 50,
       select: { id: true, url: true, provider: true, songId: true, project: { select: { genre: true } }, meta: true },
     });
+    type BeatRow = { id: string; url: string; provider: string; songId: string | null; project: { genre: string | null }; meta: unknown };
     return beats
-      .filter((b) => !b.songId || !rated.has(b.songId))
-      .map((b) => ({
+      .filter((b: BeatRow) => !b.songId || !rated.has(b.songId))
+      .map((b: BeatRow) => ({
         songId: b.songId, url: b.url, genre: b.project.genre, engine: b.provider,
         laneScore: ((b.meta ?? {}) as { bestOf?: { laneScore?: number } }).bestOf?.laneScore ?? null,
       }));

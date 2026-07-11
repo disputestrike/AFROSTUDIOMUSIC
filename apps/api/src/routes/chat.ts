@@ -127,7 +127,7 @@ async function projectStateForChat(projectId: string) {
     }),
   ]);
   return {
-    hooks: hooks.map((h) => ({ id: h.id, text: h.text, score: h.score, approved: h.approved })),
+    hooks: hooks.map((h: { id: string; text: string; score: number | null; approved: boolean }) => ({ id: h.id, text: h.text, score: h.score, approved: h.approved })),
     latestLyric: lyric,
     latestSong: song,
   };

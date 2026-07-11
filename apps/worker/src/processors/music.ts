@@ -438,7 +438,7 @@ export async function processMusic(p: MusicPayload) {
             summary: `Generated ${p.input.genre ?? ''} record (${Math.round(quality?.loudnessRangeLra ?? 0)}LU range, crest ${quality?.crestFactorDb ?? '—'}dB) on ${adapter.name}: ${(p.input.dnaTags ?? []).slice(0, 6).join(', ')}`,
           },
         })
-        .catch((err) => console.warn('[music] self-training reference write failed:', (err as Error)?.message));
+        .catch((err: unknown) => console.warn('[music] self-training reference write failed:', (err as Error)?.message));
       }
     }
 

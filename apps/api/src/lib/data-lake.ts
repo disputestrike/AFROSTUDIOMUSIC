@@ -131,7 +131,7 @@ export async function dataLakeReport(workspaceId: string) {
             : 'heardSongs';
   return {
     ...summary,
-    recentLearnings: recent.map((r) => ({
+    recentLearnings: recent.map((r: { genre: string | null; sourceUrl: string; title: string | null; summary: string | null; createdAt: Date; recipe: unknown }) => ({
       kind: kindOf(r),
       genre: normGenre(r.genre),
       what: String(r.title || r.summary || '').slice(0, 120),

@@ -228,7 +228,7 @@ function MusicEngine() {
       <div className="flex items-center justify-between">
         <h2 className="font-display text-2xl">🎵 Music engine</h2>
         <span className={`rounded-full px-3 py-1 text-xs ${state.musicConnected ? 'bg-emerald-500/20 text-emerald-300' : 'bg-white/10 text-slate-400'}`}>
-          {state.musicConnected ? `Connected · ${state.musicProvider} ${state.keyHint ?? ''}` : 'Not connected — beats are placeholders'}
+          {state.musicConnected ? `Connected · ${state.musicProvider} ${state.keyHint ?? ''}` : 'Not connected — renders fail until a key is set (no placeholders)'}
         </span>
       </div>
       <p className="mt-2 text-sm text-slate-400">

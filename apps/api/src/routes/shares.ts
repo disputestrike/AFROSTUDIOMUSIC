@@ -129,14 +129,14 @@ export default async function shares(app: FastifyInstance) {
     });
 
     const points = grouped
-      .map((g) => ({
+      .map((g: { country: string | null; region: string | null; _count: { _all: number }; _avg: { lat: number | null; lng: number | null } }) => ({
         country: g.country,
         region: g.region,
         events: g._count._all,
         lat: g._avg.lat,
         lng: g._avg.lng,
       }))
-      .sort((a, b) => b.events - a.events)
+      .sort((a: { events: number }, b: { events: number }) => b.events - a.events)
       .slice(0, 500);
 
     return { points };

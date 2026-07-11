@@ -29,6 +29,24 @@ function freshestAudioUrl(s: {
   return cands[0]!.url;
 }
 
+/** Shape of a catalog list row (song + the includes the list query selects). */
+type CatalogRow = {
+  id: string;
+  title: string;
+  versionLabel: string | null;
+  status: string;
+  projectId: string;
+  releaseReady: boolean;
+  hitScore: number | null;
+  viralScore: number | null;
+  createdAt: Date;
+  project: { id: string; title: string; genre: string; bpm: number | null; artist: { stageName: string } };
+  masters: Array<{ url: string; createdAt: Date }>;
+  mixes: Array<{ url: string; createdAt: Date }>;
+  beats: Array<{ id: string; url: string; createdAt: Date; stems: unknown[] }>;
+  lyric: { id: string; title: string | null } | null;
+};
+
 /**
  * Catalog — the artist's songs as a real WORKSTATION, not a read-only shelf.
  *
@@ -65,7 +83,7 @@ export default async function songs(app: FastifyInstance) {
       },
     });
 
-    const projectIds = [...new Set(rows.map((s) => s.projectId))];
+    const projectIds = [...new Set(rows.map((s: CatalogRow) => s.projectId))];
     const covers = await prisma.imageAsset.findMany({
       where: { projectId: { in: projectIds }, kind: 'cover' },
       orderBy: { createdAt: 'desc' },
@@ -74,7 +92,7 @@ export default async function songs(app: FastifyInstance) {
     const coverByProject = new Map<string, string>();
     for (const c of covers) if (c.projectId && !coverByProject.has(c.projectId)) coverByProject.set(c.projectId, c.url);
 
-    return rows.map((s) => ({
+    return rows.map((s: CatalogRow) => ({
       id: s.id,
       title: s.lyric?.title || s.title,
       versionLabel: s.versionLabel,
@@ -298,9 +316,9 @@ export default async function songs(app: FastifyInstance) {
     // Audio takes, oldest→newest: prefer masters (the deliverable); fall back to
     // beats if a take never mastered. Drop consecutive duplicate URLs (a promoted
     // master re-points the same file).
-    const rows = (song.masters.length ? song.masters : song.beats).map((m) => ({ url: m.url, at: m.createdAt }));
-    const audio = rows.filter((r, i) => i === 0 || r.url !== rows[i - 1]!.url);
-    const audioVersions = audio.map((a, i) => ({
+    const rows = (song.masters.length ? song.masters : song.beats).map((m: { url: string; createdAt: Date }) => ({ url: m.url, at: m.createdAt }));
+    const audio = rows.filter((r: { url: string }, i: number) => i === 0 || r.url !== rows[i - 1]!.url);
+    const audioVersions = audio.map((a: { url: string; at: Date }, i: number) => ({
       index: i,
       label: audio.length === 1 ? 'Version' : i === audio.length - 1 ? 'Bigger (current)' : i === 0 ? 'Original' : `Take ${i + 1}`,
       url: a.url,
@@ -334,8 +352,8 @@ export default async function songs(app: FastifyInstance) {
       include: { masters: { orderBy: { createdAt: 'asc' } }, beats: { orderBy: { createdAt: 'asc' } } },
     });
     if (!song) return reply.code(404).send({ error: 'song_not_found' });
-    const rows = (song.masters.length ? song.masters : song.beats).map((m) => ({ url: m.url }));
-    const audio = rows.filter((r, i) => i === 0 || r.url !== rows[i - 1]!.url);
+    const rows = (song.masters.length ? song.masters : song.beats).map((m: { url: string }) => ({ url: m.url }));
+    const audio = rows.filter((r: { url: string }, i: number) => i === 0 || r.url !== rows[i - 1]!.url);
     const target = audio[idx];
     if (!target) return reply.code(400).send({ error: 'no_such_version', have: audio.length });
     if (idx === audio.length - 1) return { ok: true, alreadyCurrent: true };
@@ -355,8 +373,8 @@ export default async function songs(app: FastifyInstance) {
       include: { masters: { orderBy: { createdAt: 'asc' } }, beats: { orderBy: { createdAt: 'desc' }, take: 1 } },
     });
     if (!song) return reply.code(404).send({ error: 'song_not_found' });
-    const rows = song.masters.map((m) => ({ url: m.url }));
-    const ded = rows.filter((r, i) => i === 0 || r.url !== rows[i - 1]!.url);
+    const rows = song.masters.map((m: { url: string }) => ({ url: m.url }));
+    const ded = rows.filter((r: { url: string }, i: number) => i === 0 || r.url !== rows[i - 1]!.url);
     const target = ded[idx] ?? ded[ded.length - 1];
     const beat = song.beats[0];
     if (!target || !beat) return reply.code(400).send({ error: 'no_audio_to_separate' });
@@ -392,7 +410,7 @@ export default async function songs(app: FastifyInstance) {
         song.masters[0] && { label: 'Master (WAV)', url: song.masters[0].url, kind: 'master', dl: `/songs/${song.id}/file?type=master` },
         song.mixes[0] && { label: 'Mix (WAV)', url: song.mixes[0].url, kind: 'mix', dl: `/songs/${song.id}/file?type=mix` },
         beat && { label: `Audio (${beat.format?.toUpperCase() ?? 'MP3'})`, url: beat.url, kind: 'audio', dl: `/songs/${song.id}/file?type=audio` },
-        ...(beat?.stems ?? []).map((st) => ({ label: `Stem — ${st.role}`, url: st.url, kind: 'stem', dl: `/songs/${song.id}/file?type=stem&stem=${encodeURIComponent(st.role)}` })),
+        ...(beat?.stems ?? []).map((st: { role: string; url: string }) => ({ label: `Stem — ${st.role}`, url: st.url, kind: 'stem', dl: `/songs/${song.id}/file?type=stem&stem=${encodeURIComponent(st.role)}` })),
       ].filter(Boolean),
       lyrics: song.lyric ? { body: song.lyric.body, cleanVersion: song.lyric.cleanVersion } : null,
     };
@@ -417,7 +435,7 @@ export default async function songs(app: FastifyInstance) {
     let ext = 'mp3';
     if (type === 'master' && song.masters[0]) { url = song.masters[0].url; ext = 'wav'; }
     else if (type === 'mix' && song.mixes[0]) { url = song.mixes[0].url; ext = 'wav'; }
-    else if (type === 'stem' && req.query.stem) { url = beat?.stems.find((s) => s.role === req.query.stem)?.url; ext = 'mp3'; }
+    else if (type === 'stem' && req.query.stem) { url = beat?.stems.find((s: { role: string; url: string }) => s.role === req.query.stem)?.url; ext = 'mp3'; }
     else if (type === 'version') {
       // Download a SPECIFIC take by its index in the versions list (owned URLs only,
       // resolved server-side — no arbitrary URL, no SSRF).
@@ -426,8 +444,8 @@ export default async function songs(app: FastifyInstance) {
         prisma.master.findMany({ where: { songId: song.id }, orderBy: { createdAt: 'asc' }, select: { url: true } }),
         prisma.beatAsset.findMany({ where: { songId: song.id }, orderBy: { createdAt: 'asc' }, select: { url: true, format: true } }),
       ]);
-      const rows = ms.length ? ms.map((m) => ({ url: m.url, format: 'wav' })) : bs.map((b) => ({ url: b.url, format: b.format ?? 'mp3' }));
-      const ded = rows.filter((r, i) => i === 0 || r.url !== rows[i - 1]!.url);
+      const rows = ms.length ? ms.map((m: { url: string }) => ({ url: m.url, format: 'wav' })) : bs.map((b: { url: string; format: string | null }) => ({ url: b.url, format: b.format ?? 'mp3' }));
+      const ded = rows.filter((r: { url: string }, i: number) => i === 0 || r.url !== rows[i - 1]!.url);
       const t = ded[idx];
       if (t) { url = t.url; ext = ms.length ? 'wav' : (t.format ?? 'mp3'); }
     }
@@ -547,7 +565,7 @@ export default async function songs(app: FastifyInstance) {
     // "Reuse the BEAT" should reuse a clean INSTRUMENTAL when we have one (from a
     // prior stem separation) — not the full song with baked-in vocals. Fall back
     // to the beat audio otherwise (and tell the user so they can run stems first).
-    const instrumental = beat.stems.find((s) => s.role === 'instrumental');
+    const instrumental = beat.stems.find((s: { role: string; url: string }) => s.role === 'instrumental');
     const reuseUrl = instrumental?.url ?? beat.url;
     const cleanInstrumental = !!instrumental;
 
@@ -562,9 +580,9 @@ export default async function songs(app: FastifyInstance) {
       },
     });
     // Carry over the non-vocal stems so the reused beat is remixable.
-    const carry = beat.stems.filter((s) => s.role !== 'vocals' && s.role !== 'instrumental');
+    const carry = beat.stems.filter((s: { role: string }) => s.role !== 'vocals' && s.role !== 'instrumental');
     if (carry.length) {
-      await prisma.$transaction(carry.map((st) => prisma.stem.create({ data: { beatId: newBeat.id, role: st.role, url: st.url, format: st.format, duration: st.duration } })));
+      await prisma.$transaction(carry.map((st: { role: string; url: string; format: string; duration: number | null }) => prisma.stem.create({ data: { beatId: newBeat.id, role: st.role, url: st.url, format: st.format, duration: st.duration } })));
     }
     reply.code(201);
     return {
@@ -620,7 +638,7 @@ export default async function songs(app: FastifyInstance) {
     });
     if (!song) return reply.code(404).send({ error: 'song_not_found' });
     const beat = song.beats[0];
-    const instrumental = beat?.stems.find((s) => s.role === 'instrumental');
+    const instrumental = beat?.stems.find((s: { role: string; url: string; format: string; duration: number | null }) => s.role === 'instrumental');
     if (!instrumental) {
       return reply.code(400).send({ error: 'no_instrumental_stem', message: 'Run "Instrumental" on this song first to extract the clean instrumental, then reuse it.' });
     }
@@ -761,7 +779,7 @@ export default async function songs(app: FastifyInstance) {
         data: { projectId: project.id, songId: copy.id, url: beat.url, format: beat.format, bpm: beat.bpm, keySignature: beat.keySignature, duration: beat.duration, provider: beat.provider, meta: beat.meta as never, approved: false },
       });
       if (beat.stems.length) {
-        await prisma.$transaction(beat.stems.map((st) => prisma.stem.create({ data: { beatId: newBeat.id, role: st.role, url: st.url, format: st.format, duration: st.duration } })));
+        await prisma.$transaction(beat.stems.map((st: { role: string; url: string; format: string; duration: number | null }) => prisma.stem.create({ data: { beatId: newBeat.id, role: st.role, url: st.url, format: st.format, duration: st.duration } })));
       }
     }
     reply.code(201);

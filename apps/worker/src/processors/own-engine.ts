@@ -41,7 +41,7 @@ async function pickKit(workspaceId: string, genre: string, bpm: number) {
   // assembler (gain.toFixed) on every own-engine run.
   const picks: Array<{ id: string; url: string; sourceBpm: number; role: string; gain: number }> = [];
   for (const role of BED_ROLES) {
-    const ofRole = rows.filter((r) => r.role === role).sort((a, b) => Math.abs((a.bpm ?? bpm) - bpm) - Math.abs((b.bpm ?? bpm) - bpm));
+    const ofRole = rows.filter((r: { role: string }) => r.role === role).sort((a: { bpm: number | null }, b: { bpm: number | null }) => Math.abs((a.bpm ?? bpm) - bpm) - Math.abs((b.bpm ?? bpm) - bpm));
     const best = ofRole[0];
     if (best) picks.push({ id: best.id, url: best.url, sourceBpm: best.bpm ?? bpm, role, gain: MATERIAL_GAINS[role] ?? 0.9 });
   }

@@ -68,7 +68,7 @@ async function fetchRefs(workspaceId: string, genre: string, pinnedId?: string |
     take: 60,
     select: { id: true, title: true, summary: true, genre: true, sourceUrl: true, createdAt: true, recipe: true },
   });
-  const all: RefRow[] = rows.map((r) => {
+  const all: RefRow[] = rows.map((r: Omit<RefRow, 'recipe' | 'generated'> & { recipe: unknown }) => {
     const recipe = (r.recipe ?? {}) as RecipeShape;
     return { ...r, recipe, generated: recipe.source === 'generated' };
   });
@@ -215,7 +215,7 @@ export async function learnedMeasuredTags(workspaceId: string, genre?: string | 
  * Feeds the hook writer + lyric writer alongside hit-craft.
  */
 export async function learnedLyricCraftBrief(workspaceId: string, genre?: string | null): Promise<string> {
-  const rows = await prisma.soundReference.findMany({
+  const rows: Array<{ title: string | null; summary: string | null; genre: string | null }> = await prisma.soundReference.findMany({
     where: { workspaceId, sourceUrl: { startsWith: 'lyric:' } },
     orderBy: { createdAt: 'desc' },
     take: 24,
@@ -284,7 +284,7 @@ export async function overusedWords(workspaceId: string): Promise<string[]> {
     prisma.lyricDraft.findMany({ where: { project: { workspaceId } }, orderBy: { createdAt: 'desc' }, take: 25, select: { body: true } }),
     prisma.hookCandidate.findMany({ where: { project: { workspaceId } }, orderBy: { createdAt: 'desc' }, take: 60, select: { text: true } }),
   ]);
-  const docs = [...lyrics.map((l) => l.body), ...hooks.map((h) => h.text)].filter(Boolean);
+  const docs: string[] = [...lyrics.map((l: { body: string }) => l.body), ...hooks.map((h: { text: string }) => h.text)].filter(Boolean);
   if (docs.length < 4) return [];
   const docFreq = new Map<string, number>();
   for (const d of docs) {

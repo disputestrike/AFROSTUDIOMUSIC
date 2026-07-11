@@ -112,9 +112,9 @@ export default async function taste(app: FastifyInstance) {
         total: refTotal,
         byKind,
         genresByKind,
-        latest: refs.slice(0, 40).map((r) => ({ id: r.id, title: r.title, genre: r.genre, kind: kind(r), summary: (r.summary ?? '').slice(0, 260), at: r.createdAt })),
+        latest: refs.slice(0, 40).map((r: { id: string; title: string | null; genre: string | null; sourceUrl: string; recipe: unknown; summary: string | null; createdAt: Date }) => ({ id: r.id, title: r.title, genre: r.genre, kind: kind(r), summary: (r.summary ?? '').slice(0, 260), at: r.createdAt })),
       },
-      materials: { total: materials.reduce((n, m) => n + m._count, 0), shelf: materials.map((m) => ({ genre: m.genre, role: m.role, count: m._count })) },
+      materials: { total: materials.reduce((n: number, m: { _count: number }) => n + m._count, 0), shelf: materials.map((m: { genre: string | null; role: string; _count: number }) => ({ genre: m.genre, role: m.role, count: m._count })) },
       wordBank: await lexiconStats(workspaceId).catch(() => ({ total: 0, byLanguage: [], byCategory: [] })),
       songs: counts[0],
       approvedLyrics: counts[1],
@@ -177,8 +177,8 @@ export default async function taste(app: FastifyInstance) {
 
       const artist = (hooks[0]?.project.artist ?? lyricRows[0]?.project.artist)!;
       const items = [
-        ...hooks.map((h) => ({ id: h.id, text: h.text, kind: 'hook' as const })),
-        ...lyricRows.map((l) => ({ id: l.id, text: l.body.slice(0, 4_000), kind: 'lyric' as const })),
+        ...hooks.map((h: { id: string; text: string }) => ({ id: h.id, text: h.text, kind: 'hook' as const })),
+        ...lyricRows.map((l: { id: string; body: string }) => ({ id: l.id, text: l.body.slice(0, 4_000), kind: 'lyric' as const })),
       ];
 
       const scores = await scoreItems({ artist: artist as never, items });
@@ -188,7 +188,7 @@ export default async function taste(app: FastifyInstance) {
         scores.map((s) =>
           prisma.tasteScore.create({
             data: {
-              hookId: hooks.find((h) => h.id === s.id) ? s.id : undefined,
+              hookId: hooks.find((h: { id: string }) => h.id === s.id) ? s.id : undefined,
               songId: undefined,
               dimensions: s.dimensions as never,
               overall: s.overall,
@@ -201,7 +201,7 @@ export default async function taste(app: FastifyInstance) {
       );
       await Promise.all(
         scores
-          .filter((s) => hooks.find((h) => h.id === s.id))
+          .filter((s) => hooks.find((h: { id: string }) => h.id === s.id))
           .map((s) =>
             prisma.hookCandidate.update({
               where: { id: s.id },

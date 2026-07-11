@@ -101,8 +101,8 @@ export default async function mixer(app: FastifyInstance) {
         prisma.vocalRender.findMany({ where: { songId: input.songId, projectId: project.id } }),
       ]);
       const urlById = new Map<string, string>();
-      beats.forEach((b) => urlById.set(b.id, b.url));
-      vocals.forEach((v) => urlById.set(v.id, v.url));
+      beats.forEach((b: { id: string; url: string }) => urlById.set(b.id, b.url));
+      vocals.forEach((v: { id: string; url: string }) => urlById.set(v.id, v.url));
 
       const settings = input.tracks
         .filter((t) => urlById.has(t.id))

@@ -28,7 +28,7 @@ export default async function materials(app: FastifyInstance) {
     });
     return {
       total: rows.length,
-      materials: rows.map((m) => ({ id: m.id, role: m.role, genre: m.genre, bpm: m.bpm, keySignature: m.keySignature, bars: m.bars, source: m.source, url: m.url, createdAt: m.createdAt })),
+      materials: rows.map((m: { id: string; role: string; genre: string | null; bpm: number | null; keySignature: string | null; bars: number | null; source: string; url: string; createdAt: Date }) => ({ id: m.id, role: m.role, genre: m.genre, bpm: m.bpm, keySignature: m.keySignature, bars: m.bars, source: m.source, url: m.url, createdAt: m.createdAt })),
     };
   });
 
@@ -51,7 +51,7 @@ export default async function materials(app: FastifyInstance) {
     let roles = input.roles?.length ? input.roles : kitRolesFor(input.genre);
     if (!input.roles?.length) {
       const existing = await prisma.materialAsset.findMany({ where: { workspaceId, genre: input.genre }, select: { role: true } });
-      const have = new Set(existing.map((m) => m.role));
+      const have = new Set(existing.map((m: { role: string }) => m.role));
       roles = roles.filter((r) => !have.has(r));
       if (!roles.length) {
         return { forging: [], note: `The ${input.genre} kit is already stocked (${[...have].join(', ')}). Nothing to forge.` };

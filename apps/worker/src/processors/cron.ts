@@ -75,8 +75,8 @@ export async function processMorningDrop() {
           brief: project.briefs[0] as never,
           count: MORNING_DROP_COUNT,
           tasteMemory: {
-            approvedExamples: approved.map((c) => c.content),
-            rejectedExamples: rejected.map((c) => c.content),
+            approvedExamples: approved.map((c: { content: string }) => c.content),
+            rejectedExamples: rejected.map((c: { content: string }) => c.content),
           },
         }),
         temperature: 0.95,
@@ -99,7 +99,7 @@ export async function processMorningDrop() {
 
       const scores = await scoreItems({
         artist: artist as never,
-        items: created.map((h) => ({ id: h.id, text: h.text, kind: 'hook' as const })),
+        items: created.map((h: { id: string; text: string }) => ({ id: h.id, text: h.text, kind: 'hook' as const })),
       });
       await Promise.all(
         scores.map((s) =>
@@ -108,8 +108,8 @@ export async function processMorningDrop() {
       );
 
       const top = created
-        .map((h) => ({ text: h.text, score: scores.find((s) => s.id === h.id)?.overall ?? null }))
-        .sort((a, b) => (b.score ?? 0) - (a.score ?? 0))
+        .map((h: { id: string; text: string }) => ({ text: h.text, score: scores.find((s) => s.id === h.id)?.overall ?? null }))
+        .sort((a: { score: number | null }, b: { score: number | null }) => (b.score ?? 0) - (a.score ?? 0))
         .slice(0, 10);
 
       const to = await ownerEmail(artist.workspaceId);

@@ -78,8 +78,8 @@ export async function lexiconStats(workspaceId: string) {
   ]);
   return {
     total,
-    byLanguage: byLang.map((l) => ({ language: l.language, count: l._count })).sort((a, b) => b.count - a.count),
-    byCategory: byCat.map((c) => ({ category: c.category, count: c._count })).sort((a, b) => b.count - a.count),
+    byLanguage: byLang.map((l: { language: string; _count: number }) => ({ language: l.language, count: l._count })).sort((a: { count: number }, b: { count: number }) => b.count - a.count),
+    byCategory: byCat.map((c: { category: string; _count: number }) => ({ category: c.category, count: c._count })).sort((a: { count: number }, b: { count: number }) => b.count - a.count),
   };
 }
 
@@ -92,7 +92,7 @@ export async function lexiconStats(workspaceId: string) {
 export async function assertLexiconCoverage(log: { info: (m: string) => void; warn: (m: string) => void }): Promise<void> {
   try {
     const byLang = await prisma.lexiconEntry.groupBy({ by: ['language'], where: { workspaceId: null }, _count: true });
-    const counts = new Map(byLang.map((l) => [l.language, l._count]));
+    const counts = new Map<string, number>(byLang.map((l: { language: string; _count: number }) => [l.language, l._count] as [string, number]));
     const PRESCRIBED = ['yo', 'ig', 'ha', 'pcm', 'en', 'zu', 'xh', 'st', 'tn', 'tsotsitaal'];
     log.info(`lexicon coverage: ${PRESCRIBED.map((l) => `${l}=${counts.get(l) ?? 0}`).join(' ')}`);
     const thin = PRESCRIBED.filter((l) => (counts.get(l) ?? 0) < 20);

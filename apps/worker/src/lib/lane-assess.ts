@@ -139,7 +139,7 @@ export async function assessLaneCompliance(opts: {
             measuredAt: new Date().toISOString(),
           } as never,
         },
-      }).catch((e) => console.warn('[lane-assess] song write-through failed:', (e as Error)?.message));
+      }).catch((e: unknown) => console.warn('[lane-assess] song write-through failed:', (e as Error)?.message));
     }
     console.log(`[lane-assess] ${opts.genre}: compliance=${score.overall}/100 drift=${score.drift.severity} repairs=${plan.repairs.length}`);
   } catch (err) {
