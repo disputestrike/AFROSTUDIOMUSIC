@@ -22,7 +22,7 @@ const fail = (m: string) => { console.error(`FAIL: ${m}`); failures++; };
   process.env.REPLICATE_API_TOKEN = 'r8_test';
   if (defaultInstrumentalEngine() !== 'replicate') fail(`Replicate-only instrumental should route to 'replicate', got '${defaultInstrumentalEngine()}'`);
   if (musicAdapter(defaultInstrumentalEngine()).name === 'stub') fail('Replicate-only instrumental resolved to the stub adapter');
-  if (defaultSongEngine() !== 'ace_step') fail(`Replicate-only (no Suno) song engine should be 'ace_step', got '${defaultSongEngine()}'`);
+  if (defaultSongEngine() !== 'minimax') fail(`Replicate-only (no Suno) song engine should be 'minimax' (best Afro vocals), got '${defaultSongEngine()}'`);
   // With NO keys at all, instrumental falls to stub (dev) — the processors then fail loudly.
   delete process.env.REPLICATE_API_TOKEN; delete process.env.REPLICATE_TOKEN;
   if (defaultInstrumentalEngine() !== 'stub') fail(`no-keys instrumental should be 'stub' (then blocked at render), got '${defaultInstrumentalEngine()}'`);

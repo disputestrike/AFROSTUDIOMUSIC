@@ -837,7 +837,10 @@ class StubMusicAdapter implements MusicProviderAdapter {
  * once — no code change, no per-route drift.
  */
 export function defaultSongEngine(): string {
-  return process.env.SONG_ENGINE || (sunoKey() ? 'suno' : 'ace_step');
+  // No Suno → MiniMax (music-2.6), NOT ACE-Step: MiniMax sings Afro vocals far
+  // better (ACE-Step was the "whack singing"). Matches the worker's own vocal
+  // fallback so the job label and the actual render agree. Both run on Replicate.
+  return process.env.SONG_ENGINE || (sunoKey() ? 'suno' : 'minimax');
 }
 
 /**

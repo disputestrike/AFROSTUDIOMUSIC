@@ -47,6 +47,19 @@ function runPython(file: string): { code: number | null; out: string } {
   else results.push({ name: 'P0  The ear (DSP)', status: code === 0 ? 'PASS' : 'FAIL', note: code === 0 ? 'all 3 gates OK' : 'see output', required: true });
 }
 
+// ---- Owned synth: genre + key awareness (pure numpy, no libsndfile) ----
+{
+  const pyDir = join(root, 'py');
+  let code: number | null = null, out = '';
+  for (const bin of [process.env.PYTHON_BIN, 'python', 'python3'].filter(Boolean) as string[]) {
+    const r = spawnSync(bin, ['test_synth.py'], { cwd: pyDir, encoding: 'utf8', shell: true });
+    if (r.error && (r.error as NodeJS.ErrnoException).code === 'ENOENT') continue;
+    code = r.status; out = (r.stdout || '') + (r.stderr || ''); break;
+  }
+  if (code === 2 || /SKIP/i.test(out) || code === null) results.push({ name: 'Synth genre+key aware', status: 'SKIP', note: 'numpy not installed here (runs in the worker image)', required: false });
+  else results.push({ name: 'Synth genre+key aware', status: code === 0 ? 'PASS' : 'FAIL', note: code === 0 ? '' : out.slice(-200), required: true });
+}
+
 // ---- Phases 1–7: pure TS unit tests ----
 const TS: Array<[string, string]> = [
   ['P1  LaneProfile', 'test-lane-profile.ts'],
