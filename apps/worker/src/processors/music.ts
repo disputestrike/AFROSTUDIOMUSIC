@@ -22,23 +22,25 @@ const MIN_COVERAGE_FOR_RANKING = 0.5;
  *      criterion whenever the ear is blind (no profile / dsp down / thin coverage).
  * Fail-open by construction: null/thin lane collapses to pure qcScore.
  */
-function rankTakes(a: { qc: AudioQuality | null; lane: LaneComplianceScore | null; bp?: number | null }, b: { qc: AudioQuality | null; lane: LaneComplianceScore | null; bp?: number | null }): number {
-  const usable = (x: { lane: LaneComplianceScore | null }) => x.lane != null && x.lane.coverage >= MIN_COVERAGE_FOR_RANKING;
-  if (usable(a) && usable(b)) {
-    const critA = a.lane!.failedCritical.length > 0 ? 1 : 0;
-    const critB = b.lane!.failedCritical.length > 0 ? 1 : 0;
-    if (critA !== critB) return critA - critB;
-
-    // BLUEPRINT precision: with a structure contract, the closest skeleton wins
-    // first (7pt deadband so noise never flips takes). Lane, then mix, follow.
-    if (a.bp != null && b.bp != null) {
-      const d = b.bp - a.bp;
-      if (Math.abs(d) > 0.07) return d;
-    } // no-critical-failure wins outright
-    const laneDelta = b.lane!.overall - a.lane!.overall;
-    if (Math.abs(laneDelta) > 2) return laneDelta; // lane compliance decides
-  }
-  return qcScore(b.qc) - qcScore(a.qc);
+/**
+ * SCALAR take score (higher = better). Replaces the old pairwise comparator whose
+ * deadbands (0.07 blueprint, 2pt lane) combined with the "both usable" branch made
+ * it INTRANSITIVE — Array.sort could crown a non-best winner for N>=3. A scalar is
+ * a valid total order by construction. Priority is preserved by weight bands:
+ * no-critical-failure ≫ blueprint match ≫ lane compliance ≫ mix quality. The
+ * deadbands survive as BUCKETS (quantize before weighting) so noise still can't
+ * flip near-ties, but the ordering is now consistent.
+ */
+function takeScore(x: { qc: AudioQuality | null; lane: LaneComplianceScore | null; bp?: number | null }): number {
+  const mix = qcScore(x.qc);
+  const usable = x.lane != null && x.lane.coverage >= MIN_COVERAGE_FOR_RANKING;
+  if (!usable) return mix; // unmeasured: mix only (as before)
+  const crit = x.lane!.failedCritical.length > 0 ? 1 : 0;
+  const bpBucket = x.bp != null ? Math.round(x.bp / 0.07) : 0; // 0.07 deadband → bucket
+  const laneBucket = Math.round(x.lane!.overall / 2); // 2pt deadband → bucket
+  // A critical-failed take sinks below everything (even unmeasured); otherwise
+  // blueprint dominates, then lane, then mix as the tiebreak.
+  return (crit ? -1e9 : 0) + bpBucket * 1e6 + laneBucket * 1e3 + mix;
 }
 
 interface MusicPayload {
@@ -258,7 +260,7 @@ export async function processMusic(p: MusicPayload) {
         return { r, qc, lane, measured, bp };
       })
     );
-    scored.sort(rankTakes);
+    scored.sort((a, b) => takeScore(b) - takeScore(a));
     const winner = scored[0]!;
     const result = winner.r;
     const out = result.output!;
