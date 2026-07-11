@@ -11,6 +11,7 @@ import swagger from '@fastify/swagger';
 import swaggerUI from '@fastify/swagger-ui';
 import { serializerCompiler, validatorCompiler, jsonSchemaTransform } from 'fastify-type-provider-zod';
 
+import { prisma } from '@afrohit/db';
 import { authPlugin } from './middleware/auth';
 import { creditsPlugin } from './middleware/credits';
 import { queuePlugin } from './lib/queue';
