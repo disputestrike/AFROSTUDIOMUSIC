@@ -216,6 +216,8 @@ export interface AssemblyLayer {
   sourceBpm: number;
   /** relative gain 0..1.5 */
   gain: number;
+  /** stereo placement -1 (left) .. +1 (right); 0/undefined = center */
+  pan?: number;
 }
 export interface AssemblySection {
   name: string; // intro | verse | hook | outro …
@@ -250,7 +252,11 @@ export async function assembleBeat(opts: {
         inputs.push('-stream_loop', '-1', '-t', (secDur + 1).toFixed(3), '-i', l.path);
         // Time-stretch to the target tempo (atempo valid 0.5–2.0 per stage).
         const ratio = Math.min(Math.max(opts.targetBpm / l.sourceBpm, 0.5), 2.0);
-        chains.push(`[${i}:a]aformat=channel_layouts=stereo,atempo=${ratio.toFixed(4)},volume=${l.gain.toFixed(2)}[l${i}]`);
+        // PAN (producer doctrine): shakers wide, congas/bells off-center, low end
+        // center — the width that makes a layered kit read as a real mix.
+        const pan = Math.max(-1, Math.min(1, l.pan ?? 0));
+        const panF = pan !== 0 ? `,stereotools=balance_out=${pan.toFixed(2)}` : '';
+        chains.push(`[${i}:a]aformat=channel_layouts=stereo,atempo=${ratio.toFixed(4)},volume=${l.gain.toFixed(2)}${panF}[l${i}]`);
         labels.push(`[l${i}]`);
       });
       const outPath = join(dir, `sec${s}.wav`);

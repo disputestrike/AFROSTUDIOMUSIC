@@ -12,6 +12,7 @@
  * RECIPE (which roles / arrangement), it is never a source of audio here.
  */
 import type { LaneProfile } from './lane-profile';
+import { familyOf, isMaterialRole } from './material-roles';
 
 export type MaterialImportance = 'core' | 'signature' | 'support';
 
@@ -60,6 +61,36 @@ export interface MaterialSelection {
  *  arranger and the worker's own-engine/section-replay (which used to pass raw
  *  DB rows with no gain at all and crash the assembler). */
 export const MATERIAL_GAINS: Record<string, number> = { drums: 1.0, log_drum: 1.05, bass: 0.95, talking_drum: 0.85, percussion: 0.8, chords: 0.7 };
+
+// Family-level gain defaults for the RICH kit roles (Executive-Summary mixing
+// spec): rhythm foundation loudest, low end just under, harmony/melody tucked,
+// textures/FX quiet. Specific roles above still win.
+const FAMILY_GAINS: Record<string, number> = {
+  drumkit: 0.95, african_perc: 0.8, global_perc: 0.75, bass: 0.95,
+  harmony: 0.68, melody: 0.62, mallets: 0.62, vocals: 0.55, fx: 0.5,
+};
+/** Gain for ANY role: explicit doctrine → family default → safe 0.75. */
+export function materialGainFor(role: string): number {
+  if (MATERIAL_GAINS[role] != null) return MATERIAL_GAINS[role]!;
+  if (isMaterialRole(role)) return FAMILY_GAINS[familyOf(role)] ?? 0.75;
+  return 0.75;
+}
+
+/** Producer PAN doctrine (Executive-Summary mixing spec): low end + kick/snare
+ *  DEAD CENTER; shakers/shekere wide; congas/bells off-center opposite sides;
+ *  guitars/keys gently spread. -1 = hard left, +1 = hard right. */
+const ROLE_PANS: Record<string, number> = {
+  shaker: 0.6, shekere: -0.6, cabasa: 0.5, maraca: -0.5,
+  conga: -0.35, bongo: 0.35, agogo: 0.45, cowbell: -0.45, woodblock: 0.4, claves: -0.4,
+  talking_drum: 0.25, djembe: -0.25, udu: 0.3, bata: -0.3,
+  highlife_guitar: 0.3, palmwine_guitar: -0.3, guitar_chords: -0.25, lead_guitar: 0.25, clean_guitar_riff: 0.3,
+  piano: -0.15, rhodes: 0.15, kalimba: 0.35, marimba: -0.35, balafon: 0.3, kora: -0.3,
+  flute: 0.2, sax: -0.2, trumpet: 0.2, brass_section: 0.15, synth_pluck: 0.25, bell_lead: -0.25,
+};
+export function materialPanFor(role: string): number {
+  if (ROLE_PANS[role] != null) return ROLE_PANS[role]!;
+  return 0; // kick/snare/bass/log_drum/pads/legacy roles: center
+}
 
 /**
  * Which material roles this lane needs, derived from measured facts. Every lane needs

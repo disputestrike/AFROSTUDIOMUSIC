@@ -4,7 +4,7 @@ import { markFailed, markRunning, markSucceeded } from '../lib/jobs';
 import { downloadToBuffer, uploadBytes, ingestRemoteFile } from '../lib/storage';
 import { trimToLoop, assembleBeat, measureAudioQuality, type AssemblyLayer, type AssemblySection } from '../lib/ffmpeg';
 import { overlayFills } from '../lib/fills';
-import { genreSignature, planFills } from '@afrohit/shared';
+import { genreSignature, planFills, isMaterialRole, jobOf, type MaterialRole } from '@afrohit/shared';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -128,8 +128,8 @@ interface AssemblePayload {
   songId?: string;
   bpm: number;
   genre: string;
-  /** materials picked API-side: [{id, url, sourceBpm, role, gain}] */
-  picks: Array<{ id: string; url: string; sourceBpm: number; role: string; gain: number }>;
+  /** materials picked API-side: [{id, url, sourceBpm, role, gain, pan}] */
+  picks: Array<{ id: string; url: string; sourceBpm: number; role: string; gain: number; pan?: number }>;
   /** Claude-authored arrangement (API-side, validated); absent → classic template. */
   sections?: Array<{ name: string; bars: number; roles: string[] }> | null;
 }
@@ -151,24 +151,37 @@ export async function processAssembleBeat(p: AssemblePayload) {
       const buf = await downloadToBuffer(pick.url);
       const path = join(dir, `mat${i}.wav`);
       await writeFile(path, buf);
-      layers.push({ path, sourceBpm: pick.sourceBpm || p.bpm, gain: pick.gain });
+      layers.push({ path, sourceBpm: pick.sourceBpm || p.bpm, gain: pick.gain, pan: pick.pan ?? 0 });
       roleIdx.set(pick.role, i);
     }
     const idx = (roles: string[]) => roles.map((r) => roleIdx.get(r)).filter((i): i is number => i != null);
     const all = layers.map((_, i) => i);
+    // FAMILY BUCKETS so the classic template arranges the RICH kit (conga/
+    // shekere/talking_drum/highlife_guitar…), not just the 5 legacy names.
+    // Producer arc: intro = texture (perc + harmony), verse = groove foundation,
+    // hook = EVERYTHING, outro = strip back.
+    const bucket = (job: string) =>
+      bedPicks
+        .map((x, i) => ({ i, j: isMaterialRole(x.role) ? jobOf(x.role) : ({ drums: 'rhythm', percussion: 'rhythm', talking_drum: 'rhythm', log_drum: 'low_end', bass: 'low_end', chords: 'harmony' } as Record<string, string>)[x.role] ?? 'melody' }))
+        .filter((x) => x.j === job)
+        .map((x) => x.i);
+    const rhythm = bucket('rhythm');
+    const lowEnd = bucket('low_end');
+    const harmony = bucket('harmony');
+    const dedupe = (a: number[]) => [...new Set(a)];
     // The arrangement: Claude's plan when the API authored one (creative,
-    // per-material), otherwise the classic producer template — strip in,
+    // per-material), otherwise the family-aware producer template — strip in,
     // stack the hook, breathe, strip out.
     const planned: AssemblySection[] = (p.sections ?? [])
       .map((s) => ({ name: s.name, bars: s.bars, layerIdx: idx(s.roles) }))
       .filter((s) => s.layerIdx.length > 0 && s.bars >= 2);
     const sections: AssemblySection[] = planned.length >= 3 ? planned : [
-      { name: 'intro', bars: 4, layerIdx: idx(['percussion', 'chords']).length ? idx(['percussion', 'chords']) : all.slice(0, 1) },
-      { name: 'verse', bars: 8, layerIdx: idx(['drums', 'percussion', 'bass', 'log_drum']).length ? idx(['drums', 'percussion', 'bass', 'log_drum']) : all },
+      { name: 'intro', bars: 4, layerIdx: dedupe([...rhythm.slice(0, 2), ...harmony.slice(0, 1)]).length ? dedupe([...rhythm.slice(0, 2), ...harmony.slice(0, 1)]) : all.slice(0, 1) },
+      { name: 'verse', bars: 8, layerIdx: dedupe([...rhythm, ...lowEnd]).length ? dedupe([...rhythm, ...lowEnd]) : all },
       { name: 'hook', bars: 8, layerIdx: all },
-      { name: 'verse2', bars: 8, layerIdx: idx(['drums', 'percussion', 'bass', 'log_drum', 'chords']).length ? idx(['drums', 'percussion', 'bass', 'log_drum', 'chords']) : all },
+      { name: 'verse2', bars: 8, layerIdx: dedupe([...rhythm, ...lowEnd, ...harmony]).length ? dedupe([...rhythm, ...lowEnd, ...harmony]) : all },
       { name: 'hook2', bars: 8, layerIdx: all },
-      { name: 'outro', bars: 4, layerIdx: idx(['percussion', 'log_drum']).length ? idx(['percussion', 'log_drum']) : all.slice(0, 1) },
+      { name: 'outro', bars: 4, layerIdx: dedupe([...rhythm.slice(0, 2), ...lowEnd.slice(0, 1)]).length ? dedupe([...rhythm.slice(0, 2), ...lowEnd.slice(0, 1)]) : all.slice(0, 1) },
     ];
     const beatWav = await assembleBeat({ layers, sections, targetBpm: p.bpm });
 
@@ -223,6 +236,18 @@ export async function processAssembleBeat(p: AssemblePayload) {
           materialIds: p.picks.map((x) => x.id),
           roles: p.picks.map((x) => x.role),
           sections: sections.map((s) => `${s.name}:${s.bars}`),
+          // PROOF-OF-USE (Executive-Summary spec): the full assembly log — every
+          // loop ID with its transforms (stretch ratio to target bpm, gain, pan).
+          // This is how "which materials made this beat" is provable per beat.
+          assemblyLog: p.picks.map((x) => ({
+            materialId: x.id,
+            role: x.role,
+            sourceBpm: x.sourceBpm,
+            targetBpm: p.bpm,
+            stretchRatio: +(p.bpm / (x.sourceBpm || p.bpm)).toFixed(4),
+            gain: x.gain,
+            pan: x.pan ?? 0,
+          })),
           qc,
         } as never,
       },

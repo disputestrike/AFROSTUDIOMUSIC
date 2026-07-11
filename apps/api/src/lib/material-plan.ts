@@ -1,5 +1,5 @@
 import { getSoundDNA, generateJson } from '@afrohit/ai';
-import { MATERIAL_GAINS, forgeKitFor } from '@afrohit/shared';
+import { MATERIAL_GAINS, forgeKitFor, materialGainFor, materialPanFor } from '@afrohit/shared';
 
 /**
  * MATERIAL PLANNING — one source of truth for the material layer's brain,
@@ -43,6 +43,8 @@ export interface MaterialPick {
   sourceBpm: number;
   role: string;
   gain: number;
+  /** stereo placement -1..+1 (producer pan doctrine; 0 = center) */
+  pan?: number;
 }
 
 /**
@@ -70,7 +72,7 @@ export function pickMaterial(rows: MaterialRow[], genre: string, bpm: number, ke
         (a.source === 'artist_stem' ? -1 : 0) - (b.source === 'artist_stem' ? -1 : 0) ||
         Math.abs((a.bpm ?? bpm) - bpm) - Math.abs((b.bpm ?? bpm) - bpm)
     )[0];
-    if (best) picks.push({ id: best.id, url: best.url, sourceBpm: best.bpm ?? bpm, role, gain: MATERIAL_GAINS[role] ?? 0.9 });
+    if (best) picks.push({ id: best.id, url: best.url, sourceBpm: best.bpm ?? bpm, role, gain: materialGainFor(role), pan: materialPanFor(role) });
   }
   return picks;
 }
