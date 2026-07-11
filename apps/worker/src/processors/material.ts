@@ -58,6 +58,13 @@ export async function processForgeMaterial(p: ForgePayload) {
     const loopDur = Math.ceil((60 / p.bpm) * 4 * bars) + 3; // headroom for trim
     const ws = await prisma.workspace.findUnique({ where: { id: p.workspaceId }, select: { musicProvider: true, musicApiKey: true } });
     const adapter = musicAdapter(ws?.musicProvider ?? undefined, ws?.musicApiKey ?? undefined);
+    // STUB GUARD (audit HIGH): if the forge provider resolves to the stub, EVERY
+    // forged loop would be the SAME SoundHelix mp3 chopped to a "loop" — it passes
+    // loop-QC and gets registered as a real MaterialAsset, so the whole "owned,
+    // rights-clean" engine ends up built from one placeholder rock track. Refuse.
+    if (adapter.name === 'stub' && process.env.ALLOW_STUB_AUDIO !== '1') {
+      throw new Error('forge blocked: no real music engine configured (stub) — set a workspace engine before forging owned material.');
+    }
 
     // Generate with 429-aware retries — Replicate throttles prediction creation
     // (observed live: 6/min, burst 1), so a throttled forge WAITS and retries

@@ -64,6 +64,7 @@ const TS: Array<[string, string]> = [
   ['Claims-evidence probe', 'test-claims.ts'],
   ['Craft laws (writer/critic/hooks)', 'test-craft-laws.ts'],
   ['Genre identity (afro≠reggaeton)', 'test-genre-identity.ts'],
+  ['Engine adapters (no silent stub)', 'test-engine-adapters.ts'],
 ];
 for (const [name, file] of TS) {
   if (!existsSync(join(scripts, file))) { results.push({ name, status: 'SKIP', note: 'script missing', required: false }); continue; }

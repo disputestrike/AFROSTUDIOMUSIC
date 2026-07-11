@@ -5,7 +5,6 @@
  *  - eleven       — Eleven Labs Music API
  *  - stable_audio — Stability Stable Audio 3
  *  - mubert       — Mubert API
- *  - beatoven     — Beatoven API
  *  - stub         — synthesized silence / placeholder (dev/local without keys)
  *
  * Every adapter must implement MusicProviderAdapter and return a stable
@@ -32,34 +31,57 @@ function provider(): string {
  * the core fix for "same-y sound".
  */
 /**
- * Per-genre Afro identity — the correct origin + signature kit for each lane, so
- * the audio engine is anchored to THIS genre, not a blanket "Afrobeats". Wrong
- * anchoring is why amapiano (South African, piano-led) was rendering as generic
- * Nigerian Afrobeats. Returns null for non-Afro genres (left untouched).
+ * Per-genre Afro identity — the correct origin + signature for each Afro lane, so
+ * the audio engine is anchored to THIS genre, not a blanket "Afrobeats".
+ *
+ * MATCH ON EXACT GENRE KEYS, never loose substrings: the old regexes
+ * (/dancehall/, /rnb|r&b|soul/) also fired for the GLOBAL genres 'dancehall',
+ * 'rnb' and 'soul' — forcing pure Jamaican dancehall and American R&B/Soul into
+ * an Afro lane. That is the inverse of the amapiano bug. Returns null for every
+ * non-Afro genre so it is left completely untouched. Highlife and gospel get
+ * their OWN signatures (guitar-band / piano-organ-choir) — NOT a log drum.
  */
 function afroIdentity(genre: string): { anchor: string; signature: string } | null {
-  const g = genre.toLowerCase();
-  if (/amapiano|afropiano/.test(g))
-    return {
-      anchor: 'South African amapiano',
-      signature: 'signature sound: deep booming log-drum sub-bass, jazzy sustained piano and soulful Rhodes, airy shakers, percussive vocal chops; spacious swung groove — NOT four-on-the-floor house, NOT Nigerian Afrobeats',
-    };
-  if (/dancehall/.test(g))
-    return {
-      anchor: 'Afro-dancehall',
-      signature: 'signature sound: Jamaican dancehall riddim bounce under African percussion, deep rolling bass, synth plucks and horn stabs',
-    };
-  if (/rnb|r&b|soul/.test(g))
-    return {
-      anchor: 'Afro-R&B / Afrosoul',
-      signature: 'signature sound: lush Rhodes and warm pads, smooth sub-bass, soft Afro percussion under intimate R&B vocals',
-    };
-  if (/afro|highlife|street_pop|gospel/.test(g))
-    return {
-      anchor: 'West African Afrobeats (Nigerian/Ghanaian)',
-      signature: 'signature sound: log drum, talking drum, shekere and interlocking highlife guitar; laid-back off-beat kick and busy 16th shaker — NOT four-on-the-floor',
-    };
-  return null;
+  switch (genre.toLowerCase()) {
+    case 'amapiano':
+    case 'afropiano':
+    case 'afro_house': // SA lineage, log-drum/piano family
+      return {
+        anchor: 'South African amapiano',
+        signature: 'signature sound: deep booming log-drum sub-bass, jazzy sustained piano and soulful Rhodes, airy shakers, percussive vocal chops; spacious swung groove — NOT four-on-the-floor house, NOT Nigerian Afrobeats',
+      };
+    case 'afro_dancehall': // NOT global 'dancehall'
+      return {
+        anchor: 'Afro-dancehall',
+        signature: 'signature sound: Jamaican dancehall riddim bounce under African percussion, deep rolling bass, synth plucks and horn stabs',
+      };
+    case 'afro_rnb': // NOT global 'rnb'
+    case 'afro_soul': // NOT global 'soul'
+      return {
+        anchor: 'Afro-R&B / Afrosoul',
+        signature: 'signature sound: lush Rhodes and warm pads, smooth sub-bass, soft Afro percussion under intimate R&B vocals',
+      };
+    case 'highlife':
+      return {
+        anchor: 'Highlife (Ghana / Nigeria)',
+        signature: 'signature sound: interlocking clean highlife guitars, live bass, congas and lilting percussion, warm horn/brass section, live-band feel — NOT a log drum, NOT amapiano',
+      };
+    case 'afro_gospel':
+      return {
+        anchor: 'Afro-gospel',
+        signature: 'signature sound: rich gospel piano and Hammond/gospel organ, full choir and call-response vocals, praise-break drums over an Afro praise groove',
+      };
+    case 'afrobeats':
+    case 'afro_fusion':
+    case 'afro_pop':
+    case 'street_pop':
+      return {
+        anchor: 'West African Afrobeats (Nigerian/Ghanaian)',
+        signature: 'signature sound: syncopated Afro kick+snare, shekere/shaker 16ths, talking drum and congas, melodic bass, interlocking highlife guitar and warm keys, vocal chants and adlibs — laid-back off-beat kick, NOT four-on-the-floor, NOT amapiano log-drum-led',
+      };
+    default:
+      return null; // every non-Afro genre — untouched
+  }
 }
 
 export function composeStyleTags(
@@ -69,7 +91,12 @@ export function composeStyleTags(
   const hasDna = !!input.dnaTags?.length;
   // Humanize the genre enum so the model reads "afro dancehall", not "afro_dancehall".
   const genreLabel = opts.genreLabel ?? (input.genre ?? 'afrobeats').replace(/_/g, ' ');
-  const isAfro = /afro|amapiano|highlife|street_pop|gospel/.test(input.genre ?? '');
+  // ONE membership test: a genre is Afro iff afroIdentity recognises it. This
+  // keeps the anchor, the anti-Latin scrub and the exclusion perfectly in sync —
+  // the old separate isAfro regex disagreed with afroIdentity, so a genre could
+  // get an Afro anchor without the scrub (or vice-versa).
+  const afro = afroIdentity(input.genre ?? '');
+  const isAfro = afro != null;
   // ANTI-REGGAETON SCRUB: the Sound DNA describes the Afrobeats groove with
   // musicology terms that OVERLAP with Latin — "clave", "woodblock/clave",
   // "tresillo". Correct on paper, but a text-to-music model with a weak
@@ -94,7 +121,6 @@ export function composeStyleTags(
   // is WRONG for amapiano (South African), afro-dancehall (Jamaican-rooted) and
   // afro-R&B. Each lane now gets its own origin + kit; the anchor instruments
   // (log drum / piano / dancehall bounce) also pull hard away from reggaeton.
-  const afro = afroIdentity(input.genre ?? '');
   const genreLine = afro
     ? `${afro.anchor} — ${genreLabel}, ${input.bpm} bpm${input.keySignature ? `, ${opts.keyPrefix ?? 'key '}${input.keySignature}` : ''}`
     : `${genreLabel}, ${input.bpm} bpm${input.keySignature ? `, ${opts.keyPrefix ?? 'key '}${input.keySignature}` : ''}`;

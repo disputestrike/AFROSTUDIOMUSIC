@@ -192,10 +192,22 @@ export async function processMusic(p: MusicPayload) {
     );
     const ok = settled.filter((r) => r.status === 'succeeded' && r.output);
 
-    // NO FAKE AUDIO. If every candidate failed on a real provider, fail the job
-    // with the real reason — never substitute a placeholder and call it the song.
-    const placeholder = false;
+    // STUB GUARD (audit CRITICAL). The stub adapter SUCCEEDS with a SoundHelix
+    // placeholder mp3, so the all-fail guard below never caught it — it was
+    // stored as an APPROVED, genre-labelled "song" (this is the "embarrassing,
+    // non-Afro audio"). voice.ts/image.ts already guard this; the music path did
+    // not. Detect the stub by adapter name AND by the placeholder host in the
+    // winning URL, and FAIL LOUDLY in production (unless a dev opts in) instead
+    // of shipping a rock sample as an Afro beat.
+    const placeholder =
+      adapter.name === 'stub' ||
+      ok.some((r) => /soundhelix\.com/i.test((r.status === 'succeeded' && r.output?.mainAudioUrl) || ''));
     const fallbackReason: string | undefined = undefined;
+    if (placeholder && process.env.ALLOW_STUB_AUDIO !== '1') {
+      console.warn(`[music] stub/placeholder audio blocked (adapter=${adapter.name}) — no real music engine configured`);
+      await markFailed(p.jobId, 'music_generation_failed: no music engine configured — set a real engine (MUSIC_PROVIDER / SUNO_API_KEY / a workspace engine in Settings), then retry.');
+      return;
+    }
     if (!ok.length) {
       const reason = settled.find((r) => r.error)?.error ?? 'provider_failed';
       // §1.11 THE WALL: errorJson reaches the user's screen — vendor/route names

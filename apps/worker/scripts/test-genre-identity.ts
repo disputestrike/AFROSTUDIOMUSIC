@@ -22,10 +22,27 @@ const AFRO_EXPECT: Record<string, RegExp> = {
   afrobeats: /west african/i,
   afro_fusion: /west african/i,
   afro_pop: /west african/i,
+  street_pop: /west african/i,
   amapiano: /south african amapiano/i,
   afro_dancehall: /afro-dancehall/i,
   afro_rnb: /afro-r&b|afrosoul/i,
+  highlife: /highlife \(ghana/i,
+  afro_gospel: /afro-gospel/i,
 };
+// Highlife and gospel must NOT be anchored with a log drum (they are guitar-band
+// and piano/organ/choir respectively).
+{
+  const hl = composeStyleTags({ genre: 'highlife', bpm: 112, dnaTags: [] } as never, { fallbackLiteral: 'x' }).join(' , ');
+  check(!/log drum/i.test(hl.replace(/NOT a? ?log drum/i, '')), 'highlife wrongly given a log drum');
+  check(/highlife guitar|interlocking/i.test(hl), 'highlife missing its interlocking guitar signature');
+}
+// GLOBAL genres must be LEFT UNTOUCHED — the loose-regex bug relabeled rnb/soul/
+// dancehall as Afro. They must get NO Afro anchor and NO anti-Latin exclusion.
+for (const g of ['rnb', 'soul', 'dancehall', 'reggae', 'reggaeton', 'pop', 'house']) {
+  const tags = composeStyleTags({ genre: g, bpm: 100, dnaTags: ['clave groove'] } as never, { fallbackLiteral: 'x' }).join(' , ');
+  check(!/afro-r&b|afrosoul|afro-dancehall|west african|south african/i.test(tags), `[${g}] GLOBAL genre wrongly relabeled as Afro`);
+  check(!/NOT reggaeton/i.test(tags), `[${g}] GLOBAL genre wrongly got the Afro exclusion clause`);
+}
 // Latin-signifier tokens the DNA carries — must be scrubbed before the engine.
 const LATIN_POISON = /\bclave\b|woodblock\s*\/\s*clave|\btresillo\b|\breggaeton\b|\bdembow\b|\bperreo\b/i;
 
