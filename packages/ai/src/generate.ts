@@ -152,8 +152,30 @@ export async function generateJson<T>(opts: GenerateOptions): Promise<T> {
     // it's the only working brain in that state.
     if (anthropicEnabled() && /quota|insufficient|429|rate limit/i.test((e as Error).message)) {
       await new Promise((r) => setTimeout(r, 1200));
-      const data = await callClaude();
-      lastBrain = 'claude';
+      try {
+        const data = await callClaude();
+        lastBrain = 'claude';
+        return data;
+      } catch (e2) {
+        // BOTH paid brains dead (lived it: Anthropic 400 credit + OpenAI quota
+        // killed a take mid-drop). Cerebras is the last lifeboat — a bulk-brain
+        // take beats a dead studio, and the economics log says which brain wrote.
+        if (cerebrasEnabled() && promptChars < 28_000) {
+          console.warn(`[brains] Claude AND OpenAI unavailable (${(e2 as Error).message.slice(0, 100)}) — last-resort Cerebras`);
+          const data = await cerebrasJson<T>({ system: opts.system + JSON_ONLY, user: opts.user, maxTokens: opts.maxTokens });
+          lastBrain = 'cerebras';
+          recordLlmUsage({ tier: opts.tier ?? 'judgment', task: opts.task ?? 'unlabeled', brain: 'cerebras', ms: 0, estCostUsd: lastCerebrasUsage?.estCostUsd ?? null, degraded: 'both paid brains unavailable' });
+          return data;
+        }
+        throw e2;
+      }
+    }
+    // Non-quota OpenAI failure after a Claude failure: same lifeboat.
+    if (cerebrasEnabled() && promptChars < 28_000) {
+      console.warn(`[brains] paid brains failed (${(e as Error).message.slice(0, 100)}) — last-resort Cerebras`);
+      const data = await cerebrasJson<T>({ system: opts.system + JSON_ONLY, user: opts.user, maxTokens: opts.maxTokens });
+      lastBrain = 'cerebras';
+      recordLlmUsage({ tier: opts.tier ?? 'judgment', task: opts.task ?? 'unlabeled', brain: 'cerebras', ms: 0, estCostUsd: lastCerebrasUsage?.estCostUsd ?? null, degraded: 'paid brains unavailable' });
       return data;
     }
     throw e;
