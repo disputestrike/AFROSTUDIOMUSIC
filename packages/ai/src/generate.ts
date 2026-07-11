@@ -10,9 +10,10 @@
  * claudeJson strip fences / extract the object.
  */
 import { claudeJson, anthropicEnabled } from './anthropic-client';
-import { responsesJson } from './providers/text';
+import { responsesJson, lastOpenAiUsage } from './providers/text';
 import { cerebrasJson, cerebrasEnabled, lastCerebrasUsage } from './cerebras-client';
 import { recordLlmUsage } from './llm-usage';
+import { MODELS } from './openai-client';
 
 export type Brain = 'claude' | 'openai' | 'cerebras' | 'stub';
 
@@ -132,7 +133,19 @@ export async function generateJson<T>(opts: GenerateOptions): Promise<T> {
 
   try {
     lastBrain = 'openai';
-    return await responsesJson<T>({ system: opts.system, user: opts.user, temperature: opts.temperature, maxOutputTokens: opts.maxTokens });
+    const t0 = Date.now();
+    // EXPLICIT brain:'openai' (e.g. the Writer A/B bench) means "the flagship
+    // GPT" (OPENAI_TEXT_MODEL). The silent-fallback path keeps the cheap draft
+    // model — a fallback should never quietly bill flagship rates.
+    const data = await responsesJson<T>({
+      system: opts.system,
+      user: opts.user,
+      temperature: opts.temperature,
+      maxOutputTokens: opts.maxTokens,
+      model: opts.brain === 'openai' ? MODELS.text : undefined,
+    });
+    recordLlmUsage({ tier: opts.tier ?? 'judgment', task: opts.task ?? 'unlabeled', brain: 'openai', ms: Date.now() - t0, estCostUsd: lastOpenAiUsage?.estCostUsd ?? null });
+    return data;
   } catch (e) {
     // OpenAI billing can be exhausted (429 insufficient_quota). Rather than
     // surface a confusing quota error, give Claude a real second attempt —

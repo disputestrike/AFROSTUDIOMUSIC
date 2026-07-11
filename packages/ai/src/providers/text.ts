@@ -24,6 +24,46 @@ interface ResponsesJsonOptions {
 }
 
 /**
+ * GPT-5.x / o-series are REASONING models with two hard behavioral differences
+ * (confirmed on OpenAI docs, 2026-07): they 400-reject `temperature`, and their
+ * invisible reasoning tokens bill as OUTPUT and count against
+ * max_completion_tokens — a tight cap can starve the visible answer to empty
+ * (same trap Fable's thinking tokens taught us). So: drop temperature, send
+ * reasoning_effort (GPT-5.6 accepts none/low/medium/high/xhigh/max, defaults
+ * medium), and add cap headroom for the thinking.
+ */
+function isReasoningModel(model: string): boolean {
+  return /^(gpt-[5-9]|o\d)/i.test(model);
+}
+
+function reasoningParams(maxOutputTokens: number): Record<string, unknown> {
+  return {
+    reasoning_effort: process.env.OPENAI_REASONING_EFFORT ?? 'medium',
+    max_completion_tokens: maxOutputTokens + Number(process.env.OPENAI_REASONING_HEADROOM ?? 12_000),
+  };
+}
+
+// $/M-token rates for the cost estimate (economics card). Estimates only —
+// billing truth lives in the OpenAI console. Order matters: longest prefix first.
+const OPENAI_RATES: Array<[RegExp, { inPerM: number; outPerM: number }]> = [
+  [/^gpt-5\.6-terra/i, { inPerM: 2.5, outPerM: 15 }],
+  [/^gpt-5\.6-luna/i, { inPerM: 1, outPerM: 6 }],
+  [/^gpt-5\.6/i, { inPerM: 5, outPerM: 30 }], // sol + bare "gpt-5.6" alias
+  [/^gpt-4o-mini/i, { inPerM: 0.15, outPerM: 0.6 }],
+  [/^gpt-4o/i, { inPerM: 2.5, outPerM: 10 }],
+];
+
+/** Real token usage of the last OpenAI call — mirrors lastCerebrasUsage. */
+export let lastOpenAiUsage: { inTok: number; outTok: number; estCostUsd: number } | null = null;
+
+function trackOpenAiUsage(model: string, usage?: { prompt_tokens?: number; completion_tokens?: number } | null): void {
+  const inTok = usage?.prompt_tokens ?? 0;
+  const outTok = usage?.completion_tokens ?? 0; // includes reasoning tokens on GPT-5.x
+  const rate = OPENAI_RATES.find(([re]) => re.test(model))?.[1] ?? { inPerM: 5, outPerM: 30 };
+  lastOpenAiUsage = { inTok, outTok, estCostUsd: (inTok * rate.inPerM + outTok * rate.outPerM) / 1_000_000 };
+}
+
+/**
  * Call the Chat Completions API with JSON mode. The SDK is forward-compatible
  * with Responses for our usage, and JSON mode is widely supported.
  */
@@ -34,14 +74,19 @@ export async function responsesJson<T>(opts: ResponsesJsonOptions): Promise<T> {
   const res = await client.chat.completions.create({
     model,
     response_format: { type: 'json_object' },
-    temperature: opts.temperature ?? 0.8,
-    // Newer OpenAI models require max_completion_tokens (max_tokens is rejected).
-    max_completion_tokens: opts.maxOutputTokens ?? 2_000,
+    ...(isReasoningModel(model)
+      ? reasoningParams(opts.maxOutputTokens ?? 2_000)
+      : {
+          temperature: opts.temperature ?? 0.8,
+          // Newer OpenAI models require max_completion_tokens (max_tokens is rejected).
+          max_completion_tokens: opts.maxOutputTokens ?? 2_000,
+        }),
     messages: [
       { role: 'system', content: opts.system },
       { role: 'user', content: opts.user },
     ],
   } as never);
+  trackOpenAiUsage(model, res.usage);
   const content = res.choices[0]?.message?.content ?? '{}';
   return JSON.parse(content) as T;
 }
@@ -99,14 +144,16 @@ export async function chatWithTools(opts: {
   const client = getOpenAI();
   const model = opts.model ?? MODELS.text;
   const res = await client.chat.completions.create({
+    ...(isReasoningModel(model)
+      ? { reasoning_effort: process.env.OPENAI_REASONING_EFFORT ?? 'medium' }
+      : { temperature: opts.temperature ?? 0.5 }),
     model,
-    temperature: opts.temperature ?? 0.5,
     tools: opts.tools.map((t) => ({
       type: 'function' as const,
       function: { name: t.name, description: t.description, parameters: t.parameters },
     })),
-    messages: opts.messages as never,
-  });
+    messages: opts.messages,
+  } as never);
   const choice = res.choices[0]!.message;
   if (choice.tool_calls && choice.tool_calls.length > 0) {
     return {
