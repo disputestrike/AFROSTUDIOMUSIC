@@ -5,7 +5,7 @@
  */
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { z } from 'zod';
-import { prisma } from '@afrohit/db';
+import { prisma, allAutonomyFlags, setAutonomyEnabled, type AutonomyJob } from '@afrohit/db';
 import { isInternalMode, requireAuth } from '../middleware/auth';
 import { isFirstPartyWorkspace, resolveEngineForWorkspace } from '@afrohit/shared';
 import { enqueue, QUEUES, type QueueName } from '../lib/queue';
@@ -231,6 +231,47 @@ export default async function admin(app: FastifyInstance) {
 
   // ADDENDUM C-3 — the re-file review list. The scanner NEVER moves a reference
   // itself; every move is approved here (§1.5 — the user's ear outranks).
+  // AUTONOMY — what the money-spending overnight jobs are, their on/off state,
+  // and what they cost in the last N days, so the operator can decide + toggle.
+  app.get<{ Querystring: { days?: string } }>('/autonomy', async (req) => {
+    await requireAdmin(req);
+    const days = Math.max(1, Math.min(30, Number(req.query.days ?? 2)));
+    const since = new Date(Date.now() - days * 86_400_000);
+    const flags = await allAutonomyFlags();
+    // Cost = the LLM calls each job tags itself with + any paid stem runs.
+    const [llm, stems] = await Promise.all([
+      prisma.analyticsEvent.findMany({ where: { name: 'llm.call', createdAt: { gte: since } }, select: { properties: true } }),
+      prisma.analyticsEvent.findMany({ where: { name: 'stems.run', createdAt: { gte: since } }, select: { properties: true } }),
+    ]);
+    const jobOf = (task: string) => /morning|drop/i.test(task) ? 'morning_drop' : /zap/i.test(task) ? 'zap_radar' : /listen|measure|backfill|refile|lexicon|gloss|verify|compound|radar/i.test(task) ? 'nightly_compound' : 'user/other';
+    const cost: Record<string, { calls: number; usd: number }> = {};
+    for (const e of llm) {
+      const p = (e.properties ?? {}) as { task?: string; estCostUsd?: number };
+      const j = jobOf(p.task ?? '');
+      (cost[j] ??= { calls: 0, usd: 0 }); cost[j].calls++; cost[j].usd += p.estCostUsd ?? 0;
+    }
+    let stemUsd = 0;
+    for (const e of stems) { const p = (e.properties ?? {}) as { estCostUsd?: number }; stemUsd += p.estCostUsd ?? 0; }
+    return {
+      windowDays: days,
+      jobs: [
+        { job: 'morning_drop', enabled: flags.morning_drop, schedule: 'daily 05:00 UTC', what: '20 hooks + A&R score + email, per enrolled artist', valueSignal: 'only useful if you want a daily hook drop' },
+        { job: 'zap_radar', enabled: flags.zap_radar, schedule: `${process.env.ZAP_RUNS_PER_DAY ?? '1'}×/day`, what: 'pull charts + learn trend craft into the lake', valueSignal: 'marginal — trend seasoning' },
+        { job: 'nightly_compound', enabled: flags.nightly_compound, schedule: 'daily 02:45 UTC + after each deploy', what: 're-score back-catalog (A&R) + MEASURE references + refile', valueSignal: 'the useful one — measuring makes your training actually influence renders' },
+      ],
+      costLast: Object.fromEntries(Object.entries(cost).map(([k, v]) => [k, { calls: v.calls, estUsd: +v.usd.toFixed(2) }])),
+      paidStemsEstUsd: +stemUsd.toFixed(2),
+      note: 'estUsd is ESTIMATED (chars×rate); billing truth is your Anthropic/Replicate console. Toggle any job with POST /admin/autonomy { job, enabled }.',
+    };
+  });
+  app.post<{ Body: { job: AutonomyJob; enabled: boolean } }>('/autonomy', async (req, reply) => {
+    await requireAdmin(req);
+    const { job, enabled } = req.body ?? {};
+    if (!['morning_drop', 'zap_radar', 'nightly_compound'].includes(job)) return reply.code(400).send({ error: 'unknown_job' });
+    await setAutonomyEnabled(job, !!enabled);
+    return { job, enabled: !!enabled };
+  });
+
   app.get('/refile', async (req) => {
     await requireAdmin(req);
     const rows = await prisma.soundReference.findMany({

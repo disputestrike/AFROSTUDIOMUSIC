@@ -12,7 +12,7 @@
  *  nightly-compound  — runs both on a budget, every night. The app gets smarter
  *                      while Benjamin sleeps (roadmap #3, now real).
  */
-import { prisma } from '@afrohit/db';
+import { prisma, isAutonomyEnabled } from '@afrohit/db';
 import { generateJson, tavilySearchRaw, lastBrain } from '@afrohit/ai';
 import { LANGUAGES, GENRES, genreSignature, synthKitFor, scoreLaneCompliance, planRepairs, promotionEligible, type MeasuredAnalysis } from '@afrohit/shared';
 import { enqueueJob } from '../lib/enqueue';
@@ -718,6 +718,7 @@ export async function processVerifyLexicon(opts?: { limit?: number }): Promise<v
 
 /** Roadmap #3 — the nightly compounding job. Cost-capped by the batch limits. */
 export async function processNightlyCompound(): Promise<void> {
+  if (!(await isAutonomyEnabled('nightly_compound'))) { console.log('[nightly-compound] disabled by operator (autonomy off) — skipped'); return; }
   console.log('[nightly-compound] start');
   await ensureSignatureKits();
   await processReportCard();

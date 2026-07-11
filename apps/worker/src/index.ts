@@ -148,7 +148,9 @@ async function registerCron() {
   // charts and learn the craft of new trending songs into the lake. Autonomous,
   // capped, keyless, non-interfering.
   // zap-radar now runs ZAP_RUNS_PER_DAY times (default 4), rotating genre slices.
-  const zapRuns = Math.max(1, Math.min(12, parseInt(process.env.ZAP_RUNS_PER_DAY ?? '4', 10) || 4));
+  // Default 1×/day (was 4× — a big overnight cost with marginal value). Raise via
+  // ZAP_RUNS_PER_DAY only if trend-chasing proves worth it on /admin/autonomy.
+  const zapRuns = Math.max(1, Math.min(12, parseInt(process.env.ZAP_RUNS_PER_DAY ?? '1', 10) || 1));
   const zapPattern = `0 */${Math.max(1, Math.floor(24 / zapRuns))} * * *`;
   await cronQueue.removeRepeatable('zap-radar', { pattern: '0 3 * * *' }).catch(() => undefined);
   await cronQueue.add('nightly-compound', {}, { repeat: { pattern: '45 2 * * *' } });

@@ -20,3 +20,40 @@ if (process.env.NODE_ENV !== 'production') {
 
 export { Prisma };
 export * from '@prisma/client';
+
+/**
+ * AUTONOMY FLAGS — live operator on/off for the money-spending background jobs,
+ * toggled from /admin (no redeploy). Default ON so existing behaviour is
+ * unchanged; a row with value 'off' disables that job at run time. Cached 30s so
+ * a cron loop doesn't hammer the DB.
+ */
+export type AutonomyJob = 'morning_drop' | 'zap_radar' | 'nightly_compound';
+const _flagCache = new Map<string, { on: boolean; at: number }>();
+export async function isAutonomyEnabled(job: AutonomyJob): Promise<boolean> {
+  const key = `autonomy.${job}`;
+  const cached = _flagCache.get(key);
+  const now = Date.now();
+  if (cached && now - cached.at < 30_000) return cached.on;
+  let on = true;
+  try {
+    const row = await prisma.systemSetting.findUnique({ where: { key } });
+    on = row ? row.value !== 'off' : true;
+  } catch { on = true; }
+  _flagCache.set(key, { on, at: now });
+  return on;
+}
+export async function setAutonomyEnabled(job: AutonomyJob, enabled: boolean): Promise<void> {
+  const key = `autonomy.${job}`;
+  await prisma.systemSetting.upsert({
+    where: { key },
+    create: { key, value: enabled ? 'on' : 'off' },
+    update: { value: enabled ? 'on' : 'off' },
+  });
+  _flagCache.set(key, { on: enabled, at: Date.now() });
+}
+export async function allAutonomyFlags(): Promise<Record<AutonomyJob, boolean>> {
+  const jobs: AutonomyJob[] = ['morning_drop', 'zap_radar', 'nightly_compound'];
+  const rows = await prisma.systemSetting.findMany({ where: { key: { in: jobs.map((j) => `autonomy.${j}`) } } });
+  const byKey = new Map(rows.map((r) => [r.key, r.value]));
+  return Object.fromEntries(jobs.map((j) => [j, byKey.get(`autonomy.${j}`) !== 'off'])) as Record<AutonomyJob, boolean>;
+}

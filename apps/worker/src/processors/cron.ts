@@ -10,7 +10,7 @@
  *
  * Both are best-effort per workspace — one failing artist never blocks the rest.
  */
-import { prisma } from '@afrohit/db';
+import { prisma, isAutonomyEnabled } from '@afrohit/db';
 import { GENRES } from '@afrohit/shared';
 import { prompts, responsesJson, scoreItems, researchTrends, extractSongCraft, parseTrendSong } from '@afrohit/ai';
 import { debitCredits } from '../lib/credits';
@@ -27,6 +27,7 @@ async function ownerEmail(workspaceId: string): Promise<string | null> {
 }
 
 export async function processMorningDrop() {
+  if (!(await isAutonomyEnabled('morning_drop'))) { console.log('[morning-drop] disabled by operator (autonomy off) — skipped'); return; }
   const artists = await prisma.artist.findMany({
     where: { morningDrop: true, workspace: { suspendedAt: null, deletedAt: null } },
     include: { workspace: { select: { id: true } } },
@@ -175,6 +176,7 @@ function radarSlice(): string[] {
 const RADAR_MAX_PER_RUN = Number(process.env.ZAP_RADAR_MAX ?? 10);
 
 export async function processZapRadar() {
+  if (!(await isAutonomyEnabled('zap_radar'))) { console.log('[zap-radar] disabled by operator (autonomy off) — skipped'); return; }
   const { backgroundLlmBudgetOk } = await import('./compound');
   if (!(await backgroundLlmBudgetOk('zap-radar'))) return;
   const workspaces = await prisma.workspace.findMany({

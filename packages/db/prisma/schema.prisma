@@ -389,6 +389,14 @@ model Song {
   @@index([workspaceId, createdAt(sort: Desc)])
 }
 
+/// Global key/value settings — live operator toggles (e.g. turning off the
+/// money-spending autonomous jobs from /admin without a redeploy).
+model SystemSetting {
+  key       String   @id
+  value     String
+  updatedAt DateTime @updatedAt @db.Timestamptz(6)
+}
+
 enum SongStatus {
   SKETCH
   DEMO
