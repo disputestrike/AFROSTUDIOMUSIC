@@ -41,6 +41,15 @@ NATURAL SPEECH & LOGIC LAWS (the last mile from 8/10 to 10/10 — each is a hard
 - INTRO BELONGS TO THE CONCEPT: every intro phrase connects to the premise or the hook. An orphaned musical-sounding phrase that never returns is cut.
 - HOOK PAYOFF LINES: internally draft THREE hook payoffs and keep the one whose FINAL TWO LINES are as memorable as the opening line — strongest sing-back rhythm, simplest words, clearest emotional payoff, most distinctive last line. An escalation motif must track the song's real mechanic and emotion, never counting for counting's sake.
 
+WRITING BRAIN (permanent laws — you are the WRITING half of a two-brain pipeline; a Singing Brain sings after you):
+- MEDIUM COMPLEXITY (the inverted-U law): hits cluster near AVERAGE complexity, never maximum — enough novelty to feel fresh, enough simplicity to be memorable. Too plain bores; too clever cannot be processed at tempo. Aim for the middle of the curve and stay there.
+- HOOK CELL BEFORE ANY VERSE: identify the HOOK CELL first — the 2-5 word melodic-linguistic fragment inside the approved hook that listeners re-enter instantly ("blue tick", "all night", "no more"). A hook must repeat an identifiable CELL listeners can re-enter, not just repeat words; every hook return re-lands the cell.
+- CHORUS EASIER THAN VERSE: the chorus must be EASIER TO PROCESS than the verse — write toward 15-30% fewer lexical items per bar in the chorus (the Singing Brain enforces the number; you write toward it).
+- REPETITION IS CRAFT: repetition is intentional design, never laziness — decide what repeats and where, and repeat it on purpose.
+- SCENE VS STADIUM: verse details are scene-specific (one street, one screen, one night); chorus language is broad enough for a stadium of strangers to sing back.
+- ANCHOR WORDS: mark the emotional keywords that must survive any compression. Anchors outrank dictionary stress — 70-85% of them belong on strong beats (the Singing Brain places them; you name them).
+- SEMANTIC LYRICS ONLY: you produce SEMANTIC lyrics — a separate Singing Brain will clip, stretch and ornament them. Optimize for singable meaning, never for complete sentences.
+
 STORYCRAFT (permanent laws — depth, not filler; this is a top complaint to fix):
 - ONE CONCRETE STORY PER SONG: every song tells ONE story — a named scene (a street, a city, a room, one night), a want, and a turn. If the song cannot be retold in one sentence (who, where, what they want, what changed), it is not a song yet.
 - VERSES MUST MOVE: verse 1 sets the scene with sensory Nigerian/African detail (what is seen, heard, eaten, worn); verse 2 ESCALATES or TURNS — time passes, stakes change, someone acts. Verses that could swap places without a listener noticing are a HARD FAIL.
@@ -98,7 +107,11 @@ Use [Section] headers inside body (e.g. [Intro], [Verse 1], [Pre-Hook], [Hook], 
   "cleanVersion": "clean version — ONLY when explicit is true, else omit",
   "explicit": false,
   "languageMix": { "yo": 0.7, "pcm": 0.2, "en": 0.1 },
-  "needsNativeReview": ["yo:line 4 of verse 2"]
+  "needsNativeReview": ["yo:line 4 of verse 2"],
+  "premise": "ONE sentence — who speaks, to whom, what they want, what changes by the end",
+  "hookCell": "2-5 words — the repeatable fragment; MUST appear inside the hook word-for-word",
+  "anchors": ["8-15 emotional keywords across the whole song, the words that must survive any compression"],
+  "sectionPurposes": { "Verse 1": "one-line purpose", "Pre-Hook": "one-line purpose", "Hook": "one-line purpose", "Verse 2": "one-line purpose", "Bridge": "one-line purpose", "Outro": "one-line purpose" }
 }
 CRITICAL: inside "body", escape every newline as \\n — "body" is ONE JSON string.
 No prose. No markdown fences around the JSON. JSON only.`;
@@ -211,7 +224,7 @@ THEN run the FINAL HUMAN SONGWRITER AUDIT — every item found is a mandatory RE
 16. MOUTH TEST AT TEMPO: read every line aloud at the song's BPM and shorten anything crowded or constructed — a 14-syllable line is a rewrite, not a keep.
 17. REAL TEXTS: every quoted reply must sound like a message that character would actually type, not an explanation written by a lyric generator.
 
-THEN rewrite the song fixing every failure — perform three internal passes (logic → music → emotion) and do not emit until hook strength, natural language, singability and narrative consistency would each score 9/10 under a hostile A&R — SAME concept, SAME title, SAME language mix, SAME section structure, keep every line the draft got right. Never consider the song finished while ANY forced line, logic error, unfinished phrase, generic expression, or culturally decorative filler remains: the mark of this editor is recognizing and DELETING an almost-good line instead of defending it. Do not sanitize the culture; sharpen it. Return JSON: {"title", "body", "cleanVersion" (same song, radio-clean), "whatChanged": [3-6 short bullets], "captionLine": "the one line made to be quoted"}.`;
+THEN rewrite the song fixing every failure — perform three internal passes (logic → music → emotion) and do not emit until hook strength, natural language, singability and narrative consistency would each score 9/10 under a hostile A&R — SAME concept, SAME title, SAME language mix, SAME section structure, keep every line the draft got right. Never consider the song finished while ANY forced line, logic error, unfinished phrase, generic expression, or culturally decorative filler remains: the mark of this editor is recognizing and DELETING an almost-good line instead of defending it. Do not sanitize the culture; sharpen it. Return JSON: {"title", "body", "cleanVersion" (same song, radio-clean), "whatChanged": [3-6 short bullets], "captionLine": "the one line made to be quoted", "premise": "one sentence — who speaks, to whom, what they want, what changes", "hookCell": "2-5 words — the repeatable fragment inside the hook, word-for-word", "anchors": ["8-15 emotional keywords that must survive any compression"], "sectionPurposes": {"Verse 1": "one-line purpose", "Hook": "one-line purpose", ...}}. The craft fields describe YOUR rewritten version — a downstream Singing Brain consumes them.`;
 
 export function lyricPolishPrompt(p: { draftTitle: string; draftBody: string; genre: string; mood?: string | null; languages?: string[] }): string {
   return [

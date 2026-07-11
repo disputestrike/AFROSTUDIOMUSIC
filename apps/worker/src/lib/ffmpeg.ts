@@ -7,6 +7,7 @@ import { spawn } from 'node:child_process';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { grooveOffsetMs } from '@afrohit/shared';
 
 export async function ffmpegAvailable(): Promise<boolean> {
   return new Promise((resolve) => {
@@ -218,6 +219,8 @@ export interface AssemblyLayer {
   gain: number;
   /** stereo placement -1 (left) .. +1 (right); 0/undefined = center */
   pan?: number;
+  /** material role — drives the GROOVE offset (grooveOffsetMs); absent = on-grid */
+  role?: string;
 }
 export interface AssemblySection {
   name: string; // intro | verse | hook | outro …
@@ -256,7 +259,13 @@ export async function assembleBeat(opts: {
         // center — the width that makes a layered kit read as a real mix.
         const pan = Math.max(-1, Math.min(1, l.pan ?? 0));
         const panF = pan !== 0 ? `,stereotools=balance_out=${pan.toFixed(2)}` : '';
-        chains.push(`[${i}:a]aformat=channel_layouts=stereo,atempo=${ratio.toFixed(4)},volume=${l.gain.toFixed(2)}${panF}[l${i}]`);
+        // GROOVE (the PDF's law: "Afrobeats doesn't sit perfectly on the grid"):
+        // timekeepers stay dead-on, hand percussion sits a few ms behind —
+        // deterministic per role, ≤10ms, so layered kits breathe like players,
+        // never like a sequencer.
+        const groove = l.role ? Math.min(10, Math.max(0, grooveOffsetMs(l.role))) : 0;
+        const grooveF = groove > 0 ? `,adelay=${groove}|${groove}` : '';
+        chains.push(`[${i}:a]aformat=channel_layouts=stereo,atempo=${ratio.toFixed(4)},volume=${l.gain.toFixed(2)}${panF}${grooveF}[l${i}]`);
         labels.push(`[l${i}]`);
       });
       const outPath = join(dir, `sec${s}.wav`);

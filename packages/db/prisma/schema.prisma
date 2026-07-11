@@ -457,6 +457,11 @@ model LyricDraft {
   languageMix   Json?    // {pcm:0.6, yo:0.3, en:0.1}
   melody        Json?    // melody spec per section: contour, syllable timing (drives sung vocals)
   translation   Json?
+  // WRITING BRAIN craft object for the downstream Singing Brain:
+  // {premise, hookCell, anchors: string[], sectionPurposes} — the semantic
+  // skeleton (hookCell = the repeatable fragment inside the approved hook;
+  // anchors = the emotional keywords that must survive any compression).
+  craftJson     Json?
   // VERSION HISTORY — every prior take, newest-first: [{body,title,cleanVersion,at,label}].
   // Snapshotted BEFORE any rewrite (make-it-bigger / will-it-blow gate / manual edit)
   // so the ORIGINAL is never lost and the artist can revert to it or any prior take.

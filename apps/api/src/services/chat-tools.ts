@@ -25,6 +25,7 @@ import { fuseSoundDna } from '../lib/fuse';
 import { presongIntelligence } from '../lib/presong';
 import { kitRolesFor, homeKeyFor, pickMaterial, claudeArrangement, ownShelfRoles } from '../lib/material-plan';
 import { autoMaterialBeat } from '../lib/material-auto';
+import { applySingingBrain, craftOf } from '../lib/singing-pipeline';
 import { memoryContext, recordFeedback } from './artist-memory';
 
 type Ctx = {
@@ -448,7 +449,9 @@ async function generateLyrics(ctx: Ctx, hookId: string, cleanVersion: boolean, l
     hitCraft: prompts.hitCraftBrief('lyric', lmood),
   }, 6000); // lyrics: leaner than hooks — a huge input + long output JSON breaks more often
 
-  type LyricOut = { title: string; body: string; cleanVersion?: string; explicit?: boolean; structure?: unknown; languageMix?: Record<string, number>; needsNativeReview?: string[] };
+  // WRITING BRAIN craft fields (premise/hookCell/anchors/sectionPurposes) ride
+  // on every pass — the Singing Brain downstream consumes them from craftJson.
+  type LyricOut = { title: string; body: string; cleanVersion?: string; explicit?: boolean; structure?: unknown; languageMix?: Record<string, number>; needsNativeReview?: string[]; premise?: string; hookCell?: string; anchors?: string[]; sectionPurposes?: Record<string, string> };
   const lyricUser = prompts.lyricUserPrompt({ artist: hook.project.artist as never, brief: hook.project.briefs[0] as never, hookText: hook.text, cleanVersion, languages: languages?.length ? languages : hook.project.artist.languages, soundDna: lyricSoundDna, selections, storiesTold: storiesTold.length ? storiesTold : undefined });
 
   // RETRY UNTIL NON-EMPTY: a long multi-line lyric returned as a JSON string
@@ -461,7 +464,7 @@ async function generateLyrics(ctx: Ctx, hookId: string, cleanVersion: boolean, l
     // draft through an editor's eyes, writes a clearly better song than any
     // one-shot. One extra call (~2-3c) buys the v2. WRITER_TWO_PASS=0 disables.
     if (out?.body && process.env.WRITER_TWO_PASS !== '0') {
-      const polished = await generateJson<{ title: string; body: string; cleanVersion?: string; whatChanged?: string[]; captionLine?: string }>({
+      const polished = await generateJson<{ title: string; body: string; cleanVersion?: string; whatChanged?: string[]; captionLine?: string; premise?: string; hookCell?: string; anchors?: string[]; sectionPurposes?: Record<string, string> }>({
         system: prompts.LYRIC_POLISH_SYSTEM,
         user: prompts.lyricPolishPrompt({ draftTitle: out.title, draftBody: out.body, genre: laneGenre, mood: lmood, languages: languages?.length ? languages : hook.project.artist.languages }),
         temperature: 0.7,
@@ -471,7 +474,19 @@ async function generateLyrics(ctx: Ctx, hookId: string, cleanVersion: boolean, l
         task: 'lyric-polish',
       }).catch(() => null);
       if (polished?.body && polished.body.length > 200) {
-        out = { ...out, title: polished.title || out.title, body: polished.body, cleanVersion: polished.cleanVersion ?? out.cleanVersion };
+        // Craft object from the FINAL pass wins — the polish rewrote the lyric,
+        // so its premise/hookCell/anchors describe the shipped version. Fall
+        // back to the draft's only when the polish omitted a field.
+        out = {
+          ...out,
+          title: polished.title || out.title,
+          body: polished.body,
+          cleanVersion: polished.cleanVersion ?? out.cleanVersion,
+          premise: polished.premise ?? out.premise,
+          hookCell: polished.hookCell ?? out.hookCell,
+          anchors: Array.isArray(polished.anchors) && polished.anchors.length ? polished.anchors : out.anchors,
+          sectionPurposes: polished.sectionPurposes ?? out.sectionPurposes,
+        };
       }
     }
     if (out && typeof out.body === 'string' && out.body.trim().length >= 20) { firstOutput = out; break; }
@@ -513,6 +528,22 @@ async function generateLyrics(ctx: Ctx, hookId: string, cleanVersion: boolean, l
   if (body.length < 20) {
     throw new Error('lyric came back empty/truncated — regenerating recommended');
   }
+  // WRITING BRAIN craft object for the downstream Singing Brain — parsed
+  // tolerantly (absent/malformed fields = null; the take never fails on craft).
+  // `output` is whichever pass won (draft → polish → language retry), so the
+  // FINAL pass's craft ships. Always written (nulls included) so a Regenerate
+  // overwrites any stale craft from a prior take.
+  const craftJson = {
+    premise: typeof output.premise === 'string' && output.premise.trim() ? output.premise.trim() : null,
+    hookCell: typeof output.hookCell === 'string' && output.hookCell.trim() ? output.hookCell.trim() : null,
+    anchors: Array.isArray(output.anchors)
+      ? output.anchors.filter((w): w is string => typeof w === 'string' && w.trim().length > 0).map((w) => w.trim())
+      : null,
+    sectionPurposes:
+      output.sectionPurposes && typeof output.sectionPurposes === 'object' && !Array.isArray(output.sectionPurposes)
+        ? output.sectionPurposes
+        : null,
+  };
   // LyricDraft.songId is @unique — a song can have ONE lyric. Re-running lyrics
   // (Continue/Regenerate) must UPDATE it, not crash on the unique constraint.
   const lyricData = {
@@ -523,6 +554,7 @@ async function generateLyrics(ctx: Ctx, hookId: string, cleanVersion: boolean, l
     explicit: output.explicit ?? false,
     structure: (output.structure ?? undefined) as never,
     languageMix: (output.languageMix ?? undefined) as never,
+    craftJson: craftJson as never,
   };
   const lyric = hook.songId
     ? await prisma.lyricDraft.upsert({
@@ -590,11 +622,14 @@ async function createBeatJob(ctx: Ctx, a: { genre: string; fusionGenres?: string
   // Full song WITH AI vocals: grab the latest lyric so the model can sing it.
   let lyrics: string | undefined;
   let songId: string | undefined;
+  let artistAuthored = false;
+  let draftCraft: ReturnType<typeof craftOf> = null;
+  let hookText: string | undefined;
   if (a.withVocals) {
     const song = await prisma.song.findFirst({
       where: { projectId: ctx.projectId },
       orderBy: { createdAt: 'desc' },
-      include: { lyric: true },
+      include: { lyric: true, hooks: { where: { approved: true }, orderBy: { createdAt: 'desc' }, take: 1 } },
     });
     songId = song?.id;
     const lyric =
@@ -603,7 +638,16 @@ async function createBeatJob(ctx: Ctx, a: { genre: string; fusionGenres?: string
         where: { projectId: ctx.projectId },
         orderBy: { createdAt: 'desc' },
       }));
-    lyrics = lyric?.cleanVersion ?? lyric?.body ?? undefined;
+    // VERBATIM LAW (parity with the REST path — this path used to sing the AI
+    // cleanVersion of an artist-authored draft and then enrich it): the
+    // artist's own words reach the engine EXACTLY as written — body, never
+    // cleanVersion, never enrichment, never the Singing Brain.
+    artistAuthored = !!(lyric as { artistAuthored?: boolean } | null)?.artistAuthored;
+    lyrics = artistAuthored ? lyric?.body ?? undefined : lyric?.cleanVersion ?? lyric?.body ?? undefined;
+    // Writing Brain craft (premise/hookCell/anchors) for the Singing Brain;
+    // the approved hook is the hookCell fallback on old drafts (null craftJson).
+    draftCraft = craftOf(lyric);
+    hookText = song?.hooks?.[0]?.text;
     if (!lyrics) return { error: 'no_lyrics — write the lyrics first, then make the full song' };
   }
 
@@ -624,25 +668,46 @@ async function createBeatJob(ctx: Ctx, a: { genre: string; fusionGenres?: string
   const bpBrief = blueprint ? structureBrief(blueprint) : '';
   const dnaTags = [...measuredTags, ...(dna.tags ?? []), ...learnedTags, ...(blueprint ? [`structure ${blueprint.sections.length} sections`, ...(blueprint.bpm ? [`${blueprint.bpm} bpm exact`] : [])] : [])];
 
-  // Arrange the vocal to sound ALIVE — ad-libs, doubled/harmonized hook.
+  // Arrange the vocal to sound ALIVE — ad-libs, doubled/harmonized hook —
+  // then the SINGING BRAIN converts the (possibly enriched) semantic lyric to
+  // the measured sung form. BOTH are skipped for artist-authored drafts: the
+  // artist's words are never transformed (verbatim law), and the job records
+  // that honestly in sungForm.
   let styleHints: string[] = [];
+  let sungForm: Record<string, unknown> | undefined;
   if (a.withVocals && lyrics) {
-    const project = await prisma.project.findUnique({
-      where: { id: ctx.projectId },
-      include: { artist: true },
-    });
-    const enriched = await enrichLyricsForVocals({
-      genre: a.genre,
-      voice: a.voice,
-      lyricBody: lyrics,
+    if (artistAuthored) {
+      sungForm = { applied: false, skipped: 'artist-authored — verbatim law' };
+    } else {
+      const project = await prisma.project.findUnique({
+        where: { id: ctx.projectId },
+        include: { artist: true },
+      });
       // The user's SELECTED languages outrank the artist profile's defaults.
-      languages: a.languages?.length ? a.languages : project?.artist.languages,
-      laneSummary: project?.artist.laneSummary ?? undefined,
-      soundDna: joinBriefs([bpBrief, dna.brief, learned]),
-    });
-    if (enriched) {
-      lyrics = enriched.enrichedLyrics;
-      styleHints = enriched.styleTags;
+      const langs = a.languages?.length ? a.languages : project?.artist.languages;
+      const enriched = await enrichLyricsForVocals({
+        genre: a.genre,
+        voice: a.voice,
+        lyricBody: lyrics,
+        languages: langs,
+        laneSummary: project?.artist.laneSummary ?? undefined,
+        soundDna: joinBriefs([bpBrief, dna.brief, learned]),
+      });
+      if (enriched) {
+        lyrics = enriched.enrichedLyrics;
+        styleHints = enriched.styleTags;
+      }
+      // SINGING BRAIN — scorecard-measured, one retry, never blocks: a failing
+      // conversion ships the SEMANTIC form with the failures recorded.
+      const sung = await applySingingBrain({
+        semanticLyric: lyrics,
+        draftCraft,
+        hookText,
+        genre: a.genre,
+        languages: langs,
+      });
+      lyrics = sung.lyrics;
+      sungForm = sung.sungForm;
     }
   }
 
@@ -679,8 +744,9 @@ async function createBeatJob(ctx: Ctx, a: { genre: string; fusionGenres?: string
       provider: a.withVocals ? a.songEngine ?? defaultSongEngine() : defaultInstrumentalEngine(),
       status: 'QUEUED',
       // trainingUsage = proof of which references shaped this render (parity with
-      // the REST path); _charge lets the worker REFUND on failure.
-      inputJson: { ...a, songId, trainingUsage, dnaTags: finalDnaTags, _charge: { key: a.withVocals || a.withStems ? 'full_song_demo' : 'beat_idea_short_30s', multiplier: Math.max(1, a.candidates ?? 1) } } as never,
+      // the REST path); sungForm = the Singing Brain's scorecard receipt (Truth
+      // report reads it verbatim); _charge lets the worker REFUND on failure.
+      inputJson: { ...a, songId, trainingUsage, dnaTags: finalDnaTags, ...(sungForm ? { sungForm } : {}), _charge: { key: a.withVocals || a.withStems ? 'full_song_demo' : 'beat_idea_short_30s', multiplier: Math.max(1, a.candidates ?? 1) } } as never,
     },
   });
   await enqueue({

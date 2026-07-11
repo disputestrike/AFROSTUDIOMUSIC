@@ -696,6 +696,16 @@ const ENGINE_SECTION_TAGS =
   /^(intro|verse|pre[- ]?chorus|chorus|interlude|bridge|outro|post[- ]?chorus|transition|break|hook|build[- ]?up|inst|solo|refrain|drop)(\s*\d+)?$/i;
 // Production cues our arranger/writers historically emitted as fake headers.
 const PRODUCTION_CUE = /(drum|fill|roll|percussion|riser|instrumental|beat[- ]?switch|ad[- ]?lib)/i;
+// SINGING-BRAIN COMPAT: the sung form notates backing melisma as stretched
+// vocables — "(oooh)", "(ohhh)", "(o-o-oh)". The literal whitelist above only
+// knows the base forms, so those held vowels were silently DELETED before the
+// engine (a melisma the scorecard counted would never be performed). Fold the
+// stretch notation back to the base vocable for the TEST only — the ORIGINAL
+// stretched text is what ships, because the engines respond to it.
+const foldStretch = (t: string) =>
+  t
+    .replace(/([aeiouy])(?:-\1)+/gi, '$1') // o-o-oh → ooh, e-eh → eh
+    .replace(/([a-z])\1{2,}/gi, '$1'); // oooh → oh, ohhh → oh, heyyy → hey
 export function cleanLyricsForMinimax(raw: string, maxChars = 3400): string {
   const cleaned = raw
     .split('\n')
@@ -716,9 +726,15 @@ export function cleanLyricsForMinimax(raw: string, maxChars = 3400): string {
       return line
         // Keep whitelisted singable interjections AND short call-and-response
         // backing phrases; drop everything else in parens (stage directions).
+        // Stretched melisma forms of a whitelisted vocable pass too (tested
+        // FOLDED, shipped AS WRITTEN — the stretch is the performance).
         .replace(/\(([^)]*)\)/g, (_m, inner: string) => {
           const t = inner.trim();
-          return MINIMAX_SINGABLE.test(t) || MINIMAX_CALL_RESPONSE.test(t) ? `(${t})` : '';
+          const folded = foldStretch(t);
+          const keep =
+            MINIMAX_SINGABLE.test(t) || MINIMAX_CALL_RESPONSE.test(t) ||
+            MINIMAX_SINGABLE.test(folded) || MINIMAX_CALL_RESPONSE.test(folded);
+          return keep ? `(${t})` : '';
         })
         .replace(/[ \t]{2,}/g, ' ')
         .trim();

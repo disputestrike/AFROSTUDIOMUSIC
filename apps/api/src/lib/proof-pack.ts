@@ -119,6 +119,13 @@ export async function assembleProofPack(workspaceId: string, songId: string): Pr
             : {}),
         }
       : { usedReferenceIds: [], note: renderJob ? 'render predates training-usage tracking' : 'no render job stored' },
+    // THE SINGING BRAIN's receipt: sung-form transformation + the measurable
+    // scorecard (hook recurrence, chorus reduction, melisma, clip ratio) the
+    // render actually carried. Absent = the render predates the singing brain
+    // or the lyrics were artist-authored (verbatim law — never transformed).
+    singing: (rj as { sungForm?: { scorecard?: unknown; alignmentCount?: number; applied?: boolean; skipped?: string; retries?: number } }).sungForm
+      ? (rj as { sungForm: Record<string, unknown> }).sungForm
+      : { note: renderJob ? 'no sung-form record — render predates the Singing Brain, or artist-authored lyrics rode verbatim' : 'no render job stored' },
     // Shelf materials IN this take (own-engine/material assemblies log every
     // loop ID + role). Provider renders carry no shelf audio — said plainly.
     materials: beat

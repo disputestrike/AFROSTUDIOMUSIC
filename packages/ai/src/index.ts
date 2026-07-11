@@ -12,6 +12,7 @@ export * from './tavily';
 export * from './analyze';
 export * from './recognize';
 export * from './vocal-arranger';
+export * from './singing-brain';
 export * from './sound-dna';
 export * from './generate';
 export * from './stems';

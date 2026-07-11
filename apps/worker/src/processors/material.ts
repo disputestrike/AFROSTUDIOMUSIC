@@ -154,7 +154,7 @@ export async function processAssembleBeat(p: AssemblePayload) {
       const buf = await downloadToBuffer(pick.url);
       const path = join(dir, `mat${i}.wav`);
       await writeFile(path, buf);
-      layers.push({ path, sourceBpm: pick.sourceBpm || p.bpm, gain: pick.gain, pan: pick.pan ?? 0 });
+      layers.push({ path, sourceBpm: pick.sourceBpm || p.bpm, gain: pick.gain, pan: pick.pan ?? 0, role: pick.role });
       roleIdx.set(pick.role, i);
     }
     const idx = (roles: string[]) => roles.map((r) => roleIdx.get(r)).filter((i): i is number => i != null);

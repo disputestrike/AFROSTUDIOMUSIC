@@ -92,6 +92,30 @@ export function materialPanFor(role: string): number {
   return 0; // kick/snare/bass/log_drum/pads/legacy roles: center
 }
 
+/** GROOVE DOCTRINE (the PDF's "Afrobeats doesn't sit perfectly on the grid"):
+ *  the TIMEKEEPERS (kick/snare/claps/low end) hold the grid dead-on; hand
+ *  percussion sits a few ms BEHIND it (the laid-back Afro pocket), harmony/
+ *  melody barely off. Deterministic per role — the same beat assembles the
+ *  same way twice — and capped ≤10ms so it reads as feel, never as sloppiness. */
+const ROLE_GROOVE_MS: Record<string, number> = {
+  shaker: 7, shekere: 8, cabasa: 6, maraca: 6,
+  conga: 5, bongo: 4, agogo: 5, cowbell: 4, woodblock: 4, claves: 5,
+  talking_drum: 6, djembe: 5, udu: 6, bata: 5, dundun: 6, sakara: 6,
+  closed_hat: 3, open_hat: 4, ride: 3, tom: 3,
+  highlife_guitar: 3, palmwine_guitar: 3, guitar_chords: 2, rhodes: 2, piano: 2,
+  kalimba: 4, marimba: 3, balafon: 4,
+};
+const GROOVE_ANCHORS = new Set(['kick', 'kick_808', 'soft_kick', 'club_kick', 'live_kick', 'snare', 'rimshot', 'clap', 'snap', 'bass', 'bass_guitar', 'sub_bass', 'bass_808', 'sliding_808', 'synth_bass', 'log_drum', 'drums']);
+export function grooveOffsetMs(role: string): number {
+  if (GROOVE_ANCHORS.has(role)) return 0;
+  if (ROLE_GROOVE_MS[role] != null) return ROLE_GROOVE_MS[role]!;
+  // Unlisted non-anchor roles: a small deterministic offset from the role name
+  // (2–5ms) so layered kits never land robot-perfectly aligned.
+  let h = 0;
+  for (let i = 0; i < role.length; i++) h = (h * 31 + role.charCodeAt(i)) >>> 0;
+  return 2 + (h % 4);
+}
+
 /**
  * Which material roles this lane needs, derived from measured facts. Every lane needs
  * a kick, bass and chords; measured signatures (log-drum, shakers) add signature roles.

@@ -39,6 +39,7 @@ import { laneDna, laneDnaBrief } from './lane-pipeline';
 import { arReadSong } from './ar-read';
 import { enqueue } from './queue';
 import { snapshotLyricVersion } from './lyric-versions';
+import { applySingingBrain, craftOf } from './singing-pipeline';
 import { languageVocalTag, voiceVocalTag } from '../services/chat-tools';
 
 // Benjamin's call: the release bar is 90 ("it needs to be perfect"). NOTE: on the
@@ -157,6 +158,14 @@ async function resing(
   opts?: { delayMs?: number }
 ): Promise<string | null> {
   if (!song.lyric) return null;
+  // VERBATIM LAW, belt-and-braces: both callers already reject artist-authored
+  // drafts before reaching here (improveSongOnce → 'artist_authored', the gate
+  // → score-only stop), but a re-sing OVERWRITES the draft body — that must be
+  // impossible for the artist's own words, not merely unlikely.
+  if ((song.lyric as { artistAuthored?: boolean }).artistAuthored) {
+    console.warn(`[resing] ${song.id}: artist-authored lyric — refusing to rewrite/re-sing (verbatim law)`);
+    return null;
+  }
   // Preserve the CURRENT lyric before overwriting it — the artist must always be
   // able to revert to the original (sometimes it's the better take).
   await snapshotLyricVersion(song.lyric.id, 'before make-it-bigger');
@@ -202,12 +211,25 @@ async function resing(
     lyricsForSong = enriched.enrichedLyrics;
     styleHints = enriched.styleTags;
   }
+  // SINGING BRAIN — same pipeline as the create paths: convert the (possibly
+  // enriched) rewrite to its measured sung form; a failing conversion never
+  // blocks the re-sing (semantic form rides, failures recorded in sungForm).
+  // Craft comes from the draft's craftJson (loadSong includes the full lyric
+  // row); the approved hook is the hookCell fallback for old drafts.
+  const sung = await applySingingBrain({
+    semanticLyric: lyricsForSong,
+    draftCraft: craftOf(song.lyric),
+    hookText: song.hooks[0]?.text,
+    genre,
+    languages: selLangs,
+  });
+  lyricsForSong = sung.lyrics;
   const prev = song.beats[0]?.provider ?? '';
   const songEngine = ['suno', 'minimax', 'ace_step'].includes(prev)
     ? (prev as 'suno' | 'ace_step' | 'minimax')
     : (['suno', 'minimax', 'ace_step'].includes(orig.songEngine ?? '') ? (orig.songEngine as 'suno' | 'ace_step' | 'minimax') : undefined);
   const job = await prisma.providerJob.create({
-    data: { workspaceId, projectId: song.projectId, kind: 'music', provider: songEngine ?? 'suno', status: 'QUEUED', inputJson: { makeItBigger: true, songId: song.id } as never },
+    data: { workspaceId, projectId: song.projectId, kind: 'music', provider: songEngine ?? 'suno', status: 'QUEUED', inputJson: { makeItBigger: true, songId: song.id, sungForm: sung.sungForm } as never },
   });
   await enqueue({
     queue: app.queues.music,

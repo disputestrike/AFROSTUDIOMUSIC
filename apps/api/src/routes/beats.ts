@@ -3,6 +3,7 @@ import { prisma } from '@afrohit/db';
 import { generateBeatInputSchema, attachBeatUploadSchema, genreSignature } from '@afrohit/shared';
 import { enrichLyricsForVocals, defaultSongEngine, defaultInstrumentalEngine } from '@afrohit/ai';
 import { learnedReferenceBrief, learnedStyleTags, learnedMeasuredTags, learnedUsage } from '../lib/learned';
+import { applySingingBrain, craftOf, type DraftCraft } from '../lib/singing-pipeline';
 import { enqueueHarvest, enqueueLearn } from '../lib/harvest';
 import { ownShelfRoles } from '../lib/material-plan';
 import { laneDna } from '../lib/lane-pipeline';
@@ -44,6 +45,9 @@ export default async function beats(app: FastifyInstance) {
       // never the enrichment rewrite below. People bring their own lyrics; the
       // studio must not touch a word.
       let artistAuthored = false;
+      // Writing Brain craft (LyricDraft.craftJson) — the Singing Brain's
+      // premise/hookCell/anchors. Null on old drafts and inline-only lyrics.
+      let draftCraft: DraftCraft | null = null;
       if (input.withVocals && !lyrics) {
         const lyric = await prisma.lyricDraft.findFirst({
           where: { projectId: project.id, ...(input.songId ? { songId: input.songId } : {}) },
@@ -51,6 +55,7 @@ export default async function beats(app: FastifyInstance) {
         });
         artistAuthored = !!(lyric as { artistAuthored?: boolean } | null)?.artistAuthored;
         lyrics = artistAuthored ? lyric?.body ?? undefined : lyric?.cleanVersion ?? lyric?.body ?? undefined;
+        draftCraft = craftOf(lyric);
         if (!lyrics) return reply.code(400).send({ error: 'no_lyrics — write lyrics first for a vocal song' });
       } else if (input.withVocals && lyrics && input.songId) {
         // SERVER-ENFORCED VERBATIM (the hole the client path fell through): when
@@ -66,6 +71,7 @@ export default async function beats(app: FastifyInstance) {
           artistAuthored = true;
           lyrics = draft?.body ?? lyrics;
         }
+        draftCraft = craftOf(draft);
       }
       // SELECTED genre wins (audit #4): the render path used project.genre — so
       // picking amapiano on an afrobeats project rendered afrobeats. The user's
@@ -159,6 +165,38 @@ export default async function beats(app: FastifyInstance) {
         };
       }
 
+      // SINGING BRAIN — the sung-form layer between the Writing Brain and the
+      // engine. Runs AFTER enrichment on what the engine will actually sing,
+      // is MEASURED by the lyric-scorecard (one retry told exactly what broke),
+      // and NEVER blocks a render: a failing conversion ships the semantic
+      // form and records the failures honestly in sungForm (Truth report).
+      // VERBATIM LAW: artist-authored lyrics are never transformed — recorded
+      // as skipped instead.
+      let sungForm: Record<string, unknown> | undefined;
+      if (input.withVocals && lyrics) {
+        if (artistAuthored) {
+          sungForm = { applied: false, skipped: 'artist-authored — verbatim law' };
+        } else {
+          // Approved hook = hookCell fallback for old drafts with no craftJson.
+          const hook = draftCraft?.hookCell
+            ? null
+            : await prisma.hookCandidate.findFirst({
+                where: { projectId: project.id, ...(input.songId ? { songId: input.songId } : {}), approved: true },
+                orderBy: { createdAt: 'desc' },
+                select: { text: true },
+              });
+          const sung = await applySingingBrain({
+            semanticLyric: lyrics,
+            draftCraft,
+            hookText: hook?.text,
+            genre,
+            languages: langs,
+          });
+          lyrics = sung.lyrics;
+          sungForm = sung.sungForm;
+        }
+      }
+
       // ONE final tag set, stored AND sent — the Truth report reads the stored
       // copy (promptStyleTags), the engine renders from the payload copy; they
       // must never diverge.
@@ -175,7 +213,9 @@ export default async function beats(app: FastifyInstance) {
           provider: input.withVocals ? input.songEngine ?? defaultSongEngine() : defaultInstrumentalEngine(),
           status: 'QUEUED',
           // _charge lets the worker REFUND this on failure (charge-before-enqueue).
-          inputJson: { ...input, genre, trainingUsage, dnaTags: finalDnaTags, _charge: { key: input.withVocals || input.withStems ? 'full_song_demo' : 'beat_idea_short_30s', multiplier: Math.max(1, input.candidates ?? 1) } } as never,
+          // sungForm = the Singing Brain's receipt (applied/pass/metrics/failures)
+          // next to trainingUsage/dnaTags — the Truth report reads it verbatim.
+          inputJson: { ...input, genre, trainingUsage, dnaTags: finalDnaTags, ...(sungForm ? { sungForm } : {}), _charge: { key: input.withVocals || input.withStems ? 'full_song_demo' : 'beat_idea_short_30s', multiplier: Math.max(1, input.candidates ?? 1) } } as never,
         },
       });
 
