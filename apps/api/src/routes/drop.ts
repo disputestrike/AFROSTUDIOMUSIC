@@ -80,7 +80,15 @@ export async function runDropPipeline(app: FastifyInstance, ctx: DropCtx, input:
             hooks?: Array<{ id: string; text: string; score: number | null }>;
           };
           let hooks = hk?.hooks ?? [];
-          if (!hooks.length) continue;
+          if (!hooks.length) {
+            // NEVER skip silently. Empty hooks = the creative brain returned
+            // nothing usable (down/degraded, or JSON that didn't match the
+            // schema). Record WHY so the drop surfaces a real reason instead of a
+            // blank "Could not start the render".
+            const why = (hk as { error?: string })?.error;
+            drops.push({ score: null, error: why ? `no hooks: ${why}` : 'no hooks — the creative brain returned nothing (check ANTHROPIC / OPENAI keys + billing on the API service, then Try again)' });
+            continue;
+          }
           // If the Claude A&R didn't score them, score via the taste engine — but
           // NEVER let a scoring hiccup kill the whole take. If it fails, we ship
           // the hooks unscored (ranked by generation order) rather than failing.
@@ -159,12 +167,20 @@ export async function runDropPipeline(app: FastifyInstance, ctx: DropCtx, input:
   }
 
   drops.sort((a, b) => (b.score ?? 0) - (a.score ?? 0));
+  // If NOT ONE take produced a render job, the drop failed even though the
+  // pipeline ran to completion. Surface the real reason (the first take's error)
+  // at the TOP LEVEL so every UI shows WHY instead of a blank "Could not start
+  // the render". produced now counts REAL renders, not attempted takes.
+  const rendered = drops.filter((d) => d.jobId);
+  const failReason = rendered.length === 0
+    ? (drops.find((d) => d.error)?.error ?? 'the studio produced no song this run — check the API brain keys (ANTHROPIC / OPENAI) and try again')
+    : undefined;
   await prisma.providerJob.update({
     where: { id: dropJobId },
     data: {
       status: 'SUCCEEDED',
       finishedAt: new Date(),
-      outputJson: { theme: input.theme, requested: input.count, produced: drops.length, drop: drops } as never,
+      outputJson: { theme: input.theme, requested: input.count, produced: rendered.length, drop: drops, error: failReason } as never,
     },
   });
 

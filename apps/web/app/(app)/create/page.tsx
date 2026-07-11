@@ -260,23 +260,26 @@ export default function CreatePage() {
       // keeps running server-side. Retry; only give up after ~2 min of solid failures.
       let dropFailed = false;
       let netFails = 0;
+      let dropErr: string | undefined;
       for (let i = 0; i < 96; i++) {
         await sleep(5000);
         if (i === 10) setStepIdx(2); // hooks done-ish → writing lyrics
-        let j: { status: string; outputJson?: { drop?: Array<typeof item> } };
+        let j: { status: string; outputJson?: { drop?: Array<typeof item>; error?: string } };
         try { j = await api.get(`/jobs/${started.jobId}`); netFails = 0; }
         catch { if (++netFails >= 24) break; continue; }
-        if (j.status === 'SUCCEEDED') { item = j.outputJson?.drop?.[0]; break; }
+        // Top-level error carries WHY when no take rendered (brain down, no hooks).
+        if (j.status === 'SUCCEEDED') { item = j.outputJson?.drop?.[0]; dropErr = j.outputJson?.error; break; }
         if (j.status === 'FAILED') { dropFailed = true; break; }
       }
       if (dropFailed) throw new Error('Could not write the song — try again.');
       if (!item?.jobId) {
-        // The daily cap is the usual culprit — say so plainly instead of a vague
-        // "couldn't start" (which reads as "broken" when it's just the budget).
-        const e = item?.error ?? '';
+        const e = item?.error || dropErr || '';
         if (!e && netFails >= 24) throw new Error('Connection dropped while the studio kept working — your song did NOT fail; it will land in the Catalog. Reopen this page to resume watching it.');
-        const capped = !e || /credit|cap|limit|quota|daily/i.test(e);
-        throw new Error(capped ? 'Daily generation limit reached — it resets at midnight UTC (or raise the cap).' : e);
+        // Only call it the cap when it ACTUALLY is — a blank error used to be
+        // mislabeled "daily limit reached", hiding a brain/keys outage as a budget
+        // problem. Show the real reason the server gave.
+        if (/credit|cap|limit|quota|daily/i.test(e)) throw new Error('Daily generation limit reached — it resets at midnight UTC (or raise the cap).');
+        throw new Error(e || 'The studio could not start this song — try again, and if it repeats check the API brain keys (ANTHROPIC / OPENAI).');
       }
       saveProduce({ renderJobId: item.jobId, projectId: project.id, title, hook: item.hookText, score: item.score });
       setStepIdx(3);

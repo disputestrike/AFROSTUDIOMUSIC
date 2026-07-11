@@ -262,14 +262,18 @@ export function ReferenceListen({ projectId }: { projectId: string }) {
         }
       );
       let item: { jobId?: string; error?: string } | undefined;
+      let dropErr: string | undefined;
       for (let i = 0; i < 60; i++) {
         await new Promise((r) => setTimeout(r, 5000));
-        const j = await api.get<{ status: string; outputJson?: { drop?: Array<typeof item> } }>(`/jobs/${started.jobId}`);
-        if (j.status === 'SUCCEEDED') { item = j.outputJson?.drop?.[0]; break; }
+        const j = await api.get<{ status: string; outputJson?: { drop?: Array<typeof item>; error?: string } }>(`/jobs/${started.jobId}`);
+        // Read the TOP-LEVEL reason too: when no take rendered, the drop carries
+        // WHY (brain down, no hooks) there — not on a per-take item.
+        if (j.status === 'SUCCEEDED') { item = j.outputJson?.drop?.[0]; dropErr = j.outputJson?.error; break; }
         if (j.status === 'FAILED') throw new Error('Could not write the song — try again.');
       }
       if (!item?.jobId) {
-        throw new Error(item?.error === 'insufficient_credits' ? 'Daily limit reached — resets at midnight UTC.' : item?.error || 'Could not start the render.');
+        const reason = item?.error || dropErr;
+        throw new Error(reason === 'insufficient_credits' ? 'Daily limit reached — resets at midnight UTC.' : reason || 'Could not start the render.');
       }
       setProducing((p) => (p ? { ...p, step: 1, label: PROD_STEPS[1]! } : p));
       const url = await pollRenderedAudio(item.jobId);

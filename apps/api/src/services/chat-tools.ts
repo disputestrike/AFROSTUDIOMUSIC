@@ -261,7 +261,10 @@ async function generateHooks(ctx: Ctx, count: number, languages?: string[], refi
   });
   const refined = await directorRefineHooks({ artist: project.artist as never, brief: project.briefs[0] as never, drafts: (result.hooks ?? []).map((h) => h.text), tasteMemory, trends, soundDna });
 
-  const rows = refined
+  // BUGFIX: an EMPTY refined array (director ran but returned nothing) is truthy
+  // and would silently discard the raw hooks → the drop pipeline then sees zero
+  // hooks and skips the whole take. Only prefer refined when it actually has rows.
+  const rows = refined && refined.length
     ? refined.map((h) => ({
         text: h.text,
         language: (h.language ?? []) as never,
