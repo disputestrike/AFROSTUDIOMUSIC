@@ -477,12 +477,11 @@ class ElevenMusicAdapter implements MusicProviderAdapter {
     return { externalId, status: 'running', pollAfterMs: 6_000 };
   }
   private composePrompt(input: MusicGenerationInput): string {
+    // Route through composeStyleTags so this engine ALSO gets the correct
+    // per-genre identity anchor + the anti-reggaeton scrub (it used to build a
+    // raw `${genre} instrumental` prompt, bypassing all of it).
     return [
-      `${input.genre} instrumental`,
-      `${input.bpm} bpm`,
-      input.keySignature ? `in ${input.keySignature}` : null,
-      input.vibePrompt ?? '',
-      input.artistTone?.length ? `tone: ${input.artistTone.join(', ')}` : null,
+      ...composeStyleTags(input, { genreLabel: `${input.genre ?? 'afrobeats'} instrumental beat`, fallbackLiteral: 'melodic, warm, radio-ready' }),
       'no vocals, leave space for lead vocal',
       input.withStems ? 'export stems' : '',
     ]
@@ -503,7 +502,7 @@ class StableAudioAdapter implements MusicProviderAdapter {
       method: 'POST',
       headers: { authorization: `Bearer ${key}`, 'content-type': 'application/json' },
       body: JSON.stringify({
-        prompt: `${input.genre} ${input.bpm}bpm ${input.keySignature ?? ''} ${input.vibePrompt ?? ''}`,
+        prompt: composeStyleTags(input, { fallbackLiteral: 'instrumental, melodic, radio-ready' }).join(', ') + ', no vocals',
         duration: input.durationS,
         output_format: 'wav',
       }),
@@ -544,7 +543,7 @@ class MubertAdapter implements MusicProviderAdapter {
           duration: input.durationS,
           mode: 'track',
           intensity: 'high',
-          prompt: input.vibePrompt ?? `${input.genre} ${input.bpm}bpm`,
+          prompt: composeStyleTags(input, { fallbackLiteral: 'instrumental, melodic, radio-ready' }).join(', '),
         },
       }),
     });
@@ -846,7 +845,7 @@ class StubMusicAdapter implements MusicProviderAdapter {
  * inconsistent and usually the weak one. Now they all call this:
  *   - SONG_ENGINE set → honor it (explicit override, any engine).
  *   - else a SUNO_API_KEY exists → 'suno' automatically (the quality path).
- *   - else 'ace_step' so renders still work before the key is set.
+ *   - else 'minimax' (best Afro vocals on the Replicate key; NOT ACE-Step).
  * Set SUNO_API_KEY + (optionally) MUSIC_PROVIDER=suno and every path upgrades at
  * once — no code change, no per-route drift.
  */
