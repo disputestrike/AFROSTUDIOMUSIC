@@ -86,6 +86,7 @@ async function rewriteLyric(
   currentBody: string,
   read: { toMakeItBigger?: string[]; risks?: string[] }
 ): Promise<{ title: string; body: string; whatChanged: string[] } | null> {
+  // PASS 1 — rewrite implementing the A&R notes (bigger, not a patch).
   const out = await generateJson<{ title: string; body: string; whatChanged: string[] }>({
     system: prompts.LYRIC_SYSTEM,
     user:
@@ -98,7 +99,24 @@ async function rewriteLyric(
     temperature: 0.8,
     maxTokens: 4000,
   });
-  return out?.body ? out : null;
+  if (!out?.body) return null;
+  // PASS 2 — the SAME critic-polish the create path runs (HIT-ENGINE laws + the
+  // FINAL HUMAN SONGWRITER AUDIT). This is what was missing: redeem/rewrite did a
+  // single pass and couldn't lift a song to the bar. Now it critiques + rewrites
+  // like the create flow. Skippable via WRITER_TWO_PASS=0.
+  if (process.env.WRITER_TWO_PASS !== '0') {
+    const polished = await generateJson<{ title: string; body: string; whatChanged?: string[] }>({
+      system: prompts.LYRIC_POLISH_SYSTEM,
+      user: prompts.lyricPolishPrompt({ draftTitle: out.title, draftBody: out.body, genre }),
+      temperature: 0.7,
+      maxTokens: 4500,
+      timeoutMs: 90_000,
+    }).catch(() => null);
+    if (polished?.body && polished.body.length > 200) {
+      return { title: polished.title || out.title, body: polished.body, whatChanged: [...(out.whatChanged ?? []).slice(0, 3), ...(polished.whatChanged ?? []).slice(0, 3)] };
+    }
+  }
+  return out;
 }
 
 /** Score a HYPOTHETICAL lyric without persisting or rendering — predictHit on the
