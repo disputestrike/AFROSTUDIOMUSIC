@@ -60,7 +60,10 @@ export default async function billing(app: FastifyInstance) {
     const { workspaceId } = requireAuth(req);
     const { isInternalMode } = await import('../middleware/auth');
     if (isInternalMode()) {
-      const cap = Number(process.env.MAX_DAILY_GENERATIONS ?? 0); // 0 = unlimited (testing phase)
+      // Mirror chargeCredits: the cap only exists when explicitly opted in via
+      // ENFORCE_GENERATION_CAP=1 (else unlimited) — so a stale Railway
+      // MAX_DAILY_GENERATIONS can never make the UI pre-block a generation.
+      const cap = process.env.ENFORCE_GENERATION_CAP === '1' ? Number(process.env.MAX_DAILY_GENERATIONS ?? 1000) : 0; // 0 = unlimited (testing phase)
       const since = new Date();
       since.setUTCHours(0, 0, 0, 0);
       const usedToday = await prisma.creditLedger.count({
