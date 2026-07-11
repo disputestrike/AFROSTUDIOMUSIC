@@ -31,7 +31,7 @@ function provider(): string {
  * DNA is present that filler is exactly the homogenizing phrase we drop. This is
  * the core fix for "same-y sound".
  */
-function composeStyleTags(
+export function composeStyleTags(
   input: MusicGenerationInput,
   opts: { fallbackLiteral: string; genreLabel?: string; genreSuffix?: string; keyPrefix?: string; tonePrefix?: string }
 ): string[] {
@@ -39,15 +39,37 @@ function composeStyleTags(
   // Humanize the genre enum so the model reads "afro dancehall", not "afro_dancehall".
   const genreLabel = opts.genreLabel ?? (input.genre ?? 'afrobeats').replace(/_/g, ' ');
   const isAfro = /afro|amapiano|highlife|street_pop|gospel/.test(input.genre ?? '');
+  // ANTI-REGGAETON SCRUB: the Sound DNA describes the Afrobeats groove with
+  // musicology terms that OVERLAP with Latin — "clave", "woodblock/clave",
+  // "tresillo". Correct on paper, but a text-to-music model with a weak
+  // Afrobeats prior reads "clave + syncopated off-beat + mid-tempo" and renders
+  // REGGAETON. Strip those Latin-signifier tokens from what reaches the audio
+  // engine (the LLM brief keeps the nuance; the engine gets West-African words).
+  const deLatin = (t: string): string =>
+    isAfro
+      ? t.replace(/\bwoodblock\s*\/\s*clave\b/gi, 'shekere')
+         .replace(/\b(3-2|2-3)[\s-]*clave\b/gi, 'off-beat West-African')
+         .replace(/\bclave\b/gi, 'off-beat')
+         .replace(/\btresillo\b/gi, 'off-beat')
+      : t;
   // ANTI-SOUP: models weight early tokens and truncate late ones, so this order
   // is a BUDGET, not a bag — identity leads (genre+tempo+key), then the DNA +
   // learned tokens, then a CAPPED vibe (an uncapped vibePrompt used to drown the
   // identity), then tone. Near-duplicate tokens are deduped.
-  const vibe = (input.vibePrompt ?? '').trim().slice(0, 160);
+  const vibe = deLatin((input.vibePrompt ?? '').trim().slice(0, 160));
+  // For Afro genres, LEAD with an unmistakable West-African anchor + an explicit
+  // exclusion, both BEFORE the DNA tokens so truncation can never drop them. The
+  // anchor instruments (log drum, talking drum, shekere, highlife guitar) have
+  // almost no reggaeton overlap — they are the strongest pull away from Latin.
+  const genreLine = isAfro
+    ? `West African ${genreLabel} — modern Nigerian/Ghanaian Afrobeats, ${input.bpm} bpm${input.keySignature ? `, ${opts.keyPrefix ?? 'key '}${input.keySignature}` : ''}`
+    : `${genreLabel}, ${input.bpm} bpm${input.keySignature ? `, ${opts.keyPrefix ?? 'key '}${input.keySignature}` : ''}`;
   const raw = [
-    `${genreLabel}, ${input.bpm} bpm${input.keySignature ? `, ${opts.keyPrefix ?? 'key '}${input.keySignature}` : ''}`,
+    genreLine,
+    isAfro ? 'signature sound: log drum, talking drum, shekere and interlocking highlife guitar; straight-4 with a laid-back off-beat kick and busy 16th shaker' : null,
+    isAfro ? 'NOT reggaeton, NOT dembow, NOT tresillo/dembow kick, NOT Latin, NOT Spanish, NOT perreo, NOT four-on-the-floor' : null,
     opts.genreSuffix ?? null,
-    ...(input.dnaTags ?? []),
+    ...(input.dnaTags ?? []).map(deLatin),
     vibe || null,
     input.artistTone?.length ? `${opts.tonePrefix ?? ''}${input.artistTone.join(', ')}` : null,
     // Afro production feel — the fills/rolls that make Afro records lift. Only
