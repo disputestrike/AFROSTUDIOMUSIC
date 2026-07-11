@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
+import { PLAN_LIMITS, PLAN_CREDIT_GRANT_CENTS } from '@afrohit/shared';
 import { useApi } from '@/lib/api';
 import { formatUsd } from '@/lib/utils';
 
@@ -10,12 +11,28 @@ interface Billing {
   paypalSubscriptionId: string | null;
 }
 
-const PLANS: Array<{ key: Billing['plan']; price: string; perks: string[] }> = [
-  { key: 'STARTER', price: '$19/mo', perks: ['Hooks + lyrics', '5 cover-art renders'] },
-  { key: 'CREATOR', price: '$49/mo', perks: ['20 demos', 'MP3 exports', 'Brand kit'] },
-  { key: 'PRO', price: '$149/mo', perks: ['60 demos', 'Voice profile', 'Release kits', 'Collab'] },
-  { key: 'STUDIO', price: '$399/mo', perks: ['Team seats', 'Bulk gen', 'Priority queue'] },
-];
+// TRUTHFUL plan cards (T3): perks are DERIVED from the enforced PLAN_LIMITS +
+// the real monthly credit grant — what the card promises is exactly what the
+// server enforces and grants. No hand-written marketing numbers.
+const PRICE: Record<Billing['plan'], string> = { STARTER: '$19/mo', CREATOR: '$49/mo', PRO: '$149/mo', STUDIO: '$399/mo' };
+const PLANS: Array<{ key: Billing['plan']; price: string; perks: string[] }> = (
+  ['STARTER', 'CREATOR', 'PRO', 'STUDIO'] as Billing['plan'][]
+).map((key) => {
+  const l = PLAN_LIMITS[key];
+  const grant = PLAN_CREDIT_GRANT_CENTS[key];
+  return {
+    key,
+    price: PRICE[key],
+    perks: [
+      `${(grant / 10_000).toFixed(0)}$ in monthly studio credits`,
+      l.monthlyDemoSongs > 0 ? `${l.monthlyDemoSongs} full songs / month` : 'Hooks + lyrics + cover art',
+      `${l.coverArt} cover-art renders`,
+      ...(l.monthlyVoiceRenders > 0 ? [`${l.monthlyVoiceRenders} voice renders`] : []),
+      ...(l.monthlyVideoSeconds > 0 ? [`${l.monthlyVideoSeconds}s of video`] : []),
+      ...(l.seats > 1 ? [`${l.seats} team seats`] : []),
+    ],
+  };
+});
 
 const PACKS = ['pack_10', 'pack_25', 'pack_50', 'pack_100'] as const;
 
