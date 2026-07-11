@@ -1,4 +1,5 @@
 import { prisma } from '@afrohit/db';
+import { learnedGenreMatches, selectLearnedRefs } from '@afrohit/shared';
 
 /**
  * The "listen & learn" retrieval — rebuilt for FIDELITY:
@@ -43,15 +44,9 @@ interface RefRow {
   generated: boolean;
 }
 
-const norm = (g?: string | null) => (g ?? '').toLowerCase().replace(/[^a-z]/g, '');
-
-/** Tolerant genre match: exact-normalized, or one contains the other. */
-function genreMatches(a?: string | null, b?: string | null): boolean {
-  const x = norm(a);
-  const y = norm(b);
-  if (!x || !y) return false;
-  return x === y || x.includes(y) || y.includes(x);
-}
+// Selection law now lives in @afrohit/shared (learned-select.ts) so the worker
+// gate can PROVE lane isolation + pin-first + artist-over-machine without a DB.
+const genreMatches = learnedGenreMatches;
 
 async function fetchRefs(workspaceId: string, genre: string, pinnedId?: string | null): Promise<RefRow[]> {
   // The lake holds more than SOUND now (lyric craft, trend snapshots) — those
@@ -72,14 +67,9 @@ async function fetchRefs(workspaceId: string, genre: string, pinnedId?: string |
     const recipe = (r.recipe ?? {}) as RecipeShape;
     return { ...r, recipe, generated: recipe.source === 'generated' };
   });
-  const inGenre = all.filter((r) => genreMatches(r.genre, genre));
-  // Priority: (1) an explicitly pinned reference (the one JUST listened to),
-  // (2) the artist's real uploads/listens newest-first, (3) at most ONE
-  // self-training row as seasoning.
-  const pinned = pinnedId ? all.filter((r) => r.id === pinnedId) : [];
-  const real = inGenre.filter((r) => !r.generated && r.id !== pinnedId);
-  const generated = inGenre.filter((r) => r.generated && r.id !== pinnedId);
-  return [...pinned, ...real.slice(0, 3), ...generated.slice(0, 1)].slice(0, 4);
+  // Selection law (pin-first, in-genre only, artist over machine) lives in
+  // shared learned-select.ts — the worker gate proves it holds.
+  return selectLearnedRefs(all, genre, pinnedId);
 }
 
 function refLines(refs: RefRow[]): string[] {

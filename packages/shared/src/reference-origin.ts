@@ -12,6 +12,10 @@ export type ReferenceOrigin = 'self-generated' | 'owned-upload' | 'facts-only';
 export function referenceOrigin(sourceUrl: string, recipe?: { source?: string } | null): ReferenceOrigin {
   if (recipe?.source === 'generated') return 'self-generated';
   if (sourceUrl.startsWith('facts:')) return 'facts-only';
+  // Zap lessons are chart metadata + measured PREVIEW facts — never owned audio.
+  // Without this they counted as owned-upload grounding, inflating a lane's
+  // "external refs" with rows the artist never brought.
+  if (recipe?.source === 'zap' || sourceUrl.startsWith('zap:')) return 'facts-only';
   return 'owned-upload';
 }
 

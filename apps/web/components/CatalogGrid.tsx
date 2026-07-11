@@ -3,7 +3,7 @@
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { useApi } from '@/lib/api';
-import { Trash2, Download, Wand2, FileText, Copy, Recycle, Pencil, Sliders, X, Loader2, Music2, Layers, TrendingUp, RefreshCw, Mic, Disc3, Sparkles, GitCompare } from 'lucide-react';
+import { Trash2, Download, Wand2, FileText, Copy, Recycle, Pencil, Sliders, X, Loader2, Music2, Layers, TrendingUp, RefreshCw, Mic, Disc3, Sparkles, GitCompare, ShieldCheck } from 'lucide-react';
 import dynamic from 'next/dynamic';
 // R-1: the bridge is an admin-only LAZY chunk — its code never loads in a
 // browser without the first-party unlock (and the component itself ships zero
@@ -49,6 +49,21 @@ export interface SongRow {
 const STATUS_LABEL: Record<string, string> = {
   SKETCH: 'Sketch', DEMO: 'Demo', FULL: 'Full', MIXED: 'Mixed', MASTERED: 'Mastered', RELEASED: 'Released',
 };
+
+// STUDIO TRUTH — the per-song proof pack from GET /songs/:id/proof. Everything
+// in it is STORED fact (the API never recomputes or invents), and engines
+// arrive as CLASSES only — no vendor name ever reaches this component (§1.11).
+interface ProofPack {
+  request?: { note?: string; selectedGenre?: string | null; effectiveGenre?: string | null; fusionGenres?: string[]; mood?: string | null; languages?: string[]; voice?: string | null; engineRequested?: string | null; promptStyleTags?: string[]; vibePrompt?: string | null };
+  training?: { usedReferenceIds?: string[]; measuredCount?: number; totalCount?: number; pinnedReferenceId?: string | null; note?: string };
+  materials?: { usedMaterialIds?: Array<string | null>; roles?: Array<string | null>; note?: string };
+  render?: { note?: string; engineClass?: string; takesTried?: number; takesRendered?: number; rankedBy?: string; earRead?: string; repairApplied?: string; qc?: { verdict?: string; integratedLufs?: number | null } | null };
+  lane?: { score?: number | null; coverage?: number | null; drift?: string | null; failedCritical?: string[]; judgedAgainst?: string; note?: string };
+  ar?: { hitScore?: number | null; viralScore?: number | null; willBlow?: boolean | null; note?: string };
+  master?: { note?: string; preset?: string; measuredLufs?: number | null; qcVerdict?: string };
+  failures?: { count?: number; lastError?: string | null; note?: string };
+  whyThisWon?: string;
+}
 
 type DownloadFile = { label: string; url: string; kind: string; dl?: string };
 type LyricVer = { body: string; title: string | null; at: string; label?: string };
@@ -97,6 +112,21 @@ export default function CatalogGrid({ initial }: { initial: SongRow[] }) {
     } catch (e) {
       flash((e as Error).message || 'Could not load versions');
       setCompare(null);
+    }
+  }
+
+  // TRUTH REPORT — prove what shaped this song (request, training references,
+  // shelf materials, ranking, failures) from stored facts, on demand for ANY
+  // song. The API speaks engine classes only; so does everything rendered here.
+  const [truth, setTruth] = useState<{ title: string; loading: boolean; proof?: ProofPack; persisted?: boolean } | null>(null);
+  async function openTruth(s: SongRow) {
+    setTruth({ title: s.title, loading: true });
+    try {
+      const r = await api.get<{ proof: ProofPack; persisted?: boolean }>(`/songs/${s.id}/proof`);
+      setTruth({ title: s.title, loading: false, proof: r.proof, persisted: r.persisted });
+    } catch (e) {
+      flash((e as Error).message || 'Could not load the truth report');
+      setTruth(null);
     }
   }
 
@@ -406,6 +436,7 @@ export default function CatalogGrid({ initial }: { initial: SongRow[] }) {
                 <Action label="Download" icon={<Download className="h-3.5 w-3.5" />} busy={isBusy(s.id, 'dl')} onClick={() => void openDownloads(s)} />
                 <Action label="Lyrics" icon={<FileText className="h-3.5 w-3.5" />} busy={isBusy(s.id, 'lyrics')} onClick={() => void openLyrics(s)} />
                 <Action label={s.hitScore != null ? `A&R ${s.hitScore}/100` : 'Will it hit?'} icon={<TrendingUp className="h-3.5 w-3.5" />} busy={isBusy(s.id, 'hit')} onClick={() => void willItHit(s)} />
+                <Action label="Truth" icon={<ShieldCheck className="h-3.5 w-3.5" />} onClick={() => void openTruth(s)} />
                 {s.hitScore != null && <Action label="🚀 Make it bigger" busy={isBusy(s.id, 'bigger')} onClick={() => void makeItBigger(s)} />}
                 {/bigger/i.test(s.versionLabel ?? '') && <Action label="⤢ Compare versions" icon={<GitCompare className="h-3.5 w-3.5" />} onClick={() => void openCompare(s)} />}
                 <Action label="Re-master" icon={<Wand2 className="h-3.5 w-3.5" />} busy={isBusy(s.id, 'master')} onClick={() => void remaster(s)} />
@@ -529,6 +560,20 @@ export default function CatalogGrid({ initial }: { initial: SongRow[] }) {
         </Modal>
       )}
 
+      {/* STUDIO TRUTH — the proof pack, readable: what was asked, what trained
+          it, whose materials are in it, how it won, what failed on the way. */}
+      {truth && (
+        <Modal onClose={() => setTruth(null)} title={`Truth report — ${truth.title}`}>
+          {truth.loading ? (
+            <div className="flex items-center gap-2 py-8 text-sm text-slate-400"><Loader2 className="h-4 w-4 animate-spin" /> Assembling the proof…</div>
+          ) : truth.proof ? (
+            <TruthBody proof={truth.proof} persisted={!!truth.persisted} />
+          ) : (
+            <div className="text-sm text-slate-400">No proof available for this song.</div>
+          )}
+        </Modal>
+      )}
+
       {/* Download list */}
       {downloads && (
         <Modal onClose={() => setDownloads(null)} title="Download">
@@ -629,6 +674,123 @@ export default function CatalogGrid({ initial }: { initial: SongRow[] }) {
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+/** Truth report body — renders the proof pack VERBATIM: stored facts, honest
+ *  notes for what isn't stored, engine CLASSES only (the API enforces the wall,
+ *  and nothing here re-labels them). Selected-vs-effective genre mismatch is
+ *  flagged in amber — a fact worth seeing, not a bug to hide. */
+function TruthBody({ proof, persisted }: { proof: ProofPack; persisted: boolean }) {
+  const lane = (g?: string | null) => (g ? g.replace(/_/g, ' ') : '—');
+  const req = proof.request ?? {};
+  const genreMismatch = !!(req.selectedGenre && req.effectiveGenre && req.selectedGenre !== req.effectiveGenre);
+  const tr = proof.training;
+  const mat = proof.materials;
+  const rend = proof.render ?? {};
+  const fails = proof.failures;
+  return (
+    <div className="max-h-[70vh] space-y-2 overflow-y-auto pr-1">
+      <p className="text-[11px] text-slate-500">
+        Every line is read from what the studio stored while it worked — nothing recomputed, nothing invented. Unmeasured fields say so.{persisted ? ' Sealed at green-light.' : ''}
+      </p>
+
+      <TruthSection title="Request — what you asked for">
+        {req.note ? (
+          <div className="text-slate-500">{req.note}</div>
+        ) : (
+          <>
+            <TruthKV k="Selected genre" v={lane(req.selectedGenre)} amber={genreMismatch} />
+            <TruthKV k="Effective genre (project lane)" v={lane(req.effectiveGenre)} amber={genreMismatch} />
+            {genreMismatch && <div className="text-amber-300">⚠ Selected ≠ effective — the project lane judged this take, not the genre picked at render time.</div>}
+            {!!req.fusionGenres?.length && <TruthKV k="Fusion" v={req.fusionGenres.map((g) => lane(g)).join(' + ')} />}
+            {req.mood && <TruthKV k="Mood" v={req.mood} />}
+            {!!req.languages?.length && <TruthKV k="Languages" v={req.languages.join(', ')} />}
+            {req.voice && <TruthKV k="Voice" v={req.voice} />}
+            <TruthKV k="Engine requested" v={req.engineRequested ?? 'auto'} />
+            {!!req.promptStyleTags?.length && <TruthKV k="Style tags" v={req.promptStyleTags.join(', ')} />}
+            {req.vibePrompt && <div className="pt-0.5 text-slate-400">“{req.vibePrompt}”</div>}
+          </>
+        )}
+      </TruthSection>
+
+      <TruthSection title="Training — what shaped the sound">
+        <TruthKV k="References used" v={String(tr?.usedReferenceIds?.length ?? 0)} />
+        {tr?.totalCount != null && <TruthKV k="Deep-measured" v={`${tr.measuredCount ?? 0} of ${tr.totalCount}`} />}
+        <TruthKV k="Pinned reference" v={tr?.pinnedReferenceId ? `…${tr.pinnedReferenceId.slice(-8)}` : 'none'} />
+        {tr?.note && <div className="text-slate-500">{tr.note}</div>}
+      </TruthSection>
+
+      <TruthSection title="Materials — your shelf in this take">
+        {mat?.roles?.length ? (
+          <TruthKV k={`${mat.usedMaterialIds?.length ?? mat.roles.length} used`} v={mat.roles.filter(Boolean).join(', ')} />
+        ) : (
+          <div className="text-slate-500">{mat?.note ?? 'no material log stored'}</div>
+        )}
+      </TruthSection>
+
+      <TruthSection title="Render">
+        {rend.note ? (
+          <div className="text-slate-500">{rend.note}</div>
+        ) : (
+          <>
+            <TruthKV k="Engine class" v={rend.engineClass ?? '—'} />
+            <TruthKV k="Takes" v={`${rend.takesRendered ?? 1} rendered · ranked by ${rend.rankedBy ?? 'single take'}`} />
+            {rend.earRead && <TruthKV k="Ear read" v={rend.earRead} />}
+            {rend.qc && <TruthKV k="QC" v={`${rend.qc.verdict ?? 'not measured'}${rend.qc.integratedLufs != null ? ` · ${rend.qc.integratedLufs} LUFS` : ''}`} />}
+          </>
+        )}
+        {proof.master && !proof.master.note && (
+          <TruthKV k="Master" v={`${proof.master.qcVerdict ?? 'not measured'}${proof.master.measuredLufs != null ? ` · ${proof.master.measuredLufs} LUFS` : ''}`} />
+        )}
+      </TruthSection>
+
+      <TruthSection title="Lane — judged against your sound">
+        <TruthKV k="Lane score" v={proof.lane?.score != null ? `${proof.lane.score}/100` : 'not yet listened-back'} />
+        {proof.lane?.judgedAgainst && <div className="text-slate-400">{proof.lane.judgedAgainst}</div>}
+        {proof.lane?.note && <div className="text-slate-500">{proof.lane.note}</div>}
+      </TruthSection>
+
+      <TruthSection title="A&R (advisory)">
+        <TruthKV k="Hit / viral" v={proof.ar?.hitScore != null ? `${proof.ar.hitScore} / ${proof.ar.viralScore ?? '—'}` : 'no read stored'} />
+        {proof.ar?.note && <div className="text-slate-500">{proof.ar.note}</div>}
+      </TruthSection>
+
+      <TruthSection title="Failed attempts">
+        {fails?.count ? (
+          <>
+            <TruthKV k="Failed renders" v={String(fails.count)} amber />
+            {fails.lastError && <div className="text-slate-400">Last: {fails.lastError}</div>}
+          </>
+        ) : (
+          <div className="text-slate-500">{fails?.note ?? 'none on record'}</div>
+        )}
+      </TruthSection>
+
+      {proof.whyThisWon && (
+        <div className="rounded-lg border border-emerald-500/25 bg-emerald-500/5 p-2.5 text-xs text-emerald-200">
+          <span className="font-medium">Why this take won:</span> {proof.whyThisWon}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function TruthSection({ title, children }: { title: string; children: React.ReactNode }) {
+  return (
+    <div className="rounded-lg border border-white/10 bg-black/20 p-2.5">
+      <div className="mb-1 text-[10px] font-medium uppercase tracking-widest text-slate-500">{title}</div>
+      <div className="space-y-0.5 text-xs text-slate-300">{children}</div>
+    </div>
+  );
+}
+
+function TruthKV({ k, v, amber }: { k: string; v: React.ReactNode; amber?: boolean }) {
+  return (
+    <div className="flex items-baseline justify-between gap-3">
+      <span className="shrink-0 text-slate-500">{k}</span>
+      <span className={`text-right ${amber ? 'text-amber-300' : 'text-slate-200'}`}>{v}</span>
     </div>
   );
 }

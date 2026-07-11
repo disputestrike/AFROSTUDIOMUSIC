@@ -113,6 +113,7 @@ export const STUDIO_CHAT_TOOLS = [
     parameters: {
       type: 'object',
       properties: { languages: { type: 'array', items: { type: 'string' }, description: 'HARD constraint: ONLY these language codes (pcm/en/yo/ig/ha/...) may appear in the writing' },
+        genre: { type: 'string', description: "The lane for the writing (e.g. amapiano, afrobeats) — PASS IT whenever the user names one: it syncs the session project's genre so briefs, lane context, and learned references pull the RIGHT lane. Omit to keep the project's current genre." },
         count: { type: 'integer', minimum: 1, maximum: 50, default: 8 },
         excludeIds: { type: 'array', items: { type: 'string' } },
         refineFrom: { type: 'array', items: { type: 'string' }, description: 'REFINE/REGENERATE MODE: the TEXT of the CURRENT hooks (from WORKSPACE_CONTEXT.hooks[].text). Pass these to get SHARPER versions in the SAME concept/theme/lane/hook-shape/language-mix — keep what works, fix the weak lines, no verbatim repeats, no drift to a new idea. OMIT for a fresh first generation or when the user explicitly wants a NEW/different concept.' },
@@ -149,6 +150,7 @@ export const STUDIO_CHAT_TOOLS = [
     parameters: {
       type: 'object',
       properties: { languages: { type: 'array', items: { type: 'string' }, description: 'HARD constraint: ONLY these language codes (pcm/en/yo/ig/ha/...) may appear in the writing' },
+        genre: { type: 'string', description: "The lane for the writing (e.g. amapiano, afrobeats) — PASS IT whenever the user names one: it syncs the session project's genre so briefs and learned references pull the RIGHT lane. Omit to keep the project's current genre." },
         hookId: { type: 'string' },
         cleanVersion: { type: 'boolean', default: true },
       },

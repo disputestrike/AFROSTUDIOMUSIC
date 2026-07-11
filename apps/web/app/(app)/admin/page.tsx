@@ -165,6 +165,8 @@ export default function AdminPage() {
           ))}
       </div>
 
+      <LakeJobs />
+
       <WriterAb />
 
       <EngineStatus />
@@ -224,6 +226,64 @@ export default function AdminPage() {
           ))}
         </tbody>
       </table>
+    </div>
+  );
+}
+
+/**
+ * DATA-LAKE JOBS — the backfill buttons, one click each. Every task lands on the
+ * worker's lake queue (never contends with renders); results show up on the Lake
+ * page's Training utilization table a few minutes later.
+ */
+const LAKE_TASKS = [
+  { task: 'measure-backfill', label: 'Measure backfill', what: 'deep-measure owned references + beats the ear missed' },
+  { task: 'learn-backfill', label: 'Learn backfill', what: 'learn uploaded songs that never got a listen' },
+  { task: 'listen-back', label: 'Listen back', what: 're-score the back-catalog; retro-promote QC passes' },
+  { task: 'refile-references', label: 'Refile scan', what: 'propose lane moves for misfiled history (approve below)' },
+  { task: 'mine-lexicon', label: 'Mine lexicon', what: 'harvest vocabulary from owned-upload transcripts' },
+] as const;
+
+function LakeJobs() {
+  const api = useApi();
+  const [busy, setBusy] = useState('');
+  const [msg, setMsg] = useState('');
+
+  async function run(task: string) {
+    setBusy(task);
+    setMsg('');
+    try {
+      const r = await api.post<{ queued: string; note?: string }>('/admin/run', { task });
+      setMsg(`${r.queued} queued${r.note ? ` — ${r.note}` : ''}`);
+    } catch (e) {
+      const m = String((e as Error)?.message ?? e);
+      const hint = /^40[13]\b/.test(m) ? ' — check the admin key above' : '';
+      setMsg(`${task} failed: ${m.slice(0, 140)}${hint}`);
+    } finally {
+      setBusy('');
+    }
+  }
+
+  return (
+    <div className="mt-10 rounded-2xl border border-slate-800 bg-slate-900/40 p-4">
+      <h2 className="font-display text-2xl">Data-lake jobs <span className="text-sm font-normal text-slate-500">— run the compounding passes NOW instead of waiting for tonight.</span></h2>
+      <div className="mt-3 grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+        {LAKE_TASKS.map((t) => (
+          <div key={t.task} className="flex items-start justify-between gap-2 rounded-xl border border-slate-800 bg-slate-950/60 p-3">
+            <div>
+              <div className="text-sm text-slate-200">{t.label}</div>
+              <div className="mt-0.5 text-[11px] leading-snug text-slate-500">{t.what}</div>
+            </div>
+            <button
+              onClick={() => void run(t.task)}
+              disabled={!!busy}
+              className="shrink-0 rounded-full border border-slate-700 px-3 py-1 text-xs hover:border-afrobrand-500 disabled:opacity-50"
+            >
+              {busy === t.task ? 'Queuing…' : 'Run'}
+            </button>
+          </div>
+        ))}
+      </div>
+      {msg && <div className="mt-3 text-xs text-slate-400">{msg}</div>}
     </div>
   );
 }

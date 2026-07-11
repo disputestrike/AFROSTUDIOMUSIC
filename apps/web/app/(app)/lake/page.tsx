@@ -32,6 +32,113 @@ interface Lake {
   orchestration: Record<string, string>;
 }
 
+/**
+ * TRAINING UTILIZATION — the owner's question, per reference: has it been USED
+ * or not, and if not, why (unmeasured? wrong lane? no material?). Every column
+ * is honest: harvested "?" means unknown, never a fake ✗.
+ */
+interface UtilRow {
+  id: string;
+  title: string | null;
+  genre: string | null;
+  origin: 'owned-upload' | 'facts-only' | 'self-generated' | 'zap';
+  measured: boolean;
+  deepMeasured: boolean;
+  usedInRenders: number;
+  lastUsedAt: string | null;
+  harvested: boolean | null;
+  needsBackfill: boolean;
+  genreMismatch: { detected: string; filed: string | null } | null;
+  learnedAt: string;
+}
+
+const ORIGIN_LABEL: Record<UtilRow['origin'], string> = {
+  'owned-upload': 'owned upload',
+  'facts-only': 'facts only',
+  'self-generated': 'self-generated',
+  zap: 'zap',
+};
+
+function Utilization() {
+  const api = useApi();
+  const [rows, setRows] = useState<UtilRow[] | null>(null);
+  const [note, setNote] = useState('');
+  const [uErr, setUErr] = useState('');
+
+  useEffect(() => {
+    api.get<{ rows: UtilRow[]; note: string }>('/taste/utilization')
+      .then((d) => { setRows(d.rows); setNote(d.note); })
+      .catch((e) => setUErr((e as Error).message.slice(0, 140)));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  if (uErr) return <div className="mt-6 rounded-2xl glass p-4 text-xs text-red-300">Training utilization unavailable: {uErr}</div>;
+  if (!rows) return null;
+
+  const unused = rows.filter((r) => r.usedInRenders === 0).length;
+  return (
+    <div className="mt-6 rounded-2xl glass p-4">
+      <div className="flex flex-wrap items-baseline gap-2">
+        <div className="font-grotesk text-sm font-medium text-slate-200">Training utilization</div>
+        <span className="text-[11px] text-slate-500">{rows.length} references · {unused} unused</span>
+      </div>
+      <p className="mt-1 text-[11px] leading-snug text-slate-500">
+        References with 0 uses in their lane are usually either unmeasured (run Measure backfill on the Admin page) or filed in the wrong genre (check Re-file review).
+      </p>
+      {rows.length === 0 ? (
+        <div className="mt-3 text-xs text-slate-500">Nothing to show yet — teach it a song first.</div>
+      ) : (
+        <div className="mt-3 max-h-96 overflow-y-auto overflow-x-auto">
+          <table className="w-full text-left text-xs">
+            <thead className="sticky top-0 bg-ink/90 text-[10px] uppercase tracking-widest text-slate-500">
+              <tr>
+                <th className="py-1.5 pr-2">Reference</th>
+                <th className="pr-2">Origin</th>
+                <th className="pr-2">Measured</th>
+                <th className="pr-2">Used</th>
+                <th className="pr-2">Harvested</th>
+                <th>Flags</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((r) => (
+                <tr key={r.id} className="border-t border-white/5">
+                  <td className="max-w-[220px] truncate py-1.5 pr-2 text-slate-300" title={r.title ?? undefined}>
+                    {r.title || '(untitled)'} {r.genre && <span className="text-slate-500">· {r.genre.replace(/_/g, ' ')}</span>}
+                  </td>
+                  <td className="pr-2"><span className="rounded bg-white/5 px-1.5 py-0.5 text-[10px] text-slate-400">{ORIGIN_LABEL[r.origin]}</span></td>
+                  <td className="pr-2">
+                    {r.measured
+                      ? <span className="text-emerald-300">✓{r.deepMeasured ? ' deep' : ''}</span>
+                      : <span className="text-slate-500">✗</span>}
+                  </td>
+                  <td className="pr-2">
+                    {r.usedInRenders > 0
+                      ? <span className="text-emerald-300">{r.usedInRenders} render{r.usedInRenders === 1 ? '' : 's'}</span>
+                      : <span className="text-red-400">0</span>}
+                  </td>
+                  <td className="pr-2" title={r.harvested === null ? 'unknown — harvest rows don’t carry a reference id' : undefined}>
+                    {r.harvested === true ? <span className="text-emerald-300">✓</span> : r.harvested === false ? <span className="text-slate-600">—</span> : <span className="text-slate-500">?</span>}
+                  </td>
+                  <td className="space-x-1">
+                    {r.needsBackfill && <span className="rounded bg-amber-500/15 px-1.5 py-0.5 text-[10px] text-amber-300">⚠ needs backfill</span>}
+                    {r.genreMismatch && (
+                      <span className="rounded bg-amber-500/15 px-1.5 py-0.5 text-[10px] text-amber-300" title="the recipe's detected genre disagrees with the filed lane">
+                        filed {(r.genreMismatch.filed ?? '?').replace(/_/g, ' ')} · ear says {r.genreMismatch.detected.replace(/_/g, ' ')}
+                      </span>
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+      {note && <p className="mt-2 text-[10px] leading-snug text-slate-600">{note}</p>}
+    </div>
+  );
+}
+
 const KIND_META: Record<string, { label: string; icon: React.ReactNode; hint: string }> = {
   heardSongs: { label: 'Heard songs', icon: <Music2 className="h-4 w-4" />, hint: 'deep-listened references (uploads + listens)' },
   lyricCraft: { label: 'Lyric craft', icon: <BookOpenText className="h-4 w-4" />, hint: 'studied lessons — patterns, never words' },
@@ -110,6 +217,8 @@ export default function LakePage() {
 
       {err && <div className="mt-6 rounded-xl border border-red-500/30 bg-red-500/10 p-4 text-sm text-red-300">{err}</div>}
       {!lake && !err && <div className="mt-8 flex items-center gap-2 text-sm text-slate-500"><Loader2 className="h-4 w-4 animate-spin" /> Reading the lake…</div>}
+
+      <Utilization />
 
       {lake && (
         <>

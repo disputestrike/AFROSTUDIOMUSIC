@@ -2,6 +2,7 @@ import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { prisma } from '@afrohit/db';
 import { scoreItems } from '@afrohit/ai';
+import { referenceOrigin } from '@afrohit/shared';
 import { lexiconStats } from '../lib/lexicon';
 import { requireAuth } from '../middleware/auth';
 
@@ -130,6 +131,118 @@ export default async function taste(app: FastifyInstance) {
         staticLibraries: 'Sound DNA (23 genres + trends enrichment) + hit-craft (8 lyric modes) compiled into every prompt',
         wordBank: 'lexiconPalette → a rotating slice of authentic terms (per language + mood) injected into every hook + lyric so vocabulary stays wide',
       },
+    };
+  });
+
+  /**
+   * TRAINING UTILIZATION — the owner's question answered per reference: is it
+   * measured (the DSP ear actually ran), deep-measured, where it came from, how
+   * many renders it actually shaped, was material harvested from it, and does it
+   * still need a backfill. Usage comes from ONE scan of the last 300 music
+   * renders' trainingUsage (counted in memory — never a query per reference).
+   */
+  app.get('/utilization', async (req) => {
+    const { workspaceId } = requireAuth(req);
+    const [refs, renders, materials] = await Promise.all([
+      prisma.soundReference.findMany({
+        // lyric-craft + trend snapshots are non-audio lessons — utilization is
+        // about SOUND references (heard/facts/self-trained/zapped lanes).
+        where: { workspaceId, NOT: [{ sourceUrl: { startsWith: 'lyric:' } }, { sourceUrl: { startsWith: 'trend:' } }] },
+        orderBy: { createdAt: 'desc' },
+        take: 200,
+        select: { id: true, title: true, genre: true, sourceUrl: true, recipe: true, createdAt: true },
+      }),
+      prisma.providerJob.findMany({
+        where: { workspaceId, kind: 'music' },
+        orderBy: { createdAt: 'desc' },
+        take: 300,
+        select: { inputJson: true, createdAt: true },
+      }),
+      // Harvest linkage: SOME material writers stamp meta.sourceUrl with the audio
+      // they were split from — the only honest reference↔material key we have.
+      prisma.materialAsset.findMany({
+        where: { workspaceId },
+        orderBy: { createdAt: 'desc' },
+        take: 1000,
+        select: { meta: true },
+      }),
+    ]);
+
+    // One pass over render history → Map<refId, {count, lastAt}>.
+    const usage = new Map<string, { count: number; lastAt: Date }>();
+    for (const j of renders) {
+      const tu = ((j.inputJson ?? {}) as { trainingUsage?: { referenceIds?: string[] } }).trainingUsage;
+      for (const id of tu?.referenceIds ?? []) {
+        const cur = usage.get(id);
+        if (cur) { cur.count++; if (j.createdAt > cur.lastAt) cur.lastAt = j.createdAt; }
+        else usage.set(id, { count: 1, lastAt: j.createdAt });
+      }
+    }
+    const harvestedUrls = new Set<string>();
+    for (const m of materials) {
+      const u = ((m.meta ?? {}) as { sourceUrl?: string }).sourceUrl;
+      if (u) harvestedUrls.add(u);
+    }
+
+    // Same normalizer family as the learn path ('Afro Fusion' → 'afro_fusion') so
+    // a label VARIANT never reads as a lane mismatch.
+    const norm = (g: string) => g.toLowerCase().trim().replace(/[\s/-]+/g, '_').replace(/[^a-z_]/g, '');
+
+    type RecipeView = {
+      source?: string;
+      genre?: string;
+      audioMissing?: boolean;
+      deepMeasured?: boolean;
+      measured?: { engineOk?: boolean };
+      refile?: { status?: string; proposedLane?: string };
+    };
+    return {
+      rows: refs.map((r: { id: string; title: string | null; genre: string | null; sourceUrl: string; recipe: unknown; createdAt: Date }) => {
+        const rec = (r.recipe ?? {}) as RecipeView;
+        // 'zap' is decided HERE (metadata-learned lane, no owned audio); the
+        // shared referenceOrigin() covers the other three origins.
+        const origin = r.sourceUrl.startsWith('zap:') || rec.source === 'zap' ? ('zap' as const) : referenceOrigin(r.sourceUrl, rec);
+        // REAL measurement = the DSP ear ran (same predicate as learnedUsage) —
+        // never the presence of LLM-guessed prose.
+        const measured = rec.measured?.engineOk === true;
+        const u = usage.get(r.id);
+        const audioUrl = r.sourceUrl.replace(/^facts:/, '');
+        // harvested: true = a material row is stamped with this exact source URL;
+        // null = UNKNOWN (most harvest writers don't stamp it — absence proves
+        // nothing); false only for zap rows (no audio was ever held, nothing to
+        // harvest). Honest three states, per the grounding doctrine.
+        const harvested = harvestedUrls.has(audioUrl) ? true : origin === 'zap' ? false : null;
+        // Mirrors measure-backfill's own targeting: plain-URL audio refs only
+        // ('zap:' has no audio behind the marker; 'facts:' audio is purged after
+        // its at-creation pass; audioMissing rows are tombstoned — never retried).
+        const backfillable = !r.sourceUrl.startsWith('zap:') && !r.sourceUrl.startsWith('facts:') && !rec.audioMissing;
+        // Lane mismatch: a PENDING refile proposal outranks; a decided one
+        // (approved/rejected — the user's ear spoke) silences the recipe's stale
+        // label; else compare the recipe's own detected genre to the filed lane.
+        const refileStatus = rec.refile?.status;
+        const detected =
+          refileStatus === 'proposed' && rec.refile?.proposedLane ? rec.refile.proposedLane
+          : refileStatus === 'approved' || refileStatus === 'rejected' ? null
+          : rec.genre && r.genre && norm(rec.genre) !== norm(r.genre) ? rec.genre
+          : null;
+        return {
+          id: r.id,
+          title: r.title,
+          genre: r.genre,
+          origin,
+          measured,
+          // deep pass really landed (tombstoned give-ups also stamp deepMeasured).
+          deepMeasured: rec.deepMeasured === true && !rec.audioMissing,
+          usedInRenders: u?.count ?? 0,
+          lastUsedAt: u?.lastAt ?? null,
+          harvested,
+          needsBackfill: backfillable && !measured,
+          genreMismatch: detected ? { detected, filed: r.genre } : null,
+          learnedAt: r.createdAt,
+        };
+      }),
+      window: { renders: renders.length, materialRows: materials.length },
+      note: 'usedInRenders counts the last 300 music renders (trainingUsage). harvested "?" = unknown — harvest rows don’t carry a reference id, so only material stamped with the same source URL can be matched honestly.',
     };
   });
 

@@ -23,7 +23,7 @@ import { lexiconPalette } from '../lib/lexicon';
 import { laneContext } from '../lib/lane-context';
 import { fuseSoundDna } from '../lib/fuse';
 import { presongIntelligence } from '../lib/presong';
-import { kitRolesFor, homeKeyFor, pickMaterial, claudeArrangement } from '../lib/material-plan';
+import { kitRolesFor, homeKeyFor, pickMaterial, claudeArrangement, ownShelfRoles } from '../lib/material-plan';
 import { autoMaterialBeat } from '../lib/material-auto';
 import { memoryContext, recordFeedback } from './artist-memory';
 
@@ -99,13 +99,13 @@ export async function runChatTool(args: Ctx & { name: string; args: Record<strin
     case 'polish_brief':
       return polishBrief(ctx, String(a.rawIdea ?? ''));
     case 'generate_hooks':
-      return generateHooks(ctx, Number(a.count ?? 8), a.languages as string[] | undefined, a.refineFrom as string[] | undefined, selectionsOf(a));
+      return generateHooks(ctx, Number(a.count ?? 8), a.languages as string[] | undefined, a.refineFrom as string[] | undefined, selectionsOf(a), a.genre ? String(a.genre) : undefined);
     case 'score_hooks':
       return scoreHooks(ctx, (a.hookIds as string[]) ?? []);
     case 'approve_hook':
       return approveHook(ctx, String(a.hookId));
     case 'generate_lyrics':
-      return generateLyrics(ctx, String(a.hookId), Boolean(a.cleanVersion ?? true), a.languages as string[] | undefined, selectionsOf(a));
+      return generateLyrics(ctx, String(a.hookId), Boolean(a.cleanVersion ?? true), a.languages as string[] | undefined, selectionsOf(a), a.genre ? String(a.genre) : undefined);
     case 'create_beat_job':
       return createBeatJob(ctx, a as never);
     case 'render_demo_vocal':
@@ -237,8 +237,14 @@ function selectionsOf(a: Record<string, unknown>): Selections | undefined {
   return Object.values(sel).some(Boolean) ? sel : undefined;
 }
 
-async function generateHooks(ctx: Ctx, count: number, languages?: string[], refineFrom?: string[], selections?: Selections) {
+async function generateHooks(ctx: Ctx, count: number, languages?: string[], refineFrom?: string[], selections?: Selections, genre?: string) {
   if (!ctx.projectId) return { error: 'no_project_in_thread' };
+  // CHAT LANE TRUTH (audit): on the freeform path the scratch project's genre
+  // only ever synced inside createBeatJob — so hooks briefed in a STALE lane.
+  // When the tool names a genre, sync the project FIRST (same one-liner
+  // createBeatJob uses) so every read below — lane context, learned references,
+  // hard constraints — pulls the RIGHT lane.
+  if (genre) await prisma.project.update({ where: { id: ctx.projectId }, data: { genre } }).catch(() => {});
   // REFINE MODE: when the user hits "Regenerate" on hooks that already exist, the
   // chat model passes their TEXT here. The writer then sharpens THESE in the same
   // lane instead of brainstorming an unrelated set. Cap + clean so a huge/garbage
@@ -373,22 +379,30 @@ async function approveHook(ctx: Ctx, hookId: string) {
   return { hookId, songId: song.id };
 }
 
-async function generateLyrics(ctx: Ctx, hookId: string, cleanVersion: boolean, languages?: string[], selections?: Selections) {
+async function generateLyrics(ctx: Ctx, hookId: string, cleanVersion: boolean, languages?: string[], selections?: Selections, genre?: string) {
   const hook = await prisma.hookCandidate.findFirstOrThrow({
     where: { id: hookId, project: { workspaceId: ctx.workspaceId } },
     include: { project: { include: { artist: true, briefs: { take: 1, orderBy: { createdAt: 'desc' } } } } },
   });
+  // CHAT LANE TRUTH (audit, same as generate_hooks): when the tool names a genre
+  // that differs from the (possibly stale scratch) project's, sync the project
+  // first — and since hook.project was fetched BEFORE the sync, laneGenre below
+  // is the single lane truth every brief in this take reads from.
+  if (genre && genre !== hook.project.genre) {
+    await prisma.project.update({ where: { id: hook.projectId }, data: { genre } }).catch(() => {});
+  }
+  const laneGenre = genre ?? hook.project.genre;
   const charge = await ctx.app.chargeCredits({ workspaceId: ctx.workspaceId, key: 'lyrics_full' });
   if (!charge.ok) return { error: 'insufficient_credits', ...charge };
 
   const lmood = (hook.project.briefs[0] as { mood?: string } | undefined)?.mood;
   const lyricSoundDna = fuseSoundDna({
-    extra: hardConstraints(hook.project.genre, languages),
+    extra: hardConstraints(laneGenre, languages),
     freshness: await freshnessBrief(ctx.workspaceId),
     palette: await lexiconPalette({ workspaceId: ctx.workspaceId, languages: languages?.length ? languages : hook.project.artist.languages, mood: lmood, rotate: Date.now() % 97 }),
-    dna: laneDnaBrief(hook.project.genre),
-    learnedRef: await learnedReferenceBrief(ctx.workspaceId, hook.project.genre),
-    learnedCraft: await learnedLyricCraftBrief(ctx.workspaceId, hook.project.genre),
+    dna: laneDnaBrief(laneGenre),
+    learnedRef: await learnedReferenceBrief(ctx.workspaceId, laneGenre),
+    learnedCraft: await learnedLyricCraftBrief(ctx.workspaceId, laneGenre),
     hitCraft: prompts.hitCraftBrief('lyric', lmood),
   }, 6000); // lyrics: leaner than hooks — a huge input + long output JSON breaks more often
 
@@ -407,7 +421,7 @@ async function generateLyrics(ctx: Ctx, hookId: string, cleanVersion: boolean, l
     if (out?.body && process.env.WRITER_TWO_PASS !== '0') {
       const polished = await generateJson<{ title: string; body: string; cleanVersion?: string; whatChanged?: string[]; captionLine?: string }>({
         system: prompts.LYRIC_POLISH_SYSTEM,
-        user: prompts.lyricPolishPrompt({ draftTitle: out.title, draftBody: out.body, genre: hook.project.genre, mood: lmood, languages: languages?.length ? languages : hook.project.artist.languages }),
+        user: prompts.lyricPolishPrompt({ draftTitle: out.title, draftBody: out.body, genre: laneGenre, mood: lmood, languages: languages?.length ? languages : hook.project.artist.languages }),
         temperature: 0.7,
         maxTokens: 5_000,
         timeoutMs: 90_000,
@@ -438,7 +452,7 @@ async function generateLyrics(ctx: Ctx, hookId: string, cleanVersion: boolean, l
           hookText: hook.text,
           cleanVersion,
           languages: languages?.length ? languages : hook.project.artist.languages,
-          soundDna: hardConstraints(hook.project.genre, languages),
+          soundDna: hardConstraints(laneGenre, languages),
         }),
       temperature: 0.7,
       maxTokens: 5_000,
@@ -496,7 +510,13 @@ async function createBeatJob(ctx: Ctx, a: { genre: string; fusionGenres?: string
   // "no music engine configured". Assemble from the artist's material instead.
   // Sung vocals aren't wired to the own engine yet — the bed renders and we SAY
   // SO honestly rather than shipping an instrumental labeled as a song.
-  if (a.songEngine === 'own') {
+  // MATERIAL-FIRST AUTO (audit: 'auto' ALWAYS rented a provider): engine unset/
+  // 'auto' + INSTRUMENTAL ask + a stocked shelf (≥ OWN_ENGINE_MIN_ROLES distinct
+  // roles for this genre) → route here too, and SAY so (materialSource).
+  // withVocals NEVER auto-routes here — the own engine cannot sing.
+  const engineUnset = !a.songEngine || (a.songEngine as string) === 'auto';
+  const autoOwnRoles = engineUnset && !a.withVocals && a.genre ? await ownShelfRoles(ctx.workspaceId, a.genre) : null;
+  if (a.songEngine === 'own' || autoOwnRoles) {
     const ownCharge = await ctx.app.chargeCredits({ workspaceId: ctx.workspaceId, key: 'beat_idea_short_30s' });
     if (!ownCharge.ok) return { error: 'insufficient_credits', ...ownCharge };
     const ownBpm = a.bpm ?? genreSignature(a.genre).bpm;
@@ -506,7 +526,7 @@ async function createBeatJob(ctx: Ctx, a: { genre: string; fusionGenres?: string
     const ownJob = await prisma.providerJob.create({
       data: {
         workspaceId: ctx.workspaceId, projectId: ctx.projectId, kind: 'music', provider: 'afrohit-own', status: 'QUEUED',
-        inputJson: { ownEngine: true, genre: a.genre, bpm: ownBpm, _charge: { key: 'beat_idea_short_30s', multiplier: 1 } } as never,
+        inputJson: { ownEngine: true, genre: a.genre, bpm: ownBpm, ...(autoOwnRoles ? { autoOwn: true } : {}), _charge: { key: 'beat_idea_short_30s', multiplier: 1 } } as never,
       },
     });
     await enqueue({
@@ -515,8 +535,11 @@ async function createBeatJob(ctx: Ctx, a: { genre: string; fusionGenres?: string
     });
     return {
       jobId: ownJob.id, status: 'queued', engine: 'afrohit-own-v1',
+      ...(autoOwnRoles ? { materialSource: `own-shelf (${autoOwnRoles} roles)` } : {}),
       note: a.withVocals
         ? 'Our engine builds the INSTRUMENTAL bed from your own + synthesized material — sung vocals are not wired to it yet. Add a vocal by upload, or pick MiniMax for a fully sung take.'
+        : autoOwnRoles
+        ? `The shelf is stocked — own-shelf (${autoOwnRoles} roles) of your own material — so this beat is assembled from YOUR OWN material instead of renting a provider. Poll the job.`
         : 'Building the beat from your own + synthesized material (owned engine). Poll the job.',
     };
   }
@@ -595,6 +618,16 @@ async function createBeatJob(ctx: Ctx, a: { genre: string; fusionGenres?: string
     multiplier: Math.max(1, a.candidates ?? 1),
   });
   if (!charge.ok) return { error: 'insufficient_credits', ...charge };
+  // ONE final tag set, stored AND sent — the Truth report reads the stored copy
+  // (promptStyleTags) and needs songId to FIND this job at all; the engine
+  // renders from the payload copy. They must never diverge.
+  const finalDnaTags = [
+    // Voice + language identity as TAGS: uncapped by the vibe budget, so
+    // they always reach the engine. The Igbo/Yoruba pronunciation belts
+    // ride here — the whole reason "ig" was being sung with Bantu phonetics.
+    ...[voiceVocalTag(a.voice), languageVocalTag(a.languages)].filter((t): t is string => !!t),
+    ...dnaTags, ...styleHints.slice(0, 3), ...laneSteer,
+  ].slice(0, 12);
   const job = await prisma.providerJob.create({
     data: {
       workspaceId: ctx.workspaceId,
@@ -604,7 +637,7 @@ async function createBeatJob(ctx: Ctx, a: { genre: string; fusionGenres?: string
       status: 'QUEUED',
       // trainingUsage = proof of which references shaped this render (parity with
       // the REST path); _charge lets the worker REFUND on failure.
-      inputJson: { ...a, trainingUsage, _charge: { key: a.withVocals || a.withStems ? 'full_song_demo' : 'beat_idea_short_30s', multiplier: Math.max(1, a.candidates ?? 1) } } as never,
+      inputJson: { ...a, songId, trainingUsage, dnaTags: finalDnaTags, _charge: { key: a.withVocals || a.withStems ? 'full_song_demo' : 'beat_idea_short_30s', multiplier: Math.max(1, a.candidates ?? 1) } } as never,
     },
   });
   await enqueue({
@@ -629,13 +662,7 @@ async function createBeatJob(ctx: Ctx, a: { genre: string; fusionGenres?: string
         withStems: a.withStems ?? !a.withVocals,
         withVocals: a.withVocals ?? false,
         songEngine: a.songEngine,
-        dnaTags: [
-          // Voice + language identity as TAGS: uncapped by the vibe budget, so
-          // they always reach the engine. The Igbo/Yoruba pronunciation belts
-          // ride here — the whole reason "ig" was being sung with Bantu phonetics.
-          ...[voiceVocalTag(a.voice), languageVocalTag(a.languages)].filter((t): t is string => !!t),
-          ...dnaTags, ...styleHints.slice(0, 3), ...laneSteer,
-        ].slice(0, 12),
+        dnaTags: finalDnaTags,
         languages: a.languages?.length ? a.languages : undefined,
         lyrics,
         blueprint: blueprint ?? undefined,
@@ -856,7 +883,9 @@ async function runDropTool(ctx: Ctx, a: { theme: string; count?: number; genre?:
   for (let i = 0; i < count; i++) {
     // Languages are LAW for the writers too — omitting them here left chat drops
     // writing in the artist-profile defaults regardless of what the user picked.
-    const hk = (await generateHooks(ctx, 10, a.languages)) as { hooks?: Array<{ id: string; text: string; score: number | null }> };
+    // The genre rides along the same way (lane truth): drops synced the project
+    // genre only at createBeatJob — AFTER the hooks were already written stale.
+    const hk = (await generateHooks(ctx, 10, a.languages, undefined, undefined, a.genre)) as { hooks?: Array<{ id: string; text: string; score: number | null }> };
     let hooks = hk?.hooks ?? [];
     if (!hooks.length) continue;
     if (hooks.every((h) => h.score == null)) {

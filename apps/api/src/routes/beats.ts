@@ -3,7 +3,8 @@ import { prisma } from '@afrohit/db';
 import { generateBeatInputSchema, attachBeatUploadSchema, genreSignature } from '@afrohit/shared';
 import { enrichLyricsForVocals, defaultSongEngine, defaultInstrumentalEngine } from '@afrohit/ai';
 import { learnedReferenceBrief, learnedStyleTags, learnedMeasuredTags, learnedUsage } from '../lib/learned';
-import { enqueueHarvest } from '../lib/harvest';
+import { enqueueHarvest, enqueueLearn } from '../lib/harvest';
+import { ownShelfRoles } from '../lib/material-plan';
 import { laneDna } from '../lib/lane-pipeline';
 import { requireAuth } from '../middleware/auth';
 import { enqueue, QUEUES } from '../lib/queue';
@@ -130,12 +131,18 @@ export default async function beats(app: FastifyInstance) {
       // model — the "hard musical control" path. Full sung vocals aren't wired to
       // the own engine yet, so 'own' produces the INSTRUMENTAL bed (vocals via
       // upload or a separate render).
-      if (input.songEngine === 'own') {
+      // MATERIAL-FIRST AUTO (audit: 'auto' ALWAYS rented a provider): engine
+      // unset + INSTRUMENTAL ask + a stocked shelf (≥ OWN_ENGINE_MIN_ROLES
+      // distinct roles for this genre) → the same own-engine path, and the
+      // response SAYS so (materialSource). withVocals NEVER auto-routes here —
+      // the own engine cannot sing; that stays with the providers.
+      const autoOwnRoles = !input.songEngine && !input.withVocals ? await ownShelfRoles(workspaceId, genre) : null;
+      if (input.songEngine === 'own' || autoOwnRoles) {
         const ownBpm = input.bpm ?? genreSignature(genre).bpm;
         const ownJob = await prisma.providerJob.create({
           data: {
             workspaceId, projectId: project.id, kind: 'music', provider: 'afrohit-own', status: 'QUEUED',
-            inputJson: { ownEngine: true, genre, bpm: ownBpm, _charge: { key: 'beat_idea_short_30s', multiplier: 1 } } as never,
+            inputJson: { ownEngine: true, genre, bpm: ownBpm, ...(autoOwnRoles ? { autoOwn: true } : {}), _charge: { key: 'beat_idea_short_30s', multiplier: 1 } } as never,
           },
         });
         await enqueue({
@@ -143,9 +150,23 @@ export default async function beats(app: FastifyInstance) {
           payload: { jobId: ownJob.id, workspaceId, projectId: project.id, songId: input.songId, genre, bpm: ownBpm, melodyPrompt: genreSignature(genre).melodyPrompt },
         });
         reply.code(202);
-        return { jobId: ownJob.id, status: 'queued', engine: 'afrohit-own-v1', note: 'Building the beat from your own + synthesized material (owned engine). Poll the job.' };
+        return {
+          jobId: ownJob.id, status: 'queued', engine: 'afrohit-own-v1',
+          ...(autoOwnRoles ? { materialSource: `own-shelf (${autoOwnRoles} roles)` } : {}),
+          note: autoOwnRoles
+            ? `Your ${genre.replace(/_/g, ' ')} shelf is stocked — own-shelf (${autoOwnRoles} roles) — so this beat is assembled from YOUR OWN material instead of renting a provider. Poll the job.`
+            : 'Building the beat from your own + synthesized material (owned engine). Poll the job.',
+        };
       }
 
+      // ONE final tag set, stored AND sent — the Truth report reads the stored
+      // copy (promptStyleTags), the engine renders from the payload copy; they
+      // must never diverge.
+      const finalDnaTags = [
+        ...[voiceVocalTag(input.voice), input.withVocals ? languageVocalTag(langs) : null].filter((t): t is string => !!t),
+        ...dnaTags,
+        ...styleHints.slice(0, 3),
+      ];
       const job = await prisma.providerJob.create({
         data: {
           workspaceId,
@@ -154,7 +175,7 @@ export default async function beats(app: FastifyInstance) {
           provider: input.withVocals ? input.songEngine ?? defaultSongEngine() : defaultInstrumentalEngine(),
           status: 'QUEUED',
           // _charge lets the worker REFUND this on failure (charge-before-enqueue).
-          inputJson: { ...input, trainingUsage, _charge: { key: input.withVocals || input.withStems ? 'full_song_demo' : 'beat_idea_short_30s', multiplier: Math.max(1, input.candidates ?? 1) } } as never,
+          inputJson: { ...input, genre, trainingUsage, dnaTags: finalDnaTags, _charge: { key: input.withVocals || input.withStems ? 'full_song_demo' : 'beat_idea_short_30s', multiplier: Math.max(1, input.candidates ?? 1) } } as never,
         },
       });
 
@@ -184,11 +205,7 @@ export default async function beats(app: FastifyInstance) {
             vibePrompt: [input.vibePrompt, input.influence ? `in the vibe/lane of ${input.influence} (capture the energy and production feel, never copy)` : null].filter(Boolean).join('. ') || undefined,
             artistTone: project.artist.vocalTone,
             languages: langs,
-            dnaTags: [
-              ...[voiceVocalTag(input.voice), input.withVocals ? languageVocalTag(langs) : null].filter((t): t is string => !!t),
-              ...dnaTags,
-              ...styleHints.slice(0, 3),
-            ],
+            dnaTags: finalDnaTags,
           },
         },
       });
@@ -267,6 +284,10 @@ export default async function beats(app: FastifyInstance) {
 
       // Auto-harvest the artist's own uploaded beat into reusable role loops.
       await enqueueHarvest(app, { workspaceId, projectId: project.id, beatId: beat.id, sourceUrl: beat.url });
+      // AUTO-LEARN too (audit: harvested but never learned): the artist's own
+      // beat joins the learned lake as a SoundReference — genre hint = the
+      // project's genre, read by the analyze processor. Charged; best-effort.
+      await enqueueLearn(app, { workspaceId, projectId: project.id, url: beat.url, source: 'beat-upload' });
       reply.code(201);
       return { ...beat, songId };
     }

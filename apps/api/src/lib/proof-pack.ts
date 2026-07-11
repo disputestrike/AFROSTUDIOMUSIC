@@ -25,8 +25,43 @@ export async function assembleProofPack(workspaceId: string, songId: string): Pr
   if (!song) return null;
   const beat = song.beats[0];
   const master = song.masters[0];
-  const bm = (beat?.meta ?? {}) as { qc?: unknown; measured?: { engineOk?: boolean }; compliance?: unknown; laneRepair?: string | null; bestOf?: { tried?: number; rendered?: number; rankedBy?: string; laneScore?: number | null } };
+  const bm = (beat?.meta ?? {}) as { qc?: { verdict?: string; integratedLufs?: number | null } | null; measured?: { engineOk?: boolean }; compliance?: unknown; laneRepair?: string | null; bestOf?: { tried?: number; rendered?: number; rankedBy?: string; laneScore?: number | null }; assemblyLog?: Array<{ materialId?: string; role?: string }> };
   const mm = (master?.meta ?? {}) as { qc?: { integratedLufs?: number; verdict?: string } | null };
+
+  // THE REQUEST THAT MADE IT — read back from the stored render job, never
+  // re-derived. The routes stamp inputJson = {...input, trainingUsage}, and
+  // inputJson.songId is the link (same lookup will-it-blow.ts uses to keep the
+  // user's selections alive through the gate). A regenerate/transform job stores
+  // a thinner inputJson — absent fields stay null/[], never reconstructed.
+  const renderJob = await prisma.providerJob.findFirst({
+    where: { workspaceId, kind: 'music', inputJson: { path: ['songId'], equals: songId } },
+    orderBy: { createdAt: 'desc' },
+    select: { inputJson: true, createdAt: true },
+  });
+  const rj = (renderJob?.inputJson ?? {}) as {
+    genre?: string; fusionGenres?: string[]; mood?: string; languages?: string[]; voice?: string;
+    songEngine?: string; dnaTags?: string[]; vibePrompt?: string;
+    trainingUsage?: { referenceIds?: string[]; measured?: number; total?: number; pinnedReferenceId?: string | null };
+  };
+
+  // FAILED-PROVIDERS truth — every failed music job for this song, counted, with
+  // the last reason (already wall-scrubbed at the worker's markFailed chokepoint;
+  // one legacy path stored a bare string, so both shapes are read).
+  const [failedCount, lastFailed] = await Promise.all([
+    prisma.providerJob.count({ where: { workspaceId, kind: 'music', status: 'FAILED', inputJson: { path: ['songId'], equals: songId } } }),
+    prisma.providerJob.findFirst({
+      where: { workspaceId, kind: 'music', status: 'FAILED', inputJson: { path: ['songId'], equals: songId } },
+      orderBy: { createdAt: 'desc' },
+      select: { errorJson: true, finishedAt: true },
+    }),
+  ]);
+  const lastErr = lastFailed?.errorJson as { message?: string } | string | null | undefined;
+  const lastErrMsg = (typeof lastErr === 'string' ? lastErr : lastErr?.message ?? '').slice(0, 160) || null;
+
+  // SHELF PROOF — which of the artist's own materials are IN this take. The
+  // assembler writes the full transform log onto the beat (material.ts); a
+  // provider render simply has none, and we say so rather than imply shelf use.
+  const assembly = Array.isArray(bm.assemblyLog) ? bm.assemblyLog : [];
 
   // Lane grounding at proof time — WHO the profile that judged this song was.
   const refs = await prisma.soundReference.findMany({
@@ -50,9 +85,47 @@ export async function assembleProofPack(workspaceId: string, songId: string): Pr
 
   const gaps = (song.laneGaps ?? {}) as Record<string, unknown>;
   return {
-    proofPackVersion: 1,
+    proofPackVersion: 2,
     assembledAt: new Date().toISOString(),
     song: { id: song.id, title: song.lyric?.title || song.title, lane: song.project?.genre ?? null, bpm: song.project?.bpm ?? null },
+    // What the artist ASKED for vs what actually judged it — selected genre from
+    // the render job, effective genre from the project. A mismatch is a fact
+    // worth showing, not a bug to hide. §1.11: songEngine is a vendor id in
+    // storage, so it leaves here as a CLASS only ('own' maps to the own class).
+    request: renderJob
+      ? {
+          selectedGenre: rj.genre ?? null,
+          effectiveGenre: song.project?.genre ?? null,
+          fusionGenres: rj.fusionGenres ?? [],
+          mood: rj.mood ?? null,
+          languages: rj.languages ?? [],
+          voice: rj.voice ?? null,
+          engineRequested: rj.songEngine ? engineClass(rj.songEngine === 'own' ? 'afrohit-own' : rj.songEngine) : null,
+          promptStyleTags: rj.dnaTags ?? [],
+          vibePrompt: rj.vibePrompt ? rj.vibePrompt.slice(0, 200) : null,
+          at: renderJob.createdAt,
+        }
+      : { note: 'no render job stored — request facts unavailable, not reconstructed' },
+    // Which of the artist's references shaped this render — copied verbatim from
+    // the trainingUsage the route stamped on the job at render time.
+    training: rj.trainingUsage
+      ? {
+          usedReferenceIds: rj.trainingUsage.referenceIds ?? [],
+          measuredCount: rj.trainingUsage.measured ?? 0,
+          totalCount: rj.trainingUsage.total ?? 0,
+          pinnedReferenceId: rj.trainingUsage.pinnedReferenceId ?? null,
+          ...((rj.trainingUsage.measured ?? 0) < (rj.trainingUsage.total ?? 0)
+            ? { note: 'measured < total — references not yet deep-measured contribute little (the honest backfill signal)' }
+            : {}),
+        }
+      : { usedReferenceIds: [], note: renderJob ? 'render predates training-usage tracking' : 'no render job stored' },
+    // Shelf materials IN this take (own-engine/material assemblies log every
+    // loop ID + role). Provider renders carry no shelf audio — said plainly.
+    materials: beat
+      ? assembly.length
+        ? { usedMaterialIds: assembly.map((x) => x.materialId ?? null), roles: assembly.map((x) => x.role ?? null) }
+        : { usedMaterialIds: [], note: 'provider render — no shelf material in this take' }
+      : { usedMaterialIds: [], note: 'no rendered take stored' },
     lane: {
       score: song.laneScore ?? null,
       coverage: (gaps.coverage as number | undefined) ?? null,
@@ -79,6 +152,19 @@ export async function assembleProofPack(workspaceId: string, songId: string): Pr
           qc: bm.qc ?? null,
         }
       : { note: 'no rendered take stored' },
+    // The one prose field — and it only restates the stored bestOf numbers
+    // (measured > inferred > unknown, same law as everything above).
+    whyThisWon: beat
+      ? bm.bestOf && (bm.bestOf.rendered ?? 1) > 1
+        ? `ranked #1 of ${bm.bestOf.rendered} takes by ${bm.bestOf.rankedBy ?? 'lane score'}`
+        : 'single take — no ranking ran'
+      : 'no rendered take stored',
+    // Failed attempts are part of the truth: counted, last reason shown (class
+    // language only — scrubbed at the worker before it was ever stored).
+    failures:
+      failedCount > 0
+        ? { count: failedCount, lastError: lastErrMsg ?? 'no reason recorded', lastAt: lastFailed?.finishedAt ?? null }
+        : { count: 0, note: 'no failed render attempts on record for this song' },
     master: master
       ? { preset: master.preset, measuredLufs: mm.qc?.integratedLufs ?? null, qcVerdict: mm.qc?.verdict ?? 'not measured', at: master.createdAt }
       : { note: 'not mastered' },

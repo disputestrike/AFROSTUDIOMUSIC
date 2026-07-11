@@ -161,7 +161,7 @@ export default function MaterialsPage() {
 
   async function assemble() {
     if (assembling || !projectId) return;
-    setAssembling('Claude is arranging your material…');
+    setAssembling('Arranging your material…');
     setAssembleErr('');
     setBeatUrl('');
     setArrangement([]);
@@ -196,7 +196,8 @@ export default function MaterialsPage() {
       </h1>
       <p className="mt-2 max-w-2xl text-sm text-slate-400">
         Real, owned loops — forged in isolation (and in key) or harvested from your own stems. When you assemble,
-        <span className="text-slate-200"> Claude arranges the exact beat from this shelf</span>: same loops in, same beat out. No hallucination.
+        <span className="text-slate-200"> the studio arranges the exact beat from this shelf</span>: same loops in, same beat out. No hallucination — and the
+        assembly itself never needs the AI brain or its credits (Claude only suggests a smarter arrangement when it&apos;s reachable).
       </p>
 
       {/* Forge + assemble controls */}

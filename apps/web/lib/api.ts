@@ -64,6 +64,16 @@ async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
     cache: 'no-store',
   });
   if (!res.ok) {
+    // JWT mode: a 401 means the session is missing/expired — send the user to
+    // sign in instead of scattering raw 401 errors across every page. Only for
+    // non-auth paths (the signin page itself must be able to see a 401) and only
+    // in the browser. Internal mode never 401s, so this is inert until the flip.
+    if (res.status === 401 && typeof window !== 'undefined' && !path.startsWith('/auth/')) {
+      localStorage.removeItem('afrohit.token');
+      if (!window.location.pathname.startsWith('/signin')) {
+        window.location.href = '/signin';
+      }
+    }
     const errText = await res.text();
     throw new Error(`${res.status} ${res.statusText}: ${errText}`);
   }

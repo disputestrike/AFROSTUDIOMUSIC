@@ -260,10 +260,18 @@ export async function assembleBeat(opts: {
         labels.push(`[l${i}]`);
       });
       const outPath = join(dir, `sec${s}.wav`);
+      // HEADROOM LAW for the deep kits: normalize=0 raw-sums the layers, so a
+      // 10-layer hook section clips guaranteed (hit live: "failed QC (clipping)
+      // — nothing shipped"). Density-scaled bus trim keeps the sum in headroom
+      // (≤3 layers ≈ unity, 12 layers ≈ -6 dB) and a safety limiter catches the
+      // peaks; the master downstream restores loudness. Deterministic ffmpeg —
+      // no brain, no credit, no excuse.
+      const busTrim = Math.min(1, 1 / Math.sqrt(Math.max(1, active.length / 3)));
+      const safety = `,volume=${busTrim.toFixed(3)},alimiter=level=false:limit=0.891:attack=2:release=80`;
       const filter =
         active.length === 1
-          ? `${chains[0]!.replace(/\[l0\]$/, '[out]')}`
-          : `${chains.join(';')};${labels.join('')}amix=inputs=${active.length}:duration=longest:normalize=0[out]`;
+          ? chains[0]!.replace(/\[l0\]$/, `${safety}[out]`)
+          : `${chains.join(';')};${labels.join('')}amix=inputs=${active.length}:duration=longest:normalize=0${safety}[out]`;
       await runFfmpeg([...inputs, '-filter_complex', filter, '-map', '[out]', '-t', secDur.toFixed(3), '-ar', '44100', '-ac', '2', outPath]);
       sectionFiles.push(outPath);
     }

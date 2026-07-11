@@ -80,6 +80,7 @@ const TS: Array<[string, string]> = [
   ['Engine adapters (no silent stub)', 'test-engine-adapters.ts'],
   ['Genre kits (42 producer kits)', 'test-genre-kits.ts'],
   ['Material system (forge/layer/pan)', 'test-material-system.ts'],
+  ['Training isolation (lane/pin/zap)', 'test-training-isolation.ts'],
 ];
 for (const [name, file] of TS) {
   if (!existsSync(join(scripts, file))) { results.push({ name, status: 'SKIP', note: 'script missing', required: false }); continue; }

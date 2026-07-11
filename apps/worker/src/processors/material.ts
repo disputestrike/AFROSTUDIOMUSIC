@@ -185,36 +185,51 @@ export async function processAssembleBeat(p: AssemblePayload) {
       { name: 'hook2', bars: 8, layerIdx: all },
       { name: 'outro', bars: 4, layerIdx: dedupe([...rhythm.slice(0, 2), ...lowEnd.slice(0, 1)]).length ? dedupe([...rhythm.slice(0, 2), ...lowEnd.slice(0, 1)]) : all },
     ];
-    const beatWav = await assembleBeat({ layers, sections, targetBpm: p.bpm });
+    // TACTICAL CORRECTION (owner law: a clipped take gets FIXED, not abandoned):
+    // render → QC; if the ONLY failure is clipping, trim every layer's gain and
+    // re-render — deterministic ffmpeg, no brain, no credit. Two attempts
+    // (unity, then -4.4 dB); anything still broken after that fails honestly.
+    let url = '';
+    let qc: Awaited<ReturnType<typeof measureAudioQuality>> | null = null;
+    let tacticalTrim: number | null = null;
+    for (const scale of [1, 0.6]) {
+      const scaledLayers = scale === 1 ? layers : layers.map((l) => ({ ...l, gain: +(l.gain * scale).toFixed(2) }));
+      const beatWav = await assembleBeat({ layers: scaledLayers, sections, targetBpm: p.bpm });
 
-    // PHASE 5 — lay fills at the arrangement's KNOWN section boundaries (bar counts
-    // give exact seconds). Gated FILL_OVERLAY=1; best-effort, clean assembly kept on
-    // any failure. A 'fill' loop is excluded from the section LAYERS (it's a
-    // transition, not a bed) and used only here.
-    let beatBytes = beatWav;
-    if (process.env.FILL_OVERLAY !== '0') {
-      try {
-        const fillPick = p.picks.find((x) => x.role === 'fill');
-        const fillMat = fillPick ?? (await prisma.materialAsset.findFirst({ where: { workspaceId: p.workspaceId, role: 'fill', OR: [{ genre: p.genre }, { genre: null }] }, orderBy: { createdAt: 'desc' } }));
-        if (fillMat) {
-          const secPerBar = (60 / p.bpm) * 4;
-          const boundaries: number[] = [];
-          let cum = 0;
-          for (const s of sections) { cum += s.bars; boundaries.push(cum * secPerBar); }
-          boundaries.pop(); // no fill after the final section
-          const placements = planFills(p.bpm, cum * secPerBar, boundaries, genreSignature(p.genre).fillBars);
-          if (placements.length) {
-            const fillBuf = await downloadToBuffer(fillMat.url);
-            beatBytes = await overlayFills(beatWav, fillBuf, placements.map((f) => f.atS));
-            console.log(`[assemble] overlaid ${placements.length} fills at section boundaries`);
+      // PHASE 5 — lay fills at the arrangement's KNOWN section boundaries (bar counts
+      // give exact seconds). Gated FILL_OVERLAY=1; best-effort, clean assembly kept on
+      // any failure. A 'fill' loop is excluded from the section LAYERS (it's a
+      // transition, not a bed) and used only here.
+      let beatBytes = beatWav;
+      if (process.env.FILL_OVERLAY !== '0') {
+        try {
+          const fillPick = p.picks.find((x) => x.role === 'fill');
+          const fillMat = fillPick ?? (await prisma.materialAsset.findFirst({ where: { workspaceId: p.workspaceId, role: 'fill', OR: [{ genre: p.genre }, { genre: null }] }, orderBy: { createdAt: 'desc' } }));
+          if (fillMat) {
+            const secPerBar = (60 / p.bpm) * 4;
+            const boundaries: number[] = [];
+            let cum = 0;
+            for (const s of sections) { cum += s.bars; boundaries.push(cum * secPerBar); }
+            boundaries.pop(); // no fill after the final section
+            const placements = planFills(p.bpm, cum * secPerBar, boundaries, genreSignature(p.genre).fillBars);
+            if (placements.length) {
+              const fillBuf = await downloadToBuffer(fillMat.url);
+              beatBytes = await overlayFills(beatWav, fillBuf, placements.map((f) => f.atS));
+              console.log(`[assemble] overlaid ${placements.length} fills at section boundaries`);
+            }
           }
+        } catch (err) {
+          console.warn('[assemble] fill overlay failed (clean assembly kept):', (err as Error)?.message);
         }
-      } catch (err) {
-        console.warn('[assemble] fill overlay failed (clean assembly kept):', (err as Error)?.message);
       }
+      url = await uploadBytes({ workspaceId: p.workspaceId, kind: 'beats', bytes: beatBytes, contentType: 'audio/wav', ext: 'wav' });
+      qc = await measureAudioQuality(url).catch(() => null);
+      const clippingOnly = qc?.verdict === 'fail' && (qc.flags ?? []).includes('clipping');
+      if (!clippingOnly) break;
+      if (scale !== 1) break; // trimmed retry still clips → fall through to the honest fail
+      tacticalTrim = 0.6;
+      console.warn('[assemble] take clipped — tactical correction: retrying with layer gains ×0.6');
     }
-    const url = await uploadBytes({ workspaceId: p.workspaceId, kind: 'beats', bytes: beatBytes, contentType: 'audio/wav', ext: 'wav' });
-    const qc = await measureAudioQuality(url).catch(() => null);
     // WO-1 SAFETY RAIL: assembled output passes the SAME QC gate as provider
     // output — a broken render (near-silence/clipping) is rejected with the real
     // reason, never approved. 'weak' ships flagged; unmeasured ships disclosed.
@@ -235,6 +250,9 @@ export async function processAssembleBeat(p: AssemblePayload) {
         meta: {
           assembled: true,
           arrangedBy: planned.length >= 3 ? 'claude' : 'template',
+          // Truth: this take clipped on the first pass and shipped after the
+          // deterministic gain-trim correction (never silently).
+          ...(tacticalTrim ? { tacticalTrim } : {}),
           materialIds: p.picks.map((x) => x.id),
           roles: p.picks.map((x) => x.role),
           sections: sections.map((s) => `${s.name}:${s.bars}`),

@@ -1,3 +1,4 @@
+import { prisma } from '@afrohit/db';
 import { getSoundDNA, generateJson } from '@afrohit/ai';
 import { MATERIAL_GAINS, forgeKitFor, materialGainFor, materialPanFor } from '@afrohit/shared';
 
@@ -26,6 +27,21 @@ export function kitRolesFor(genre: string, cap = 30): string[] {
 /** The genre's home key — melodic loops forge + assemble in it by default. */
 export function homeKeyFor(genre: string): string {
   return getSoundDNA(genre)?.commonKeys?.[0] ?? 'A minor';
+}
+
+/**
+ * MATERIAL-FIRST AUTO (audit: engine 'auto' ALWAYS rented a provider): when the
+ * engine is unset and the ask is an INSTRUMENTAL, a stocked shelf routes the
+ * render to the owned engine instead. "Stocked" = at least OWN_ENGINE_MIN_ROLES
+ * (default 6) DISTINCT roles of real MaterialAssets for this workspace+genre —
+ * enough kit for pickMaterial to build a real beat, not a two-loop skeleton.
+ * Returns the distinct-role count when the shelf qualifies, null otherwise.
+ * Vocal asks NEVER route here — the own engine cannot sing (that stays provider).
+ */
+export async function ownShelfRoles(workspaceId: string, genre: string): Promise<number | null> {
+  const min = Math.max(1, Number(process.env.OWN_ENGINE_MIN_ROLES) || 6);
+  const roles = await prisma.materialAsset.groupBy({ by: ['role'], where: { workspaceId, genre } });
+  return roles.length >= min ? roles.length : null;
 }
 
 export interface MaterialRow {

@@ -5,7 +5,7 @@ import { nanoid } from 'nanoid';
 import { requireAuth } from '../middleware/auth';
 import { presignUpload, putBytes } from '../lib/storage';
 import { assertSafeUrl, safeFetch } from '../lib/url-guard';
-import { enqueueHarvest } from '../lib/harvest';
+import { enqueueHarvest, enqueueLearn } from '../lib/harvest';
 
 /**
  * Bring-your-own-audio uploads + legal URL import.
@@ -156,6 +156,12 @@ export default async function uploads(app: FastifyInstance) {
           notes: `Imported song — ${input.url}`,
         },
       });
+      // Same law as the finished-upload bridge (mixes.ts /upload): an OWNED
+      // imported song both LEARNS (SoundReference, genre hint = project genre)
+      // and HARVESTS (non-vocal stems → owned material). Song-scoped — a
+      // finished record has no beat row. Best-effort, never blocks the import.
+      await enqueueLearn(app, { workspaceId, projectId: project.id, url, source: 'song-import' });
+      await enqueueHarvest(app, { workspaceId, projectId: project.id, songId, sourceUrl: url, owned: true });
       reply.code(201);
       return { kind: 'song', asset: mix, songId };
     }
@@ -190,6 +196,9 @@ export default async function uploads(app: FastifyInstance) {
     });
     // Auto-harvest the owned import into reusable role loops (drums/bass/other).
     await enqueueHarvest(app, { workspaceId, projectId: project.id, beatId: beat.id, sourceUrl: url });
+    // AUTO-LEARN too (audit: harvested but never learned): the owned import
+    // joins the learned lake as a SoundReference. Charged; best-effort.
+    await enqueueLearn(app, { workspaceId, projectId: project.id, url, source: 'beat-import' });
     reply.code(201);
     return { kind: input.kind, asset: beat, songId };
   });

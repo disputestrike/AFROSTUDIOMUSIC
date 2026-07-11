@@ -16,6 +16,10 @@ interface StemsPayload {
   mode?: 'instrumental' | 'acapella' | 'full' | 'stems';
   /** Override the audio to separate (e.g. a specific VERSION's master URL) — defaults to the freshest audio. */
   sourceUrl?: string;
+  /** The API route vouches this audio is the ARTIST'S OWN (finished-song upload/
+   *  import bridge). Beat-less harvests carry provenance HERE — there is no beat
+   *  row whose uploaded/imported flags could prove it. */
+  owned?: boolean;
 }
 
 /**
@@ -34,12 +38,18 @@ export async function processStems(p: StemsPayload) {
   await markRunning(p.jobId);
   try {
     const ws = await prisma.workspace.findUnique({ where: { id: p.workspaceId }, select: { musicApiKey: true } });
+    // A FINISHED-SONG harvest (the mixes /upload bridge, /import kind=song) has
+    // NO beat row — the record lives as a Mix. The split still runs off the
+    // payload's sourceUrl; only the beat-attached Stem rows get skipped below.
     const beat = p.beatId
       ? await prisma.beatAsset.findFirstOrThrow({ where: { id: p.beatId } })
-      : await prisma.beatAsset.findFirstOrThrow({ where: { songId: p.songId }, orderBy: { createdAt: 'desc' } });
+      : await prisma.beatAsset.findFirst({ where: { songId: p.songId }, orderBy: { createdAt: 'desc' } });
 
     const mode = p.mode ?? 'instrumental';
     if (mode === 'instrumental' || mode === 'acapella') {
+      // Stem rows are beat-scoped — this path cannot run without one. Fail with
+      // the real reason, never a silent no-op.
+      if (!beat) throw new Error('instrumental/acapella needs a beat row to attach stems to — none found for this song');
       await processTrueInstrumental(p, beat, ws?.musicApiKey ?? undefined, mode);
       return;
     }
@@ -48,7 +58,9 @@ export async function processStems(p: StemsPayload) {
     // Separate the requested version's audio when given (per-version instrumental),
     // else the beat. Result stems still attach to the beat row for download/remix.
     // A3-4: user-facing stems stay on the fast paid path by default; DEMUCS_MODE=local forces local.
-    const result = await separateStemsRouted({ audioUrl: p.sourceUrl || beat.url, apiKey: ws?.musicApiKey ?? undefined, mode: 'full', purpose: 'user', workspaceId: p.workspaceId });
+    const sepSource = p.sourceUrl || beat?.url;
+    if (!sepSource) throw new Error('nothing to separate — no sourceUrl in the payload and no beat on this song');
+    const result = await separateStemsRouted({ audioUrl: sepSource, apiKey: ws?.musicApiKey ?? undefined, mode: 'full', purpose: 'user', workspaceId: p.workspaceId });
     if (!result.stems.length) throw new Error('stem separation returned no audio');
 
     // Re-host to our bucket (parallel), then persist as Stem rows.
@@ -60,8 +72,12 @@ export async function processStems(p: StemsPayload) {
     );
     const roles = ingested.map((s) => s.role);
     // Replace any prior separated stems of the same roles so re-runs don't pile up.
-    await prisma.stem.deleteMany({ where: { beatId: beat.id, role: { in: roles } } });
-    await prisma.$transaction(ingested.map((s) => prisma.stem.create({ data: { beatId: beat.id, role: s.role, url: s.url, format: 'mp3' } })));
+    // Beat-less (finished-song) harvests skip this — Stem rows need a beat FK; the
+    // MaterialAsset filing below is the whole point of that harvest.
+    if (beat) {
+      await prisma.stem.deleteMany({ where: { beatId: beat.id, role: { in: roles } } });
+      await prisma.$transaction(ingested.map((s) => prisma.stem.create({ data: { beatId: beat.id, role: s.role, url: s.url, format: 'mp3' } })));
+    }
 
     // MATERIAL HARVEST: the artist's own non-vocal stems join the material
     // library — real, owned audio the arranger can place into future beats.
@@ -72,9 +88,10 @@ export async function processStems(p: StemsPayload) {
     // TRUE PROVENANCE (audit DANGEROUS): only a beat the ARTIST uploaded/imported
     // yields rights-clean 'artist_stem' material. Stems split from a PROVIDER
     // render (Suno/MiniMax/etc.) are 'provider_stem' — never mislabel a
-    // third-party generation as the artist's own owned material.
-    const beatMetaP = (beat.meta ?? {}) as { uploaded?: boolean; imported?: boolean };
-    const isOwned = beatMetaP.uploaded === true || beatMetaP.imported === true || beat.provider === 'upload' || beat.provider === 'import';
+    // third-party generation as the artist's own owned material. Beat-less
+    // finished-song harvests carry the route's vouch in p.owned instead.
+    const beatMetaP = (beat?.meta ?? {}) as { uploaded?: boolean; imported?: boolean };
+    const isOwned = p.owned === true || beatMetaP.uploaded === true || beatMetaP.imported === true || beat?.provider === 'upload' || beat?.provider === 'import';
     const stemSource = isOwned ? 'artist_stem' : 'provider_stem';
     await Promise.all(
       ingested
@@ -87,12 +104,12 @@ export async function processStems(p: StemsPayload) {
                 kind: 'stem',
                 role: ROLE_MAP[s.role] ?? 'other',
                 genre: project?.genre ?? null,
-                bpm: beat.bpm,
-                keySignature: beat.keySignature,
-                durationS: beat.duration,
+                bpm: beat?.bpm ?? null,
+                keySignature: beat?.keySignature ?? null,
+                durationS: beat?.duration ?? null,
                 url: s.url,
                 source: stemSource,
-                meta: { fromBeatId: beat.id, fromSongId: p.songId, stemRole: s.role, provider: beat.provider, owned: isOwned } as never,
+                meta: { fromBeatId: beat?.id ?? null, fromSongId: p.songId, stemRole: s.role, provider: beat?.provider ?? null, owned: isOwned } as never,
               },
             })
             .catch((err: unknown) => console.warn('[stems] material harvest failed:', (err as Error)?.message))
@@ -100,7 +117,7 @@ export async function processStems(p: StemsPayload) {
     );
 
     await markSucceeded(p.jobId, {
-      beatId: beat.id,
+      beatId: beat?.id ?? null,
       stems: ingested.length,
       instrumental: ingested.some((s) => s.role === 'instrumental'),
       roles,

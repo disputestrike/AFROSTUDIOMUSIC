@@ -3,6 +3,7 @@ import { prisma } from '@afrohit/db';
 import { createMasterInputSchema, createMixInputSchema, attachSongUploadSchema } from '@afrohit/shared';
 import { requireAuth } from '../middleware/auth';
 import { enqueue } from '../lib/queue';
+import { enqueueHarvest } from '../lib/harvest';
 import { publicUrlFor, assertOwnedKey } from '../lib/storage';
 import { arReadAfterRender } from '../lib/ar-read';
 
@@ -201,6 +202,12 @@ export default async function mixes(app: FastifyInstance) {
       } catch (err) {
         req.log.warn({ err }, 'finished-upload learn enqueue failed (upload still ok)');
       }
+
+      // HARVEST too (audit: finished uploads fed the lake but never the material
+      // shelf): stem-split the record and file its NON-VOCAL stems as owned
+      // material. Song-scoped — a finished upload has no beat row — and owned by
+      // definition (this route only accepts the artist's own key). Best-effort.
+      await enqueueHarvest(app, { workspaceId, projectId: project.id, songId, sourceUrl: mix.url, owned: true });
 
       if (!input.autoMaster) {
         reply.code(201);
