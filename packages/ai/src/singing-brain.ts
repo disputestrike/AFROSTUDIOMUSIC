@@ -57,7 +57,7 @@ HARD CONSTRAINTS:
 
 Return ONLY JSON: {"sungLyric": string, "alignment": [{"token": string, "action": "A"|"B"|"G"|"O", "note": string}], "summary": string}.
 - "sungLyric": the complete sung-form lyric with its section headers.
-- "alignment": one entry per meaningful token decision — anchors kept (A), bridges kept or clipped (B, note "clipped to ..." when contracted), ghosts removed (G, note "dropped"), ornaments added (O, note what was added: vocable / melisma / repeat / ad-lib). "note" may be omitted when nothing changed.
+- "alignment": entries ONLY for tokens where something HAPPENED — bridges clipped (B, note "clipped to ..."), ghosts dropped (G, note "dropped"), melisma stretches (A, note "stretched"), ornaments added (O, note what was added: vocable / melisma / repeat / ad-lib). Do NOT list unchanged tokens. Cap it at the ~60 most meaningful decisions — receipts, not a transcript.
 - "summary": one or two sentences on what was compressed, stretched and repeated.`;
 
 /**
@@ -91,20 +91,27 @@ export async function singingBrain(opts: {
         .filter(Boolean)
         .join('\n'),
       temperature: 0.7,
-      maxTokens: 4_000,
+      // First live run returned null on a full-length lyric: per-token alignment
+      // blew past 4k output tokens and the truncated JSON failed the parse. The
+      // alignment is now changed-tokens-only AND the budget is doubled.
+      maxTokens: 8_000,
       task: 'singing-brain',
     });
-    if (!out || typeof out.sungLyric !== 'string' || !out.sungLyric.trim()) return null;
-    if (!Array.isArray(out.alignment) || out.alignment.length === 0) return null;
+    if (!out || typeof out.sungLyric !== 'string' || !out.sungLyric.trim()) { console.warn('[singing-brain] void: no sungLyric in output'); return null; }
+    if (!Array.isArray(out.alignment) || out.alignment.length === 0) { console.warn('[singing-brain] void: empty alignment'); return null; }
     for (const a of out.alignment) {
-      if (!a || typeof a.token !== 'string' || !a.token) return null;
-      if (a.action !== 'A' && a.action !== 'B' && a.action !== 'G' && a.action !== 'O') return null;
-      if (a.note !== undefined && typeof a.note !== 'string') return null;
+      if (!a || typeof a.token !== 'string' || !a.token) { console.warn('[singing-brain] void: malformed alignment entry'); return null; }
+      if (a.action !== 'A' && a.action !== 'B' && a.action !== 'G' && a.action !== 'O') { console.warn('[singing-brain] void: bad action', a.action); return null; }
+      if (a.note !== undefined && typeof a.note !== 'string') { console.warn('[singing-brain] void: bad note'); return null; }
     }
-    // Header law is code-enforced, not just prompted: every [Section] header
-    // in the semantic lyric must survive verbatim, or the conversion is void.
+    // Header law is code-enforced, not just prompted: every [Section] header in
+    // the semantic lyric must survive, or the conversion is void. NORMALIZED
+    // comparison (case/whitespace) — "[Verse 1]" vs "[verse 1]" is preservation,
+    // a MISSING section is the violation.
+    const norm = (s: string) => s.toLowerCase().replace(/\s+/g, ' ');
+    const sungNorm = norm(out.sungLyric);
     const headers = (opts.semanticLyric.match(/^\s*\[[^\]]+\]\s*$/gm) ?? []).map((h) => h.trim());
-    for (const h of headers) if (!out.sungLyric.includes(h)) return null;
+    for (const h of headers) if (!sungNorm.includes(norm(h))) { console.warn('[singing-brain] void: dropped section header', h); return null; }
     return {
       sungLyric: out.sungLyric.trim(),
       alignment: out.alignment.map((a) => (a.note === undefined ? { token: a.token, action: a.action } : { token: a.token, action: a.action, note: a.note })),

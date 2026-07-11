@@ -98,11 +98,15 @@ export async function applySingingBrain(opts: {
     languages,
   };
 
-  const first = await singingBrain(brainOpts);
+  // A null from the brain (truncated JSON, dropped header, transient LLM blip)
+  // gets ONE immediate re-ask before we give up — the first live run died on
+  // exactly this and the whole stage silently sat out the render.
+  let first = await singingBrain(brainOpts);
+  if (!first) first = await singingBrain(brainOpts);
   if (!first) {
     return {
       lyrics: semanticLyric,
-      sungForm: { applied: false, note: 'singing brain unavailable — semantic form rode as-is' },
+      sungForm: { applied: false, note: 'singing brain unavailable (2 attempts) — semantic form rode as-is' },
     };
   }
 
