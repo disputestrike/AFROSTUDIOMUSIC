@@ -1,6 +1,31 @@
 import { FastifyInstance } from 'fastify';
 import fp from 'fastify-plugin';
+import { createHmac, timingSafeEqual } from 'node:crypto';
 import { prisma } from '@afrohit/db';
+
+/**
+ * Verify a compact HS256 JWT signed with JWT_SECRET. Returns the claims when the
+ * signature + expiry are valid, else null. No external dependency — enough for
+ * the jwt AUTH_MODE (issue tokens from your own login/session service with the
+ * same secret + { sub, workspaceId }).
+ */
+function verifyJwt(token: string): Record<string, unknown> | null {
+  const secret = process.env.JWT_SECRET;
+  if (!secret || !token) return null;
+  const parts = token.split('.');
+  if (parts.length !== 3) return null;
+  const h = parts[0]!, p = parts[1]!, sig = parts[2]!;
+  const expected = createHmac('sha256', secret).update(`${h}.${p}`).digest('base64url');
+  const a = Buffer.from(sig); const b = Buffer.from(expected);
+  if (a.length !== b.length || !timingSafeEqual(a, b)) return null;
+  try {
+    const claims = JSON.parse(Buffer.from(p, 'base64url').toString('utf8')) as Record<string, unknown>;
+    if (typeof claims.exp === 'number' && claims.exp * 1000 < Date.now()) return null; // expired
+    return claims;
+  } catch {
+    return null;
+  }
+}
 
 declare module 'fastify' {
   interface FastifyRequest {
@@ -118,9 +143,33 @@ export const authPlugin = fp(async function (app: FastifyInstance) {
       }
     }
 
-    // No other auth mode is implemented yet. Fail explicitly rather than
-    // silently letting requests through.
-    return reply.unauthorized(`auth mode "${AUTH_MODE()}" not implemented — set AUTH_MODE=internal`);
+    // JWT mode — real multi-tenant auth. A Bearer HS256 token signed with
+    // JWT_SECRET, carrying { sub|userId, workspaceId, role }. Unauthenticated or
+    // invalid → 401. Membership is verified against the DB so a token can't claim
+    // a workspace the user isn't a member of.
+    if (AUTH_MODE() === 'jwt') {
+      const auth = String(req.headers['authorization'] ?? '');
+      const token = auth.startsWith('Bearer ') ? auth.slice(7) : '';
+      const claims = verifyJwt(token);
+      if (!claims) return reply.unauthorized('invalid or missing token');
+      const userId = String(claims.sub ?? claims.userId ?? '');
+      const workspaceId = String(claims.workspaceId ?? '');
+      if (!userId || !workspaceId) return reply.unauthorized('token missing userId/workspaceId');
+      // Verify the user actually belongs to the workspace (membership table).
+      const [ws, member] = await Promise.all([
+        prisma.workspace.findUnique({ where: { id: workspaceId }, select: { suspendedAt: true } }),
+        prisma.workspaceMember.findFirst({ where: { workspaceId, userId }, select: { role: true } }),
+      ]);
+      if (!ws) return reply.unauthorized('unknown workspace');
+      if (ws.suspendedAt) return reply.forbidden('workspace suspended');
+      if (!member) return reply.forbidden('not a member of this workspace');
+      req.auth = { userId, workspaceId, role: member.role as never, isService: false };
+      return;
+    }
+
+    // No other auth mode is implemented. Fail explicitly rather than silently
+    // letting requests through.
+    return reply.unauthorized(`auth mode "${AUTH_MODE()}" not implemented — set AUTH_MODE=internal or jwt`);
   });
 });
 
