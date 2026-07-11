@@ -208,6 +208,13 @@ export default async function release(app: FastifyInstance) {
     if (gate.blocked) {
       return reply.code(409).send({ error: 'audio_quality_block', message: 'This take failed audio QC (broken render) — re-master or regenerate before distributing.', checks: gate.checks });
     }
+    // Rights must be CLEAR before distribution (fail-closed, consistent with export).
+    const receipt = await prisma.rightsReceipt.findFirst({ where: { songId: song.id }, orderBy: { createdAt: 'desc' } });
+    const verdict = (receipt?.prompts ?? {}) as { rightsCheck?: { okToExport?: boolean; overallRisk?: string } };
+    if (verdict.rightsCheck && (verdict.rightsCheck.okToExport === false || verdict.rightsCheck.overallRisk === 'high')) {
+      return reply.code(409).send({ error: 'rights_not_clear', message: 'The rights review flagged this song — resolve it before distributing.' });
+    }
+
     const result = await distributeRelease({
       title: song.title,
       artist: song.project.artist.stageName,
@@ -217,6 +224,26 @@ export default async function release(app: FastifyInstance) {
       audioUrl: master?.url ?? mix?.url ?? null,
       coverUrl: cover?.url ?? null,
     });
+
+    // RELEASED means a REAL distributor submission — ONLY on status 'submitted'.
+    // A stubbed/not-configured distributor leaves the song EXPORTED, never faking
+    // a release (audit DANGEROUS: RELEASED used to be stamped by mere export).
+    if (result.status === 'submitted') {
+      await prisma.$transaction([
+        prisma.release.upsert({
+          where: { songId: song.id },
+          create: {
+            workspaceId, artistId: song.project.artist.id, songId: song.id,
+            isrc: song.isrc, upc: song.upc, releaseDate: new Date(),
+            distributor: result.provider, status: 'released',
+            channels: (result as { channels?: unknown }).channels as never,
+          },
+          update: { status: 'released', distributor: result.provider, releaseDate: new Date() },
+        }),
+        prisma.song.update({ where: { id: song.id }, data: { status: 'RELEASED' } }),
+      ]);
+    }
+
     await prisma.analyticsEvent
       .create({ data: { workspaceId, name: 'release.distribute', properties: { songId: song.id, status: result.status, provider: result.provider } as never } })
       .catch(() => {});
