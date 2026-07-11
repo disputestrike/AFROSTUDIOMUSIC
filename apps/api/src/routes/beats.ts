@@ -38,12 +38,18 @@ export default async function beats(app: FastifyInstance) {
       // Full song WITH AI vocals: use provided lyrics, else pull the latest.
       let lyrics = input.lyrics;
       let styleHints: string[] = [];
+      // ARTIST'S WORDS ARE LAW: when the draft is artistAuthored (create-from-
+      // lyrics), the render sings the EXACT body — never an AI cleanVersion, and
+      // never the enrichment rewrite below. People bring their own lyrics; the
+      // studio must not touch a word.
+      let artistAuthored = false;
       if (input.withVocals && !lyrics) {
         const lyric = await prisma.lyricDraft.findFirst({
           where: { projectId: project.id, ...(input.songId ? { songId: input.songId } : {}) },
           orderBy: { createdAt: 'desc' },
         });
-        lyrics = lyric?.cleanVersion ?? lyric?.body ?? undefined;
+        artistAuthored = !!(lyric as { artistAuthored?: boolean } | null)?.artistAuthored;
+        lyrics = artistAuthored ? lyric?.body ?? undefined : lyric?.cleanVersion ?? lyric?.body ?? undefined;
         if (!lyrics) return reply.code(400).send({ error: 'no_lyrics — write lyrics first for a vocal song' });
       }
       // SELECTED genre wins (audit #4): the render path used project.genre — so
@@ -74,7 +80,9 @@ export default async function beats(app: FastifyInstance) {
       const langs = input.languages?.length ? input.languages : project.artist.languages;
 
       // Arrange the vocal to sound ALIVE (ad-libs, doubled/harmonized hook).
-      if (input.withVocals && lyrics && input.richVocals) {
+      // SKIPPED for artist-authored lyrics — enrichment rewrites lines, and the
+      // artist's words must reach the engine verbatim.
+      if (input.withVocals && lyrics && input.richVocals && !artistAuthored) {
         const enriched = await enrichLyricsForVocals({
           genre,
           lyricBody: lyrics,

@@ -76,6 +76,18 @@ export default function CatalogGrid({ initial }: { initial: SongRow[] }) {
   // internal bridge tooling; without it the wall keeps vendor tools hidden.
   const firstParty = typeof localStorage !== 'undefined' && !!localStorage.getItem('afrohit.adminKey');
   const [compare, setCompare] = useState<{ title: string; loading: boolean; data?: VersionsResp } | null>(null);
+  // NOTHING IS LOST: the default list hides old lyric-only shells (failed /
+  // never-ran renders). This toggle fetches EVERYTHING (?all=1) so "lost
+  // versions" are always findable — re-sing or delete them from here.
+  const [showingAll, setShowingAll] = useState(false);
+  const toggleShowAll = async () => {
+    try {
+      const next = !showingAll;
+      const rows = await api.get<SongRow[]>(next ? '/songs?all=1' : '/songs');
+      setSongs(rows);
+      setShowingAll(next);
+    } catch { flash('Could not load the full list'); }
+  };
 
   async function openCompare(s: SongRow) {
     setCompare({ title: s.title, loading: true });
@@ -337,7 +349,14 @@ export default function CatalogGrid({ initial }: { initial: SongRow[] }) {
   if (songs.length === 0) {
     return (
       <div className="mt-8 rounded-2xl border border-dashed border-slate-800 p-10 text-center text-sm text-slate-500">
-        No songs yet. Head to <span className="text-afrobrand-400">Create</span> and make one.
+        {showingAll ? 'Nothing here at all — not even hidden songs.' : 'No songs yet. Head to '}
+        {!showingAll && <span className="text-afrobrand-400">Create</span>}
+        {!showingAll && ' and make one.'}
+        <div className="mt-4">
+          <button onClick={() => void toggleShowAll()} className="rounded-full border border-white/15 px-3 py-1.5 text-xs text-slate-300 hover:bg-white/10">
+            {showingAll ? 'Back to normal view' : '🔎 Check for hidden/failed songs'}
+          </button>
+        </div>
       </div>
     );
   }
@@ -347,6 +366,12 @@ export default function CatalogGrid({ initial }: { initial: SongRow[] }) {
       {toast && (
         <div className="fixed bottom-6 left-1/2 z-50 -translate-x-1/2 rounded-full bg-white/10 px-4 py-2 text-sm text-white backdrop-blur">{toast}</div>
       )}
+
+      <div className="mb-4 flex items-center justify-end">
+        <button onClick={() => void toggleShowAll()} className="rounded-full border border-white/15 px-3 py-1.5 text-xs text-slate-300 hover:bg-white/10">
+          {showingAll ? 'Hide incomplete songs' : '🔎 Show ALL songs (recover hidden/failed)'}
+        </button>
+      </div>
 
       <div className="grid gap-5 sm:grid-cols-2 lg:grid-cols-3">
         {songs.map((s) => (

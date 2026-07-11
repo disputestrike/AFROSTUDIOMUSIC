@@ -68,7 +68,12 @@ export default function CreatePage() {
     try {
       const cur = JSON.parse(sessionStorage.getItem(PRODUCE_KEY) ?? '{}');
       sessionStorage.setItem(PRODUCE_KEY, JSON.stringify({ ...cur, ...patch, at: Date.now() }));
-      window.history.replaceState(null, '', '?produce=1');
+      // STICKY MARKER = ?resume=1, NOT ?produce=1. produce=1 is the AUTO-CREATE
+      // intent param (links from Zap/Listen) — mobile browsers evict
+      // sessionStorage but RESTORE the URL, so marking the sticky state with
+      // produce=1 made every tab-restore fire a brand-new render ("it keeps
+      // creating for days"). resume=1 only resumes; it can never create.
+      window.history.replaceState(null, '', '?resume=1');
     } catch { /* storage unavailable — non-fatal */ }
   };
   const clearProduce = () => {
@@ -79,7 +84,13 @@ export default function CreatePage() {
     if (resumedRef.current) return; resumedRef.current = true;
     let saved: { dropJobId?: string; renderJobId?: string; projectId?: string; title?: string; hook?: string; score?: number | null; at?: number } | null = null;
     try { saved = JSON.parse(sessionStorage.getItem(PRODUCE_KEY) ?? 'null'); } catch { saved = null; }
-    if (!saved || !(saved.dropJobId || saved.renderJobId) || Date.now() - (saved.at ?? 0) > 30 * 60 * 1000) return;
+    if (!saved || !(saved.dropJobId || saved.renderJobId) || Date.now() - (saved.at ?? 0) > 30 * 60 * 1000) {
+      // Nothing valid to resume (or too old): CLEAR the sticky state + URL so a
+      // stale ?resume=1 can never leave the page stuck on "creating music".
+      clearProduce();
+      if (phase === 'producing') setPhase('form');
+      return;
+    }
     setPhase('producing'); setStepIdx(saved.renderJobId ? 3 : 1);
     void (async () => {
       let dropJobId = saved!.dropJobId; let renderJobId = saved!.renderJobId; let projectId = saved!.projectId;
@@ -93,7 +104,7 @@ export default function CreatePage() {
           if (j.status === 'SUCCEEDED') {
             if (!renderJobId && dropJobId) {
               const item = j.outputJson?.drop?.[0];
-              if (!item?.jobId) { setPhase('finishing'); return; }
+              if (!item?.jobId) { setSong({ title, hook, score, url: '', projectId: projectId ?? '' }); setPhase('finishing'); clearProduce(); return; }
               renderJobId = item.jobId; projectId = item.projectId ?? projectId; hook = item.hookText ?? hook; score = item.score ?? score; title = item.title ?? title;
               saveProduce({ renderJobId, projectId, title, hook, score }); setStepIdx(3); continue;
             }
@@ -109,8 +120,12 @@ export default function CreatePage() {
           }
           await sleep(5000);
         }
-        setPhase('finishing');
-      } catch { setPhase('finishing'); }
+        // Poll budget exhausted — the render may still land server-side, but the
+        // SCREEN must terminate: hand off to the Catalog and clear the sticky
+        // state so no future mount resumes a zombie ("never stops on mobile").
+        setSong({ title, hook, score, url: '', projectId: projectId ?? '' });
+        setPhase('finishing'); clearProduce();
+      } catch { setSong({ title: 'Your song', score: null, url: '', projectId: '' }); setPhase('finishing'); clearProduce(); }
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -146,11 +161,15 @@ export default function CreatePage() {
   const [deconBusy, setDeconBusy] = useState(false);
   const [deconTitle, setDeconTitle] = useState('');
 
-  // With ?produce=1 we start in 'producing' immediately — never flash the form
-  // (the user asked to make a song, e.g. "Make in this lane" from Zap/Lake).
-  const [phase, setPhase] = useState<'form' | 'producing' | 'done' | 'finishing' | 'error'>(() =>
-    typeof window !== 'undefined' && new URLSearchParams(window.location.search).get('produce') === '1' ? 'producing' : 'form'
-  );
+  // Start in 'producing' (no form flash) when EITHER an auto-create intent link
+  // (?produce=1 from Zap/Lake) or a mid-render sticky marker (?resume=1) is
+  // present. The resume effect validates the sticky state and falls back to the
+  // form if there is nothing real to resume.
+  const [phase, setPhase] = useState<'form' | 'producing' | 'done' | 'finishing' | 'error'>(() => {
+    if (typeof window === 'undefined') return 'form';
+    const q = new URLSearchParams(window.location.search);
+    return q.get('produce') === '1' || q.get('resume') === '1' ? 'producing' : 'form';
+  });
   const [stepIdx, setStepIdx] = useState(0);
   const [err, setErr] = useState('');
   const [song, setSong] = useState<{ title: string; hook?: string; score: number | null; url: string; projectId: string } | null>(null);
@@ -179,7 +198,12 @@ export default function CreatePage() {
       const arr = lg.split(',').map((s) => s.trim()).filter((x) => LANGS.some((l) => l.value === x));
       if (arr.length) { setLangs(arr); langsTouched.current = true; }
     }
-    if (q.get('produce') === '1') setAutoProduce(true);
+    // AUTO-CREATE only on an explicit intent link (?produce=1) AND only when no
+    // render is already in flight — never double-create, never fire from a
+    // restored tab (the sticky marker is ?resume=1 and never reaches here).
+    let inFlight = false;
+    try { inFlight = !!sessionStorage.getItem(PRODUCE_KEY); } catch { /* noop */ }
+    if (q.get('produce') === '1' && !inFlight) setAutoProduce(true);
     // Clean the URL so a refresh doesn't re-fire the auto-create.
     if (q.toString()) window.history.replaceState(null, '', '/create');
   }, []);

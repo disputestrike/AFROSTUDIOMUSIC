@@ -160,7 +160,10 @@ async function resing(
   // Preserve the CURRENT lyric before overwriting it — the artist must always be
   // able to revert to the original (sometimes it's the better take).
   await snapshotLyricVersion(song.lyric.id, 'before make-it-bigger');
-  await prisma.lyricDraft.update({ where: { id: song.lyric.id }, data: { title: title || song.lyric.title, body, approved: true } });
+  // THE NAME IS LAW: a rewrite improves EXECUTION, never identity — the existing
+  // title (often the artist's own) always survives a redeem. Only a song with no
+  // title yet may take the rewrite's suggestion.
+  await prisma.lyricDraft.update({ where: { id: song.lyric.id }, data: { title: song.lyric.title || title, body, approved: true } });
   await prisma.song.update({ where: { id: song.id }, data: { versionLabel: 'bigger (A&R notes applied)', hitScore: null, viralScore: null } });
   const charge = await app.chargeCredits({ workspaceId, key: 'full_song_demo', refTable: 'Song', refId: song.id });
   if (!charge.ok) return null;

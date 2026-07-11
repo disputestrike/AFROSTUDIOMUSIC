@@ -56,21 +56,26 @@ type CatalogRow = {
  */
 export default async function songs(app: FastifyInstance) {
   // ---- List (with per-asset ids/urls so the UI can target the right file) ----
-  app.get('/', async (req) => {
+  app.get<{ Querystring: { all?: string } }>('/', async (req) => {
     const { workspaceId } = requireAuth(req);
+    // NOTHING IS EVER LOST: default = songs with real audio (or fresh ones still
+    // cooking, < 20 min). ?all=1 ALSO returns the hidden ones — lyric-only shells
+    // whose render failed/never ran — so "lost versions" are always recoverable
+    // from the UI (flagged via audioUrl:null), never silently vanished.
+    const showAll = (req.query as { all?: string }).all === '1';
     const rows = await prisma.song.findMany({
-      // Show songs that have REAL audio (rendered beat/mix/master) OR were just
-      // created and are still rendering (< 20 min) — so a fresh song is NEVER
-      // invisible while it cooks. OLD lyric-only shells (>20 min, render failed /
-      // never ran) stay hidden so they don't clutter or read as "wasted".
       where: {
         workspaceId,
-        OR: [
-          { beats: { some: {} } },
-          { mixes: { some: {} } },
-          { masters: { some: {} } },
-          { createdAt: { gte: new Date(Date.now() - 20 * 60 * 1000) } },
-        ],
+        ...(showAll
+          ? {}
+          : {
+              OR: [
+                { beats: { some: {} } },
+                { mixes: { some: {} } },
+                { masters: { some: {} } },
+                { createdAt: { gte: new Date(Date.now() - 20 * 60 * 1000) } },
+              ],
+            }),
       },
       orderBy: { createdAt: 'desc' },
       take: 100,
