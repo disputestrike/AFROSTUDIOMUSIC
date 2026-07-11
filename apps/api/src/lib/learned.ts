@@ -27,6 +27,9 @@ interface RecipeShape {
   bpm?: number | null;
   key?: string | null;
   learnedRecipe?: string | null;
+  /** DSP MeasuredAnalysis when the ear actually ran (engineOk=true). The
+   *  genuinely reference-specific signal — distinct from the LLM prose above. */
+  measured?: { engineOk?: boolean; tempoBpm?: { value?: number }; swingRatio?: number; logDrumLikelihood?: number } | null;
 }
 
 interface RefRow {
@@ -135,17 +138,24 @@ export interface TrainingUsage {
   titles: string[];
   pinnedReferenceId: string | null;
   total: number; // refs considered in-genre
-  measured: number; // of the used refs, how many carry a measured recipe
+  measured: number; // of the used refs, how many were REALLY DSP-measured (ear ran)
+  inferredOnly: number; // carry only LLM-guessed prose, never actually heard
   genre: string;
 }
 export async function learnedUsage(workspaceId: string, genre?: string | null, pinnedReferenceId?: string | null): Promise<TrainingUsage> {
   const g = genre ?? '';
-  if (!g) return { referenceIds: [], titles: [], pinnedReferenceId: pinnedReferenceId ?? null, total: 0, measured: 0, genre: g };
+  if (!g) return { referenceIds: [], titles: [], pinnedReferenceId: pinnedReferenceId ?? null, total: 0, measured: 0, inferredOnly: 0, genre: g };
   const refs = await fetchRefs(workspaceId, g, pinnedReferenceId);
-  const isMeasured = (r: RefRow) => !!(r.recipe.drums || r.recipe.bass || r.recipe.percussion || r.recipe.groove);
+  // REAL measurement = the DSP ear actually ran (recipe.measured.engineOk), NOT
+  // the presence of LLM-guessed drums/bass prose (which analyzeAudio fills even
+  // with the audio model OFF). The old predicate reported inferred refs as
+  // 'measured', manufacturing false confidence (audit FAKE_GREEN).
+  const isMeasured = (r: RefRow) => !!(r.recipe.measured as { engineOk?: boolean } | undefined)?.engineOk;
+  const hasProse = (r: RefRow) => !!(r.recipe.drums || r.recipe.bass || r.recipe.percussion || r.recipe.groove);
   return {
     referenceIds: refs.map((r) => r.id),
     titles: refs.map((r) => r.title ?? '(untitled)'),
+    inferredOnly: refs.filter((r) => !isMeasured(r) && hasProse(r)).length,
     pinnedReferenceId: pinnedReferenceId ?? null,
     total: refs.length,
     measured: refs.filter(isMeasured).length,
@@ -177,6 +187,25 @@ export async function learnedStyleTags(
   return [shorten(rec.drums), shorten(rec.percussion, 36), shorten(rec.groove, 36), shorten(rec.bass, 32)]
     .filter((t): t is string => !!t)
     .slice(0, 4);
+}
+
+/**
+ * MEASURED tokens — the genuinely reference-SPECIFIC signal (audit PARTIAL: the
+ * DSP-measured facts never reached the fresh-render prompt, only ranking used
+ * them). Reads recipe.measured (the ear's real output) from the newest MEASURED
+ * reference and emits terse, true tokens the music model can act on.
+ */
+export async function learnedMeasuredTags(workspaceId: string, genre?: string | null, pinnedReferenceId?: string | null): Promise<string[]> {
+  if (!genre) return [];
+  const refs = await fetchRefs(workspaceId, genre, pinnedReferenceId);
+  const src = refs.find((r) => (r.recipe.measured as { engineOk?: boolean } | undefined)?.engineOk);
+  const m = (src?.recipe.measured ?? null) as { tempoBpm?: { value?: number }; swingRatio?: number; logDrumLikelihood?: number } | null;
+  if (!m) return [];
+  const out: string[] = [];
+  if (m.tempoBpm?.value) out.push(`${Math.round(m.tempoBpm.value)} bpm (measured)`);
+  if (typeof m.swingRatio === 'number' && m.swingRatio > 0.55) out.push('laid-back swung groove');
+  if (typeof m.logDrumLikelihood === 'number' && m.logDrumLikelihood > 0.5) out.push('deep log-drum sub-bass');
+  return out.slice(0, 3);
 }
 
 /**

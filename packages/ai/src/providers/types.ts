@@ -16,6 +16,9 @@ export interface ProviderJobResult<T = unknown> {
 
 export interface MusicGenerationInput {
   genre: string;
+  /** Secondary genres to FUSE into the primary (e.g. amapiano × afrobeats). The
+   *  primary owns the groove/tempo; each fusion genre injects its signature. */
+  fusionGenres?: string[];
   bpm: number;
   keySignature?: string;
   durationS: number;

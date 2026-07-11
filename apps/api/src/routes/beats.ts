@@ -2,7 +2,7 @@ import type { FastifyInstance } from 'fastify';
 import { prisma } from '@afrohit/db';
 import { generateBeatInputSchema, attachBeatUploadSchema, genreSignature } from '@afrohit/shared';
 import { enrichLyricsForVocals, defaultSongEngine, defaultInstrumentalEngine } from '@afrohit/ai';
-import { learnedReferenceBrief, learnedStyleTags, learnedUsage } from '../lib/learned';
+import { learnedReferenceBrief, learnedStyleTags, learnedMeasuredTags, learnedUsage } from '../lib/learned';
 import { laneDna } from '../lib/lane-pipeline';
 import { requireAuth } from '../middleware/auth';
 import { enqueue, QUEUES } from '../lib/queue';
@@ -57,13 +57,15 @@ export default async function beats(app: FastifyInstance) {
         : laneDna(genre, { mood: input.mood });
       const learned = await learnedReferenceBrief(workspaceId, genre, input.pinnedReferenceId);
       const learnedTags = await learnedStyleTags(workspaceId, genre, input.pinnedReferenceId);
+      // MEASURED facts (the truly reference-specific signal) now reach the render.
+      const measuredTags = await learnedMeasuredTags(workspaceId, genre, input.pinnedReferenceId);
       // TRACEABILITY: capture exactly which of the artist's references this render
       // draws on, so "have my beats been used?" is provable per beat. Stored on
       // the job (below) and logged. measured<total = training that hasn't been
       // deep-measured yet contributes little — the honest signal to backfill.
       const trainingUsage = await learnedUsage(workspaceId, genre, input.pinnedReferenceId);
       req.log.info({ workspaceId, genre, usedRefs: trainingUsage.referenceIds.length, measured: `${trainingUsage.measured}/${trainingUsage.total}`, pin: trainingUsage.pinnedReferenceId }, '[training] references applied to this render');
-      const dnaTags = [...(dna.tags ?? []), ...learnedTags];
+      const dnaTags = [...measuredTags, ...(dna.tags ?? []), ...learnedTags];
 
       // The user's SELECTED languages outrank the artist profile's defaults —
       // this is the from-lyrics path where Igbo lyrics used to reach the engine

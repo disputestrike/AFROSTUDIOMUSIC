@@ -46,10 +46,14 @@ function afroIdentity(genre: string): { anchor: string; signature: string } | nu
   switch (genre.toLowerCase()) {
     case 'amapiano':
     case 'afropiano':
-    case 'afro_house': // SA lineage, log-drum/piano family
       return {
         anchor: 'South African amapiano',
         signature: 'signature sound: deep booming log-drum sub-bass, jazzy sustained piano and soulful Rhodes, airy shakers, percussive vocal chops; spacious swung groove — NOT four-on-the-floor house, NOT Nigerian Afrobeats',
+      };
+    case 'afro_house':
+      return {
+        anchor: 'South African afro house',
+        signature: 'signature sound: FOUR-ON-THE-FLOOR deep house kick, tribal African percussion (congas/shakers/log-drum accents), hypnotic synth stabs and warm bass, chant vocals — driving and danceable, NOT the swung amapiano bounce',
       };
     case 'afro_dancehall': // NOT global 'dancehall'
       return {
@@ -130,9 +134,24 @@ export function composeStyleTags(
   // "talking drum"). These are the genre's real fingerprint; they lead so the
   // engine renders the correct lane instead of leaning on generic DNA tokens.
   const kit = getGenreKit(input.genre);
+  // FUSION (audit PARTIAL: fusionGenres never reached the audio). The primary
+  // owns groove/tempo; each fusion genre injects its identity anchor + a few
+  // signature engine tags so "amapiano × afrobeats" actually blends in the render.
+  const fusionTokens = (input.fusionGenres ?? [])
+    .filter((g) => g && g !== input.genre)
+    .slice(0, 2)
+    .flatMap((g) => {
+      const fi = afroIdentity(g);
+      const fk = getGenreKit(g);
+      return [
+        `fused with ${fi?.anchor ?? g.replace(/_/g, ' ')}`,
+        ...(fk ? fk.engineTags.slice(0, 3).map(deLatin) : []),
+      ];
+    });
   const raw = [
     genreLine,
     afro ? afro.signature : null,
+    ...fusionTokens,
     // Anti-Latin exclusion applies to every Afro lane (none are reggaeton). The
     // groove note (four-on-the-floor or not) is per-genre in the signature above.
     isAfro ? 'NOT reggaeton, NOT dembow, NOT tresillo/dembow kick, NOT Latin, NOT Spanish, NOT perreo' : null,
