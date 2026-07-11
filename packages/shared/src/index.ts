@@ -14,4 +14,5 @@ export * from './license-certificate';
 export * from './lora-dataset';
 export * from './blueprint';
 export * from './genre-signatures';
+export * from './material-roles';
 export * from './expert-priors';
