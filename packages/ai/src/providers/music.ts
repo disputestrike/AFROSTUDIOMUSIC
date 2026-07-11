@@ -16,6 +16,7 @@ import type {
   MusicProviderAdapter,
   ProviderJobResult,
 } from './types';
+import { getGenreKit } from '@afrohit/shared';
 
 function provider(): string {
   return (process.env.MUSIC_PROVIDER ?? 'stub').toLowerCase();
@@ -124,12 +125,18 @@ export function composeStyleTags(
   const genreLine = afro
     ? `${afro.anchor} — ${genreLabel}, ${input.bpm} bpm${input.keySignature ? `, ${opts.keyPrefix ?? 'key '}${input.keySignature}` : ''}`
     : `${genreLabel}, ${input.bpm} bpm${input.keySignature ? `, ${opts.keyPrefix ?? 'key '}${input.keySignature}` : ''}`;
+  // Producer-panel engineTags for THIS exact genre — accurate, front-loaded
+  // tokens (e.g. amapiano: "log drum", "jazzy piano"; afrobeats: "shekere 16ths",
+  // "talking drum"). These are the genre's real fingerprint; they lead so the
+  // engine renders the correct lane instead of leaning on generic DNA tokens.
+  const kit = getGenreKit(input.genre);
   const raw = [
     genreLine,
     afro ? afro.signature : null,
     // Anti-Latin exclusion applies to every Afro lane (none are reggaeton). The
     // groove note (four-on-the-floor or not) is per-genre in the signature above.
     isAfro ? 'NOT reggaeton, NOT dembow, NOT tresillo/dembow kick, NOT Latin, NOT Spanish, NOT perreo' : null,
+    ...(kit ? kit.engineTags.slice(0, 8).map(deLatin) : []),
     opts.genreSuffix ?? null,
     ...(input.dnaTags ?? []).map(deLatin),
     vibe || null,
