@@ -19,11 +19,18 @@ export async function processImage(p: ImagePayload) {
   try {
     let adapter = imageAdapter();
     let result = await adapter.generate({ prompt: p.prompt, size: p.size, quality: p.quality });
-    // Fallback to a marked placeholder image if the real provider fails.
+    // NO PLACEHOLDER COVER ART in production: the stub returns a random picsum
+    // image. Only fall back when a dev opts in (ALLOW_STUB_AUDIO=1); otherwise
+    // fail loudly so a stock photo is never shipped as the artist's cover.
     if ((result.status !== 'succeeded' || !result.output) && adapter.name !== 'stub') {
-      const stub = imageAdapter('stub');
-      result = await stub.generate({ prompt: p.prompt, size: p.size, quality: p.quality });
-      adapter = stub;
+      if (process.env.ALLOW_STUB_AUDIO === '1') {
+        const stub = imageAdapter('stub');
+        result = await stub.generate({ prompt: p.prompt, size: p.size, quality: p.quality });
+        adapter = stub;
+      } else {
+        await markFailed(p.jobId, `image_failed: ${result.error ?? 'provider_failed'} — no image engine configured (set OPENAI_API_KEY).`);
+        return;
+      }
     }
     if (result.status !== 'succeeded' || !result.output) {
       await markFailed(p.jobId, result.error ?? 'image_failed');

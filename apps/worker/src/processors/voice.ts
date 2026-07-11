@@ -42,16 +42,23 @@ export async function processVoice(p: VoicePayload) {
       result = await adapter.poll(result.externalId);
     }
 
-    // Graceful fallback to a marked placeholder if the real voice provider is
-    // unavailable (e.g. ElevenLabs needs a paid plan), so the render still lands.
+    // NO FAKE AUDIO (audit): the stub returns a SoundHelix placeholder. Only fall
+    // back to it when a dev explicitly opts in (ALLOW_STUB_AUDIO=1); in production
+    // a failed voice provider FAILS the job with the real reason instead of
+    // shipping a placeholder as the artist's vocal.
     let placeholder = false;
     let fallbackReason: string | undefined;
     if ((result.status !== 'succeeded' || !result.output) && adapter.name !== 'stub') {
       fallbackReason = result.error ?? 'provider_failed';
-      const stub = voiceAdapter('stub');
-      result = await stub.render({ ...renderInput, providerVoiceId: p.providerVoiceId ?? 'stub' });
-      adapter = stub;
-      placeholder = true;
+      if (process.env.ALLOW_STUB_AUDIO === '1') {
+        const stub = voiceAdapter('stub');
+        result = await stub.render({ ...renderInput, providerVoiceId: p.providerVoiceId ?? 'stub' });
+        adapter = stub;
+        placeholder = true;
+      } else {
+        await markFailed(p.jobId, `voice_render_failed: ${fallbackReason} — no voice engine configured (set ELEVEN_API_KEY).`);
+        return;
+      }
     }
 
     if (result.status !== 'succeeded' || !result.output) {
@@ -96,12 +103,15 @@ export async function processVoice(p: VoicePayload) {
           duration: result.output.durationS,
           pitchCorrection: p.pitchCorrection as never,
           effects: p.effects as never,
-          meta: { placeholder, fallbackReason } as never,
+          // HONESTY: the ElevenLabs path is multilingual TTS (a SPOKEN guide
+          // vocal), not a sung performance. Flag it so no surface presents it as
+          // singing until a real singing-voice engine (SVC/RVC) is wired.
+          meta: { placeholder, fallbackReason, spokenGuideNotSung: adapter.name === 'eleven' } as never,
         },
       });
     }
 
-    await markSucceeded(p.jobId, { url: storedUrl, placeholder, fallbackReason }, result.estimatedCostUsd);
+    await markSucceeded(p.jobId, { url: storedUrl, placeholder, fallbackReason, spokenGuideNotSung: adapter.name === 'eleven' }, result.estimatedCostUsd);
   } catch (err) {
     await markFailed(p.jobId, err);
   }

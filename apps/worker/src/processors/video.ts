@@ -23,6 +23,13 @@ export async function processVideo(p: VideoPayload) {
   await markRunning(p.jobId);
   try {
     const adapter = videoAdapter();
+    // NO PLACEHOLDER VIDEO in production: the stub returns a fixed pixabay stock
+    // clip. Fail loudly unless a dev opts in (ALLOW_STUB_AUDIO=1) — never store a
+    // stock clip as the artist's music video.
+    if (adapter.name === 'stub' && process.env.ALLOW_STUB_AUDIO !== '1') {
+      await markFailed(p.jobId, 'video_failed: no video engine configured (set VIDEO_PROVIDER + its key).');
+      return;
+    }
     const shots = p.shotIndex == null ? p.shots : [p.shots[p.shotIndex]!];
     const results: Array<{ url: string; durationS: number }> = [];
 
