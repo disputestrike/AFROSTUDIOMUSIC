@@ -312,7 +312,11 @@ export default function CreatePage() {
       // networks). We poll the drop job for the hook/lyrics result…
       const started = await api.post<{ jobId: string }>(
         `/projects/${project.id}/drop`,
-        { theme, vibe: vibe.trim().slice(0, 500) || undefined, songTitle: songName.trim() || undefined, voice: voice === 'auto' ? undefined : voice, candidates: takes > 1 ? takes : undefined, pinnedReferenceId: pinnedRef || undefined, count: 1, genre, fusionGenres: fusion.length ? fusion : undefined, mood, bpm, withVocals: true, songEngine: engine === 'auto' ? undefined : engine, influence: influence.trim() || undefined, languages: langs }
+        { theme, vibe: vibe.trim().slice(0, 500) || undefined, songTitle: songName.trim() || undefined, voice: voice === 'auto' ? undefined : voice, candidates: takes > 1 ? takes : undefined, pinnedReferenceId: pinnedRef || undefined, count: 1, genre, fusionGenres: fusion.length ? fusion : undefined, mood, bpm, withVocals: true, songEngine: engine === 'auto' ? undefined : engine, influence: influence.trim() || undefined, languages: langs },
+        // One key per CLICK: the retry-on-network-death in apiFetch can re-send
+        // this POST — the server returns the drop already running instead of
+        // starting (and charging) a second one.
+        { 'Idempotency-Key': crypto.randomUUID() }
       );
       saveProduce({ dropJobId: started.jobId, renderJobId: undefined });
       let item: { jobId?: string; hookText?: string; score: number | null; error?: string } | undefined;
@@ -424,9 +428,17 @@ export default function CreatePage() {
       setDecon(d);
       setDeconTitle(d.title);
       // Prefill the shared dials from what it heard — all still editable.
+      // bpmTouched is set BEFORE setBpm: setGenres fires the genres-effect, which
+      // used to clobber the DETECTED tempo with the genre-signature default.
       if (GENRES.some((g) => g.value === d.suggestedGenre)) setGenres([d.suggestedGenre]);
+      bpmTouched.current = true;
       setBpm(d.suggestedBpm);
       if (MOODS.includes(d.mood)) setMood(d.mood);
+      // The chips must SHOW what will be sung — the detected languages land on
+      // the page (and lock against the genres-effect), so a user re-toggle after
+      // deconstruct is real intent the submit can honor.
+      const detected = (d.languages ?? []).filter((l) => LANGS.some((x) => x.value === l));
+      if (detected.length) { langsTouched.current = true; setLangs(detected); }
     } catch (e) {
       setErr((e as Error).message.slice(0, 160));
     } finally {
@@ -458,13 +470,20 @@ export default function CreatePage() {
         bpm,
         withStems: false,
         withVocals: true,
-        lyrics: lyricsText.trim(),
+        // NO inline lyrics — the attach above stored the draft artistAuthored, and
+        // the server sings draft.body VERBATIM on that path. Passing the text
+        // inline skipped the artistAuthored check and the enrichment REWROTE the
+        // artist's own words (the exact violation the owner banned).
         songEngine: engine === 'auto' ? undefined : engine,
-        // Language identity is law on this path too — Igbo lyrics used to sing
-        // with no language identity here (the Bantu-phonetics bug). The lyric's
-        // DETECTED languages outrank the page chips: the pasted words are the truth.
-        languages: decon?.languages?.length ? decon.languages : langs,
+        // Language chips are the truth here: deconstruct() writes the DETECTED
+        // languages onto the chips, so any difference now is the user's own
+        // re-toggle — real intent, honored.
+        languages: langs,
         voice: voice === 'auto' ? undefined : voice,
+        mood,
+        influence: influence.trim() || undefined,
+        candidates: takes > 1 ? takes : undefined,
+        pinnedReferenceId: pinnedRef || undefined,
         vibePrompt: [`${mood} energy`, decon?.vocalDirection, fusion.length ? `genre fusion: ${genreLabel}` : null].filter(Boolean).join('. '),
       });
       saveProduce({ renderJobId: r.jobId, projectId: project.id, title: 'Your song', hook: '', score: null });

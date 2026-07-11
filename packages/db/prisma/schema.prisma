@@ -368,6 +368,13 @@ model Song {
   measuredAnalysis Json?  // MeasuredAnalysis of the current audio (provenance-tagged)
   laneGaps         Json?  // { coverage, failedCritical[], topGaps[], drift, measuredAt }
   proofPack        Json?  // per-song evidence bundle, persisted at green-light (lib/proof-pack.ts)
+  // TRUE INSTRUMENTAL — the FINISHED song minus the voice (never the raw
+  // pre-vocal beat): separated from the freshest master/mix, loudness-matched
+  // back to it. Cleared whenever a new master is promoted — a changed song
+  // must never serve yesterday's instrumental.
+  instrumentalUrl  String? // 320k mp3 for the player/library (the WAV lives on the Stem row)
+  acapellaUrl      String? // the isolated voice, same treatment
+  instrumentalMeta Json?   // { sourceUrl, sourceLufs, matchedLufs, engine, format, at }
   createdAt   DateTime @default(now()) @db.Timestamptz(6)
 
   workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)

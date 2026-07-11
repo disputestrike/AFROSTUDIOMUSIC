@@ -99,13 +99,13 @@ export async function runChatTool(args: Ctx & { name: string; args: Record<strin
     case 'polish_brief':
       return polishBrief(ctx, String(a.rawIdea ?? ''));
     case 'generate_hooks':
-      return generateHooks(ctx, Number(a.count ?? 8), a.languages as string[] | undefined, a.refineFrom as string[] | undefined);
+      return generateHooks(ctx, Number(a.count ?? 8), a.languages as string[] | undefined, a.refineFrom as string[] | undefined, selectionsOf(a));
     case 'score_hooks':
       return scoreHooks(ctx, (a.hookIds as string[]) ?? []);
     case 'approve_hook':
       return approveHook(ctx, String(a.hookId));
     case 'generate_lyrics':
-      return generateLyrics(ctx, String(a.hookId), Boolean(a.cleanVersion ?? true), a.languages as string[] | undefined);
+      return generateLyrics(ctx, String(a.hookId), Boolean(a.cleanVersion ?? true), a.languages as string[] | undefined, selectionsOf(a));
     case 'create_beat_job':
       return createBeatJob(ctx, a as never);
     case 'render_demo_vocal':
@@ -224,7 +224,20 @@ async function polishBrief(ctx: Ctx, rawIdea: string) {
   return { briefId: brief.id, polished };
 }
 
-async function generateHooks(ctx: Ctx, count: number, languages?: string[], refineFrom?: string[]) {
+/** The user's STRUCTURED create selections, plucked from tool args — passed
+ *  first-class to the writers so a polish-brief hiccup can never drop them. */
+type Selections = { mood?: string; fusionGenres?: string[]; influence?: string; songTitle?: string };
+function selectionsOf(a: Record<string, unknown>): Selections | undefined {
+  const sel: Selections = {
+    mood: typeof a.mood === 'string' ? a.mood : undefined,
+    fusionGenres: Array.isArray(a.fusionGenres) ? (a.fusionGenres as string[]) : undefined,
+    influence: typeof a.influence === 'string' ? a.influence : undefined,
+    songTitle: typeof a.songTitle === 'string' ? a.songTitle : undefined,
+  };
+  return Object.values(sel).some(Boolean) ? sel : undefined;
+}
+
+async function generateHooks(ctx: Ctx, count: number, languages?: string[], refineFrom?: string[], selections?: Selections) {
   if (!ctx.projectId) return { error: 'no_project_in_thread' };
   // REFINE MODE: when the user hits "Regenerate" on hooks that already exist, the
   // chat model passes their TEXT here. The writer then sharpens THESE in the same
@@ -255,7 +268,7 @@ async function generateHooks(ctx: Ctx, count: number, languages?: string[], refi
   // "nothing's happening" feel.
   const result = await generateJson<{ hooks?: Array<{ text: string; language?: string[]; syllablePattern?: string }> }>({
     system: prompts.HOOK_SYSTEM,
-    user: prompts.hookUserPrompt({ artist: project.artist as never, brief: project.briefs[0] as never, count, tasteMemory, trends, soundDna, refineFrom: refine.length ? refine : undefined }),
+    user: prompts.hookUserPrompt({ artist: project.artist as never, brief: project.briefs[0] as never, count, tasteMemory, trends, soundDna, refineFrom: refine.length ? refine : undefined, selections }),
     temperature: 0.95,
     maxTokens: 3_500,
   });
@@ -360,7 +373,7 @@ async function approveHook(ctx: Ctx, hookId: string) {
   return { hookId, songId: song.id };
 }
 
-async function generateLyrics(ctx: Ctx, hookId: string, cleanVersion: boolean, languages?: string[]) {
+async function generateLyrics(ctx: Ctx, hookId: string, cleanVersion: boolean, languages?: string[], selections?: Selections) {
   const hook = await prisma.hookCandidate.findFirstOrThrow({
     where: { id: hookId, project: { workspaceId: ctx.workspaceId } },
     include: { project: { include: { artist: true, briefs: { take: 1, orderBy: { createdAt: 'desc' } } } } },
@@ -380,7 +393,7 @@ async function generateLyrics(ctx: Ctx, hookId: string, cleanVersion: boolean, l
   }, 6000); // lyrics: leaner than hooks — a huge input + long output JSON breaks more often
 
   type LyricOut = { title: string; body: string; cleanVersion?: string; explicit?: boolean; structure?: unknown; languageMix?: Record<string, number>; needsNativeReview?: string[] };
-  const lyricUser = prompts.lyricUserPrompt({ artist: hook.project.artist as never, brief: hook.project.briefs[0] as never, hookText: hook.text, cleanVersion, languages: languages?.length ? languages : hook.project.artist.languages, soundDna: lyricSoundDna });
+  const lyricUser = prompts.lyricUserPrompt({ artist: hook.project.artist as never, brief: hook.project.briefs[0] as never, hookText: hook.text, cleanVersion, languages: languages?.length ? languages : hook.project.artist.languages, soundDna: lyricSoundDna, selections });
 
   // RETRY UNTIL NON-EMPTY: a long multi-line lyric returned as a JSON string
   // sometimes comes back empty/broken (~1 in 3 live) — regenerate up to 3x
@@ -470,12 +483,43 @@ async function generateLyrics(ctx: Ctx, hookId: string, cleanVersion: boolean, l
   return { lyric: { id: lyric.id, title: lyric.title }, ...(langViolation.length ? { languageWarning: `still contains: ${langViolation.join(', ')} — regenerate or edit` } : {}) };
 }
 
-async function createBeatJob(ctx: Ctx, a: { genre: string; fusionGenres?: string[]; mood?: string; pinnedReferenceId?: string; bpm: number; keySignature?: string; durationS?: number; vibePrompt?: string; withStems?: boolean; withVocals?: boolean; songEngine?: 'suno' | 'ace_step' | 'minimax'; influence?: string; languages?: string[]; voice?: 'auto' | 'female' | 'male' | 'duet' | 'group'; candidates?: number }) {
+async function createBeatJob(ctx: Ctx, a: { genre: string; fusionGenres?: string[]; mood?: string; pinnedReferenceId?: string; bpm: number; keySignature?: string; durationS?: number; vibePrompt?: string; withStems?: boolean; withVocals?: boolean; songEngine?: 'suno' | 'ace_step' | 'minimax' | 'own'; influence?: string; languages?: string[]; voice?: 'auto' | 'female' | 'male' | 'duet' | 'group'; candidates?: number }) {
   if (!ctx.projectId) return { error: 'no_project_in_thread' };
 
   // Honor the requested genre for the whole session — the chat's scratch project
   // defaults to afro_fusion, so sync it to what was actually asked for.
   if (a.genre) await prisma.project.update({ where: { id: ctx.projectId }, data: { genre: a.genre } }).catch(() => {});
+
+  // OUR OWN ENGINE — parity with the REST path (beats.ts). This path had NO own
+  // branch, so picking "Our Engine" on Describe-it fell through to musicAdapter
+  // ('own' is not a provider) → the Stub → a guaranteed fail with a MISLEADING
+  // "no music engine configured". Assemble from the artist's material instead.
+  // Sung vocals aren't wired to the own engine yet — the bed renders and we SAY
+  // SO honestly rather than shipping an instrumental labeled as a song.
+  if (a.songEngine === 'own') {
+    const ownCharge = await ctx.app.chargeCredits({ workspaceId: ctx.workspaceId, key: 'beat_idea_short_30s' });
+    if (!ownCharge.ok) return { error: 'insufficient_credits', ...ownCharge };
+    const ownBpm = a.bpm ?? genreSignature(a.genre).bpm;
+    const ownSong = a.withVocals
+      ? await prisma.song.findFirst({ where: { projectId: ctx.projectId }, orderBy: { createdAt: 'desc' }, select: { id: true } })
+      : null;
+    const ownJob = await prisma.providerJob.create({
+      data: {
+        workspaceId: ctx.workspaceId, projectId: ctx.projectId, kind: 'music', provider: 'afrohit-own', status: 'QUEUED',
+        inputJson: { ownEngine: true, genre: a.genre, bpm: ownBpm, _charge: { key: 'beat_idea_short_30s', multiplier: 1 } } as never,
+      },
+    });
+    await enqueue({
+      queue: ctx.app.queues.music, name: 'own-engine',
+      payload: { jobId: ownJob.id, workspaceId: ctx.workspaceId, projectId: ctx.projectId, songId: ownSong?.id, genre: a.genre, bpm: ownBpm, melodyPrompt: genreSignature(a.genre).melodyPrompt },
+    });
+    return {
+      jobId: ownJob.id, status: 'queued', engine: 'afrohit-own-v1',
+      note: a.withVocals
+        ? 'Our engine builds the INSTRUMENTAL bed from your own + synthesized material — sung vocals are not wired to it yet. Add a vocal by upload, or pick MiniMax for a fully sung take.'
+        : 'Building the beat from your own + synthesized material (owned engine). Poll the job.',
+    };
+  }
 
   // Full song WITH AI vocals: grab the latest lyric so the model can sing it.
   let lyrics: string | undefined;
@@ -859,11 +903,13 @@ async function masterSongTool(ctx: Ctx, songId: string, preset?: string) {
   }
   const charge = await ctx.app.chargeCredits({ workspaceId: ctx.workspaceId, key: 'master_preset' });
   if (!charge.ok) return { error: 'insufficient_credits', ...charge };
-  // HEADROOM LAW: finished-engine renders and uploaded masters conform light-touch
-  // (see songs.ts /:id/master) — the full chain on a finished master dulls it.
+  // 'finished' routes the chain (light-touch conform for finished-engine renders
+  // and uploaded masters — the full chain on a finished master dulls it; see
+  // songs.ts /:id/master). LOUDNESS LAW v2: default target = commercial Afro
+  // loudness (-9 LUFS, two-pass driven); 'breathe_-16.5' is the dynamics opt-in.
   const finished =
     (!realMix && ['minimax', 'suno'].includes(latestBeat?.provider ?? '')) || realMix?.preset === 'uploaded';
-  const p = preset ?? (finished ? 'breathe_-16.5' : 'streaming_lufs_-14');
+  const p = preset || 'afro_stream_-9';
   const job = await prisma.providerJob.create({ data: { workspaceId: ctx.workspaceId, projectId: song.projectId, kind: 'master', provider: 'internal', status: 'QUEUED', inputJson: { songId, mixId, preset: p, finished } as never } });
   await enqueue({ queue: ctx.app.queues.master, name: 'create-master', payload: { jobId: job.id, workspaceId: ctx.workspaceId, projectId: song.projectId, songId, mixId, preset: p, finished } });
   return { jobId: job.id, status: 'queued', preset: p };
@@ -936,19 +982,29 @@ async function predictHitTool(ctx: Ctx, songId: string | undefined) {
 }
 
 async function separateStemsTool(ctx: Ctx, songId: string | undefined, mode: 'instrumental' | 'full') {
+  const assetIncludes = {
+    masters: { orderBy: { createdAt: 'desc' as const }, take: 1 },
+    mixes: { orderBy: { createdAt: 'desc' as const }, take: 1 },
+    beats: { orderBy: { createdAt: 'desc' as const }, take: 1 },
+  };
   const song = songId
-    ? await prisma.song.findFirst({ where: { id: songId, workspaceId: ctx.workspaceId }, include: { beats: { orderBy: { createdAt: 'desc' }, take: 1 } } })
+    ? await prisma.song.findFirst({ where: { id: songId, workspaceId: ctx.workspaceId }, include: assetIncludes })
     : ctx.projectId
-    ? await prisma.song.findFirst({ where: { projectId: ctx.projectId }, orderBy: { createdAt: 'desc' }, include: { beats: { orderBy: { createdAt: 'desc' }, take: 1 } } })
+    ? await prisma.song.findFirst({ where: { projectId: ctx.projectId }, orderBy: { createdAt: 'desc' }, include: assetIncludes })
     : null;
   if (!song) return { error: 'no_song' };
   const beat = song.beats[0];
   if (!beat) return { error: 'no_audio_to_separate' };
+  // Separate what the user HEARS — freshest master → mix → beat (mirror of
+  // routes/songs.ts freshestAudioUrl; the raw pre-vocal beat is the last resort).
+  const cands = [song.masters[0], song.mixes[0], song.beats[0]].filter(Boolean) as Array<{ url: string; createdAt: Date }>;
+  cands.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+  const sourceUrl = cands[0]?.url ?? beat.url;
   const charge = await ctx.app.chargeCredits({ workspaceId: ctx.workspaceId, key: 'beat_idea_short_30s' });
   if (!charge.ok) return { error: 'insufficient_credits', ...charge };
-  const job = await prisma.providerJob.create({ data: { workspaceId: ctx.workspaceId, projectId: song.projectId, kind: 'stems', provider: 'replicate', status: 'QUEUED', inputJson: { songId: song.id, beatId: beat.id, mode } as never } });
-  await enqueue({ queue: ctx.app.queues.music, name: 'stems', payload: { jobId: job.id, workspaceId: ctx.workspaceId, projectId: song.projectId, songId: song.id, beatId: beat.id, mode } });
-  return { jobId: job.id, status: 'queued', mode, note: mode === 'instrumental' ? 'Instrumental will appear in the song download shortly.' : 'Stems (vocals/drums/bass/other) will appear in the song download shortly.' };
+  const job = await prisma.providerJob.create({ data: { workspaceId: ctx.workspaceId, projectId: song.projectId, kind: 'stems', provider: 'replicate', status: 'QUEUED', inputJson: { songId: song.id, beatId: beat.id, mode, sourceUrl } as never } });
+  await enqueue({ queue: ctx.app.queues.music, name: 'stems', payload: { jobId: job.id, workspaceId: ctx.workspaceId, projectId: song.projectId, songId: song.id, beatId: beat.id, mode, sourceUrl } });
+  return { jobId: job.id, status: 'queued', mode, note: mode === 'instrumental' ? 'Making the true instrumental: the finished song with the voice taken out and everything else kept, loudness-matched to the original. It lands in the song download in a few minutes.' : 'Stems (vocals/drums/bass/other) will appear in the song download shortly.' };
 }
 
 /** Forge isolated loops (the material layer's raw stock) for a genre. */

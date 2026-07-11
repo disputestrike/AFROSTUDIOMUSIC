@@ -9,7 +9,7 @@
  * shakers wide); (5) the PDF's regression scenarios yield their expected
  * instruments. Exit 1 on any regression.
  */
-import { GENRE_KIT_KEYS, forgeKitFor, getGenreKit, isMaterialRole, familyOf, jobOf, materialGainFor, materialPanFor, type MaterialRole } from '@afrohit/shared';
+import { GENRE_KIT_KEYS, GENRE_PALETTES, forgeKitFor, getGenreKit, isMaterialRole, familyOf, jobOf, materialGainFor, materialPanFor, type MaterialRole } from '@afrohit/shared';
 import { forgePromptFor, isKeyedRole } from '../src/lib/forge-prompts';
 
 let failures = 0;
@@ -51,6 +51,27 @@ for (const genre of ['afrobeats', 'amapiano', 'afro_fusion', 'highlife', 'street
     fail(`[${genre}] no African percussion in the kit (${rhythm.join(',')})`);
   }
   void distinctFams;
+}
+
+// ---- 3b: THE DEPTH LAW — "you need to have everything" --------------------
+// Every kit has an explicit hand-authored palette (no lane rides a default),
+// and the Afro-core lanes' forge kits carry a full session's breadth: deep
+// African percussion AND harmony AND melody AND FX — congas alongside flute,
+// Rhodes, chants and risers, never a rhythm-only shelf.
+for (const genre of GENRE_KIT_KEYS) {
+  if (!GENRE_PALETTES[genre]) fail(`[${genre}] has NO hand-authored palette in genre-palettes.ts`);
+  for (const r of GENRE_PALETTES[genre] ?? []) {
+    if (!isMaterialRole(r)) fail(`[${genre}] palette role '${r}' is not in the material taxonomy`);
+  }
+}
+for (const genre of ['afrobeats', 'amapiano', 'afro_fusion', 'afro_pop', 'street_pop', 'highlife', 'afro_dancehall', 'afro_gospel', 'afro_house', 'praise']) {
+  const kit = forgeKitFor(genre).filter((r) => isMaterialRole(r)) as MaterialRole[];
+  if (kit.length < 20) fail(`[${genre}] depth law: forge kit only ${kit.length} roles (needs 20+)`);
+  const fams = (f: string) => kit.filter((r) => familyOf(r) === f).length;
+  if (fams('african_perc') < 4) fail(`[${genre}] depth law: only ${fams('african_perc')} African-perc roles (needs 4+)`);
+  if (fams('harmony') < 2) fail(`[${genre}] depth law: only ${fams('harmony')} harmony roles (needs 2+ — piano/Rhodes/pads/guitars)`);
+  if (fams('melody') < 1) fail(`[${genre}] depth law: no melody roles (needs flute/sax/brass/leads)`);
+  if (fams('fx') < 1) fail(`[${genre}] depth law: no FX roles (needs risers/transitions)`);
 }
 
 // ---- 4: gain/pan doctrine sane for every taxonomy role --------------------

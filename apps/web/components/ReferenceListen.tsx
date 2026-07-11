@@ -217,7 +217,9 @@ export function ReferenceListen({ projectId }: { projectId: string }) {
     setMadeUrl(null);
     setProducing({ step: 1, label: 'Producing the beat', startedAt: Date.now() });
     try {
-      const bpm = Math.min(Math.max(profile.bpm ?? 103, 60), 180);
+      // Round AND clamp — the ear can report 111.5bpm but the API schema is
+      // int-only, so a float 400'd the whole action.
+      const bpm = Math.round(Math.min(Math.max(profile.bpm ?? 103, 60), 180));
       const r = await api.post<{ jobId: string }>(`/projects/${projectId}/beats/generate`, {
         genre: matchGenre(profile.genre),
         bpm,
@@ -246,7 +248,8 @@ export function ReferenceListen({ projectId }: { projectId: string }) {
     // see life the entire time.
     setProducing({ step: 0, label: PROD_STEPS[0]!, startedAt: Date.now() });
     try {
-      const bpm = Math.min(Math.max(profile.bpm ?? 103, 60), 180);
+      // Round AND clamp — the API schema is int-only; a float bpm 400'd here too.
+      const bpm = Math.round(Math.min(Math.max(profile.bpm ?? 103, 60), 180));
       const genre = matchGenre(profile.genre);
       const theme = `A fresh ${genre.replace(/_/g, ' ')} song in the vibe of: ${profile.suggestedVibePrompt || profile.vibe}.${voiceLine(profile)} Catchy, original, never a copy.`;
       // 202 + drop-job id instantly; poll for the written hook/lyrics result

@@ -1,4 +1,4 @@
-import { prisma } from '@afrohit/db';
+import { prisma, Prisma } from '@afrohit/db';
 import { markFailed, markRunning, markSucceeded } from '../lib/jobs';
 import { downloadToBuffer, uploadBytes } from '../lib/storage';
 import { ffmpegAvailable, master as ffmpegMaster, MASTER_TARGETS, measureAudioQuality } from '../lib/ffmpeg';
@@ -64,7 +64,9 @@ export async function processMaster(p: MasterPayload) {
         approved: true,
       },
     });
-    await prisma.song.update({ where: { id: p.songId }, data: { status: 'MASTERED' } });
+    // A new master is now the song's current audio — yesterday's instrumental/
+    // acapella no longer describe it. Clear them; the next request re-separates.
+    await prisma.song.update({ where: { id: p.songId }, data: { status: 'MASTERED', instrumentalUrl: null, acapellaUrl: null, instrumentalMeta: Prisma.DbNull } });
     await markSucceeded(p.jobId, { masterId: masterRow.id, wavUrl, mp3Url, targetLufs: target.lufs });
   } catch (err) {
     await markFailed(p.jobId, err);

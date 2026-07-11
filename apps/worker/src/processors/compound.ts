@@ -632,13 +632,14 @@ export async function processGlossPass(opts?: { limit?: number }): Promise<void>
  *   2. the RICH forge kit (Executive-Summary spec: conga/shekere/talking-drum/
  *      highlife-guitar… via forgeKitFor) — auto-forged on the real engine when a
  *      Replicate key exists, PACED (30s apart) and CAPPED per night
- *      (KIT_FORGES_PER_NIGHT, default 10 ≈ $1/night max) so the shelf fills
- *      itself over a few nights with zero clicks. */
+ *      (KIT_FORGES_PER_NIGHT, default 30 ≈ $3/night max — the deep-palette kits
+ *      are ~30 roles/lane, so an active lane completes in a night or two) so the
+ *      shelf fills itself with zero clicks. Autonomy toggle gates the whole run. */
 export async function ensureSignatureKits(): Promise<void> {
   try {
     const projects = await prisma.project.findMany({ orderBy: { createdAt: 'desc' }, take: 40, select: { workspaceId: true, genre: true } });
     const seen = new Set<string>();
-    let forgeBudget = Math.max(0, parseInt(process.env.KIT_FORGES_PER_NIGHT ?? '10', 10) || 10);
+    let forgeBudget = Math.max(0, parseInt(process.env.KIT_FORGES_PER_NIGHT ?? '30', 10) || 30);
     for (const pr of projects) {
       if (!pr.genre) continue;
       const key = `${pr.workspaceId}|${pr.genre}`;

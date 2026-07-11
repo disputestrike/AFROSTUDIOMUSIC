@@ -19,7 +19,7 @@ export const MELODIC_ROLES = new Set(['chords', 'bass', 'log_drum']);
  * spec: signature roles first, rhythm-first required roles, capped, +fill) so the
  * API, worker nightly self-provisioning, and tests all read ONE definition.
  */
-export function kitRolesFor(genre: string, cap = 12): string[] {
+export function kitRolesFor(genre: string, cap = 30): string[] {
   return forgeKitFor(genre, cap);
 }
 

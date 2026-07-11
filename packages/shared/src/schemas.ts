@@ -141,6 +141,9 @@ export const generateBeatInputSchema = z.object({
   richVocals: z.boolean().default(true),
   // Which vocal/song model: 'ace_step' (default) or 'minimax' (higher realism).
   songEngine: z.enum(['suno', 'ace_step', 'minimax', 'own']).optional(),
+  /** Artist LANE to vibe toward (energy/tempo/production feel) — never a copy,
+   *  never named in the song. Same semantics as dropBatchSchema.influence. */
+  influence: z.string().max(120).optional(),
 });
 
 // ---------- Voice -----------------------------------------------------------
@@ -292,10 +295,11 @@ export const attachSongUploadSchema = z.object({
   songId: z.string().cuid().optional(),
   title: z.string().max(120).optional(),
   // An uploaded finished song (Suno, or bring-your-own) → light-touch conform to
-  // the HEADROOM LAW target (-16.5, Suno's own measured range). The old default
-  // (-9) was the retired crusher — it squashed exactly the masters the bridge
-  // exists to preserve.
-  masterPreset: z.enum(MASTER_PRESETS).default('breathe_-16.5'),
+  // the commercial default (-9 LUFS / -1.0 dBTP). Safe now: the two-pass chain
+  // drives with a MEASURED gain and lands linearly on target — the old "-9
+  // crusher" was the one-pass dynamic loudnorm, not the number. Artists who
+  // want the record to breathe opt in to 'breathe_-16.5'.
+  masterPreset: z.enum(MASTER_PRESETS).default('afro_stream_-9'),
   autoMaster: z.boolean().default(true),
 });
 

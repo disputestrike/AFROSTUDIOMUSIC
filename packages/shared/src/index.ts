@@ -16,4 +16,5 @@ export * from './blueprint';
 export * from './genre-signatures';
 export * from './material-roles';
 export * from './genre-kits';
+export * from './genre-palettes';
 export * from './expert-priors';

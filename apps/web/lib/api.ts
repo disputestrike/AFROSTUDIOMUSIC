@@ -1,5 +1,7 @@
 'use client';
 
+import { useMemo } from 'react';
+
 /**
  * Client API helper. Internal mode = no auth token; the API resolves the
  * single default workspace for every request. When you add Google auth later,
@@ -7,6 +9,31 @@
  */
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:4000';
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+/**
+ * Network-level failures ("Failed to fetch") happen during Railway redeploy
+ * windows — the API is down for ~20-40s while the new build swaps in. A hard
+ * fail there showed the owner "Couldn't finish that one" on a healthy app.
+ * fetch throws TypeError ONLY when no response arrived at all (DNS/conn reset),
+ * so no request was processed — safe to retry even for POSTs.
+ */
+async function fetchWithRetry(url: string, init: RequestInit): Promise<Response> {
+  const delays = [2_000, 8_000, 20_000];
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await fetch(url, init);
+    } catch (err) {
+      if (attempt >= delays.length) {
+        // Raw "Failed to fetch" reads like the APP is broken — say what actually
+        // happened after ~30s of genuine retries.
+        throw new Error('The studio is unreachable right now (network blip or a deploy in progress). It usually comes back within a minute — try again.');
+      }
+      await sleep(delays[attempt]!);
+    }
+  }
+}
 
 async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
   // Only declare a JSON content-type when we're ACTUALLY sending a JSON body.
@@ -18,12 +45,15 @@ async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
   // WO-1: admin/trigger routes require x-admin-secret (set once via the /admin
   // page, kept in localStorage). ONLY attach it to /admin + /debug requests —
   // sending the operator secret on every call needlessly exposed it (audit).
-  const needsAdmin = path.startsWith('/admin') || path.startsWith('/debug');
+  // bridge-export/flagship exports are admin-gated on the API side too — without
+  // the header the catalog's bridge button was ALWAYS 401 (regression from
+  // narrowing the header to /admin+/debug only).
+  const needsAdmin = path.startsWith('/admin') || path.startsWith('/debug') || path.includes('-export');
   const adminKey = needsAdmin && typeof localStorage !== 'undefined' ? localStorage.getItem('afrohit.adminKey') : null;
   // Multi-tenant session (AUTH_MODE=jwt): attach the bearer token when signed
   // in. Internal mode ignores it — harmless either way.
   const token = typeof localStorage !== 'undefined' ? localStorage.getItem('afrohit.token') : null;
-  const res = await fetch(`${API_URL}/api/v1${path}`, {
+  const res = await fetchWithRetry(`${API_URL}/api/v1${path}`, {
     ...init,
     headers: {
       ...(hasBody ? { 'content-type': 'application/json' } : {}),
@@ -42,7 +72,12 @@ async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 export function useApi() {
-  return {
+  // STABLE IDENTITY: this object used to be rebuilt every render, so any
+  // `useCallback(..., [api])` downstream changed identity each render → effect
+  // re-ran → setState → render → repeat. That infinite refetch loop hammered
+  // GET /songs from the Create page (and release/benchmark panels), burning the
+  // per-IP rate limit exactly while a render poll needed it.
+  return useMemo(() => ({
     /** Absolute URL for a same-API path (e.g. a proxied file download link). */
     fileHref(path: string): string {
       return `${API_URL}/api/v1${path}`;
@@ -50,8 +85,8 @@ export function useApi() {
     get<T>(path: string): Promise<T> {
       return apiFetch<T>(path);
     },
-    post<T>(path: string, body: unknown): Promise<T> {
-      return apiFetch<T>(path, { method: 'POST', body: JSON.stringify(body) });
+    post<T>(path: string, body: unknown, headers?: Record<string, string>): Promise<T> {
+      return apiFetch<T>(path, { method: 'POST', body: JSON.stringify(body), ...(headers ? { headers } : {}) });
     },
     patch<T>(path: string, body: unknown): Promise<T> {
       return apiFetch<T>(path, { method: 'PATCH', body: JSON.stringify(body) });
@@ -140,9 +175,15 @@ export function useApi() {
       body: unknown,
       onEvent: (evt: Record<string, unknown>) => void
     ): Promise<void> {
-      const res = await fetch(`${API_URL}/api/v1${path}`, {
+      // Same session headers as apiFetch — the stream endpoint 401'd in jwt mode
+      // because this hand-rolled fetch never carried the bearer token.
+      const token = typeof localStorage !== 'undefined' ? localStorage.getItem('afrohit.token') : null;
+      const res = await fetchWithRetry(`${API_URL}/api/v1${path}`, {
         method: 'POST',
-        headers: { 'content-type': 'application/json' },
+        headers: {
+          'content-type': 'application/json',
+          ...(token ? { authorization: `Bearer ${token}` } : {}),
+        },
         body: JSON.stringify(body),
       });
       if (!res.ok || !res.body) {
@@ -168,5 +209,5 @@ export function useApi() {
         }
       }
     },
-  };
+  }), []);
 }

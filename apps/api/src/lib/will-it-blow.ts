@@ -39,7 +39,7 @@ import { laneDna, laneDnaBrief } from './lane-pipeline';
 import { arReadSong } from './ar-read';
 import { enqueue } from './queue';
 import { snapshotLyricVersion } from './lyric-versions';
-import { languageVocalTag } from '../services/chat-tools';
+import { languageVocalTag, voiceVocalTag } from '../services/chat-tools';
 
 // Benjamin's call: the release bar is 90 ("it needs to be perfect"). NOTE: on the
 // current MiniMax engine, writing-driven scores top out ~65-70 (the A&R itself says
@@ -168,7 +168,19 @@ async function resing(
   const charge = await app.chargeCredits({ workspaceId, key: 'full_song_demo', refTable: 'Song', refId: song.id });
   if (!charge.ok) return null;
   const genre = song.project.genre;
-  const dna = laneDna(genre);
+  // THE USER'S SELECTIONS SURVIVE THE GATE: the original render job carries the
+  // create's languages/voice/mood/fusion (inputJson = {...input}). The re-sing
+  // used the ARTIST-PROFILE defaults instead — the gate would auto-"improve" an
+  // Igbo duet into the profile's default tongue with no voice at all, silently
+  // overriding what the user picked ("it was selecting properly, now broken").
+  const origJob = await prisma.providerJob.findFirst({
+    where: { workspaceId, kind: 'music', inputJson: { path: ['songId'], equals: song.id } },
+    orderBy: { createdAt: 'desc' },
+    select: { inputJson: true },
+  });
+  const orig = (origJob?.inputJson ?? {}) as { languages?: string[]; voice?: 'auto' | 'female' | 'male' | 'duet' | 'group'; mood?: string; fusionGenres?: string[]; songEngine?: string };
+  const selLangs = orig.languages?.length ? orig.languages : song.project.artist.languages;
+  const dna = laneDna(genre, { mood: orig.mood, fusionGenres: orig.fusionGenres });
   const learned = await learnedReferenceBrief(workspaceId, genre);
   // PHASE 4 loop — re-sing is a regen; inject the stored repair steering so the
   // bigger take is pushed back in-lane (the whole point of make-it-bigger + the gate).
@@ -181,7 +193,8 @@ async function resing(
   const enriched = await enrichLyricsForVocals({
       genre: song.project.genre,
     lyricBody: body,
-    languages: song.project.artist.languages,
+    voice: orig.voice,
+    languages: selLangs,
     laneSummary: song.project.artist.laneSummary ?? undefined,
     soundDna: [dna.brief, learned].filter(Boolean).join('\n\n'),
   });
@@ -190,7 +203,9 @@ async function resing(
     styleHints = enriched.styleTags;
   }
   const prev = song.beats[0]?.provider ?? '';
-  const songEngine = ['suno', 'minimax', 'ace_step'].includes(prev) ? (prev as 'suno' | 'ace_step' | 'minimax') : undefined;
+  const songEngine = ['suno', 'minimax', 'ace_step'].includes(prev)
+    ? (prev as 'suno' | 'ace_step' | 'minimax')
+    : (['suno', 'minimax', 'ace_step'].includes(orig.songEngine ?? '') ? (orig.songEngine as 'suno' | 'ace_step' | 'minimax') : undefined);
   const job = await prisma.providerJob.create({
     data: { workspaceId, projectId: song.projectId, kind: 'music', provider: songEngine ?? 'suno', status: 'QUEUED', inputJson: { makeItBigger: true, songId: song.id } as never },
   });
@@ -207,8 +222,8 @@ async function resing(
         // rendered 120s and the gate SHORTENED the shipped song.
         durationS: song.beats[0]?.duration && song.beats[0].duration > 30 ? Math.round(song.beats[0].duration) : genreSignature(genre).durationS,
         lyrics: lyricsForSong,
-        artistTone: song.project.artist.vocalTone, languages: song.project.artist.languages,
-        dnaTags: [languageVocalTag(song.project.artist.languages), ...(dna.tags ?? []), ...styleHints.slice(0, 3), ...laneSteer],
+        artistTone: song.project.artist.vocalTone, languages: selLangs,
+        dnaTags: [...[voiceVocalTag(orig.voice ?? null)].filter((t): t is string => !!t), languageVocalTag(selLangs), ...(dna.tags ?? []), ...styleHints.slice(0, 3), ...laneSteer],
       },
     },
   });

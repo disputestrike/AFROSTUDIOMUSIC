@@ -51,6 +51,20 @@ export default async function beats(app: FastifyInstance) {
         artistAuthored = !!(lyric as { artistAuthored?: boolean } | null)?.artistAuthored;
         lyrics = artistAuthored ? lyric?.body ?? undefined : lyric?.cleanVersion ?? lyric?.body ?? undefined;
         if (!lyrics) return reply.code(400).send({ error: 'no_lyrics — write lyrics first for a vocal song' });
+      } else if (input.withVocals && lyrics && input.songId) {
+        // SERVER-ENFORCED VERBATIM (the hole the client path fell through): when
+        // lyrics arrive INLINE the guard above never ran, artistAuthored stayed
+        // false, and the enrichment below rewrote the artist's own words. If this
+        // song's draft is artistAuthored, the draft body is the law regardless of
+        // how the request carried the text.
+        const draft = await prisma.lyricDraft.findFirst({
+          where: { projectId: project.id, songId: input.songId },
+          orderBy: { createdAt: 'desc' },
+        });
+        if ((draft as { artistAuthored?: boolean } | null)?.artistAuthored) {
+          artistAuthored = true;
+          lyrics = draft?.body ?? lyrics;
+        }
       }
       // SELECTED genre wins (audit #4): the render path used project.genre — so
       // picking amapiano on an afrobeats project rendered afrobeats. The user's
@@ -165,7 +179,9 @@ export default async function beats(app: FastifyInstance) {
             durationS: input.durationS ?? (input.withVocals ? genreSignature(genre).durationS : 60),
             // ANTI-SOUP: styleHints are TAGS (they join dnaTags), not sentence glue —
             // an ever-growing vibePrompt used to drown the genre identity.
-            vibePrompt: input.vibePrompt || undefined,
+            // Influence = artist LANE (energy/tempo/production feel), same
+            // semantics as the drop path — never a copy, never named.
+            vibePrompt: [input.vibePrompt, input.influence ? `in the vibe/lane of ${input.influence} (capture the energy and production feel, never copy)` : null].filter(Boolean).join('. ') || undefined,
             artistTone: project.artist.vocalTone,
             languages: langs,
             dnaTags: [

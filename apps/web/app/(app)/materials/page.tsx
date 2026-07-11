@@ -51,6 +51,7 @@ export default function MaterialsPage() {
   const [bpm, setBpm] = useState(112);
   const [forging, setForging] = useState<string>(''); // status line
   const [forgeErr, setForgeErr] = useState('');
+  const [forgeNote, setForgeNote] = useState(''); // informational, not an error
   const [projects, setProjects] = useState<Project[]>([]);
   const [projectId, setProjectId] = useState('');
   const [assembling, setAssembling] = useState('');
@@ -116,12 +117,21 @@ export default function MaterialsPage() {
     if (forging) return;
     setForging('Starting the forge…');
     setForgeErr('');
+    setForgeNote('');
     try {
-      const res = await api.post<{ forging: Array<{ role: string; jobId: string }>; keySignature: string }>('/materials/forge', { genre, bpm });
+      const res = await api.post<{ forging: Array<{ role: string; jobId: string }>; keySignature?: string; note?: string }>('/materials/forge', { genre, bpm });
       const total = res.forging.length;
+      // Already-stocked kit: the API returns no jobs (and no key) plus a note —
+      // relay that, never "Forging 0 loops in undefined".
+      if (!total) {
+        setForging('');
+        setForgeNote(res.note ?? 'Kit already stocked — assembling from the shelf.');
+        void load();
+        return;
+      }
       let ok = 0;
       const failed: string[] = [];
-      setForging(`Forging ${total} loops in ${res.keySignature} — they land one at a time (rate-limit spacing)…`);
+      setForging(`Forging ${total} loops${res.keySignature ? ` in ${res.keySignature}` : ''} — they land one at a time (rate-limit spacing)…`);
       await Promise.allSettled(res.forging.map(async (f) => {
         try {
           await pollJob(f.jobId, 80);
@@ -204,6 +214,7 @@ export default function MaterialsPage() {
             </button>
           </div>
           {forging && <div className="mt-2 text-xs text-afrobrand-300">{forging}</div>}
+          {forgeNote && <div className="mt-2 rounded-lg border border-emerald-500/30 bg-emerald-500/10 p-2.5 text-xs text-emerald-300">{forgeNote}</div>}
           {forgeErr && <div className="mt-2 rounded-lg border border-amber-500/30 bg-amber-500/10 p-2.5 text-xs text-amber-300">{forgeErr}</div>}
           <p className="mt-2 text-[11px] text-slate-500">One isolated loop per role (~$0.10 each). Loops arrive ~30s apart — the provider rate-limits, we pace it.</p>
         </div>

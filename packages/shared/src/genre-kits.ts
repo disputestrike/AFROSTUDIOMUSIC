@@ -11,6 +11,7 @@
  * synth, the arranger, the engine brief and the verifier all read from.
  */
 import { jobOf, familyOf, isMaterialRole, type MaterialRole } from './material-roles';
+import { paletteFor } from './genre-palettes';
 
 export interface GenreKit {
   genre: string;
@@ -10837,13 +10838,18 @@ const UNFORGEABLE = new Set(['lead_vocal', 'double', 'harmony_vocal', 'adlib', '
 
 /**
  * The genre's FORGE KIT (Executive-Summary spec) — the rich, prioritized role
- * list the shelf should hold, derived from the genre's kit definition, never a
- * hand-maintained list. Signature roles lead (talking drum, shekere, log drum,
- * highlife guitar…), then required roles rhythm-first (the layering law wants
- * 3-5 concurrent percussion), capped so a kit forge stays affordable — the cap
- * can never drop a signature. Every kit carries a section fill.
+ * list the shelf should hold, derived from the genre's kit definition PLUS its
+ * full palette (genre-palettes.ts), never a hand-maintained list. Signature
+ * roles lead (talking drum, shekere, log drum, highlife guitar…), then required
+ * roles rhythm-first (the layering law wants 3-5 concurrent percussion), then
+ * the palette fills remaining slots BREADTH-FIRST across families — one role
+ * per family per round — so the shelf always gains harmony, melody, textures
+ * and FX alongside more percussion, never rhythm-only ("you need to have
+ * everything": congas AND flute AND Rhodes AND chants AND risers). Capped so a
+ * kit forge stays affordable; the cap can never drop a signature. Every kit
+ * carries a section fill.
  */
-export function forgeKitFor(genre: string, cap = 12): string[] {
+export function forgeKitFor(genre: string, cap = 30): string[] {
   const kit = getGenreKit(genre);
   if (!kit) {
     const base = /drill|trap|hip_hop/.test(genre) ? ['drums', 'bass', 'chords'] : ['drums', 'percussion', 'bass', 'chords'];
@@ -10857,6 +10863,24 @@ export function forgeKitFor(genre: string, cap = 12): string[] {
   const famRank: Record<string, number> = { drumkit: 0, african_perc: 0, global_perc: 0, bass: 1, harmony: 2, melody: 3, mallets: 3, vocals: 4, fx: 5 };
   const req = [...kit.requiredRoles].filter((r) => isMaterialRole(r)).sort((a, b) => (famRank[familyOf(a as MaterialRole)] ?? 9) - (famRank[familyOf(b as MaterialRole)] ?? 9));
   for (const r of req) push(r);
+  // Palette depth, breadth-first: queue each family's roles in authored priority
+  // order, then round-robin one per family until the cap — extra shaker patterns
+  // can never crowd out the first flute, pad or riser.
+  const FAM_ORDER = ['drumkit', 'african_perc', 'global_perc', 'bass', 'harmony', 'melody', 'mallets', 'vocals', 'fx'];
+  const queues = new Map<string, string[]>(FAM_ORDER.map((f) => [f, []]));
+  for (const r of paletteFor(genre)) {
+    if (ordered.includes(r) || UNFORGEABLE.has(r) || !isMaterialRole(r)) continue;
+    queues.get(familyOf(r as MaterialRole))?.push(r);
+  }
+  let moved = true;
+  while (ordered.length < cap && moved) {
+    moved = false;
+    for (const f of FAM_ORDER) {
+      if (ordered.length >= cap) break;
+      const next = queues.get(f)?.shift();
+      if (next && !ordered.includes(next)) { ordered.push(next); moved = true; }
+    }
+  }
   return [...ordered.slice(0, cap), 'fill'];
 }
 

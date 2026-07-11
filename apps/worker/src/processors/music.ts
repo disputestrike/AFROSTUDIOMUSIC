@@ -1,4 +1,4 @@
-import { prisma } from '@afrohit/db';
+import { prisma, Prisma } from '@afrohit/db';
 import { musicAdapter, sunoKey, defaultInstrumentalEngine } from '@afrohit/ai';
 import type { MusicGenerationInput } from '@afrohit/ai';
 import { markFailed, markRunning, markSucceeded } from '../lib/jobs';
@@ -476,12 +476,15 @@ export async function processMusic(p: MusicPayload) {
     if (wantsVocals && !placeholder && p.songId) {
       try {
         if (await ffmpegAvailable()) {
-          // Finished engines (minimax/suno) already deliver a competitive, loud
-          // master — conform it to ~-9 LUFS (commercial Afro loudness) light-touch,
-          // don't master it DOWN to -14 with a full EQ/comp chain (that made the
-          // catalog ~5 dB quieter and duller than the raw beat the Create page
-          // plays — the "sounds weak" complaint). Raw engines keep the -14 chain.
-          const preset = finished ? 'breathe_-16.5' : 'streaming_lufs_-14'; // HEADROOM LAW: finished records breathe (-16.5); the -9 club crush retired from the default path (still selectable)
+          // LOUDNESS LAW v2: the old HEADROOM LAW parked every default master at
+          // -16.5/-14 LUFS while commercial Afrobeats ships at -8.5..-11 — THAT
+          // gap is the "masters sound weak" complaint, and the old one-pass
+          // loudnorm undershot its target 1-3 LU on top of it. Default is now
+          // commercial Afro loudness (-9 LUFS / -1.0 dBTP) via the two-pass drive
+          // chain for BOTH finished and raw engines ('finished' still routes
+          // light-touch conform vs full EQ/glue chain inside master()).
+          // 'breathe_-16.5' remains the honest dynamics-first OPT-IN, not the default.
+          const preset = 'afro_stream_-9';
           const mixRow = await prisma.mix.create({
             data: { projectId: p.projectId, songId: p.songId, preset: 'source', url: ingestedMain, notes: 'Master source (auto, from render)', approved: true },
           });
@@ -492,10 +495,20 @@ export async function processMusic(p: MusicPayload) {
             uploadBytes({ workspaceId: p.workspaceId, kind: 'masters', bytes: mp3, contentType: 'audio/mpeg', ext: 'mp3' }),
           ]);
           const target = MASTER_TARGETS[preset]!;
+          // Certify what actually SHIPPED (same rule as the re-master worker):
+          // measure the mastered artifact and store the MEASURED loudness — the
+          // target is only the fallback, never the claim.
+          const masterQc = await measureAudioQuality(wavUrl).catch(() => null);
+          const measuredLufs = masterQc?.integratedLufs ?? null;
+          if (measuredLufs !== null && measuredLufs < target.lufs - 1.5) {
+            console.warn(`[music] auto-master undershot target: measured ${measuredLufs.toFixed(1)} LUFS vs ${target.lufs} (${preset}) — the two-pass trim should not do this, check the chain`);
+          }
           await prisma.master.create({
-            data: { projectId: p.projectId, songId: p.songId, mixId: mixRow.id, preset, url: wavUrl, loudness: target.lufs, approved: true },
+            data: { projectId: p.projectId, songId: p.songId, mixId: mixRow.id, preset, url: wavUrl, loudness: measuredLufs ?? target.lufs, approved: true },
           });
-          await prisma.song.update({ where: { id: p.songId }, data: { status: 'MASTERED' } });
+          // A fresh render just became the current audio (re-sing lands here) —
+          // clear any instrumental/acapella split from the PREVIOUS take.
+          await prisma.song.update({ where: { id: p.songId }, data: { status: 'MASTERED', instrumentalUrl: null, acapellaUrl: null, instrumentalMeta: Prisma.DbNull } });
           masteredUrl = mp3Url;
         }
       } catch (err) {

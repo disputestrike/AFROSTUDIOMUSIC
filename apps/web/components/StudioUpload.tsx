@@ -62,7 +62,7 @@ export function StudioUpload({ projectId }: { projectId: string }) {
     set('song', { kind: 'uploading', pct: 0 });
     try {
       const { key } = await api.uploadToStorage(file, 'reference', (f) => set('song', { kind: 'uploading', pct: Math.round(f * 100) }));
-      await api.post(`/projects/${projectId}/mixes/upload`, { key, title: baseName(file.name), autoMaster: true, masterPreset: 'streaming_lufs_-14' });
+      await api.post(`/projects/${projectId}/mixes/upload`, { key, title: baseName(file.name), autoMaster: true, masterPreset: 'afro_stream_-9' });
       set('song', { kind: 'done', msg: 'Song uploaded — mastering to streaming loudness now. Refresh Masters shortly.' });
       router.refresh();
     } catch (e) {

@@ -12,6 +12,7 @@ import { useApi } from '@/lib/api';
 interface DropItem {
   songId?: string;
   hookText?: string;
+  title?: string;
   score: number | null;
   jobId?: string;
   error?: string;
@@ -47,12 +48,55 @@ export function DropMachine({ projectId, initialTheme = '' }: { projectId: strin
     setItems([]);
     setStatus(`Producing ${n} song${n > 1 ? 's' : ''} on “${theme.trim()}” — hooks, A&R pick, lyrics, sung song…`);
     try {
-      const r = await api.post<{ drop: DropItem[]; produced: number }>(`/projects/${projectId}/drop`, {
+      // 202 + a job id INSTANTLY — the pipeline runs detached server-side
+      // (holding a multi-minute HTTP request open dies on real networks).
+      const started = await api.post<{ jobId: string }>(`/projects/${projectId}/drop`, {
         theme: theme.trim(),
         count: n,
       });
-      setItems(r.drop ?? []);
-      setStatus(`${r.produced} songs queued & ranked. Audio renders in the background — refresh Catalog to hear them.`);
+      const t0 = Date.now();
+      const elapsed = () => {
+        const s = Math.round((Date.now() - t0) / 1000);
+        return s < 60 ? `${s}s` : `${Math.floor(s / 60)}m ${s % 60}s`;
+      };
+      let out: { produced?: number; drop?: DropItem[]; error?: string } | undefined;
+      let failMsg = '';
+      let netFails = 0;
+      // 192 × 5s = 16 min — a full write (hooks → A&R → polished lyrics × N
+      // takes) can take that long under load. Past the window we hand off
+      // calmly; the pipeline keeps going and the songs land in the Catalog.
+      for (let i = 0; i < 192; i++) {
+        await new Promise((r) => setTimeout(r, 5000));
+        let j: { status: string; errorJson?: { message?: string } | null; outputJson?: { produced?: number; drop?: DropItem[]; error?: string } };
+        // A single failed poll (backgrounded tab, wifi↔cell switch) must not
+        // kill a drop that's still running server-side — retry, give up only
+        // after ~2 min of solid failures.
+        try { j = await api.get(`/jobs/${started.jobId}`); netFails = 0; }
+        catch { if (++netFails >= 24) break; continue; }
+        if (j.status === 'SUCCEEDED') { out = j.outputJson; break; }
+        if (j.status === 'FAILED') { failMsg = j.errorJson?.message ?? 'the drop failed — try again'; break; }
+        setStatus(
+          i < 24
+            ? `Writing hooks + the A&R pick… (${elapsed()})`
+            : i < 96
+              ? `Writing & polishing the lyrics… (${elapsed()})`
+              : `Ranking the takes & queueing the renders… (${elapsed()})`
+        );
+      }
+      if (failMsg) throw new Error(failMsg);
+      if (!out) {
+        setStatus('Still rendering in the background — this batch is taking longer than usual. Check the Catalog in a few minutes; nothing is lost.');
+        return;
+      }
+      setItems(out.drop ?? []);
+      // Top-level error = NO take rendered; the server names why (brain down,
+      // cap hit) — show that, never a fabricated "0 songs queued".
+      if (out.error) {
+        setStatus(`Drop failed: ${out.error}`);
+        return;
+      }
+      const produced = out.produced ?? 0;
+      setStatus(`${produced} song${produced === 1 ? '' : 's'} queued & ranked. Audio renders in the background — refresh Catalog to hear them.`);
       router.refresh();
     } catch (e) {
       setStatus(`Drop failed: ${(e as Error).message}`);

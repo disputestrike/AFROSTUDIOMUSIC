@@ -98,15 +98,22 @@ export async function separateStemsRouted(opts: {
   mode?: 'instrumental' | 'full';
   purpose: 'measure' | 'user';
   workspaceId?: string;
-}): Promise<StemSeparationResult> {
+  /** Run local htdemucs FIRST even for purpose:'user' (the paid path stays as
+   * fallback). The TRUE INSTRUMENTAL path sets this: local keeps the split at
+   * full WAV quality where the paid default re-encodes to mp3. DEMUCS_MODE=
+   * replicate still overrides — operator config beats a caller preference. */
+  preferLocal?: boolean;
+}): Promise<StemSeparationResult & { engine?: 'local' | 'replicate' }> {
   const configured = (process.env.DEMUCS_MODE ?? '').toLowerCase();
-  const wantLocal = configured === 'local' || (configured !== 'replicate' && opts.purpose === 'measure');
+  const wantLocal =
+    configured === 'local' ||
+    (configured !== 'replicate' && (opts.purpose === 'measure' || opts.preferLocal === true));
   const started = Date.now();
   if (wantLocal && (await localDemucsAvailable())) {
     try {
       const res = await separateStemsLocal({ audioUrl: opts.audioUrl, mode: opts.mode });
       await logStemsRun(opts.workspaceId, 'local', opts.purpose, Date.now() - started, 0, true);
-      return res;
+      return { ...res, engine: 'local' };
     } catch (err) {
       console.warn('[stems] local demucs failed — falling back to the paid path:', (err as Error)?.message);
     }
@@ -116,5 +123,5 @@ export async function separateStemsRouted(opts: {
   const paidStart = Date.now();
   const res = await separateStems({ audioUrl: opts.audioUrl, apiKey: opts.apiKey, mode: opts.mode });
   await logStemsRun(opts.workspaceId, 'replicate', opts.purpose, Date.now() - paidStart, REPLICATE_STEM_COST, true);
-  return res;
+  return { ...res, engine: 'replicate' };
 }

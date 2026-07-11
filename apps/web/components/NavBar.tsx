@@ -2,7 +2,7 @@
 
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Menu, X } from 'lucide-react';
 
 const LINKS = [
@@ -19,12 +19,19 @@ const LINKS = [
   { href: '/albums', label: 'Albums' },
   { href: '/billing', label: 'Billing' },
   { href: '/settings', label: 'Settings' },
+  { href: '/benchmark', label: 'Benchmark' },
   { href: '/admin', label: 'Admin' },
 ];
 
 export function NavBar() {
   const path = usePathname();
   const [open, setOpen] = useState(false);
+  // null = unknown (matches the server-rendered markup, so no hydration
+  // mismatch); the token check is client-only by nature.
+  const [signedIn, setSignedIn] = useState<boolean | null>(null);
+  useEffect(() => {
+    try { setSignedIn(!!localStorage.getItem('afrohit.token')); } catch { setSignedIn(true); }
+  }, []);
   const isActive = (href: string) => path === href || path.startsWith(href + '/');
 
   const linkClass = (href: string, mobile = false) =>
@@ -61,10 +68,20 @@ export function NavBar() {
             Admin
           </Link>
           <span className="ml-2 shrink-0 rounded-full border border-white/10 bg-white/5 px-3 py-1 text-xs text-slate-400">Internal</span>
+          {signedIn === false && (
+            <Link href="/signin" className="ml-1 shrink-0 rounded-full border border-afrobrand-500/40 bg-afrobrand-500/10 px-3 py-1 text-xs text-afrobrand-300 hover:bg-afrobrand-500/20">
+              Sign in
+            </Link>
+          )}
         </nav>
 
         {/* Mobile / tablet — hamburger. */}
         <div className="flex items-center gap-2 xl:hidden">
+          {signedIn === false && (
+            <Link href="/signin" className="rounded-full border border-afrobrand-500/40 bg-afrobrand-500/10 px-2.5 py-1 text-[11px] text-afrobrand-300">
+              Sign in
+            </Link>
+          )}
           <span className="rounded-full border border-white/10 bg-white/5 px-2.5 py-1 text-[11px] text-slate-400">Internal</span>
           <button
             onClick={() => setOpen((o) => !o)}

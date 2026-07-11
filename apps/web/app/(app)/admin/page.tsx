@@ -36,6 +36,15 @@ export default function AdminPage() {
   const [needsKey, setNeedsKey] = useState(false);
   const [keyInput, setKeyInput] = useState('');
   const [busy, setBusy] = useState<string | null>(null);
+  const [actionErr, setActionErr] = useState('');
+
+  // The api helper throws "401 Unauthorized: …" — read the status off the
+  // front and point at the fix (a stale/wrong admin key is the common case).
+  function actionErrText(prefix: string, e: unknown): string {
+    const m = String((e as Error)?.message ?? e);
+    const hint = /^40[13]\b/.test(m) ? ' — check the admin key in the field above' : '';
+    return `${prefix}: ${m.slice(0, 160)}${hint}`;
+  }
 
   async function load() {
     try {
@@ -69,12 +78,15 @@ export default function AdminPage() {
     if (!usd) return;
     const reason = prompt('Reason (goes in the ledger):', 'support grant') ?? 'support grant';
     setBusy(id);
+    setActionErr('');
     try {
       await api.post(`/admin/workspaces/${id}/credits`, {
         deltaCents: Math.round(Number(usd) * 10_000),
         reason,
       });
       await load();
+    } catch (e) {
+      setActionErr(actionErrText('Credit grant failed', e));
     } finally {
       setBusy(null);
     }
@@ -83,9 +95,12 @@ export default function AdminPage() {
   async function toggleSuspend(row: WorkspaceRow) {
     if (!confirm(`${row.suspendedAt ? 'Unsuspend' : 'SUSPEND'} workspace "${row.name}"?`)) return;
     setBusy(row.id);
+    setActionErr('');
     try {
       await api.post(`/admin/workspaces/${row.id}/${row.suspendedAt ? 'unsuspend' : 'suspend'}`, {});
       await load();
+    } catch (e) {
+      setActionErr(actionErrText(`${row.suspendedAt ? 'Unsuspend' : 'Suspend'} failed`, e));
     } finally {
       setBusy(null);
     }
@@ -157,6 +172,9 @@ export default function AdminPage() {
       <RefileReview />
 
       <h2 className="mt-10 font-display text-2xl">Workspaces</h2>
+      {actionErr && (
+        <div className="mt-3 rounded-lg border border-red-500/40 bg-red-500/10 p-3 text-sm text-red-300">{actionErr}</div>
+      )}
       <table className="mt-4 w-full text-left text-sm">
         <thead className="text-xs uppercase tracking-widest text-slate-400">
           <tr>

@@ -125,7 +125,7 @@ export default function CatalogGrid({ initial }: { initial: SongRow[] }) {
     setBusy(`${data.songId}:inst${index}`);
     try {
       await api.post(`/songs/${data.songId}/versions/instrumental`, { index });
-      flash('Instrumental is separating — it’ll be downloadable from Download → stems shortly.');
+      flash('Instrumental is separating — it’ll be downloadable from Download in a few minutes.');
     } catch (e) {
       flash((e as Error).message || 'Could not start instrumental');
     } finally {
@@ -161,7 +161,7 @@ export default function CatalogGrid({ initial }: { initial: SongRow[] }) {
 
   async function remaster(s: SongRow) {
     setBusy(`${s.id}:master`);
-    try { await api.post(`/songs/${s.id}/master`, { preset: 'streaming_lufs_-14' }); flash('Re-master queued — refresh in ~1 min for the new master.'); }
+    try { await api.post(`/songs/${s.id}/master`, { preset: 'afro_stream_-9' }); flash('Re-master queued — refresh in ~1 min for the new master.'); }
     catch (e) { flash((e as Error).message || 'Master failed'); }
     finally { setBusy(''); }
   }
@@ -229,7 +229,7 @@ export default function CatalogGrid({ initial }: { initial: SongRow[] }) {
         if (!/no_instrumental_stem/.test((e as Error).message)) throw e;
       }
       // No clean instrumental yet — make one first, then finish the job.
-      flash('No clean instrumental yet — separating the vocals now (about a minute)…');
+      flash('No clean instrumental yet — separating the vocals now (a few minutes)…');
       const sep = await api.post<{ jobId: string }>(`/songs/${s.id}/stems`, { mode: 'instrumental' });
       for (let i = 0; i < 36; i++) {
         await new Promise((r) => setTimeout(r, 5000));
@@ -286,7 +286,7 @@ export default function CatalogGrid({ initial }: { initial: SongRow[] }) {
     setBusy(`${s.id}:${mode}`);
     try {
       await api.post(`/songs/${s.id}/stems`, { mode });
-      flash(mode === 'instrumental' ? 'Making the instrumental — it’ll appear in Download in ~1 min.' : 'Separating stems — they’ll appear in Download in ~1 min.');
+      flash(mode === 'instrumental' ? 'Making the instrumental — the full song minus the voice. It’ll appear in Download in a few minutes.' : 'Separating stems — they’ll appear in Download in a few minutes.');
     } catch (e) { flash((e as Error).message || 'Separation failed'); }
     finally { setBusy(''); }
   }

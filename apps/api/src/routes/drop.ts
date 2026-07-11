@@ -26,6 +26,21 @@ export default async function drop(app: FastifyInstance) {
       });
       const ctx = { app, workspaceId, userId, projectId: project.id };
 
+      // IDEMPOTENT START: the client retries a network-dead POST (redeploy
+      // window) with the SAME Idempotency-Key — a duplicate key returns the
+      // drop already running instead of double-creating (and double-charging).
+      const idem = (req.headers['idempotency-key'] as string) || undefined;
+      if (idem) {
+        const existing = await prisma.providerJob.findFirst({
+          where: { workspaceId, kind: 'drop', inputJson: { path: ['_idem'], equals: idem } },
+          orderBy: { createdAt: 'desc' },
+        });
+        if (existing) {
+          reply.code(202);
+          return { jobId: existing.id, status: 'queued', theme: input.theme };
+        }
+      }
+
       // ASYNC BY DESIGN: the pipeline takes 1–3 minutes of LLM work. Holding one
       // HTTP request open that long dies on real-world networks/proxies (browser
       // click-through proved it: ECONNRESET mid-drop → user sees a dead button).
@@ -39,14 +54,16 @@ export default async function drop(app: FastifyInstance) {
           provider: 'internal',
           status: 'RUNNING',
           startedAt: new Date(),
-          inputJson: input as never,
+          inputJson: { ...input, ...(idem ? { _idem: idem } : {}) } as never,
         },
       });
 
       void runDropPipeline(app, ctx, input, dropJob.id).catch(async (err) => {
         app.log.error({ err, dropJobId: dropJob.id }, 'drop pipeline crashed');
         await prisma.providerJob
-          .update({ where: { id: dropJob.id }, data: { status: 'FAILED', finishedAt: new Date(), errorJson: 'drop pipeline failed — try again' as never } })
+          // { message } shape — the web reads j.errorJson?.message; a bare string
+          // here rendered as nothing and the user saw a blank failure.
+          .update({ where: { id: dropJob.id }, data: { status: 'FAILED', finishedAt: new Date(), errorJson: { message: 'drop pipeline failed — try again' } as never } })
           .catch(() => {});
       });
 
@@ -68,14 +85,41 @@ export async function runDropPipeline(app: FastifyInstance, ctx: DropCtx, input:
   const t0 = Date.now();
   const secs = () => ((Date.now() - t0) / 1000).toFixed(1);
   app.log.info({ dropJobId, count: input.count }, `[drop] start`);
-  // One shared brief for the whole drop.
-  await runChatTool({ ...ctx, name: 'polish_brief', args: { rawIdea: input.theme } });
-  app.log.info({ dropJobId }, `[drop] brief polished @${secs()}s`);
+  // One shared brief for the whole drop. ADVISORY, NEVER LOAD-BEARING: when the
+  // polish LLM fails (cap hit, bad JSON, provider down) the writers used to read
+  // briefs[0] === undefined and the user's ENTIRE description — song-name anchor,
+  // vibe, mood, fusion, influence — silently never reached a single prompt. Now a
+  // failed polish falls back to a brief built VERBATIM from the structured input.
+  try {
+    const polished = (await runChatTool({ ...ctx, name: 'polish_brief', args: { rawIdea: input.theme } })) as { error?: string } | null;
+    if (polished && (polished as { error?: string }).error) throw new Error((polished as { error: string }).error);
+    app.log.info({ dropJobId }, `[drop] brief polished @${secs()}s`);
+  } catch (err) {
+    app.log.error({ err, dropJobId }, '[drop] polish_brief failed — writing the fallback brief from the structured input');
+    await prisma.songBrief
+      .create({
+        data: {
+          projectId: ctx.projectId,
+          mood: input.mood ?? null,
+          topic: input.vibe ?? input.theme,
+          language: input.languages ?? [],
+          bpm: input.bpm ?? null,
+          notes: [
+            input.songTitle ? `Song title (law): ${input.songTitle}` : null,
+            input.influence ? `Influence: ${input.influence}` : null,
+            input.fusionGenres?.length ? `Fusion: ${input.fusionGenres.join(', ')}` : null,
+          ].filter(Boolean).join('\n') || null,
+          approved: true,
+        },
+      })
+      .catch(() => undefined);
+  }
 
   const drops: Array<{
         songId?: string;
         hookId?: string;
         hookText?: string;
+        title?: string;
         score: number | null;
         jobId?: string;
         error?: string;
@@ -83,7 +127,11 @@ export async function runDropPipeline(app: FastifyInstance, ctx: DropCtx, input:
 
       for (let i = 0; i < input.count; i++) {
         try {
-          const hk = (await runChatTool({ ...ctx, name: 'generate_hooks', args: { count: 6, languages: input.languages } })) as {
+          // Structured selections ride FIRST-CLASS next to languages — the
+          // polish-brief LLM re-extracting them from the theme prose was the
+          // only carrier before, so a polish hiccup dropped mood/fusion/influence.
+          const sel = { mood: input.mood, fusionGenres: input.fusionGenres, influence: input.influence, songTitle: input.songTitle };
+          const hk = (await runChatTool({ ...ctx, name: 'generate_hooks', args: { count: 6, languages: input.languages, ...sel } })) as {
             hooks?: Array<{ id: string; text: string; score: number | null }>;
           };
           let hooks = hk?.hooks ?? [];
@@ -113,7 +161,7 @@ export async function runDropPipeline(app: FastifyInstance, ctx: DropCtx, input:
           // hard-failing the drop (a strong hook is what carries an Afrobeats record).
           const MIN_HOOK_SCORE = Number(process.env.MIN_HOOK_SCORE ?? 6.5);
           if ((best.score ?? 0) < MIN_HOOK_SCORE) {
-            const hk2 = (await runChatTool({ ...ctx, name: 'generate_hooks', args: { count: 6, languages: input.languages } })) as {
+            const hk2 = (await runChatTool({ ...ctx, name: 'generate_hooks', args: { count: 6, languages: input.languages, ...sel } })) as {
               hooks?: Array<{ id: string; text: string; score: number | null }>;
             };
             let hooks2 = hk2?.hooks ?? [];
@@ -132,7 +180,7 @@ export async function runDropPipeline(app: FastifyInstance, ctx: DropCtx, input:
           const ap = (await runChatTool({ ...ctx, name: 'approve_hook', args: { hookId: best.id } })) as {
             songId?: string;
           };
-          await runChatTool({ ...ctx, name: 'generate_lyrics', args: { hookId: best.id, cleanVersion: true, languages: input.languages } });
+          await runChatTool({ ...ctx, name: 'generate_lyrics', args: { hookId: best.id, cleanVersion: true, languages: input.languages, ...sel } });
           app.log.info({ dropJobId }, `[drop] take ${i + 1}: lyrics written (draft+polish) @${secs()}s`);
           const beat = (await runChatTool({
             ...ctx,
@@ -160,6 +208,7 @@ export async function runDropPipeline(app: FastifyInstance, ctx: DropCtx, input:
             songId: producedSongId,
             hookId: best.id,
             hookText: best.text,
+            title: input.songTitle?.slice(0, 80),
             score: best.score ?? null,
             jobId: beat?.jobId,
             error: beat?.error,

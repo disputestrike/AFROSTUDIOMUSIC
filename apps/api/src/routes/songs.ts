@@ -1,7 +1,7 @@
 import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import { z } from 'zod';
 import { blueprintFromMeasured, structureBrief, genreSignature, type MeasuredAnalysis, type SongBlueprint } from '@afrohit/shared';
-import { prisma } from '@afrohit/db';
+import { prisma, Prisma } from '@afrohit/db';
 import { predictHit, researchTrends, enrichLyricsForVocals, generateJson, prompts, cleanLyricsForMinimax, defaultSongEngine } from '@afrohit/ai';
 import { laneDna, laneDnaBrief } from '../lib/lane-pipeline';
 import { requireAuth } from '../middleware/auth';
@@ -366,6 +366,9 @@ export default async function songs(app: FastifyInstance) {
     const master = await prisma.master.create({
       data: { projectId: song.projectId, songId: song.id, preset: 'reverted', url: target.url, approved: true },
     });
+    // The reverted take is now the current audio — a stale instrumental/acapella
+    // from the previous take must never be served for it.
+    await prisma.song.update({ where: { id: song.id }, data: { instrumentalUrl: null, acapellaUrl: null, instrumentalMeta: Prisma.DbNull } }).catch(() => undefined);
     return { ok: true, revertedTo: label, masterId: master.id, url: target.url };
   });
 
@@ -415,6 +418,10 @@ export default async function songs(app: FastifyInstance) {
         song.masters[0] && { label: 'Master (WAV)', url: song.masters[0].url, kind: 'master', dl: `/songs/${song.id}/file?type=master` },
         song.mixes[0] && { label: 'Mix (WAV)', url: song.mixes[0].url, kind: 'mix', dl: `/songs/${song.id}/file?type=mix` },
         beat && { label: `Audio (${beat.format?.toUpperCase() ?? 'MP3'})`, url: beat.url, kind: 'audio', dl: `/songs/${song.id}/file?type=audio` },
+        // TRUE INSTRUMENTAL — the finished song minus the voice, loudness-matched
+        // to it (never the raw pre-vocal beat). Cleared on re-master/re-sing.
+        song.instrumentalUrl && { label: 'Instrumental — full song, voice removed', url: song.instrumentalUrl, kind: 'instrumental', dl: `/songs/${song.id}/file?type=instrumental` },
+        song.acapellaUrl && { label: 'Acapella', url: song.acapellaUrl, kind: 'acapella', dl: `/songs/${song.id}/file?type=acapella` },
         ...(beat?.stems ?? []).map((st: { role: string; url: string }) => ({ label: `Stem — ${st.role}`, url: st.url, kind: 'stem', dl: `/songs/${song.id}/file?type=stem&stem=${encodeURIComponent(st.role)}` })),
       ].filter(Boolean),
       lyrics: song.lyric ? { body: song.lyric.body, cleanVersion: song.lyric.cleanVersion } : null,
@@ -440,7 +447,16 @@ export default async function songs(app: FastifyInstance) {
     let ext = 'mp3';
     if (type === 'master' && song.masters[0]) { url = song.masters[0].url; ext = 'wav'; }
     else if (type === 'mix' && song.mixes[0]) { url = song.mixes[0].url; ext = 'wav'; }
-    else if (type === 'stem' && req.query.stem) { url = beat?.stems.find((s: { role: string; url: string }) => s.role === req.query.stem)?.url; ext = 'mp3'; }
+    // The TRUE INSTRUMENTAL / acapella live on the song itself (320k mp3; the WAV
+    // is the matching Stem row, served via type=stem).
+    else if (type === 'instrumental' && song.instrumentalUrl) { url = song.instrumentalUrl; ext = 'mp3'; }
+    else if (type === 'acapella' && song.acapellaUrl) { url = song.acapellaUrl; ext = 'mp3'; }
+    else if (type === 'stem' && req.query.stem) {
+      // Honest extension: read the stem's REAL stored format (WAV separations
+      // were shipping as ".mp3" files under the old hardcode).
+      const st = beat?.stems.find((s: { role: string; url: string; format: string }) => s.role === req.query.stem);
+      url = st?.url; ext = st?.format ?? 'mp3';
+    }
     else if (type === 'version') {
       // Download a SPECIFIC take by its index in the versions list (owned URLs only,
       // resolved server-side — no arbitrary URL, no SSRF).
@@ -536,13 +552,16 @@ export default async function songs(app: FastifyInstance) {
     const charge = await app.chargeCredits({ workspaceId, key: 'master_preset', refTable: 'Song', refId: song.id });
     if (!charge.ok) return reply.code(402).send({ error: 'insufficient_credits', ...charge });
 
-    // HEADROOM LAW: a MiniMax/Suno render (or a re-master of an existing master)
-    // is a FINISHED record — light-touch conform, never the full EQ+comp chain
-    // that was "mastering a master" into dullness. Raw engines keep the chain.
+    // 'finished' routes the CHAIN, not the target: a MiniMax/Suno render (or a
+    // re-master of an existing master) is a FINISHED record — light-touch
+    // conform, never the full EQ+comp chain that was "mastering a master" into
+    // dullness. Raw engines keep the full chain.
     const finished =
       (!realMix && (['minimax', 'suno'].includes(latestBeat?.provider ?? '') || (!latestBeat?.url && !latestMix?.url && !!song.masters[0]?.url))) ||
       realMix?.preset === 'uploaded';
-    const preset = requestedPreset || (finished ? 'breathe_-16.5' : 'streaming_lufs_-14');
+    // LOUDNESS LAW v2: default = commercial Afro loudness (-9 LUFS / -1.0 dBTP,
+    // two-pass driven) for every path; 'breathe_-16.5' is the dynamics opt-in.
+    const preset = requestedPreset || 'afro_stream_-9';
 
     const job = await prisma.providerJob.create({
       data: { workspaceId, projectId: song.projectId, kind: 'master', provider: 'internal', status: 'QUEUED', inputJson: { songId: song.id, mixId, preset, finished } as never },
@@ -792,24 +811,32 @@ export default async function songs(app: FastifyInstance) {
   });
 
   // ---- Instrumental + stems (Demucs stem separation) ----
-  app.post<{ Params: { id: string }; Body: { mode?: 'instrumental' | 'full' } }>('/:id/stems', async (req, reply) => {
+  app.post<{ Params: { id: string }; Body: { mode?: 'instrumental' | 'acapella' | 'full' } }>('/:id/stems', async (req, reply) => {
     const { workspaceId } = requireAuth(req);
-    const mode = req.body?.mode === 'full' ? 'full' : 'instrumental';
+    const mode = req.body?.mode === 'full' ? 'full' : req.body?.mode === 'acapella' ? 'acapella' : 'instrumental';
     const song = await prisma.song.findFirst({
       where: { id: req.params.id, workspaceId },
-      include: { beats: { orderBy: { createdAt: 'desc' }, take: 1 } },
+      include: {
+        masters: { orderBy: { createdAt: 'desc' }, take: 1 },
+        mixes: { orderBy: { createdAt: 'desc' }, take: 1 },
+        beats: { orderBy: { createdAt: 'desc' }, take: 1 },
+      },
     });
     if (!song) return reply.code(404).send({ error: 'song_not_found' });
     const beat = song.beats[0];
     if (!beat) return reply.code(400).send({ error: 'no_audio_to_separate' });
+    // THE SOURCE IS WHAT THE USER HEARS — freshest master → mix → beat. The old
+    // path always separated the raw pre-vocal beat, so "instrumental" wasn't the
+    // finished song minus the voice. Resolved server-side; the worker gets a URL.
+    const sourceUrl = freshestAudioUrl(song) ?? beat.url;
 
     const charge = await app.chargeCredits({ workspaceId, key: 'beat_idea_short_30s', refTable: 'Song', refId: song.id });
     if (!charge.ok) return reply.code(402).send({ error: 'insufficient_credits', ...charge });
 
     const job = await prisma.providerJob.create({
-      data: { workspaceId, projectId: song.projectId, kind: 'stems', provider: 'replicate', status: 'QUEUED', inputJson: { songId: song.id, beatId: beat.id, mode } as never },
+      data: { workspaceId, projectId: song.projectId, kind: 'stems', provider: 'replicate', status: 'QUEUED', inputJson: { songId: song.id, beatId: beat.id, mode, sourceUrl } as never },
     });
-    await enqueue({ queue: app.queues.music, name: 'stems', payload: { jobId: job.id, workspaceId, projectId: song.projectId, songId: song.id, beatId: beat.id, mode } });
+    await enqueue({ queue: app.queues.music, name: 'stems', payload: { jobId: job.id, workspaceId, projectId: song.projectId, songId: song.id, beatId: beat.id, mode, sourceUrl } });
     reply.code(202);
     return { jobId: job.id, status: 'queued', mode };
   });

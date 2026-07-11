@@ -1,23 +1,34 @@
 import { prisma } from '@afrohit/db';
 import { separateStemsRouted } from '../lib/demucs-local';
 import { markFailed, markRunning, markSucceeded } from '../lib/jobs';
-import { ingestRemoteFile } from '../lib/storage';
+import { downloadToBuffer, ingestRemoteFile, uploadBytes } from '../lib/storage';
+import { encodeMp3320, ffmpegAvailable, loudnessMatchToSource, measureAudioQuality, transformAudio } from '../lib/ffmpeg';
 
 interface StemsPayload {
   jobId: string;
   workspaceId: string;
   projectId: string;
-  songId: string;
+  /** Absent on auto-harvest jobs (they're beat-scoped, no song attached). */
+  songId?: string;
   beatId?: string;
-  mode?: 'instrumental' | 'full';
-  /** Override the audio to separate (e.g. a specific VERSION's master URL) — defaults to the beat. */
+  /** 'instrumental' | 'acapella' = TRUE INSTRUMENTAL path (finished song minus
+   *  voice, loudness-matched); 'full' | 'stems' = harvest/remix four-way split. */
+  mode?: 'instrumental' | 'acapella' | 'full' | 'stems';
+  /** Override the audio to separate (e.g. a specific VERSION's master URL) — defaults to the freshest audio. */
   sourceUrl?: string;
 }
 
 /**
- * Split a rendered song into an instrumental + stems (Demucs). Re-hosts each
- * output to our bucket and attaches them as Stem rows on the song's beat, so
- * the catalog download offers the instrumental and the mixer can remix.
+ * Stem separation, two distinct jobs behind one queue name:
+ *
+ *  - TRUE INSTRUMENTAL / ACAPELLA ('instrumental' | 'acapella'): the owner's law
+ *    — "take out the voice and keep EVERYTHING else, same quality". Separates
+ *    the FINISHED song (freshest master → mix → beat: exactly what the user
+ *    hears, never the raw pre-vocal beat), prefers local htdemucs (lossless WAV
+ *    out; the paid path re-encodes), loudness-matches both halves back to the
+ *    source's measured LUFS, and ships WAV + true-320k mp3 with honest labels.
+ *  - HARVEST / REMIX ('full' | 'stems'): four-way split re-hosted as Stem rows +
+ *    MaterialAssets so the mixer can remix and the arranger can reuse. Unchanged.
  */
 export async function processStems(p: StemsPayload) {
   await markRunning(p.jobId);
@@ -27,10 +38,17 @@ export async function processStems(p: StemsPayload) {
       ? await prisma.beatAsset.findFirstOrThrow({ where: { id: p.beatId } })
       : await prisma.beatAsset.findFirstOrThrow({ where: { songId: p.songId }, orderBy: { createdAt: 'desc' } });
 
+    const mode = p.mode ?? 'instrumental';
+    if (mode === 'instrumental' || mode === 'acapella') {
+      await processTrueInstrumental(p, beat, ws?.musicApiKey ?? undefined, mode);
+      return;
+    }
+
+    // ---- HARVEST / REMIX PATH ('full' | 'stems') — behavior preserved ----
     // Separate the requested version's audio when given (per-version instrumental),
     // else the beat. Result stems still attach to the beat row for download/remix.
     // A3-4: user-facing stems stay on the fast paid path by default; DEMUCS_MODE=local forces local.
-    const result = await separateStemsRouted({ audioUrl: p.sourceUrl || beat.url, apiKey: ws?.musicApiKey ?? undefined, mode: p.mode ?? 'instrumental', purpose: 'user', workspaceId: p.workspaceId });
+    const result = await separateStemsRouted({ audioUrl: p.sourceUrl || beat.url, apiKey: ws?.musicApiKey ?? undefined, mode: 'full', purpose: 'user', workspaceId: p.workspaceId });
     if (!result.stems.length) throw new Error('stem separation returned no audio');
 
     // Re-host to our bucket (parallel), then persist as Stem rows.
@@ -40,11 +58,7 @@ export async function processStems(p: StemsPayload) {
         url: await ingestRemoteFile({ workspaceId: p.workspaceId, url: s.url, kind: 'stems', ext: 'mp3', contentType: 'audio/mpeg' }),
       }))
     );
-    // If the user asked for an instrumental, don't silently "succeed" without one.
     const roles = ingested.map((s) => s.role);
-    if ((p.mode ?? 'instrumental') === 'instrumental' && !roles.includes('instrumental')) {
-      throw new Error(`stem separation did not return an instrumental (got: ${roles.join(', ') || 'nothing'})`);
-    }
     // Replace any prior separated stems of the same roles so re-runs don't pile up.
     await prisma.stem.deleteMany({ where: { beatId: beat.id, role: { in: roles } } });
     await prisma.$transaction(ingested.map((s) => prisma.stem.create({ data: { beatId: beat.id, role: s.role, url: s.url, format: 'mp3' } })));
@@ -94,4 +108,123 @@ export async function processStems(p: StemsPayload) {
   } catch (err) {
     await markFailed(p.jobId, err);
   }
+}
+
+type BeatRow = { id: string; url: string; createdAt: Date; bpm: number | null; keySignature: string | null; duration: number | null; provider: string; meta: unknown };
+
+/**
+ * TRUE INSTRUMENTAL / ACAPELLA — separate what the user actually HEARS.
+ *   source = explicit override → freshest master → mix → beat (mirror of the
+ *   catalog's freshestAudioUrl; the raw pre-vocal beat is only the last resort).
+ * Both halves come back loudness-matched to the source's own integrated LUFS,
+ * uploaded as WAV (Stem rows) + true 320k mp3 (Song.instrumentalUrl/acapellaUrl).
+ */
+async function processTrueInstrumental(p: StemsPayload, beat: BeatRow, apiKey: string | undefined, mode: 'instrumental' | 'acapella') {
+  if (!p.songId) throw new Error('instrumental/acapella jobs are song-scoped — payload has no songId');
+  if (!(await ffmpegAvailable())) {
+    throw new Error('ffmpeg binary not found on worker host — install ffmpeg (Railway nixpacks includes it)');
+  }
+
+  // (a) The source is what the user HEARS: newest of master → mix → beat.
+  const [master, mix] = await Promise.all([
+    prisma.master.findFirst({ where: { songId: p.songId }, orderBy: { createdAt: 'desc' }, select: { url: true, createdAt: true } }),
+    prisma.mix.findFirst({ where: { songId: p.songId }, orderBy: { createdAt: 'desc' }, select: { url: true, createdAt: true } }),
+  ]);
+  const cands = [master, mix, beat].filter(Boolean) as Array<{ url: string; createdAt: Date }>;
+  cands.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+  const sourceUrl = p.sourceUrl || cands[0]!.url;
+
+  // (b) Measure the source's integrated loudness — the match target. A null read
+  // (undecodable/silent) skips the match honestly rather than inventing a level.
+  const sourceQc = await measureAudioQuality(sourceUrl).catch(() => null);
+  const sourceLufs = sourceQc?.integratedLufs ?? null;
+
+  // (c) Separate — local htdemucs first (lossless WAV out), paid path as fallback.
+  const result = await separateStemsRouted({ audioUrl: sourceUrl, apiKey, mode: 'instrumental', purpose: 'user', workspaceId: p.workspaceId, preferLocal: true });
+  const instrumentalRaw = result.instrumentalUrl ?? result.stems.find((s) => s.role === 'instrumental')?.url;
+  const vocalsRaw = result.stems.find((s) => s.role === 'vocals')?.url;
+  if (!instrumentalRaw) throw new Error(`stem separation did not return an instrumental (got: ${result.stems.map((s) => s.role).join(', ') || 'nothing'})`);
+  if (mode === 'acapella' && !vocalsRaw) throw new Error('stem separation did not return a vocals stem');
+
+  // (d) Loudness-match each half to the source and ship WAV + true 320k mp3.
+  const renderPair = async (rawUrl: string) => {
+    const bytes = await downloadToBuffer(rawUrl);
+    // No measurable source loudness → still normalize the container to WAV
+    // (anull transform), just without a fabricated loudness target.
+    const wav = sourceLufs !== null ? await loudnessMatchToSource(bytes, sourceLufs) : await transformAudio(bytes, {});
+    const mp3 = await encodeMp3320(wav);
+    const [wavUrl, mp3Url] = await Promise.all([
+      uploadBytes({ workspaceId: p.workspaceId, kind: 'stems', bytes: wav, contentType: 'audio/wav', ext: 'wav' }),
+      uploadBytes({ workspaceId: p.workspaceId, kind: 'stems', bytes: mp3, contentType: 'audio/mpeg', ext: 'mp3' }),
+    ]);
+    return { wavUrl, mp3Url };
+  };
+  const instrumental = await renderPair(instrumentalRaw);
+  const vocals = vocalsRaw ? await renderPair(vocalsRaw) : null;
+
+  // Certify what shipped: measure the matched instrumental, not the intent.
+  const matchedQc = await measureAudioQuality(instrumental.wavUrl).catch(() => null);
+  const matchedLufs = matchedQc?.integratedLufs ?? null;
+
+  // (e) Persist: Stem rows carry the WAV with its REAL format (the old path
+  // stamped ext:'mp3' on whatever came back — the mislabel this rewrite kills).
+  const roles = ['instrumental', ...(vocals ? ['vocals'] : [])];
+  await prisma.stem.deleteMany({ where: { beatId: beat.id, role: { in: roles } } });
+  await prisma.$transaction([
+    prisma.stem.create({ data: { beatId: beat.id, role: 'instrumental', url: instrumental.wavUrl, format: 'wav' } }),
+    ...(vocals ? [prisma.stem.create({ data: { beatId: beat.id, role: 'vocals', url: vocals.wavUrl, format: 'wav' } })] : []),
+  ]);
+
+  const song = await prisma.song.findUnique({ where: { id: p.songId }, select: { title: true, lyric: { select: { title: true } } } });
+  await prisma.song.update({
+    where: { id: p.songId },
+    data: {
+      instrumentalUrl: instrumental.mp3Url,
+      acapellaUrl: vocals?.mp3Url ?? null,
+      instrumentalMeta: {
+        sourceUrl,
+        sourceLufs,
+        matchedLufs,
+        engine: result.engine ?? 'unknown',
+        format: 'wav+mp3',
+        at: new Date().toISOString(),
+      } as never,
+    },
+  });
+
+  // File the instrumental in the material library too — same provenance law as
+  // the harvest path (a provider render never masquerades as owned material).
+  const project = await prisma.project.findUnique({ where: { id: p.projectId }, select: { genre: true } });
+  const beatMeta = (beat.meta ?? {}) as { uploaded?: boolean; imported?: boolean };
+  const owned = beatMeta.uploaded === true || beatMeta.imported === true || beat.provider === 'upload' || beat.provider === 'import';
+  await prisma.materialAsset
+    .create({
+      data: {
+        workspaceId: p.workspaceId,
+        kind: 'stem',
+        role: 'instrumental',
+        genre: project?.genre ?? null,
+        bpm: beat.bpm,
+        keySignature: beat.keySignature,
+        durationS: beat.duration,
+        url: instrumental.wavUrl,
+        source: owned ? 'artist_stem' : 'provider_stem',
+        meta: { fromSongId: p.songId, fromSongTitle: song?.lyric?.title || song?.title, sourceUrl, matchedLufs } as never,
+      },
+    })
+    .catch((err: unknown) => console.warn('[stems] instrumental material filing failed:', (err as Error)?.message));
+
+  await markSucceeded(p.jobId, {
+    beatId: beat.id,
+    mode,
+    sourceUrl,
+    sourceLufs,
+    matchedLufs,
+    engine: result.engine ?? 'unknown',
+    instrumentalUrl: instrumental.mp3Url,
+    acapellaUrl: vocals?.mp3Url ?? null,
+    stems: roles.length,
+    instrumental: true,
+    roles,
+  });
 }

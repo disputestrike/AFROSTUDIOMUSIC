@@ -17,7 +17,38 @@ export default async function mixes(app: FastifyInstance) {
         where: { id: req.params.projectId, workspaceId },
       });
       // The song must belong to this workspace — never mix another tenant's song.
-      await prisma.song.findFirstOrThrow({ where: { id: input.songId, workspaceId } });
+      const song = await prisma.song.findFirstOrThrow({
+        where: { id: input.songId, workspaceId },
+        include: {
+          masters: { orderBy: { createdAt: 'desc' }, take: 1 },
+          mixes: { orderBy: { createdAt: 'desc' }, take: 1 },
+          beats: { orderBy: { createdAt: 'desc' }, take: 1 },
+        },
+      });
+
+      // DEFINITIONAL FIX — 'instrumental'/'acapella' as MIX presets bounced the
+      // beat/vocal channels of the pre-vocal session, NOT the finished record
+      // ("instrumental" of a mastered song came out as the raw beat). The preset
+      // names stay (removing enum members breaks clients); the request reroutes
+      // to true stem separation of the freshest audio the user actually hears.
+      if (input.preset === 'instrumental' || input.preset === 'acapella') {
+        const beat = song.beats[0];
+        if (!beat) return reply.code(400).send({ error: 'no_audio_to_separate' });
+        const cands = [song.masters[0], song.mixes[0], song.beats[0]].filter(Boolean) as Array<{ url: string; createdAt: Date }>;
+        cands.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+        const sourceUrl = cands[0]!.url;
+        const sepCharge = await app.chargeCredits({ workspaceId, key: 'beat_idea_short_30s', refTable: 'Song', refId: input.songId });
+        if (!sepCharge.ok) return reply.code(402).send({ error: 'insufficient_credits', ...sepCharge });
+        const sepJob = await prisma.providerJob.create({
+          data: { workspaceId, projectId: project.id, kind: 'stems', provider: 'replicate', status: 'QUEUED', inputJson: { songId: input.songId, beatId: beat.id, mode: input.preset, sourceUrl } as never },
+        });
+        await enqueue({ queue: app.queues.music, name: 'stems', payload: { jobId: sepJob.id, workspaceId, projectId: project.id, songId: input.songId, beatId: beat.id, mode: input.preset, sourceUrl } });
+        reply.code(202);
+        return {
+          jobId: sepJob.id,
+          note: `${input.preset === 'instrumental' ? 'Instrumental' : 'Acapella'} is separated from the finished song (voice ${input.preset === 'instrumental' ? 'removed' : 'isolated'}, everything else kept, loudness-matched) — not a beat-only bounce. It lands on the song in a few minutes.`,
+        };
+      }
 
       const charge = await app.chargeCredits({
         workspaceId,

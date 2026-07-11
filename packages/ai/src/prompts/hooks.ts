@@ -76,8 +76,14 @@ export function hookUserPrompt(opts: {
    * repeats, no drift). Omit for a fresh first generation.
    */
   refineFrom?: string[];
+  /**
+   * The user's STRUCTURED create selections, passed first-class — these used to
+   * reach the writer only if the polish-brief LLM re-extracted them from the
+   * theme prose, so a polish hiccup silently dropped mood/fusion/influence.
+   */
+  selections?: { mood?: string; fusionGenres?: string[]; influence?: string; songTitle?: string };
 }): string {
-  const { artist, brief, count, exclude, tasteMemory, trends, soundDna, refineFrom } = opts;
+  const { artist, brief, count, exclude, tasteMemory, trends, soundDna, refineFrom, selections } = opts;
   const refine = (refineFrom ?? []).map((t) => String(t).trim()).filter(Boolean);
   const refs = artist.references?.map((r) => `${r.name} lane (${r.lane})`).join(', ') ?? 'none';
   const banned = [...(artist.cornyBanned ?? []), ...(artist.forbiddenStyles ?? [])];
@@ -96,6 +102,14 @@ export function hookUserPrompt(opts: {
       approvedSlang: artist.slang ?? [],
     },
     brief: brief ?? {},
+    USER_SELECTIONS_these_outrank_the_brief: selections && Object.values(selections).some(Boolean)
+      ? {
+          mood: selections.mood,
+          fusionGenres: selections.fusionGenres?.length ? selections.fusionGenres : undefined,
+          influence_lane_only_never_copy: selections.influence,
+          songTitle_the_hook_sings_this_name: selections.songTitle,
+        }
+      : undefined,
     exclude_text_starting_with: exclude ?? [],
     GENRE_SOUND_DNA: soundDna || undefined,
     TRENDING_NOW: trends || undefined,

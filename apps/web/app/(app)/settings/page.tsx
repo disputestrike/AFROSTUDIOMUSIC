@@ -24,6 +24,7 @@ export default function SettingsPage() {
   const api = useApi();
   const [artist, setArtist] = useState<Artist | null>(null);
   const [saving, setSaving] = useState(false);
+  const [saveMsg, setSaveMsg] = useState<{ ok: boolean; text: string } | null>(null);
 
   useEffect(() => {
     api.get<Artist[]>('/artists').then((list) => setArtist(list[0] ?? null)).catch(() => setArtist(null));
@@ -42,18 +43,26 @@ export default function SettingsPage() {
   async function save() {
     if (!artist) return;
     setSaving(true);
+    setSaveMsg(null);
     try {
-      await api.patch(`/artists/${artist.id}`, {
-        stageName: artist.stageName,
-        bio: artist.bio,
-        vocalRangeLow: artist.vocalRangeLow,
-        vocalRangeHigh: artist.vocalRangeHigh,
+      // Auto-provisioned artists carry NULL bio/range/lane fields, and the
+      // schema's .optional() accepts undefined ONLY — sending null was a silent
+      // 400 on every save. Send only fields that hold a real value.
+      const body: Record<string, unknown> = {
         vocalTone: artist.vocalTone,
         languages: artist.languages,
-        laneSummary: artist.laneSummary,
         cornyBanned: artist.cornyBanned,
         morningDrop: artist.morningDrop,
-      });
+      };
+      if (artist.stageName.trim()) body.stageName = artist.stageName.trim();
+      for (const k of ['bio', 'vocalRangeLow', 'vocalRangeHigh', 'laneSummary'] as const) {
+        const v = artist[k];
+        if (typeof v === 'string' && v.trim()) body[k] = v;
+      }
+      await api.patch(`/artists/${artist.id}`, body);
+      setSaveMsg({ ok: true, text: 'Saved ✓' });
+    } catch (e) {
+      setSaveMsg({ ok: false, text: `Couldn't save: ${(e as Error).message.slice(0, 200)}` });
     } finally {
       setSaving(false);
     }
@@ -132,6 +141,9 @@ export default function SettingsPage() {
       >
         {saving ? 'Saving…' : 'Save DNA'}
       </button>
+      {saveMsg && (
+        <span className={`ml-3 text-xs ${saveMsg.ok ? 'text-emerald-400' : 'text-red-400'}`}>{saveMsg.text}</span>
+      )}
 
       <style jsx>{`
         :global(.input) {

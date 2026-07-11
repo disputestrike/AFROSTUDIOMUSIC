@@ -40,18 +40,36 @@ export default function BillingPage() {
   const api = useApi();
   const [me, setMe] = useState<Billing | null>(null);
   const [busy, setBusy] = useState(false);
+  const [checkoutErr, setCheckoutErr] = useState('');
 
   useEffect(() => {
     api.get<Billing>('/billing/me').then(setMe).catch(() => setMe(null));
   }, []);
 
+  // The API 400s `unknown_plan_or_unconfigured` when the operator hasn't set
+  // the PayPal plan IDs — an unhandled rejection here was a silent dead button.
+  function checkoutErrText(e: Error): string {
+    return /unknown_plan_or_unconfigured/.test(e.message)
+      ? 'Billing isn’t configured yet — set the PayPal plan IDs on the API service.'
+      : e.message.slice(0, 200);
+  }
   async function subscribe(plan: Billing['plan']) {
-    const res = await api.post<{ url: string }>('/billing/checkout/subscribe', { plan });
-    window.location.href = res.url;
+    setCheckoutErr('');
+    try {
+      const res = await api.post<{ url: string }>('/billing/checkout/subscribe', { plan });
+      window.location.href = res.url;
+    } catch (e) {
+      setCheckoutErr(checkoutErrText(e as Error));
+    }
   }
   async function topup(pack: (typeof PACKS)[number]) {
-    const res = await api.post<{ url: string }>('/billing/checkout/credits', { pack });
-    window.location.href = res.url;
+    setCheckoutErr('');
+    try {
+      const res = await api.post<{ url: string }>('/billing/checkout/credits', { pack });
+      window.location.href = res.url;
+    } catch (e) {
+      setCheckoutErr(checkoutErrText(e as Error));
+    }
   }
   async function cancelSub() {
     if (!confirm('Cancel your PayPal subscription? Your plan will downgrade to Starter at the end of the period.')) return;
@@ -89,6 +107,10 @@ export default function BillingPage() {
       </p>
       <p className="mt-1 text-xs text-slate-500">Payments processed by PayPal.</p>
 
+      {checkoutErr && (
+        <div className="mt-4 rounded-xl border border-red-500/40 bg-red-500/10 p-3 text-sm text-red-300">{checkoutErr}</div>
+      )}
+
       <h2 className="mt-10 font-display text-2xl">Plans</h2>
       <div className="mt-4 grid gap-4 md:grid-cols-4">
         {PLANS.map((p) => {
@@ -115,6 +137,9 @@ export default function BillingPage() {
       </div>
 
       <h2 className="mt-10 font-display text-2xl">Credit packs</h2>
+      {checkoutErr && (
+        <div className="mt-3 rounded-xl border border-red-500/40 bg-red-500/10 p-3 text-sm text-red-300">{checkoutErr}</div>
+      )}
       <div className="mt-4 grid gap-3 md:grid-cols-4">
         {PACKS.map((pack) => (
           <button

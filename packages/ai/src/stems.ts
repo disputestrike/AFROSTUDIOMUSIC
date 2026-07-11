@@ -45,6 +45,10 @@ export async function separateStems(opts: {
   // instrumental). Omit `stem` for the full four-way split.
   const input: Record<string, unknown> = { audio: opts.audioUrl };
   if (opts.mode === 'instrumental') input.stem = 'vocals';
+  // REPLICATE_DEMUCS_OUTPUT=wav: ask the model for lossless stems instead of its
+  // mp3 default — the TRUE INSTRUMENTAL path must not re-encode a finished
+  // master. Opt-in only (bigger transfers); default keeps the old behavior.
+  if ((process.env.REPLICATE_DEMUCS_OUTPUT ?? '').toLowerCase() === 'wav') input.output_format = 'wav';
 
   const res = await fetch('https://api.replicate.com/v1/predictions', {
     method: 'POST',

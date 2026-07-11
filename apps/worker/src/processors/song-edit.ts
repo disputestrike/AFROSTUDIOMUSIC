@@ -7,7 +7,7 @@
  * serve (transform / remaster / regenerate) never reach here; the api injects
  * those directly.
  */
-import { prisma } from '@afrohit/db';
+import { prisma, Prisma } from '@afrohit/db';
 import { MATERIAL_GAINS } from '@afrohit/shared';
 import { downloadToBuffer, uploadBytes } from '../lib/storage';
 import { mixBuffers, runFfmpeg } from '../lib/ffmpeg';
@@ -257,6 +257,9 @@ export async function processSongEdit(p: SongEditPayload): Promise<void> {
 
     const url = await uploadBytes({ workspaceId: p.workspaceId, kind: 'masters', bytes: out, contentType: 'audio/wav', ext: 'wav' });
     await prisma.master.create({ data: { projectId: p.projectId, songId: p.songId, preset: `chat ${label}`.slice(0, 60), url, approved: true } });
+    // The edit just became the song's current audio — a stale instrumental/
+    // acapella must never be served for the changed record. Clear; re-separate on demand.
+    await prisma.song.update({ where: { id: p.songId }, data: { instrumentalUrl: null, acapellaUrl: null, instrumentalMeta: Prisma.DbNull } }).catch(() => undefined);
     // VERSION DISCIPLINE — chat edits never pile up an endless version list:
     // keep the CURRENT edit + ONE previous chat version; older chat versions
     // are pruned. The ORIGINAL render/master (non-chat presets) is never

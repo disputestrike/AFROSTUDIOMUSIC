@@ -112,6 +112,9 @@ export function lyricUserPrompt(opts: {
   languages?: string[];
   /** Genre Sound-DNA brief — arrangement map, pocket, ad-libs to write toward. */
   soundDna?: string;
+  /** The user's STRUCTURED create selections, first-class — a polish-brief
+   *  hiccup must never drop mood/fusion/influence from the writer's view. */
+  selections?: { mood?: string; fusionGenres?: string[]; influence?: string; songTitle?: string };
 }): string {
   // Determine the PRIMARY language: strongest weight in the mix, else the requested
   // languages, else the artist default. This is what the writer must deliver in.
@@ -145,6 +148,14 @@ export function lyricUserPrompt(opts: {
       ],
     },
     brief: opts.brief ?? {},
+    USER_SELECTIONS_these_outrank_the_brief: opts.selections && Object.values(opts.selections).some(Boolean)
+      ? {
+          mood: opts.selections.mood,
+          fusionGenres: opts.selections.fusionGenres?.length ? opts.selections.fusionGenres : undefined,
+          influence_lane_only_never_copy: opts.selections.influence,
+          songTitle_is_law_use_exactly: opts.selections.songTitle,
+        }
+      : undefined,
     hook: opts.hookText,
     require_clean_version: opts.cleanVersion,
   });

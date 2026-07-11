@@ -309,7 +309,7 @@ export const STUDIO_CHAT_TOOLS = [
       type: 'object',
       properties: {
         songId: { type: 'string' },
-        preset: { type: 'string', enum: ['streaming_lufs_-14', 'club_-9', 'reels_-16'], default: 'streaming_lufs_-14' },
+        preset: { type: 'string', enum: ['afro_stream_-9', 'streaming_lufs_-14', 'breathe_-16.5', 'club_-9', 'reels_-16'], default: 'afro_stream_-9' },
       },
       required: ['songId'],
     },

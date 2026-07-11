@@ -36,7 +36,23 @@ export default async function ProjectPage({
 }) {
   const { id } = await params;
   const { produce } = await searchParams;
-  const p = await apiServer<Project>(`/projects/${id}`);
+  // null = fetch failed (bad/deleted id, API down) — render "not found",
+  // never let the whole route 500.
+  const p = await apiServer<Project>(`/projects/${id}`).catch(() => null);
+  if (!p) {
+    return (
+      <div className="mx-auto max-w-lg px-6 py-20 text-center">
+        <h1 className="font-display text-3xl">Project not found</h1>
+        <p className="mt-3 text-sm text-slate-400">It may have been deleted, or the link is wrong.</p>
+        <Link
+          href="/projects"
+          className="mt-6 inline-block rounded-full bg-afrobrand-500 px-4 py-2 text-sm font-medium text-ink hover:bg-afrobrand-400"
+        >
+          ← All projects
+        </Link>
+      </div>
+    );
+  }
 
   const gateState = Object.fromEntries(
     GATES.map((g) => {

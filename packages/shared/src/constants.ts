@@ -148,9 +148,9 @@ export type ImageProvider = (typeof IMAGE_PROVIDERS)[number];
 
 export const MIX_PRESETS = ['radio', 'club', 'tiktok', 'youtube', 'acapella', 'instrumental'] as const;
 export const MASTER_PRESETS = [
+  'afro_stream_-9', // DEFAULT — commercial Afrobeats loudness (-9 LUFS / -1.0 dBTP, two-pass driven). No longer "the crusher": the crush was the old ONE-PASS loudnorm implementation, not the -9 target.
   'streaming_lufs_-14',
-  'breathe_-16.5', // HEADROOM LAW: finished records breathe (Suno's own measured range) — default for finished/uploaded masters
-  'afro_stream_-9', // retired from default paths (the "-9 crusher") — still selectable for club-loud intent
+  'breathe_-16.5', // dynamics-first OPT-IN — for records that should breathe (streaming platforms normalize anyway)
   'club_-9',
   'reels_-16',
   'cd_-9',

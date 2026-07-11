@@ -313,60 +313,249 @@ export const MIX_PRESETS: Record<string, MixPreset> = {
 
 /** LUFS targets per master preset. */
 export const MASTER_TARGETS: Record<string, { lufs: number; tp: number }> = {
-  // HEADROOM LAW (measured, 3-point evidence): our takes crushed at -13..-15
-  // while Suno breathes at -17.3..-19 with MORE energy contrast. Streaming
-  // platforms normalize anyway — loudness wars only cost us dynamics.
-  'breathe_-16.5': { lufs: -16.5, tp: -1.2 },
+  // LOUDNESS LAW v2 (the "masters sound weak" postmortem): commercial Afrobeats
+  // ships at -8.5..-11 LUFS; our defaults conformed everything to -16.5/-14 AND
+  // the old ONE-PASS dynamic loudnorm undershot even that by 1-3 LU while
+  // pumping. The crush the first HEADROOM LAW blamed on "-9" was that one-pass
+  // implementation, not the number. Default is now afro_stream_-9 through the
+  // two-pass drive chain; breathe_-16.5 stays as the dynamics-first OPT-IN
+  // (streaming platforms normalize, but a weak master loses every A/B first).
+  'afro_stream_-9': { lufs: -9, tp: -1.0 }, // DEFAULT — commercial Afro loudness, -1.0 dBTP so it stays safe on lossy transcode (unlike club_-9's -0.3)
+  'breathe_-16.5': { lufs: -16.5, tp: -1.2 }, // dynamics-first opt-in (Suno's own measured range)
   'streaming_lufs_-14': { lufs: -14, tp: -1.0 },
-  // Competitive Afrobeats/Afropop delivery — loud like commercial records
-  // (~-8 to -10 LUFS) but a -1.0 dBTP ceiling so it stays safe on lossy transcode
-  // (unlike club_-9's -0.3). This is the auto-master target for FINISHED engines.
-  'afro_stream_-9': { lufs: -9, tp: -1.0 },
   'club_-9': { lufs: -9, tp: -0.3 },
   'reels_-16': { lufs: -16, tp: -1.0 },
   'cd_-9': { lufs: -9, tp: -0.3 },
 };
 
+/** Measured loudness of a program — loudnorm pass-1 numbers, verbatim. */
+export interface LoudnormStats {
+  input_i: number; // integrated LUFS
+  input_tp: number; // dBTP
+  input_lra: number; // LU
+  input_thresh: number; // LUFS
+}
+
 /**
- * Automated mastering chain — the pieces a mastering engineer reaches for first,
- * applied conservatively so it flatters most Afro/Afro-fusion material without
- * mangling it:
+ * TWO-PASS loudnorm, pass 1: run (optional upstream chain +) loudnorm in
+ * analysis mode (-f null) and parse the JSON block ffmpeg prints at the END of
+ * stderr. These input_* numbers are what let pass 2 run loudnorm LINEAR —
+ * a constant gain that lands ON target — instead of the one-pass dynamic mode
+ * that undershot 1-3 LU and pumped. Returns null when the block never printed
+ * (decode error, pure silence → "-inf"); callers fall back to dynamic mode.
+ */
+export async function measureLoudnorm(
+  input: string,
+  target: { lufs: number; tp: number },
+  preChain?: string
+): Promise<LoudnormStats | null> {
+  const af = `${preChain ? `${preChain},` : ''}loudnorm=I=${target.lufs}:TP=${target.tp}:LRA=11:print_format=json`;
+  const err = await ffmpegCapture(['-i', input, '-af', af, '-f', 'null', '-']);
+  // loudnorm's JSON is FLAT (no nested braces) and prints last — take the
+  // trailing {...} so per-frame chatter above it can't poison the parse.
+  const open = err.lastIndexOf('{');
+  const close = err.lastIndexOf('}');
+  if (open < 0 || close <= open) return null;
+  try {
+    const j = JSON.parse(err.slice(open, close + 1)) as Record<string, string>;
+    const num = (k: string): number | null => {
+      const v = parseFloat(j[k] ?? '');
+      return Number.isFinite(v) ? v : null; // "-inf" (silence) is unusable
+    };
+    const input_i = num('input_i');
+    const input_tp = num('input_tp');
+    const input_lra = num('input_lra');
+    const input_thresh = num('input_thresh');
+    if (input_i === null || input_tp === null || input_lra === null || input_thresh === null) return null;
+    return { input_i, input_tp, input_lra, input_thresh };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * DRIVE LAW: push the program ~1 LU ABOVE target into the limiter so the final
+ * linear trim only ever trims DOWN — a positive trim needs peak headroom the
+ * limiter already spent and kicks loudnorm back into dynamic (pumping) mode.
+ * Clamped to +12 dB so a whisper-quiet take is never dragged up into its own
+ * noise floor.
+ */
+const driveGainDb = (targetLufs: number, measuredI: number): number =>
+  Math.min(12, Math.max(0, targetLufs - measuredI + 1));
+
+/**
+ * Final trim — pass 2 of the two-pass loudnorm, LINEAR mode. The measured_*
+ * values MUST describe the signal at THIS point in the chain (post drive/
+ * limiter, from a pass-1 run of the same upstream chain) — feed it the raw
+ * take's numbers and the drive gain gets applied twice. linear=true only
+ * engages when measured_LRA <= LRA and the offset respects TP, hence the
+ * generous LRA and the drive law's +1 overshoot. No measurement → the old
+ * dynamic one-pass, kept strictly as a lifeboat, never the default path.
+ */
+export function loudnormTrim(
+  target: { lufs: number; tp: number },
+  lraFloor: number,
+  m: LoudnormStats | null
+): string {
+  if (!m) return `loudnorm=I=${target.lufs}:TP=${target.tp}:LRA=${lraFloor}`;
+  const lra = Math.min(50, Math.max(lraFloor, Math.ceil(m.input_lra) + 1));
+  return (
+    `loudnorm=I=${target.lufs}:TP=${target.tp}:LRA=${lra}` +
+    `:measured_I=${m.input_i.toFixed(2)}:measured_TP=${m.input_tp.toFixed(2)}` +
+    `:measured_LRA=${m.input_lra.toFixed(2)}:measured_thresh=${m.input_thresh.toFixed(2)}` +
+    `:linear=true`
+  );
+}
+
+/**
+ * Automated mastering chain — now a real LOUDNESS chain, not a polite one:
  *   1. subsonic high-pass (kill rumble that steals headroom)
  *   2. gentle tonal shaping — low warmth, vocal presence, top-end air
  *   3. glue bus compression (2:1, slow) to round the whole thing together
- *   4. loudnorm to the preset LUFS + true-peak target (loudness maximisation)
- *   5. true-peak brickwall limiter as a hard ceiling so nothing clips on export
- * It is a strong, release-ready loudness master — not a replacement for a human
- * mastering engineer on a flagship single.
+ *   4. DRIVE (loud targets only): measured volume push + tanh soft-clip INTO the
+ *      limiter — the density stage commercial Afrobeats masters have and the old
+ *      chain never did; loudnorm alone cannot create it.
+ *   5. brickwall limiter as the hard ceiling
+ *   6. two-pass LINEAR loudnorm trim landing on the exact preset target — the
+ *      old ONE-PASS dynamic loudnorm undershot 1-3 LU and pumped; THAT was the
+ *      "crusher"/"weak" defect, not the -9 number.
+ * Everything before the trim (steps 1-5) lives in masterPreChain so pass 1 can
+ * measure EXACTLY the signal the trim will receive.
  */
-export function masterChain(target: { lufs: number; tp: number }): string {
+export function masterPreChain(target: { lufs: number; tp: number }, rawI: number | null): string {
   const tpLinear = Math.pow(10, target.tp / 20).toFixed(4); // dBTP → linear amplitude
-  return [
+  const parts = [
     'highpass=f=28',
     'bass=g=1.2:f=110', // low-end warmth
     'equalizer=f=3000:width_type=q:width=1.5:g=1', // vocal/lead presence
     'treble=g=1.8:f=9000', // air
     'acompressor=threshold=-16dB:ratio=2:attack=20:release=200:makeup=1.5', // glue
-    `loudnorm=I=${target.lufs}:TP=${target.tp}:LRA=11`,
-    `alimiter=level=false:limit=${tpLinear}`, // true-peak brickwall ceiling
-  ].join(',');
+  ];
+  // Loud targets get DRIVEN into the ceiling; quiet ("breathe") targets don't —
+  // saturating a dynamics-first master defeats its whole point.
+  const gain = rawI === null ? 0 : driveGainDb(target.lufs, rawI);
+  if (target.lufs >= -11 && gain > 0.05) {
+    parts.push(`volume=${gain.toFixed(2)}dB`); // measured drive, never a blind boost
+    parts.push('asoftclip=type=tanh:threshold=0.85'); // analog-style density before the wall
+  }
+  parts.push(`alimiter=level=false:limit=${tpLinear}:attack=2:release=80`); // brickwall ceiling
+  return parts.join(',');
+}
+
+/** Full mastering filtergraph: pre-chain + two-pass linear trim (see above). */
+export function masterChain(
+  target: { lufs: number; tp: number },
+  m?: { raw: LoudnormStats | null; driven: LoudnormStats | null }
+): string {
+  return [masterPreChain(target, m?.raw?.input_i ?? null), loudnormTrim(target, 11, m?.driven ?? null)].join(',');
 }
 
 /**
  * Light-touch CONFORM for engines that already hand back a FINISHED, loudness-
- * maximised master (MiniMax/Suno). It only conforms loudness to target and puts a
- * true-peak ceiling on the inter-sample overshoot these models ship with — NO EQ
- * and NO glue compression, because re-EQing + re-compressing an already-balanced,
- * already-limited master ("mastering a master") recolours it and dulls the
- * transients. LRA is set high so loudnorm does NOT compress the engine's own
- * dynamics — we're taming the +1 dBTP peak and matching loudness, nothing else.
+ * maximised master (MiniMax/Suno). NO EQ and NO glue compression — re-EQing +
+ * re-compressing an already-balanced, already-limited master ("mastering a
+ * master") recolours it and dulls the transients. What it DOES do now: a
+ * measured volume drive up to target (tanh soft-clip only when boosting hard,
+ * >2 dB), the true-peak ceiling on the +1 dBTP overshoot these models ship
+ * with, then the two-pass LINEAR trim. LRA floor 20 so loudnorm never touches
+ * the engine's own dynamics — match loudness, tame peaks, nothing else.
  */
-export function conformChain(target: { lufs: number; tp: number }): string {
+export function conformPreChain(target: { lufs: number; tp: number }, rawI: number | null): string {
   const tpLinear = Math.pow(10, target.tp / 20).toFixed(4);
-  return [
-    `loudnorm=I=${target.lufs}:TP=${target.tp}:LRA=20`,
-    `alimiter=level=false:limit=${tpLinear}`, // true-peak ceiling on the provider's hot render
-  ].join(',');
+  const parts: string[] = [];
+  const gain = rawI === null ? 0 : driveGainDb(target.lufs, rawI);
+  if (gain > 0.05) {
+    parts.push(`volume=${gain.toFixed(2)}dB`); // measured drive up to the commercial target
+    if (gain > 2) parts.push('asoftclip=type=tanh:threshold=0.85'); // only when boosting hard
+  }
+  parts.push(`alimiter=level=false:limit=${tpLinear}:attack=2:release=80`); // true-peak ceiling on the provider's hot render
+  return parts.join(',');
+}
+
+/** Full conform filtergraph: light-touch pre-chain + two-pass linear trim. */
+export function conformChain(
+  target: { lufs: number; tp: number },
+  m?: { raw: LoudnormStats | null; driven: LoudnormStats | null }
+): string {
+  return [conformPreChain(target, m?.raw?.input_i ?? null), loudnormTrim(target, 20, m?.driven ?? null)].join(',');
+}
+
+/**
+ * LOUDNESS-MATCH filtergraph — conform a separated stem back to ITS OWN source's
+ * integrated loudness (the TRUE INSTRUMENTAL law: voice out, everything else at
+ * the same level the finished song played at). Deliberately narrower than
+ * conformPreChain: a measured volume drive + the true-peak ceiling, NO soft-clip
+ * and NO EQ — we're matching a stem, not densifying a master. LRA floor 20 so
+ * the linear trim never touches the source's own dynamics. Exported separately
+ * from the renderer so the chain is assertable without an ffmpeg binary.
+ */
+export function loudnessMatchPreChain(target: { lufs: number; tp: number }, rawI: number | null): string {
+  const tpLinear = Math.pow(10, target.tp / 20).toFixed(4);
+  const parts: string[] = [];
+  const gain = rawI === null ? 0 : driveGainDb(target.lufs, rawI);
+  if (gain > 0.05) parts.push(`volume=${gain.toFixed(2)}dB`); // measured drive up to the source's loudness
+  parts.push(`alimiter=level=false:limit=${tpLinear}:attack=2:release=80`); // true-peak ceiling
+  return parts.join(',');
+}
+
+/** Full loudness-match filtergraph: drive+ceiling pre-chain, then the two-pass
+ *  LINEAR trim (LRA floor 20) — never the dynamic pump. */
+export function loudnessMatchChain(
+  target: { lufs: number; tp: number },
+  rawI: number | null,
+  driven: LoudnormStats | null
+): string {
+  return [loudnessMatchPreChain(target, rawI), loudnormTrim(target, 20, driven)].join(',');
+}
+
+/**
+ * Loudness-match a stem to the SOURCE song's measured integrated LUFS (two-pass:
+ * measure raw → measure through the drive/limiter → render once with the linear
+ * trim). Input is raw bytes or a URL ffmpeg can read directly; output is 44.1k
+ * stereo WAV bytes — the caller decides what lossy encodes to derive from it.
+ */
+export async function loudnessMatchToSource(
+  input: Buffer | string,
+  sourceLufs: number,
+  tp = -1.0
+): Promise<Buffer> {
+  // loudnorm only accepts I in [-70,-5] — clamp a pathological measurement
+  // rather than letting the whole job die on a filter arg error.
+  const target = { lufs: Math.min(-5, Math.max(-70, sourceLufs)), tp };
+  const dir = await mkdtemp(join(tmpdir(), 'lmatch-'));
+  try {
+    let src: string;
+    if (typeof input === 'string') src = input;
+    else {
+      src = join(dir, 'in.bin');
+      await writeFile(src, input);
+    }
+    // PASS 1 — the raw stem sets the drive; PASS 1b — the driven signal sets the
+    // trim's measured_* numbers (same law as master(): the trim must know its
+    // OWN input or the drive gets applied twice).
+    const raw = await measureLoudnorm(src, target);
+    const pre = loudnessMatchPreChain(target, raw?.input_i ?? null);
+    const driven = raw ? await measureLoudnorm(src, target, pre) : null;
+    const outPath = join(dir, 'matched.wav');
+    await runFfmpeg(['-i', src, '-af', loudnessMatchChain(target, raw?.input_i ?? null, driven), '-ar', '44100', '-ac', '2', outPath]);
+    return await readFile(outPath);
+  } finally {
+    await rm(dir, { recursive: true, force: true }).catch(() => {});
+  }
+}
+
+/** Encode any decodable audio to 320k mp3 (same libmp3lame settings master() ships). */
+export async function encodeMp3320(input: Buffer): Promise<Buffer> {
+  const dir = await mkdtemp(join(tmpdir(), 'mp3-'));
+  try {
+    const inPath = join(dir, 'in.bin');
+    const outPath = join(dir, 'out.mp3');
+    await writeFile(inPath, input);
+    await runFfmpeg(['-i', inPath, '-codec:a', 'libmp3lame', '-b:a', '320k', outPath]);
+    return await readFile(outPath);
+  } finally {
+    await rm(dir, { recursive: true, force: true }).catch(() => {});
+  }
 }
 
 /**
@@ -493,8 +682,12 @@ export async function mixdownConsole(tracks: ConsoleTrack[]): Promise<Buffer> {
 }
 
 /**
- * Master a mix: two-pass style loudnorm in one pass (dynamic mode) to the
- * preset target, encode both WAV and MP3. Returns both.
+ * Master a mix — real TWO-PASS loudness. Pass 1 measures (raw take → sets the
+ * drive gain; then the driven pre-chain → sets the trim's measured_* numbers),
+ * pass 2 renders once with a LINEAR trim that lands ON the preset target. The
+ * old one-pass dynamic loudnorm undershot 1-3 LU and pumped — the "masters
+ * sound weak" defect, now retired to a fallback for unmeasurable input.
+ * Encodes both WAV and 320k MP3. Returns both.
  */
 export async function master(opts: {
   mix: Buffer;
@@ -507,14 +700,25 @@ export async function master(opts: {
    */
   finished?: boolean;
 }): Promise<{ wav: Buffer; mp3: Buffer }> {
-  const target = MASTER_TARGETS[opts.preset] ?? MASTER_TARGETS['streaming_lufs_-14']!;
+  const target = MASTER_TARGETS[opts.preset] ?? MASTER_TARGETS['afro_stream_-9']!;
   const dir = await mkdtemp(join(tmpdir(), 'afrohit-master-'));
   try {
     const inPath = join(dir, 'in.bin');
     const wavPath = join(dir, 'master.wav');
     const mp3Path = join(dir, 'master.mp3');
     await writeFile(inPath, opts.mix);
-    const filter = opts.finished ? conformChain(target) : masterChain(target);
+    // PASS 1 — measure the raw program; its integrated loudness sets the drive.
+    const raw = await measureLoudnorm(inPath, target);
+    const pre = opts.finished
+      ? conformPreChain(target, raw?.input_i ?? null)
+      : masterPreChain(target, raw?.input_i ?? null);
+    // PASS 1b — measure the signal as it LEAVES the drive/limiter stage: the
+    // trim must know its OWN input, not the raw take, or the drive gain gets
+    // applied twice. Same deterministic pre-chain as the render below.
+    const driven = raw ? await measureLoudnorm(inPath, target, pre) : null;
+    // PASS 2 — the real render: pre-chain + linear trim (dynamic fallback only
+    // when measurement failed; a master job should never die on analysis).
+    const filter = [pre, loudnormTrim(target, opts.finished ? 20 : 11, driven)].join(',');
     await runFfmpeg(['-i', inPath, '-af', filter, '-ar', '44100', '-ac', '2', wavPath]);
     await runFfmpeg(['-i', wavPath, '-codec:a', 'libmp3lame', '-b:a', '320k', mp3Path]);
     return { wav: await readFile(wavPath), mp3: await readFile(mp3Path) };

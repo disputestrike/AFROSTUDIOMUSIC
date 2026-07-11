@@ -4,7 +4,7 @@
  * appended as a new Master take, so it shows in Compare Versions as the current
  * version with one-tap revert. Zero model spend — pure ffmpeg.
  */
-import { prisma } from '@afrohit/db';
+import { prisma, Prisma } from '@afrohit/db';
 import { transformAudio } from '../lib/ffmpeg';
 import { downloadToBuffer, uploadBytes } from '../lib/storage';
 import { markSucceeded, markFailed } from '../lib/jobs';
@@ -26,6 +26,9 @@ export async function processTransform(p: TransformPayload): Promise<void> {
     await prisma.master.create({
       data: { projectId: p.projectId, songId: p.songId, preset: `transform ${label}`, url, approved: true },
     });
+    // New current take (speed/key changed) — yesterday's instrumental/acapella
+    // no longer match it. Clear; the next request re-separates from this take.
+    await prisma.song.update({ where: { id: p.songId }, data: { instrumentalUrl: null, acapellaUrl: null, instrumentalMeta: Prisma.DbNull } }).catch(() => undefined);
     await markSucceeded(p.jobId, { url, label });
     console.log(`[transform] song ${p.songId}: ${label}`);
   } catch (err) {
