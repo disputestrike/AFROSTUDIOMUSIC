@@ -35,12 +35,15 @@ interface ForgePayload {
   bpm: number;
   keySignature?: string;
   bars?: number;
+  /** VARIANT DEPTH: ≥2 = "forge a DIFFERENT take of this role" (prompt gets the
+   *  variation direction; the loop lands with meta.variant so the shelf shows it). */
+  variant?: number;
 }
 
 export async function processForgeMaterial(p: ForgePayload) {
   await markRunning(p.jobId);
   try {
-    const prompt = forgePromptFor(p.role, p.genre, p.bpm, p.keySignature);
+    const prompt = forgePromptFor(p.role, p.genre, p.bpm, p.keySignature, p.variant);
     if (!prompt) throw new Error(`unknown material role: ${p.role}`);
     const key = isKeyedRole(p.role) ? p.keySignature : undefined;
     const bars = p.bars ?? 8;
@@ -112,7 +115,7 @@ export async function processForgeMaterial(p: ForgePayload) {
         durationS: (60 / p.bpm) * 4 * bars,
         url,
         source: 'forged',
-        meta: { qc, prompt, engine: adapter.name, origin: 'forged', license: 'owned-generation' } as never,
+        meta: { qc, prompt, engine: adapter.name, origin: 'forged', license: 'owned-generation', ...(p.variant ? { variant: p.variant } : {}) } as never,
       },
     });
     await markSucceeded(p.jobId, { materialId: material.id, role: p.role, url, qc: qc?.verdict ?? 'unmeasured' }, result.estimatedCostUsd);

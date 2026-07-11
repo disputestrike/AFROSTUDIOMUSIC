@@ -41,6 +41,13 @@ NATURAL SPEECH & LOGIC LAWS (the last mile from 8/10 to 10/10 — each is a hard
 - INTRO BELONGS TO THE CONCEPT: every intro phrase connects to the premise or the hook. An orphaned musical-sounding phrase that never returns is cut.
 - HOOK PAYOFF LINES: internally draft THREE hook payoffs and keep the one whose FINAL TWO LINES are as memorable as the opening line — strongest sing-back rhythm, simplest words, clearest emotional payoff, most distinctive last line. An escalation motif must track the song's real mechanic and emotion, never counting for counting's sake.
 
+STORYCRAFT (permanent laws — depth, not filler; this is a top complaint to fix):
+- ONE CONCRETE STORY PER SONG: every song tells ONE story — a named scene (a street, a city, a room, one night), a want, and a turn. If the song cannot be retold in one sentence (who, where, what they want, what changed), it is not a song yet.
+- VERSES MUST MOVE: verse 1 sets the scene with sensory Nigerian/African detail (what is seen, heard, eaten, worn); verse 2 ESCALATES or TURNS — time passes, stakes change, someone acts. Verses that could swap places without a listener noticing are a HARD FAIL.
+- GENERIC ROMANCE FILLER IS BANNED: "baby" as the whole story, unnamed she/her devotion arcs with no scene — never write these UNLESS the brief explicitly asks for a love song, and even then the love story must have a specific scene and a turn (where, when, what changed tonight), never floating devotion.
+- TOPICAL RANGE (rotate, never rut): money/hustle, faith/gratitude, family/mama, city nights/enjoyment, struggle→triumph, longing/distance. Read the brief's mood and pick the story that FITS it — never reach for romance by default.
+- SHOW, NEVER STATE: name places, foods, moments, sounds. The studied craft briefs show how the greats do it — apply their TECHNIQUES, never their words.
+
 VOCABULARY — SPAN WIDE, NEVER REPEAT (this is a top complaint to fix):
 - The "WORD BANK" widens your options — use its terms ONLY where a real speaker would drop them mid-sentence. Zero is acceptable; a forced-in vocabulary word is a FAILURE worse than plain language (the "written not sung" defect).
 - Across the whole song, do NOT lean on the same handful of content words. Each verse brings FRESH vocabulary; once you use a striking word, don't reuse it. Only the HOOK repeats — the verses must be lexically varied. Rotating vocabulary is a REQUIREMENT, not a nicety.
@@ -115,6 +122,10 @@ export function lyricUserPrompt(opts: {
   /** The user's STRUCTURED create selections, first-class — a polish-brief
    *  hiccup must never drop mood/fusion/influence from the writer's view. */
   selections?: { mood?: string; fusionGenres?: string[]; influence?: string; songTitle?: string };
+  /** NEVER RETELL A STORY: the workspace's recent drafts ("Title — first line…").
+   *  Every new song must take a DIFFERENT story/angle/scene from ALL of these —
+   *  the same theme is allowed only with a visibly different story. */
+  storiesTold?: string[];
 }): string {
   // Determine the PRIMARY language: strongest weight in the mix, else the requested
   // languages, else the artist default. This is what the writer must deliver in.
@@ -155,6 +166,10 @@ export function lyricUserPrompt(opts: {
           influence_lane_only_never_copy: opts.selections.influence,
           songTitle_is_law_use_exactly: opts.selections.songTitle,
         }
+      : undefined,
+    STORIES_ALREADY_TOLD_never_retell_these_angles: opts.storiesTold?.length ? opts.storiesTold : undefined,
+    STORY_RULE: opts.storiesTold?.length
+      ? 'Every new song must take a DIFFERENT story/angle/scene from ALL of STORIES_ALREADY_TOLD — the same theme is allowed only with a visibly different story.'
       : undefined,
     hook: opts.hookText,
     require_clean_version: opts.cleanVersion,

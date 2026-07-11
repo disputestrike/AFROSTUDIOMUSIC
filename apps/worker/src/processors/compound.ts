@@ -634,7 +634,13 @@ export async function processGlossPass(opts?: { limit?: number }): Promise<void>
  *      Replicate key exists, PACED (30s apart) and CAPPED per night
  *      (KIT_FORGES_PER_NIGHT, default 30 ≈ $3/night max — the deep-palette kits
  *      are ~30 roles/lane, so an active lane completes in a night or two) so the
- *      shelf fills itself with zero clicks. Autonomy toggle gates the whole run. */
+ *      shelf fills itself with zero clicks. Autonomy toggle gates the whole run.
+ *  Once a lane's kit roles are ALL covered, remaining budget forges VARIANTS —
+ *  coverage is not depth: one loop per role meant pickMaterial served the SAME
+ *  loop on every assemble and the lane sang one beat forever ("every beat sounds
+ *  identical" — Benjamin heard it). Rotation follows the kit's own order
+ *  (signature + rhythm families first), capped at MATERIAL_VARIANTS_PER_ROLE
+ *  (default 3) per workspace+genre, same pacing, same nightly budget. */
 export async function ensureSignatureKits(): Promise<void> {
   try {
     const projects = await prisma.project.findMany({ orderBy: { createdAt: 'desc' }, take: 40, select: { workspaceId: true, genre: true } });
@@ -645,7 +651,13 @@ export async function ensureSignatureKits(): Promise<void> {
       const key = `${pr.workspaceId}|${pr.genre}`;
       if (seen.has(key) || seen.size >= 6) continue;
       seen.add(key);
-      const have = new Set((await prisma.materialAsset.findMany({ where: { workspaceId: pr.workspaceId, genre: pr.genre }, select: { role: true } })).map((m: { role: string }) => m.role));
+      // Per-role COUNTS (not just coverage) — the variant tier below needs to know
+      // how deep each role already is, not merely that it exists.
+      const counts = new Map<string, number>();
+      for (const m of await prisma.materialAsset.findMany({ where: { workspaceId: pr.workspaceId, genre: pr.genre }, select: { role: true } })) {
+        counts.set(m.role, (counts.get(m.role) ?? 0) + 1);
+      }
+      const have = new Set(counts.keys());
       // Tier 1 — synth primitives (free): never let a lane sit loop-less.
       const missing = synthKitFor(pr.genre).filter((r) => !have.has(r));
       if (missing.length) {
@@ -670,6 +682,29 @@ export async function ensureSignatureKits(): Promise<void> {
           queued++;
         }
         if (queued) console.log(`[kits] ${pr.genre}: auto-forging ${queued} rich role(s) on the real engine (nightly budget left: ${forgeBudget})`);
+        // VARIANT DEPTH — the lane's kit is fully covered, so budget goes to
+        // DIFFERENT takes of the same roles: rotate the kit in its own order
+        // (signature + rhythm families lead), skip roles already at the per-role
+        // cap, and enqueue the SAME forge job with variant = existing count + 1
+        // (the prompt library turns that into "variation B/C/D — a different
+        // pattern, never a re-render"). Same 30s pacing, same nightly budget.
+        if (!richMissing.length) {
+          const maxVariants = Math.max(1, parseInt(process.env.MATERIAL_VARIANTS_PER_ROLE ?? '3', 10) || 3);
+          for (const role of forgeKitFor(pr.genre)) {
+            if (forgeBudget <= 0) break;
+            if (role === 'fill') continue;
+            const depth = counts.get(role) ?? 0;
+            if (depth >= maxVariants) continue;
+            forgeBudget--;
+            const variant = depth + 1;
+            const job = await prisma.providerJob.create({
+              data: { workspaceId: pr.workspaceId, kind: 'material', provider: 'replicate', status: 'QUEUED', inputJson: { genre: pr.genre, role, bpm, variant, auto: 'nightly-variant' } as never },
+            });
+            await enqueueJob('music', 'forge-material', { jobId: job.id, workspaceId: pr.workspaceId, genre: pr.genre, role, bpm, keySignature: dnaKey, apiKeyHint: !!ws?.musicApiKey, variant }, { delayMs: queued * 30_000 });
+            queued++;
+          }
+          if (queued) console.log(`[kits] ${pr.genre}: kit covered — deepening the shelf with ${queued} variant forge(s), max ${maxVariants}/role (nightly budget left: ${forgeBudget})`);
+        }
       }
     }
   } catch (err) { console.warn('[kits] failed (non-fatal):', (err as Error)?.message); }

@@ -115,11 +115,20 @@ export function isKeyedRole(role: string): boolean {
  * The prompt for forging one isolated loop of `role`. Covers the ENTIRE
  * taxonomy: curated descriptor first, family template as fallback. Legacy
  * coarse roles (drums/percussion/chords/bass/fill) keep working.
+ *
+ * `variant` (VARIANT DEPTH — the "one loop per role forever" fix): variant ≥ 2
+ * appends a variation direction HERE — one call site instead of 60 descriptors —
+ * so the engine renders a genuinely different phrase in the same lane and
+ * character, never a re-render of the same idea. variant 2 = B, 3 = C, …
  */
-export function forgePromptFor(role: string, genre: string, bpm: number, key?: string): string | null {
+export function forgePromptFor(role: string, genre: string, bpm: number, key?: string, variant?: number): string | null {
   const k = isKeyedRole(role) ? key : undefined;
+  const withVariant = (base: string) =>
+    variant && variant >= 2
+      ? `${base} — variation ${String.fromCharCode(64 + Math.min(variant, 26))}: a DIFFERENT pattern/phrase in the same lane and character (new rhythm placement or melodic contour), never a re-render of the same idea`
+      : base;
   const curated = DESCRIPTORS[role as MaterialRole];
-  if (curated) return curated(genre, bpm, k);
+  if (curated) return withVariant(curated(genre, bpm, k));
   // Legacy coarse roles used by the synth bridge + old shelf entries.
   const LEGACY: Record<string, (g: string, b: number, k?: string) => string> = {
     drums: (g, b) => `solo ${g2(g)} drum groove, ${b} bpm — punchy tuned kick, crisp snare and rimshots, lively swung hi-hats with ghost notes, human pocket; drums only, ${ISO}`,
@@ -128,11 +137,11 @@ export function forgePromptFor(role: string, genre: string, bpm: number, key?: s
     bass: (g, b, kk) => `solo ${g2(g)} bassline${kk ? ` in ${kk}` : ''}, ${b} bpm — warm round bass with groove; bass only, ${ISO}`,
     fill: (g, b) => `solo ${g2(g)} DRUM FILL, ${b} bpm — a short 1-2 bar rising tom/snare fill landing on the downbeat; drums only, one fill, not a loop, ${ISO}`,
   };
-  if (LEGACY[role]) return LEGACY[role](genre, bpm, k);
+  if (LEGACY[role]) return withVariant(LEGACY[role](genre, bpm, k));
   if (isMaterialRole(role)) {
     const fam = familyOf(role);
     const fb = FAMILY_FALLBACK[fam];
-    if (fb) return fb(role, genre, bpm, k);
+    if (fb) return withVariant(fb(role, genre, bpm, k));
   }
   return null;
 }

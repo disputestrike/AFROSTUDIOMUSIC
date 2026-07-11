@@ -26,9 +26,24 @@ export default async function materials(app: FastifyInstance) {
       orderBy: { createdAt: 'desc' },
       take: 200,
     });
+    type Row = { id: string; role: string; genre: string | null; bpm: number | null; keySignature: string | null; bars: number | null; source: string; url: string; createdAt: Date; meta: unknown };
+    // TRUE ORIGIN per row: source is the rights column ('forged' covers both
+    // engines), meta says WHICH machine made it — synth bridge vs the real forge.
+    // Stems keep their provenance verbatim (artist_stem / provider_stem).
+    const originOf = (m: Row) => {
+      const meta = (m.meta ?? {}) as { synth?: boolean; origin?: string };
+      return m.source !== 'forged' ? m.source : meta.synth ? 'synth' : (meta.origin ?? 'forged');
+    };
+    // INTEGRITY — "confirm every material is true": same rows, zero extra
+    // queries. distinctFiles counts unique underlying audio, so duplicates > 0
+    // means the shelf is re-serving the same file under different rows.
+    const byOrigin: Record<string, number> = {};
+    for (const m of rows as Row[]) byOrigin[originOf(m)] = (byOrigin[originOf(m)] ?? 0) + 1;
+    const distinctFiles = new Set((rows as Row[]).map((m) => m.url)).size;
     return {
       total: rows.length,
-      materials: rows.map((m: { id: string; role: string; genre: string | null; bpm: number | null; keySignature: string | null; bars: number | null; source: string; url: string; createdAt: Date }) => ({ id: m.id, role: m.role, genre: m.genre, bpm: m.bpm, keySignature: m.keySignature, bars: m.bars, source: m.source, url: m.url, createdAt: m.createdAt })),
+      integrity: { totalLoops: rows.length, distinctFiles, duplicates: rows.length - distinctFiles, byOrigin },
+      materials: (rows as Row[]).map((m) => ({ id: m.id, role: m.role, genre: m.genre, bpm: m.bpm, keySignature: m.keySignature, bars: m.bars, source: m.source, origin: originOf(m), variant: ((m.meta ?? {}) as { variant?: number }).variant ?? null, url: m.url, createdAt: m.createdAt })),
     };
   });
 
@@ -172,7 +187,9 @@ export default async function materials(app: FastifyInstance) {
       orderBy: { createdAt: 'desc' },
       take: 100,
     });
-    const picks = pickMaterial(rows, input.genre, input.bpm, input.keySignature);
+    // Fresh variety seed per request — same shelf, different combination each
+    // assemble (the deterministic pick made every beat in a lane identical).
+    const picks = pickMaterial(rows, input.genre, input.bpm, input.keySignature, { varietySeed: Date.now() % 100000 });
     if (picks.length < 2) {
       return reply.code(400).send({
         error: 'not_enough_material',

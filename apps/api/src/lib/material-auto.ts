@@ -75,7 +75,9 @@ export async function autoMaterialBeat(app: FastifyInstance, workspaceId: string
     : `fallback-hardcoded (lane underprofiled: < 3 measured refs)`;
 
   const shelf = await loadShelf(workspaceId, opts.genre);
-  const picks = pickMaterial(shelf, opts.genre, bpm, keySignature);
+  // Fresh variety seed per request — the deterministic pick served the SAME loop
+  // per role on every assemble, so every beat in a lane was the same beat.
+  const picks = pickMaterial(shelf, opts.genre, bpm, keySignature, { varietySeed: Date.now() % 100000 });
   const have = new Set(picks.map((p) => p.role));
   const missing = wanted.filter((r) => !have.has(r));
 
@@ -109,7 +111,7 @@ export async function autoMaterialBeat(app: FastifyInstance, workspaceId: string
         }
       }
       const shelf2 = await loadShelf(workspaceId, opts.genre);
-      const picks2 = pickMaterial(shelf2, opts.genre, bpm, keySignature);
+      const picks2 = pickMaterial(shelf2, opts.genre, bpm, keySignature, { varietySeed: Date.now() % 100000 });
       if (picks2.length >= 2) {
         await assembleFrom(app, workspaceId, opts.projectId, opts.genre, bpm, keySignature, opts.vibe, opts.songId, picks2);
       }

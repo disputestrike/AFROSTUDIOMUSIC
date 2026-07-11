@@ -17,6 +17,7 @@ export const HOOK_SYSTEM = `You are an Afro-fusion hook writer for artists in We
 
 HOOK ECONOMICS (permanent law): for each hook, internally design several competing concepts and keep only the strongest. Reject any candidate that merely repeats a title, summarizes a verse, uses generic emotional stock, has no rhythmic identity, or cannot be remembered after ONE listen. A shipped hook carries: one central phrase + an emotional consequence + a call-and-response answer + open vowels where notes sustain + a percussive landing word the drums can hit + one line people will caption. Fewer words beats more words.
 HOOK FINAL LINE (permanent law): the hook's LAST line must be as memorable as its first — a distinctive payoff, never a fade-out or a filler rhyme. Every thought completes on the page (a deliberately interrupted line must show the answer that completes it). Natural phrasing outranks rhyme: a phrase no real speaker would say ("before the night done") is rejected at birth — say it the way people actually talk ("before this night go end"). An escalation motif must track the song's real mechanic and emotion, never counting for counting's sake.
+HOOK CARRIES THE STORY (permanent law): a hook is the STORY's hook, not just a chant — it must imply a scene or a stake the listener can picture (who, where, what is at risk or won tonight). A chant with nothing behind it is filler; the freshness and cliché bans below still apply on top.
 You write hooks that are:
 - simple and repeatable (a child should be able to sing them after one play)
 - emotionally clear (one feeling per hook)
@@ -82,8 +83,14 @@ export function hookUserPrompt(opts: {
    * theme prose, so a polish hiccup silently dropped mood/fusion/influence.
    */
   selections?: { mood?: string; fusionGenres?: string[]; influence?: string; songTitle?: string };
+  /**
+   * NEVER RETELL A STORY: the workspace's recent drafts ("Title — first line…").
+   * Every new hook must take a DIFFERENT story/angle/scene from ALL of these —
+   * the same theme is allowed only with a visibly different story.
+   */
+  storiesTold?: string[];
 }): string {
-  const { artist, brief, count, exclude, tasteMemory, trends, soundDna, refineFrom, selections } = opts;
+  const { artist, brief, count, exclude, tasteMemory, trends, soundDna, refineFrom, selections, storiesTold } = opts;
   const refine = (refineFrom ?? []).map((t) => String(t).trim()).filter(Boolean);
   const refs = artist.references?.map((r) => `${r.name} lane (${r.lane})`).join(', ') ?? 'none';
   const banned = [...(artist.cornyBanned ?? []), ...(artist.forbiddenStyles ?? [])];
@@ -118,6 +125,7 @@ export function hookUserPrompt(opts: {
       'no dulling', 'we dey rise', 'party don start', 'make we jam', 'hustle hard',
       'to the moon', 'we dey vibe', 'my vibe', 'like a star',
     ],
+    STORIES_ALREADY_TOLD_never_retell_these_angles: storiesTold?.length ? storiesTold : undefined,
     taste_memory: tasteMemory
       ? {
           hooks_the_artist_APPROVED_write_more_like_these: tasteMemory.approvedExamples,
@@ -135,6 +143,9 @@ export function hookUserPrompt(opts: {
       'Do NOT use any phrase in banned_overused_cliches. Write fresh, specific, sensory lines.',
       'If TRENDING_NOW is present, reflect the current wave (sound/slang/themes) without copying anyone.',
       'If GENRE_SOUND_DNA is present, make hooks that sit in that pocket/arrangement and cadence — phrasing, rhythm, and imagery must fit the lane, not generic pop.',
+      ...(storiesTold?.length
+        ? ['STORIES_ALREADY_TOLD_never_retell_these_angles is the workspace\'s recent catalog: every new hook must take a DIFFERENT story/angle/scene from ALL of them — the same theme is allowed only with a visibly different story.']
+        : []),
       ...(refine.length
         ? [
             'REFINE MODE: REFINE_FROM is the artist\'s current hooks — return SHARPER versions of THESE, same concept/theme/lane/hook-shape/language-mix. This OVERRIDES "different image/angle/story": keep each source hook\'s idea, just make it better.',

@@ -35,8 +35,22 @@ interface Material {
   keySignature: string | null;
   bars: number | null;
   source: string;
+  /** TRUE origin: forged (real engine) / synth (owned bridge) / artist_stem / provider_stem. */
+  origin?: string;
+  /** ≥2 = a deliberately DIFFERENT take of the same role (variation B/C/D…). */
+  variant?: number | null;
   url: string;
 }
+
+/** The API's truth receipt for the shelf — counted from the same rows it returns. */
+interface Integrity {
+  totalLoops: number;
+  distinctFiles: number;
+  duplicates: number;
+  byOrigin: Record<string, number>;
+}
+
+const ORIGIN_LABEL: Record<string, string> = { forged: 'forged', synth: 'synth', artist_stem: 'your stems', provider_stem: 'provider stems' };
 
 interface Project { id: string; title: string; genre: string }
 
@@ -46,6 +60,7 @@ const ROLE_LABEL: Record<string, string> = { drums: '🥁 Drums', log_drum: '�
 export default function MaterialsPage() {
   const api = useApi();
   const [materials, setMaterials] = useState<Material[] | null>(null);
+  const [integrity, setIntegrity] = useState<Integrity | null>(null);
   const [loadErr, setLoadErr] = useState('');
   const [genre, setGenre] = useState('amapiano');
   const [bpm, setBpm] = useState(112);
@@ -62,8 +77,9 @@ export default function MaterialsPage() {
 
   const load = useCallback(async () => {
     try {
-      const res = await api.get<{ materials: Material[] }>('/materials');
+      const res = await api.get<{ materials: Material[]; integrity?: Integrity }>('/materials');
       setMaterials(res.materials);
+      setIntegrity(res.integrity ?? null);
       setLoadErr('');
       return res.materials;
     } catch (e) {
@@ -199,6 +215,16 @@ export default function MaterialsPage() {
         <span className="text-slate-200"> the studio arranges the exact beat from this shelf</span>: same loops in, same beat out. No hallucination — and the
         assembly itself never needs the AI brain or its credits (Claude only suggests a smarter arrangement when it&apos;s reachable).
       </p>
+      {/* TRUTH RECEIPT — the shelf counted honestly: every loop, every unique file,
+          every duplicate, and who made what. Duplicates flag amber, never hidden. */}
+      {integrity && integrity.totalLoops > 0 && (
+        <p className="mt-2 text-xs text-slate-500">
+          <span className="text-slate-300">{integrity.totalLoops} loop{integrity.totalLoops === 1 ? '' : 's'}</span>
+          {' · '}{integrity.distinctFiles} distinct file{integrity.distinctFiles === 1 ? '' : 's'}
+          {' · '}<span className={integrity.duplicates > 0 ? 'text-amber-400' : 'text-emerald-400'}>{integrity.duplicates} duplicate{integrity.duplicates === 1 ? '' : 's'}</span>
+          {' — '}{Object.entries(integrity.byOrigin).map(([o, n]) => `${ORIGIN_LABEL[o] ?? o} ${n}`).join(' / ')}
+        </p>
+      )}
 
       {/* Forge + assemble controls */}
       <div className="mt-6 grid gap-4 md:grid-cols-2">
@@ -265,8 +291,19 @@ export default function MaterialsPage() {
             {items.map((m) => (
               <div key={m.id} className="rounded-xl border border-white/10 bg-black/20 p-3">
                 <div className="flex items-center justify-between text-sm text-slate-200">
-                  <span>{ROLE_LABEL[m.role] ?? m.role}</span>
-                  <span className="text-[10px] uppercase tracking-wide text-slate-500">{m.source === 'artist_stem' ? 'your stem' : 'forged'}</span>
+                  <span className="flex items-center gap-1.5">
+                    {ROLE_LABEL[m.role] ?? m.role}
+                    {/* Variant chip — this loop is a deliberately DIFFERENT take of its role. */}
+                    {(m.variant ?? 0) >= 2 && <span className="rounded bg-white/10 px-1 py-px text-[9px] font-medium text-afrobrand-300">v{m.variant}</span>}
+                  </span>
+                  {/* TRUE origin badge — synth-bridge loops say SYNTH, never FORGED;
+                      stems say whose they really are. */}
+                  <span className="text-[10px] uppercase tracking-wide text-slate-500">
+                    {(() => {
+                      const o = m.origin ?? (m.source === 'artist_stem' ? 'artist_stem' : m.source === 'provider_stem' ? 'provider_stem' : 'forged');
+                      return o === 'artist_stem' ? 'your stem' : o === 'provider_stem' ? 'provider stem' : o === 'synth' ? 'synth' : 'forged';
+                    })()}
+                  </span>
                 </div>
                 <div className="mt-1 text-xs text-slate-500">
                   {m.bpm ? `${m.bpm}bpm` : ''}{m.keySignature ? ` · ${m.keySignature}` : ''}{m.bars ? ` · ${m.bars} bars` : ''}

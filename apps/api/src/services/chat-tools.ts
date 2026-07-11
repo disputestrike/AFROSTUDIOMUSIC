@@ -237,6 +237,37 @@ function selectionsOf(a: Record<string, unknown>): Selections | undefined {
   return Object.values(sel).some(Boolean) ? sel : undefined;
 }
 
+// ---------------------------------------------------------------------------
+// NEVER RETELL A STORY — the writer kept circling the same baby/minor love
+// story. The workspace's recent drafts (title + opening lines = the story's
+// fingerprint) become a DO-NOT-RETELL list every new hook/lyric must take a
+// different story/angle/scene from. ONE query (projectId → workspace via the
+// project relation), best-effort: a recall failure never blocks a take.
+async function recentStoriesTold(workspaceId: string, excludeSongId?: string | null): Promise<string[]> {
+  const drafts: Array<{ title: string | null; body: string }> = await prisma.lyricDraft
+    .findMany({
+      where: { project: { workspaceId }, ...(excludeSongId ? { NOT: { songId: excludeSongId } } : {}) },
+      orderBy: { createdAt: 'desc' },
+      take: 12,
+      select: { title: true, body: true },
+    })
+    .catch(() => []);
+  return drafts
+    .map((d) => {
+      // First TWO content lines — [Section] headers and blanks carry no story.
+      const lines = String(d.body ?? '')
+        .split('\n')
+        .map((l) => l.trim())
+        .filter((l) => l && !l.startsWith('['))
+        .slice(0, 2);
+      return [(d.title ?? '').trim() || 'Untitled', lines.join(' / ')]
+        .filter(Boolean)
+        .join(' — ')
+        .slice(0, 160);
+    })
+    .filter((s) => s && s !== 'Untitled');
+}
+
 async function generateHooks(ctx: Ctx, count: number, languages?: string[], refineFrom?: string[], selections?: Selections, genre?: string) {
   if (!ctx.projectId) return { error: 'no_project_in_thread' };
   // CHAT LANE TRUTH (audit): on the freeform path the scratch project's genre
@@ -261,6 +292,10 @@ async function generateHooks(ctx: Ctx, count: number, languages?: string[], refi
   if (!charge.ok) return { error: 'insufficient_credits', ...charge };
 
   const tasteMemory = await memoryContext(project.artistId);
+  // NEVER RETELL A STORY: recent drafts become a banned-angles list on FRESH
+  // generation only — refine mode sharpens the CURRENT hooks in place, and
+  // banning their own story would fight that contract.
+  const storiesTold = refine.length ? [] : await recentStoriesTold(ctx.workspaceId);
   const trendData = await researchTrends({ genre: project.genre }).catch(() => null);
   const trends = trendData?.digest;
   void snapshotTrend(ctx.workspaceId, project.genre, trendData);
@@ -274,7 +309,7 @@ async function generateHooks(ctx: Ctx, count: number, languages?: string[], refi
   // "nothing's happening" feel.
   const result = await generateJson<{ hooks?: Array<{ text: string; language?: string[]; syllablePattern?: string }> }>({
     system: prompts.HOOK_SYSTEM,
-    user: prompts.hookUserPrompt({ artist: project.artist as never, brief: project.briefs[0] as never, count, tasteMemory, trends, soundDna, refineFrom: refine.length ? refine : undefined, selections }),
+    user: prompts.hookUserPrompt({ artist: project.artist as never, brief: project.briefs[0] as never, count, tasteMemory, trends, soundDna, refineFrom: refine.length ? refine : undefined, selections, storiesTold: storiesTold.length ? storiesTold : undefined }),
     temperature: 0.95,
     maxTokens: 3_500,
   });
@@ -396,8 +431,15 @@ async function generateLyrics(ctx: Ctx, hookId: string, cleanVersion: boolean, l
   if (!charge.ok) return { error: 'insufficient_credits', ...charge };
 
   const lmood = (hook.project.briefs[0] as { mood?: string } | undefined)?.mood;
+  // NEVER RETELL A STORY: the workspace's recent drafts — MINUS this song's own
+  // draft, so a Regenerate on the same hook never bans its own story.
+  const storiesTold = await recentStoriesTold(ctx.workspaceId, hook.songId);
+  // Pre-song recall rides with the hard constraints in the extra slot (same as
+  // hooks — the lyrics fuse was missing it, so the verses never saw the
+  // measured winners/losers the hooks were briefed on).
+  const lpresong = await presongIntelligence(ctx.workspaceId, laneGenre, lmood);
   const lyricSoundDna = fuseSoundDna({
-    extra: hardConstraints(laneGenre, languages),
+    extra: [hardConstraints(laneGenre, languages), lpresong].filter(Boolean).join('\n\n'),
     freshness: await freshnessBrief(ctx.workspaceId),
     palette: await lexiconPalette({ workspaceId: ctx.workspaceId, languages: languages?.length ? languages : hook.project.artist.languages, mood: lmood, rotate: Date.now() % 97 }),
     dna: laneDnaBrief(laneGenre),
@@ -407,7 +449,7 @@ async function generateLyrics(ctx: Ctx, hookId: string, cleanVersion: boolean, l
   }, 6000); // lyrics: leaner than hooks — a huge input + long output JSON breaks more often
 
   type LyricOut = { title: string; body: string; cleanVersion?: string; explicit?: boolean; structure?: unknown; languageMix?: Record<string, number>; needsNativeReview?: string[] };
-  const lyricUser = prompts.lyricUserPrompt({ artist: hook.project.artist as never, brief: hook.project.briefs[0] as never, hookText: hook.text, cleanVersion, languages: languages?.length ? languages : hook.project.artist.languages, soundDna: lyricSoundDna, selections });
+  const lyricUser = prompts.lyricUserPrompt({ artist: hook.project.artist as never, brief: hook.project.briefs[0] as never, hookText: hook.text, cleanVersion, languages: languages?.length ? languages : hook.project.artist.languages, soundDna: lyricSoundDna, selections, storiesTold: storiesTold.length ? storiesTold : undefined });
 
   // RETRY UNTIL NON-EMPTY: a long multi-line lyric returned as a JSON string
   // sometimes comes back empty/broken (~1 in 3 live) — regenerate up to 3x
@@ -453,6 +495,7 @@ async function generateLyrics(ctx: Ctx, hookId: string, cleanVersion: boolean, l
           cleanVersion,
           languages: languages?.length ? languages : hook.project.artist.languages,
           soundDna: hardConstraints(laneGenre, languages),
+          storiesTold: storiesTold.length ? storiesTold : undefined,
         }),
       temperature: 0.7,
       maxTokens: 5_000,

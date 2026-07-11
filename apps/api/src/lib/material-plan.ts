@@ -67,8 +67,15 @@ export interface MaterialPick {
  * Best loop per wanted role: bpm within ±15%, then key-compatible melodic
  * material first (unknown key stays usable, WRONG key sinks last), artist
  * stems over forged, closest bpm wins.
+ *
+ * varietySeed (ASSEMBLY VARIETY — the "every beat sounds identical" fix): the
+ * deterministic sort meant rank #1 won a role FOREVER, so every assemble of a
+ * lane placed the exact same loops. With a seed, each role still ranks exactly
+ * as above but the pick rotates among the TOP 3 (or fewer) candidates via
+ * (seed + roleIndex) % k — same seed = same beat (replayable), fresh seed =
+ * fresh combination. No seed = the legacy byte-identical pick (tests depend on it).
  */
-export function pickMaterial(rows: MaterialRow[], genre: string, bpm: number, keySignature?: string | null): MaterialPick[] {
+export function pickMaterial(rows: MaterialRow[], genre: string, bpm: number, keySignature?: string | null, opts?: { varietySeed?: number }): MaterialPick[] {
   const targetKey = (keySignature ?? homeKeyFor(genre)).toLowerCase();
   const keyScore = (m: MaterialRow) => {
     if (!MELODIC_ROLES.has(m.role) || !targetKey) return 0;
@@ -76,18 +83,22 @@ export function pickMaterial(rows: MaterialRow[], genre: string, bpm: number, ke
     return m.keySignature.toLowerCase() === targetKey ? 0 : 2;
   };
   const picks: MaterialPick[] = [];
-  for (const role of kitRolesFor(genre)) {
+  const roles = kitRolesFor(genre);
+  for (let ri = 0; ri < roles.length; ri++) {
+    const role = roles[ri]!;
     // In-tempo picks first; a harvested stem with NO measured bpm is a valid
     // LAST-RESORT pick (audit: harvested loops inherit a possibly-null beat bpm,
     // so a strict bpm filter silently orphaned the artist's own material).
     const inTempo = rows.filter((m) => m.role === role && m.bpm && Math.abs(m.bpm - bpm) / bpm <= 0.15);
     const nullBpm = rows.filter((m) => m.role === role && !m.bpm);
-    const best = [...inTempo, ...nullBpm].sort(
+    const ranked = [...inTempo, ...nullBpm].sort(
       (a, b) =>
         keyScore(a) - keyScore(b) ||
         (a.source === 'artist_stem' ? -1 : 0) - (b.source === 'artist_stem' ? -1 : 0) ||
         Math.abs((a.bpm ?? bpm) - bpm) - Math.abs((b.bpm ?? bpm) - bpm)
-    )[0];
+    );
+    const k = Math.min(3, ranked.length);
+    const best = opts?.varietySeed != null && k > 1 ? ranked[(opts.varietySeed + ri) % k] : ranked[0];
     if (best) picks.push({ id: best.id, url: best.url, sourceBpm: best.bpm ?? bpm, role, gain: materialGainFor(role), pan: materialPanFor(role) });
   }
   return picks;
