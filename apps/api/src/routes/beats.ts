@@ -93,6 +93,9 @@ export default async function beats(app: FastifyInstance) {
         multiplier: Math.max(1, input.candidates ?? 1),
         refTable: 'Project',
         refId: project.id,
+        // IDEMPOTENCY (audit FAKE_GREEN: supported but never passed): a retried/
+        // double-submitted create with the same Idempotency-Key charges ONCE.
+        idempotencyKey: (req.headers['idempotency-key'] as string) || undefined,
       });
       if (!charge.ok) return reply.code(402).send({ error: 'insufficient_credits', ...charge });
 
@@ -103,7 +106,8 @@ export default async function beats(app: FastifyInstance) {
           kind: 'music',
           provider: input.withVocals ? input.songEngine ?? defaultSongEngine() : defaultInstrumentalEngine(),
           status: 'QUEUED',
-          inputJson: { ...input, trainingUsage } as never,
+          // _charge lets the worker REFUND this on failure (charge-before-enqueue).
+          inputJson: { ...input, trainingUsage, _charge: { key: input.withVocals || input.withStems ? 'full_song_demo' : 'beat_idea_short_30s', multiplier: Math.max(1, input.candidates ?? 1) } } as never,
         },
       });
 

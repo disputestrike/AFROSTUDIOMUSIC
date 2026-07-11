@@ -9,6 +9,7 @@
  */
 import type { FastifyInstance } from 'fastify';
 import { prisma } from '@afrohit/db';
+import { PLAN_CREDIT_GRANT_CENTS } from '@afrohit/shared';
 import { verifyWebhookSignature, type WebhookHeaders } from '../lib/paypal';
 import { creditReceiptEmail, sendEmail } from '../lib/email';
 import { track } from '../lib/observability';
@@ -79,8 +80,9 @@ export default async function webhooks(app: FastifyInstance) {
           break;
         }
         case 'PAYMENT.SALE.COMPLETED': {
-          // Recurring subscription payments. We don't need to do anything here;
-          // logging is enough since the plan is already active.
+          // Recurring subscription payment → grant this cycle's credit allowance
+          // (audit: previously a no-op, so month 2+ delivered nothing).
+          await grantRecurring(event);
           req.log.info({ eventId: event.id }, 'paypal recurring sale completed');
           break;
         }
@@ -144,22 +146,53 @@ async function activateSubscription(event: PaypalEvent) {
   if (!workspaceId || !r.plan_id || !r.id) return;
   const plan = mapPlanIdToTier(r.plan_id);
   if (!plan) return;
-  // One transaction: the plan flip and its idempotency stamp commit together.
+  // GRANT THE TIER'S CREDITS (audit DANGEROUS): activation used to write a
+  // delta:0 ledger row — a paying PRO/STUDIO customer received ZERO capability.
+  // Now the plan flip, the credit grant, and the idempotency stamp commit as one
+  // transaction (paypalEventId unique = replay-safe: a re-delivered webhook
+  // collides on the ledger row and grants nothing twice).
+  const grant = PLAN_CREDIT_GRANT_CENTS[plan] ?? 0;
   await prisma.$transaction([
     prisma.workspace.update({
       where: { id: workspaceId },
-      data: { plan, paypalSubscriptionId: r.id },
+      data: { plan, paypalSubscriptionId: r.id, creditsCents: { increment: grant } },
     }),
     prisma.creditLedger.create({
       data: {
         workspaceId,
-        delta: 0,
+        delta: grant,
         reason: 'paypal_subscription_activated',
         paypalEventId: event.id,
-        meta: { subscriptionId: r.id, planId: r.plan_id } as never,
+        meta: { subscriptionId: r.id, planId: r.plan_id, grant } as never,
       },
     }),
   ]);
+}
+
+/** Grant a subscription cycle's credit allowance. Idempotent via the unique
+ *  paypalEventId — a re-delivered webhook grants nothing twice. */
+async function grantRecurring(event: PaypalEvent) {
+  const r = event.resource as { billing_agreement_id?: string; custom_id?: string };
+  const subId = r.billing_agreement_id;
+  const ws = subId
+    ? await prisma.workspace.findUnique({ where: { paypalSubscriptionId: subId } })
+    : r.custom_id
+      ? await prisma.workspace.findUnique({ where: { id: r.custom_id } })
+      : null;
+  if (!ws) return;
+  const grant = PLAN_CREDIT_GRANT_CENTS[ws.plan as keyof typeof PLAN_CREDIT_GRANT_CENTS] ?? 0;
+  if (!grant) return;
+  try {
+    await prisma.$transaction([
+      prisma.workspace.update({ where: { id: ws.id }, data: { creditsCents: { increment: grant } } }),
+      prisma.creditLedger.create({
+        data: { workspaceId: ws.id, delta: grant, reason: 'paypal_subscription_renewal', paypalEventId: event.id, meta: { grant } as never },
+      }),
+    ]);
+  } catch (e) {
+    // Unique paypalEventId collision = already granted for this delivery. Fine.
+    if ((e as { code?: string }).code !== 'P2002') throw e;
+  }
 }
 
 async function downgradeSubscription(event: PaypalEvent) {

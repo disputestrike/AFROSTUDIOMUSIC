@@ -1,7 +1,24 @@
 import fp from 'fastify-plugin';
 import { prisma } from '@afrohit/db';
-import { costOf, type CreditKey } from '@afrohit/shared';
+import { costOf, PLAN_LIMITS, type CreditKey } from '@afrohit/shared';
 import { isInternalMode } from './auth';
+
+// Map a credit action → the PLAN_LIMITS monthly category it counts against, and
+// the ledger reasons that make up that category's usage. Keys not listed are
+// uncapped (charged on balance only).
+const LIMIT_CATEGORY: Partial<Record<CreditKey, string>> = {
+  full_song_demo: 'monthlyDemoSongs',
+  beat_idea_short_30s: 'monthlyDemoSongs',
+  voice_render_30s: 'monthlyVoiceRenders',
+  voice_render_full: 'monthlyVoiceRenders',
+  cover_art_low: 'coverArt',
+  cover_art_high: 'coverArt',
+};
+const CATEGORY_REASONS: Record<string, string[]> = {
+  monthlyDemoSongs: ['full_song_demo', 'beat_idea_short_30s'],
+  monthlyVoiceRenders: ['voice_render_30s', 'voice_render_full'],
+  coverArt: ['cover_art_low', 'cover_art_high'],
+};
 
 declare module 'fastify' {
   interface FastifyInstance {
@@ -104,6 +121,26 @@ export const creditsPlugin = fp(async function (app) {
         throw e;
       }
       return { ok: true as const, balance: Number.MAX_SAFE_INTEGER };
+    }
+    // PLAN_LIMITS enforcement (audit DEAD: the table was advertised but never
+    // enforced). For real tenants, refuse an action once this month's usage in its
+    // category exceeds the tier's hard cap (cap × 1.2 tolerance). Internal/owner
+    // mode returned above, so this only gates paying multi-tenant workspaces.
+    const category = LIMIT_CATEGORY[opts.key];
+    if (category) {
+      const ws = await prisma.workspace.findUnique({ where: { id: opts.workspaceId }, select: { plan: true } });
+      const limits = PLAN_LIMITS[(ws?.plan ?? 'STARTER') as keyof typeof PLAN_LIMITS];
+      const cap = limits ? (limits as Record<string, number>)[category] : undefined;
+      if (typeof cap === 'number' && cap >= 0) {
+        const monthStart = new Date();
+        monthStart.setUTCDate(1); monthStart.setUTCHours(0, 0, 0, 0);
+        const used = await prisma.creditLedger.count({
+          where: { workspaceId: opts.workspaceId, createdAt: { gte: monthStart }, reason: { in: CATEGORY_REASONS[category] } },
+        });
+        if (used >= Math.ceil(cap * 1.2)) {
+          return { ok: false as const, needed: costOf(opts.key) * (opts.multiplier ?? 1), balance: 0, reason: `plan_limit:${category}` };
+        }
+      }
     }
     const cost = costOf(opts.key) * (opts.multiplier ?? 1);
     return prisma.$transaction(async (tx) => {

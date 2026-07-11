@@ -152,3 +152,17 @@ export const PLAN_LIMITS: Record<
   PRO: { seats: 3, monthlyDemoSongs: 60, monthlyVoiceRenders: 100, monthlyVideoSeconds: 90, coverArt: 100 },
   STUDIO: { seats: 10, monthlyDemoSongs: 300, monthlyVoiceRenders: 500, monthlyVideoSeconds: 600, coverArt: 1000 },
 };
+
+/**
+ * Monthly credit allowance (in 1/100-cent micro-cents) granted when a
+ * subscription activates AND on each recurring PAYMENT.SALE.COMPLETED. Sized to
+ * the tier's promised demo-song volume at the full_song_demo price (75_000) plus
+ * a cover-art base, so a paying customer actually RECEIVES the capability their
+ * plan advertises (audit DANGEROUS: activation used to grant delta:0 = nothing).
+ */
+export const PLAN_CREDIT_GRANT_CENTS: Record<PlanTier, number> = {
+  STARTER: 30_000, // ~5 cover arts, no demo songs
+  CREATOR: 20 * 75_000 + 30_000, // ~20 full songs + art
+  PRO: 60 * 75_000 + 100_000, // ~60 full songs + art
+  STUDIO: 300 * 75_000 + 1_000_000, // ~300 full songs + art
+};
