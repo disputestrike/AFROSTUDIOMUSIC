@@ -39,6 +39,7 @@ const P: Record<string, Prior> = {
   // clap-and-shekere-driven with organ-led harmony.
   worship: { bpm: 72, four: 0.3, log: 0.05, swing: 0.5, shaker: 0.25, keys: 0.9, kick: 0.3, clap: 0.35, sync: 0.35 },
   praise: { bpm: 122, four: 0.55, log: 0.1, swing: 0.56, shaker: 0.7, keys: 0.8, kick: 0.65, clap: 0.75, sync: 0.6 },
+  spiritual: { bpm: 78, four: 0.25, log: 0.05, swing: 0.55, shaker: 0.45, keys: 0.7, kick: 0.25, clap: 0.2, sync: 0.45 },
   // African continental lanes (published production facts, uncopyrightable).
   afro_soul: { bpm: 90, four: 0.4, log: 0.1, swing: 0.54, shaker: 0.45, keys: 0.75, sync: 0.5 },
   alte: { bpm: 96, four: 0.4, log: 0.1, swing: 0.54, shaker: 0.4, keys: 0.65, sync: 0.52 },

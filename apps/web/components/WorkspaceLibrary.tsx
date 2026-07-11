@@ -20,7 +20,7 @@ export interface LibSong {
   createdAt: string;
 }
 
-export default function WorkspaceLibrary({ onPlay, refreshKey }: { onPlay: (s: { title: string; url: string }) => void; refreshKey?: number }) {
+export default function WorkspaceLibrary({ onPlay, refreshKey, playingUrl }: { onPlay: (s: { title: string; url: string }) => void; refreshKey?: number; playingUrl?: string | null }) {
   const api = useApi();
   const router = useRouter();
   const [songs, setSongs] = useState<LibSong[]>([]);
@@ -61,8 +61,12 @@ export default function WorkspaceLibrary({ onPlay, refreshKey }: { onPlay: (s: {
               <div className="truncate text-xs text-slate-500 capitalize">{s.genre.replace(/_/g, ' ')}{s.hitScore != null ? ` · ${s.hitScore}/100` : ''}</div>
             </div>
             {s.audioUrl ? (
-              <button onClick={() => onPlay({ title: s.title, url: s.audioUrl! })} title="Play"
-                className="shrink-0 rounded-full bg-brand-gradient px-3 py-1.5 text-xs font-semibold text-ink shadow-glow">▶</button>
+              // Toggle: playing this row shows ⏹ and clicking STOPS it (the
+              // parent clears the console player) — play must always be stoppable.
+              <button onClick={() => onPlay({ title: s.title, url: s.audioUrl! })} title={playingUrl === s.audioUrl ? 'Stop' : 'Play'}
+                className={`shrink-0 rounded-full px-3 py-1.5 text-xs font-semibold ${playingUrl === s.audioUrl ? 'border border-white/25 text-slate-200' : 'bg-brand-gradient text-ink shadow-glow'}`}>
+                {playingUrl === s.audioUrl ? '⏹' : '▶'}
+              </button>
             ) : (
               <span className="shrink-0 text-[10px] text-slate-500">cooking…</span>
             )}

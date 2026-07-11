@@ -23,7 +23,7 @@ const GENRES = [
   { value: 'street_pop', label: 'Street-pop / Zanku' }, { value: 'afro_rnb', label: 'Afro R&B' },
   { value: 'afro_pop', label: 'Afropop' }, { value: 'afro_soul', label: 'Afro-soul' }, { value: 'highlife', label: 'Highlife' },
   { value: 'gospel', label: 'Gospel' }, { value: 'afro_gospel', label: 'Afro-gospel' },
-  { value: 'worship', label: 'Worship' }, { value: 'praise', label: 'Praise' },
+  { value: 'worship', label: 'Worship' }, { value: 'praise', label: 'Praise' }, { value: 'spiritual', label: 'Spiritual' },
   { value: 'hip_hop', label: 'Hip-hop / Rap' }, { value: 'reggae', label: 'Reggae' }, { value: 'alte', label: 'Alté' },
   // African continental
   { value: 'gqom', label: 'Gqom' }, { value: 'kwaito', label: 'Kwaito' }, { value: 'afro_house', label: 'Afro house' },
@@ -49,7 +49,16 @@ const LANGS = [
   { value: 'ln', label: 'Lingala' }, { value: 'wo', label: 'Wolof' }, { value: 'bm', label: 'Bambara' }, { value: 'nouchi', label: 'Nouchi (Ivorian street)' },
   { value: 'es', label: 'Spanish' }, { value: 'ar', label: 'Arabic' }, { value: 'ht', label: 'Haitian Creole' }, { value: 'kriolu', label: 'Kriolu (Cape Verde)' }, { value: 'am', label: 'Amharic' }, { value: 'patois', label: 'Jamaican Patois' },
 ];
-const MOODS = ['confident', 'love', 'heartbreak', 'party', 'vibey', 'spiritual', 'worship', 'street', 'hustle', 'nostalgic', 'sexy', 'triumphant', 'luxury', 'lifestyle', 'family', 'gratitude', 'summer', 'motivation', 'freedom'];
+// MOODS — the emotional registers a real producer actually reaches for (the
+// groove/feel vocabulary, not random adjectives).
+const MOODS = [
+  'confident', 'love', 'heartbreak', 'party', 'groovy', 'joyful', 'uplifting',
+  'praise', 'worship', 'spiritual', 'prayerful', 'meditation',
+  'chill', 'laid-back', 'hypnotic', 'bouncy', 'energetic', 'anthemic',
+  'romantic', 'intimate', 'sexy', 'nostalgic', 'melancholy', 'dark',
+  'street', 'hustle', 'triumphant', 'luxury', 'lifestyle', 'family',
+  'gratitude', 'summer', 'motivation', 'freedom',
+];
 const STEPS = ['Setting up your session', 'Writing hooks + A&R picking the best', 'Writing the lyrics', 'Singing & producing your song'];
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -96,10 +105,18 @@ export default function CreatePage() {
     let saved: { dropJobId?: string; renderJobId?: string; projectId?: string; title?: string; hook?: string; score?: number | null; at?: number } | null = null;
     try { saved = JSON.parse(sessionStorage.getItem(PRODUCE_KEY) ?? 'null'); } catch { saved = null; }
     if (!saved || !(saved.dropJobId || saved.renderJobId) || Date.now() - (saved.at ?? 0) > 30 * 60 * 1000) {
-      // Nothing valid to resume (or too old): CLEAR the sticky state + URL so a
-      // stale ?resume=1 can never leave the page stuck on "creating music".
-      clearProduce();
-      if (phase === 'producing') setPhase('form');
+      // Nothing valid to resume (or too old): clear ONLY the sticky state and the
+      // resume marker. NEVER wipe the whole query string here — that destroyed
+      // Zap/Listen intent links (?produce=1&genre=...) before the prefill effect
+      // could read them, breaking "Make in this lane" entirely.
+      try { sessionStorage.removeItem(PRODUCE_KEY); } catch { /* noop */ }
+      const q = new URLSearchParams(window.location.search);
+      if (q.get('resume') === '1') {
+        q.delete('resume');
+        window.history.replaceState(null, '', q.toString() ? `${window.location.pathname}?${q}` : window.location.pathname);
+      }
+      // Only fall back to the form when there is NO auto-create intent pending.
+      if (phase === 'producing' && q.get('produce') !== '1') setPhase('form');
       return;
     }
     setPhase('producing'); setStepIdx(saved.renderJobId ? 3 : 1);
@@ -190,6 +207,7 @@ export default function CreatePage() {
   // button. New renders land here; library rows play here.
   const [nowPlaying, setNowPlaying] = useState<{ title: string; url: string } | null>(null);
   const [libRefresh, setLibRefresh] = useState(0);
+  const playerRef = useRef<HTMLAudioElement | null>(null);
 
   // Prefill from links like /create?genre=...&mood=...&bpm=...&vibe=...&produce=1
   // e.g. "Make a song that outdoes this" after learning a lyric on /listen.
@@ -691,7 +709,7 @@ export default function CreatePage() {
           <button key={l.value} onClick={() => toggleLang(l.value)} className={`rounded-full px-3.5 py-1.5 text-sm ${langs.includes(l.value) ? 'bg-white/15 text-white shadow-[inset_0_0_0_1px_rgba(226,62,140,.4)]' : 'border border-white/10 text-slate-400 hover:bg-white/5'}`}>{l.label}</button>
         ))}</div>
       </div>
-      <label className="mb-1 block text-sm text-slate-300">Song name <span className="text-slate-500">(optional — leave blank and the studio names it from the vibe)</span></label>
+      <label className="mb-1 mt-6 block text-sm text-slate-300">Song name <span className="text-slate-500">(optional — leave blank and the studio names it from the vibe)</span></label>
       <input value={songName} onChange={(e) => setSongName(e.target.value)} maxLength={80} placeholder="e.g. Midnight in Lekki" className="mb-2 w-full rounded-xl border border-slate-700 bg-slate-950 px-4 py-3 text-slate-100 placeholder:text-slate-600" />
 {songName.trim() && (
   <label className="mb-5 flex items-center gap-2 text-xs text-slate-400">
@@ -784,15 +802,26 @@ export default function CreatePage() {
               <div className="text-xs text-slate-500">Now playing</div>
               <div className="truncate font-display text-lg">{nowPlaying.title}</div>
             </div>
-            <button onClick={() => setNowPlaying(null)} className="ml-3 shrink-0 text-xs text-slate-500 hover:text-slate-300">✕</button>
+            <button
+              onClick={() => { playerRef.current?.pause(); setNowPlaying(null); }}
+              className="ml-3 shrink-0 rounded-full border border-white/15 px-3 py-1 text-xs text-slate-300 hover:bg-white/10"
+            >
+              ⏹ Stop
+            </button>
           </div>
-          <audio controls autoPlay src={nowPlaying.url} className="mt-3 w-full" />
+          <audio ref={playerRef} controls autoPlay src={nowPlaying.url} className="mt-3 w-full" />
         </div>
       )}
     </div>
 
-    <div className="mt-8 lg:mt-0">
-      <WorkspaceLibrary onPlay={(s) => setNowPlaying(s)} refreshKey={libRefresh} />
+    {/* Independent column: sticky with its OWN scrollbar so browsing the
+        library never scrolls the create form (and vice versa). */}
+    <div className="mt-8 lg:sticky lg:top-6 lg:mt-0 lg:max-h-[calc(100vh-3rem)] lg:overflow-y-auto lg:pr-1">
+      <WorkspaceLibrary
+        playingUrl={nowPlaying?.url ?? null}
+        onPlay={(s) => setNowPlaying((cur) => (cur?.url === s.url ? null : s))}
+        refreshKey={libRefresh}
+      />
     </div>
     </div>
   );

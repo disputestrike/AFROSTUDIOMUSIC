@@ -10759,6 +10759,46 @@ export const GENRE_KITS: Record<string, GenreKit> = {
       "NO log drum, NO dembow, NO trap half-time"
     ],
     "engineTags": ["african praise", "nigerian gospel praise", "122 bpm joyful dance", "gospel organ stabs", "shekere 16ths and congas", "clap-driven backbeat", "call and response vocals", "praise-break drum rolls", "bright major key celebration"]
+  },
+  "spiritual": {
+    "genre": "spiritual",
+    "displayName": "Spiritual (Meditative African)",
+    "origin": "Meditative African spiritual music — ancestral, prayerful and healing: kalimba/mbira patterns, earthy hand percussion, hums and chants over deep ambient warmth.",
+    "bpmLo": 66, "bpmHi": 92, "typicalBpm": 78,
+    "swing": "light",
+    "fourOnFloor": false,
+    "requiredRoles": ["kalimba", "warm_pad", "udu", "shaker", "sub_bass", "humming", "lead_vocal"],
+    "optionalRoles": ["mbira", "kora", "balafon", "djembe", "conga", "woodblock", "flute", "pan_flute", "string_pad", "choir_pad", "piano", "chant", "call_response", "nature_ambience", "riser", "soft_kick", "bass_guitar", "marimba"],
+    "signatureRoles": ["kalimba", "udu", "humming", "warm_pad"],
+    "forbiddenTraits": [
+      "club four-on-the-floor kick",
+      "log drum bassline (amapiano)",
+      "trap hi-hat rolls or 808 glides",
+      "party chant energy (this lane is inward, prayerful, meditative)",
+      "dense busy drums crowding the stillness",
+      "dembow/reggaeton bounce"
+    ],
+    "grooveRules": "Slow, breathing and cyclical (66-92 BPM), light swing. Kalimba or mbira carries a hypnotic repeating pattern; udu and soft shaker keep an earthy heartbeat pulse — sparse, never busy. Deep warm sub roots the drone. Hums, chants and call-and-response float over long ambient pads. Space IS the music: silence between phrases, natural room, gentle swells instead of drops. Builds by adding a single texture at a time.",
+    "sectionMap": [
+      { "section": "intro", "materials": ["warm_pad", "kalimba", "nature_ambience"] },
+      { "section": "verse", "materials": ["kalimba", "udu", "shaker", "sub_bass", "warm_pad"] },
+      { "section": "pre-hook", "materials": ["kalimba", "udu", "shaker", "sub_bass", "warm_pad", "humming"] },
+      { "section": "hook", "materials": ["kalimba", "udu", "shaker", "conga", "sub_bass", "warm_pad", "choir_pad", "humming", "call_response"] },
+      { "section": "bridge", "materials": ["warm_pad", "flute", "humming"] },
+      { "section": "final-hook", "materials": ["kalimba", "mbira", "udu", "shaker", "conga", "sub_bass", "warm_pad", "choir_pad", "chant", "call_response"] },
+      { "section": "outro", "materials": ["warm_pad", "kalimba", "humming", "nature_ambience"] }
+    ],
+    "fillCadenceBars": 32,
+    "mixPriorities": ["lead_vocal", "kalimba", "humming", "sub_bass", "udu", "warm_pad", "shaker", "choir_pad", "flute"],
+    "qualityChecks": [
+      "tempo sits 66-92 BPM, breathing feel",
+      "kalimba/mbira cyclical pattern clearly present",
+      "earthy udu/shaker pulse — sparse, never busy",
+      "hums or chants present as texture",
+      "long warm pads and real space between phrases",
+      "NO club kick, NO log drum, NO trap hats"
+    ],
+    "engineTags": ["meditative african spiritual", "78 bpm breathing groove", "hypnotic kalimba pattern", "earthy udu clay-pot pulse", "deep warm sub drone", "soft hums and chants", "long ambient pads", "sparse sacred space"]
   }
 };
 

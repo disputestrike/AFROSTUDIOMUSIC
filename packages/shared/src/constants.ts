@@ -15,6 +15,7 @@ export const GENRES = [
   'afro_gospel',
   'worship',
   'praise',
+  'spiritual',
   'afro_pop',
   'afro_soul',
   'hip_hop',
