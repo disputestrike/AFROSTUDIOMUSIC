@@ -64,20 +64,20 @@ async function getOrCreateDefaultIdentity(): Promise<{ userId: string; workspace
 export const authPlugin = fp(async function (app: FastifyInstance) {
   app.decorateRequest('auth', undefined);
 
-  // Loud safety warning: internal mode NEVER rejects a request, so if this
-  // instance is reachable from the public internet, anyone gets the owner's
-  // workspace + spends the owner's provider budget. Keep it private until real
-  // auth (Phase 2) exists. (Warn, don't crash — the operator runs this on purpose.)
-  // HARD-FAIL, don't just warn (audit P0 denial-of-wallet + takeover): in
-  // production, unauthenticated internal mode means anyone who reaches the URL is
-  // the owner and can drain the provider budget. Refuse to boot unless the
-  // operator consciously accepts it (they've put a network gate in front) via
-  // ALLOW_PUBLIC_INTERNAL=1. This makes the SAFE state the default.
-  if (isInternalMode() && process.env.NODE_ENV === 'production' && process.env.ALLOW_PUBLIC_INTERNAL !== '1') {
-    throw new Error(
-      'REFUSING TO BOOT: AUTH_MODE=internal in production authenticates NO ONE (anyone becomes the owner and can spend your provider keys). ' +
-      'Put a network gate/proxy in front and set ALLOW_PUBLIC_INTERNAL=1 to accept the risk, or implement real auth. ' +
-      'Also set ENFORCE_GENERATION_CAP=1 with sane MAX_DAILY_GENERATIONS before any public exposure.'
+  // Internal mode NEVER rejects a request, so if this instance is reachable from
+  // the public internet, anyone gets the owner's workspace + spends the owner's
+  // provider budget. Benjamin runs single-owner internal mode in production ON
+  // PURPOSE, so this WARNS by default (never crashes his own deploy). Only when
+  // he opts INTO multi-tenant hardening (REQUIRE_AUTH=1) do we refuse to boot in
+  // the unsafe internal+prod combination.
+  if (isInternalMode() && process.env.NODE_ENV === 'production') {
+    if (process.env.REQUIRE_AUTH === '1') {
+      throw new Error(
+        'REFUSING TO BOOT: REQUIRE_AUTH=1 but AUTH_MODE=internal authenticates no one. Set AUTH_MODE to a real auth provider or unset REQUIRE_AUTH for single-owner mode.'
+      );
+    }
+    app.log.warn(
+      '⚠️  AUTH_MODE=internal in production — the API does NOT authenticate. Safe only behind a network gate/allowlist. Before public multi-tenant use: implement real auth + set ENFORCE_GENERATION_CAP=1.'
     );
   }
 
