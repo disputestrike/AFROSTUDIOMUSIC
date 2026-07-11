@@ -20,11 +20,15 @@ async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
   // sending the operator secret on every call needlessly exposed it (audit).
   const needsAdmin = path.startsWith('/admin') || path.startsWith('/debug');
   const adminKey = needsAdmin && typeof localStorage !== 'undefined' ? localStorage.getItem('afrohit.adminKey') : null;
+  // Multi-tenant session (AUTH_MODE=jwt): attach the bearer token when signed
+  // in. Internal mode ignores it — harmless either way.
+  const token = typeof localStorage !== 'undefined' ? localStorage.getItem('afrohit.token') : null;
   const res = await fetch(`${API_URL}/api/v1${path}`, {
     ...init,
     headers: {
       ...(hasBody ? { 'content-type': 'application/json' } : {}),
       ...(adminKey ? { 'x-admin-secret': adminKey } : {}),
+      ...(token ? { authorization: `Bearer ${token}` } : {}),
       ...(init?.headers ?? {}),
     },
     cache: 'no-store',

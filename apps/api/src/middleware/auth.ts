@@ -114,6 +114,9 @@ export const authPlugin = fp(async function (app: FastifyInstance) {
     // Public anon endpoints (share ingest + public redirect)
     if (url.startsWith('/api/v1/share/events')) return;
     if (url.startsWith('/api/v1/share/redirect')) return;
+    // Account creation/login are definitionally unauthenticated (/auth/me is NOT
+    // exempt — it requires the resolved identity).
+    if (url.startsWith('/api/v1/auth/signup') || url.startsWith('/api/v1/auth/login')) return;
 
     // Service-to-service (worker → API)
     const svc = req.headers['x-internal-secret'];
