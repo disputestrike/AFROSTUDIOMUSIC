@@ -12,10 +12,27 @@ export const GENRES = [
   'street_pop',
   'afro_rnb',
   'gospel',
+  'afro_gospel',
+  'worship',
+  'praise',
   'afro_pop',
+  'afro_soul',
   'hip_hop',
   'highlife',
   'reggae',
+  'alte',
+  // African continental — each has a full producer kit (genre-kits.ts)
+  'gqom',
+  'kwaito',
+  'afro_house',
+  'bongo_flava',
+  'azonto',
+  'coupe_decale',
+  'ndombolo',
+  'soukous',
+  'fuji',
+  'juju',
+  'apala',
   // Global — all-genre, each with full Sound DNA (packages/ai/src/sound-dna/global-genres.ts)
   'pop',
   'rnb',
@@ -29,6 +46,10 @@ export const GENRES = [
   'country',
   'rock',
   'soul',
+  'jazz',
+  'funk',
+  'blues',
+  'lofi',
 ] as const;
 export type Genre = (typeof GENRES)[number];
 

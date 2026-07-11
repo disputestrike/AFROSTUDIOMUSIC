@@ -35,6 +35,28 @@ const P: Record<string, Prior> = {
   edm: { bpm: 128, four: 0.95, log: 0.15, swing: 0.5, shaker: 0.5, keys: 0.55, sync: 0.42 },
   country: { bpm: 100, four: 0.45, log: 0.05, swing: 0.5, shaker: 0.35, keys: 0.6, sync: 0.4 },
   rock: { bpm: 120, four: 0.5, log: 0.05, swing: 0.5, shaker: 0.3, keys: 0.5, sync: 0.4 },
+  // Church lanes — worship slow/keys-led/soft drums; praise fast/joyful/
+  // clap-and-shekere-driven with organ-led harmony.
+  worship: { bpm: 72, four: 0.3, log: 0.05, swing: 0.5, shaker: 0.25, keys: 0.9, kick: 0.3, clap: 0.35, sync: 0.35 },
+  praise: { bpm: 122, four: 0.55, log: 0.1, swing: 0.56, shaker: 0.7, keys: 0.8, kick: 0.65, clap: 0.75, sync: 0.6 },
+  // African continental lanes (published production facts, uncopyrightable).
+  afro_soul: { bpm: 90, four: 0.4, log: 0.1, swing: 0.54, shaker: 0.45, keys: 0.75, sync: 0.5 },
+  alte: { bpm: 96, four: 0.4, log: 0.1, swing: 0.54, shaker: 0.4, keys: 0.65, sync: 0.52 },
+  gqom: { bpm: 124, four: 0.7, log: 0.3, swing: 0.5, shaker: 0.45, keys: 0.25, kick: 0.75, sync: 0.6 },
+  kwaito: { bpm: 105, four: 0.75, log: 0.35, swing: 0.54, shaker: 0.5, keys: 0.55, sync: 0.55 },
+  afro_house: { bpm: 122, four: 0.95, log: 0.35, swing: 0.52, shaker: 0.65, keys: 0.6, kick: 0.85, sync: 0.55 },
+  bongo_flava: { bpm: 100, four: 0.5, log: 0.1, swing: 0.54, shaker: 0.5, keys: 0.65, sync: 0.55 },
+  azonto: { bpm: 126, four: 0.55, log: 0.15, swing: 0.55, shaker: 0.6, keys: 0.5, kick: 0.65, sync: 0.62 },
+  coupe_decale: { bpm: 128, four: 0.6, log: 0.1, swing: 0.54, shaker: 0.6, keys: 0.5, kick: 0.7, sync: 0.6 },
+  ndombolo: { bpm: 132, four: 0.55, log: 0.05, swing: 0.55, shaker: 0.55, keys: 0.6, sync: 0.65 },
+  soukous: { bpm: 120, four: 0.5, log: 0.05, swing: 0.55, shaker: 0.5, keys: 0.65, sync: 0.6 },
+  fuji: { bpm: 110, four: 0.4, log: 0.1, swing: 0.58, shaker: 0.65, keys: 0.3, sync: 0.7 },
+  juju: { bpm: 104, four: 0.4, log: 0.05, swing: 0.57, shaker: 0.6, keys: 0.55, sync: 0.62 },
+  apala: { bpm: 96, four: 0.35, log: 0.1, swing: 0.58, shaker: 0.65, keys: 0.25, sync: 0.7 },
+  jazz: { bpm: 110, four: 0.35, log: 0.03, swing: 0.62, shaker: 0.3, keys: 0.85, sync: 0.6 },
+  funk: { bpm: 104, four: 0.5, log: 0.05, swing: 0.56, shaker: 0.45, keys: 0.6, clap: 0.6, sync: 0.65 },
+  blues: { bpm: 84, four: 0.4, log: 0.03, swing: 0.6, shaker: 0.3, keys: 0.7, sync: 0.5 },
+  lofi: { bpm: 82, four: 0.4, log: 0.05, swing: 0.56, shaker: 0.35, keys: 0.75, sync: 0.45 },
 };
 
 const M = <T,>(v: T) => ({ value: v, source: 'measured', confidence: 0.5, method: 'expert-prior' });

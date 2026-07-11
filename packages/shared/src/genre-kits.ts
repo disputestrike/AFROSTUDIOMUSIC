@@ -10677,6 +10677,88 @@ export const GENRE_KITS: Record<string, GenreKit> = {
       "sparse hard-hitting beat",
       "autotune rap vocal"
     ]
+  },
+  "worship": {
+    "genre": "worship",
+    "displayName": "Worship (Contemporary/African)",
+    "origin": "Church worship — contemporary Christian and African gospel worship: slow, reverent, building from intimacy to a lifted congregation.",
+    "bpmLo": 62, "bpmHi": 82, "typicalBpm": 72,
+    "swing": "straight",
+    "fourOnFloor": false,
+    "requiredRoles": ["piano", "gospel_organ", "warm_pad", "choir_pad", "soft_kick", "snare", "closed_hat", "bass_guitar", "lead_vocal", "choir"],
+    "optionalRoles": ["rhodes", "string_pad", "strings_line", "clean_guitar_riff", "lead_guitar", "shaker", "tom", "crash", "sub_bass", "humming", "call_response", "harmony_vocal", "riser", "reverse_cymbal", "violin_line", "flute"],
+    "signatureRoles": ["piano", "gospel_organ", "choir_pad", "warm_pad"],
+    "forbiddenTraits": [
+      "club four-on-the-floor kick (this is worship, not house)",
+      "log drum bassline (amapiano)",
+      "trap hi-hat rolls or sliding 808s",
+      "dembow/reggaeton bounce",
+      "party chant energy over the reverent build",
+      "dense busy percussion drowning the vocal space"
+    ],
+    "grooveRules": "Slow and spacious (62-82 BPM), straight feel. The PIANO leads — flowing arpeggios and open voicings; gospel organ swells under it. Drums enter LATE and soft (rim/soft kick, gentle hats), building only as the song lifts. Bass is long, warm and rooted. Huge space for the lead vocal and choir — the mix breathes; nothing competes with the voice. Dynamics tell the story: intimate verse, swelling pre, LIFTED chorus with full choir, then a stripped tag.",
+    "sectionMap": [
+      { "section": "intro", "materials": ["piano", "warm_pad"] },
+      { "section": "verse", "materials": ["piano", "warm_pad", "bass_guitar", "soft_kick", "closed_hat"] },
+      { "section": "pre-hook", "materials": ["piano", "gospel_organ", "warm_pad", "bass_guitar", "snare", "riser"] },
+      { "section": "hook", "materials": ["piano", "gospel_organ", "choir_pad", "string_pad", "bass_guitar", "soft_kick", "snare", "closed_hat", "crash"] },
+      { "section": "bridge", "materials": ["piano", "choir_pad", "humming"] },
+      { "section": "final-hook", "materials": ["piano", "gospel_organ", "choir_pad", "string_pad", "strings_line", "bass_guitar", "soft_kick", "snare", "closed_hat", "crash", "call_response"] },
+      { "section": "outro", "materials": ["piano", "warm_pad", "humming"] }
+    ],
+    "fillCadenceBars": 16,
+    "mixPriorities": ["lead_vocal", "piano", "choir", "gospel_organ", "bass_guitar", "soft_kick", "warm_pad", "string_pad", "closed_hat"],
+    "qualityChecks": [
+      "tempo sits 62-82 BPM, straight feel",
+      "piano is the lead instrument (arpeggios/open voicings audible)",
+      "gospel organ swells present under the lift",
+      "drums soft and late-entering — never a club kick",
+      "big vocal space — nothing masks 2-4kHz",
+      "dynamic build: intimate verse to lifted chorus",
+      "NO log drum, NO trap hats, NO dembow"
+    ],
+    "engineTags": ["worship", "contemporary gospel worship", "72 bpm slow build", "flowing piano arpeggios", "gospel organ swells", "warm choir pads", "soft late-entering drums", "reverent and lifted", "huge vocal space"]
+  },
+  "praise": {
+    "genre": "praise",
+    "displayName": "Praise (African Praise-Break)",
+    "origin": "African church praise — the fast, joyful, danceable half of gospel: Nigerian/Ghanaian praise medleys and praise-break energy.",
+    "bpmLo": 112, "bpmHi": 132, "typicalBpm": 122,
+    "swing": "light",
+    "fourOnFloor": false,
+    "requiredRoles": ["kick", "snare", "clap", "closed_hat", "shekere", "conga", "bass_guitar", "piano", "gospel_organ", "lead_vocal", "call_response"],
+    "optionalRoles": ["talking_drum", "cowbell", "agogo", "shaker", "open_hat", "tom_fill", "drum_roll", "highlife_guitar", "clean_guitar_riff", "brass_section", "trumpet", "sax", "choir", "gospel_choir", "crowd_chant", "chant", "crash", "sub_bass"],
+    "signatureRoles": ["gospel_organ", "shekere", "call_response", "clap"],
+    "forbiddenTraits": [
+      "log drum bassline (amapiano, not praise)",
+      "dembow/reggaeton pattern",
+      "trap half-time feel or sliding 808s",
+      "dark minor moodiness (praise is JOY — major and bright)",
+      "slow worship tempo (that is the worship lane)"
+    ],
+    "grooveRules": "Fast and JOYFUL (112-132 BPM), light swing. Driving syncopated kick with claps + snare on the backbeat, shekere running bright 16ths, congas and talking drum answering in the gaps. Gospel organ stabs and runs lead the harmony with bright major-key piano; bass walks and bounces. Call-and-response everywhere — leader calls, congregation answers. Praise-break lifts: drum rolls into every chorus, brass punches on the peaks. It must make a congregation DANCE.",
+    "sectionMap": [
+      { "section": "intro", "materials": ["gospel_organ", "shekere", "clap", "call_response"] },
+      { "section": "verse", "materials": ["kick", "snare", "clap", "closed_hat", "shekere", "conga", "bass_guitar", "piano"] },
+      { "section": "pre-hook", "materials": ["kick", "snare", "clap", "closed_hat", "shekere", "conga", "bass_guitar", "gospel_organ", "drum_roll"] },
+      { "section": "hook", "materials": ["kick", "snare", "clap", "closed_hat", "open_hat", "shekere", "conga", "talking_drum", "bass_guitar", "piano", "gospel_organ", "brass_section", "call_response", "crash"] },
+      { "section": "bridge", "materials": ["gospel_organ", "clap", "shekere", "call_response", "crowd_chant"] },
+      { "section": "final-hook", "materials": ["kick", "snare", "clap", "closed_hat", "open_hat", "shekere", "conga", "talking_drum", "cowbell", "bass_guitar", "piano", "gospel_organ", "brass_section", "gospel_choir", "call_response", "crowd_chant", "crash"] },
+      { "section": "outro", "materials": ["gospel_organ", "clap", "shekere", "crowd_chant"] }
+    ],
+    "fillCadenceBars": 8,
+    "mixPriorities": ["lead_vocal", "kick", "bass_guitar", "clap", "snare", "gospel_organ", "shekere", "call_response", "conga", "piano", "brass_section"],
+    "qualityChecks": [
+      "tempo sits 112-132 BPM with light swing",
+      "gospel organ stabs/runs clearly present",
+      "shekere/shaker 16th motion drives throughout",
+      "claps + backbeat land strong",
+      "call-and-response between lead and answer vocals",
+      "bright MAJOR-key joy — never dark or moody",
+      "drum roll lifts into every chorus",
+      "NO log drum, NO dembow, NO trap half-time"
+    ],
+    "engineTags": ["african praise", "nigerian gospel praise", "122 bpm joyful dance", "gospel organ stabs", "shekere 16ths and congas", "clap-driven backbeat", "call and response vocals", "praise-break drum rolls", "bright major key celebration"]
   }
 };
 

@@ -175,13 +175,15 @@ export async function processAssembleBeat(p: AssemblePayload) {
     const planned: AssemblySection[] = (p.sections ?? [])
       .map((s) => ({ name: s.name, bars: s.bars, layerIdx: idx(s.roles) }))
       .filter((s) => s.layerIdx.length > 0 && s.bars >= 2);
+    // OWNER LAW: when a bucket comes up empty the fallback is ALWAYS the full
+    // stack (`all`) — a thin one-loop section is never acceptable.
     const sections: AssemblySection[] = planned.length >= 3 ? planned : [
-      { name: 'intro', bars: 4, layerIdx: dedupe([...rhythm.slice(0, 2), ...harmony.slice(0, 1)]).length ? dedupe([...rhythm.slice(0, 2), ...harmony.slice(0, 1)]) : all.slice(0, 1) },
+      { name: 'intro', bars: 4, layerIdx: dedupe([...rhythm.slice(0, 2), ...harmony.slice(0, 1)]).length ? dedupe([...rhythm.slice(0, 2), ...harmony.slice(0, 1)]) : all },
       { name: 'verse', bars: 8, layerIdx: dedupe([...rhythm, ...lowEnd]).length ? dedupe([...rhythm, ...lowEnd]) : all },
       { name: 'hook', bars: 8, layerIdx: all },
       { name: 'verse2', bars: 8, layerIdx: dedupe([...rhythm, ...lowEnd, ...harmony]).length ? dedupe([...rhythm, ...lowEnd, ...harmony]) : all },
       { name: 'hook2', bars: 8, layerIdx: all },
-      { name: 'outro', bars: 4, layerIdx: dedupe([...rhythm.slice(0, 2), ...lowEnd.slice(0, 1)]).length ? dedupe([...rhythm.slice(0, 2), ...lowEnd.slice(0, 1)]) : all.slice(0, 1) },
+      { name: 'outro', bars: 4, layerIdx: dedupe([...rhythm.slice(0, 2), ...lowEnd.slice(0, 1)]).length ? dedupe([...rhythm.slice(0, 2), ...lowEnd.slice(0, 1)]) : all },
     ];
     const beatWav = await assembleBeat({ layers, sections, targetBpm: p.bpm });
 

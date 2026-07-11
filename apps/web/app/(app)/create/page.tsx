@@ -21,8 +21,16 @@ const GENRES = [
   { value: 'afrobeats', label: 'Afrobeats' }, { value: 'afro_fusion', label: 'Afro-fusion' },
   { value: 'amapiano', label: 'Amapiano' }, { value: 'afro_dancehall', label: 'Afro-dancehall' },
   { value: 'street_pop', label: 'Street-pop / Zanku' }, { value: 'afro_rnb', label: 'Afro R&B' },
-  { value: 'afro_pop', label: 'Afropop' }, { value: 'highlife', label: 'Highlife' },
-  { value: 'gospel', label: 'Gospel' }, { value: 'hip_hop', label: 'Hip-hop / Rap' }, { value: 'reggae', label: 'Reggae' },
+  { value: 'afro_pop', label: 'Afropop' }, { value: 'afro_soul', label: 'Afro-soul' }, { value: 'highlife', label: 'Highlife' },
+  { value: 'gospel', label: 'Gospel' }, { value: 'afro_gospel', label: 'Afro-gospel' },
+  { value: 'worship', label: 'Worship' }, { value: 'praise', label: 'Praise' },
+  { value: 'hip_hop', label: 'Hip-hop / Rap' }, { value: 'reggae', label: 'Reggae' }, { value: 'alte', label: 'Alté' },
+  // African continental
+  { value: 'gqom', label: 'Gqom' }, { value: 'kwaito', label: 'Kwaito' }, { value: 'afro_house', label: 'Afro house' },
+  { value: 'bongo_flava', label: 'Bongo Flava' }, { value: 'azonto', label: 'Azonto' },
+  { value: 'coupe_decale', label: 'Coupé-Décalé' }, { value: 'ndombolo', label: 'Ndombolo' },
+  { value: 'soukous', label: 'Soukous' }, { value: 'fuji', label: 'Fuji' },
+  { value: 'juju', label: 'Jùjú' }, { value: 'apala', label: 'Apala' },
   // Global
   { value: 'pop', label: 'Pop' }, { value: 'rnb', label: 'R&B' },
   { value: 'dancehall', label: 'Dancehall' }, { value: 'drill', label: 'Drill' },
@@ -30,6 +38,8 @@ const GENRES = [
   { value: 'edm', label: 'EDM' }, { value: 'reggaeton', label: 'Reggaeton' },
   { value: 'latin_pop', label: 'Latin pop' }, { value: 'country', label: 'Country' },
   { value: 'rock', label: 'Rock' }, { value: 'soul', label: 'Soul' },
+  { value: 'jazz', label: 'Jazz' }, { value: 'funk', label: 'Funk' },
+  { value: 'blues', label: 'Blues' }, { value: 'lofi', label: 'Lo-fi' },
 ];
 const LANGS = [
   { value: 'pcm', label: 'Pidgin' }, { value: 'en', label: 'English' }, { value: 'yo', label: 'Yoruba' },
