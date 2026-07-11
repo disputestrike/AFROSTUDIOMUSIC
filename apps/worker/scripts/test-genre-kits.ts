@@ -7,7 +7,7 @@
  * enforces the specific bugs the audit found: amapiano must own the log drum,
  * afrobeats must NOT, and no kit may be the old amapiano-for-everything mush.
  */
-import { GENRE_KITS, GENRE_KIT_KEYS, getGenreKit, kitCoverageGaps, missingSignatures, isMaterialRole } from '@afrohit/shared';
+import { GENRE_KITS, GENRE_KIT_KEYS, getGenreKit, kitCoverageGaps, missingSignatures, isMaterialRole, synthKitFor } from '@afrohit/shared';
 
 let failures = 0;
 const fail = (m: string) => { console.error(`FAIL: ${m}`); failures++; };
@@ -51,6 +51,15 @@ if (!getGenreKit('house')!.fourOnFloor) fail('house should be four-on-the-floor'
 // The ear hook works: an amapiano take with no log drum fails its signature.
 const miss = missingSignatures('amapiano', ['piano', 'shaker']);
 if (!miss.includes('log_drum')) fail('missingSignatures should flag amapiano lacking log_drum');
+
+// synthKitFor is the unified role map: afrobeats forges DRUMS (a real kick), not
+// amapiano's log_drum; amapiano forges the log_drum. This is what the owned
+// engine + synth bridge both read now (they used to disagree).
+const afbKit = synthKitFor('afrobeats');
+if (afbKit.includes('log_drum')) fail('synthKitFor(afrobeats) wrongly includes log_drum');
+if (!afbKit.includes('drums')) fail('synthKitFor(afrobeats) missing real drums (kick/snare)');
+if (!synthKitFor('amapiano').includes('log_drum')) fail('synthKitFor(amapiano) missing its log_drum');
+if (!synthKitFor('house').includes('drums')) fail('synthKitFor(house) missing drums');
 
 if (failures) { console.error(`genre-kits: ${failures} failure(s)`); process.exit(1); }
 console.log(`genre-kits: all ${GENRE_KIT_KEYS.length} genres ship complete, guardrailed kits; amapiano≠afrobeats≠highlife enforced`);

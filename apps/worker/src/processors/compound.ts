@@ -14,7 +14,7 @@
  */
 import { prisma } from '@afrohit/db';
 import { generateJson, tavilySearchRaw, lastBrain } from '@afrohit/ai';
-import { LANGUAGES, GENRES, genreSignature, scoreLaneCompliance, planRepairs, promotionEligible, type MeasuredAnalysis } from '@afrohit/shared';
+import { LANGUAGES, GENRES, genreSignature, synthKitFor, scoreLaneCompliance, planRepairs, promotionEligible, type MeasuredAnalysis } from '@afrohit/shared';
 import { enqueueJob } from '../lib/enqueue';
 import { assessLaneCompliance, loadLaneProfile, laneGrounding } from '../lib/lane-assess';
 import { measureAudio, dspAvailable } from '../lib/dsp';
@@ -636,7 +636,7 @@ export async function ensureSignatureKits(): Promise<void> {
       if (seen.has(key) || seen.size >= 6) continue;
       seen.add(key);
       const have = new Set((await prisma.materialAsset.findMany({ where: { workspaceId: pr.workspaceId, genre: pr.genre }, select: { role: true } })).map((m) => m.role));
-      const missing = genreSignature(pr.genre).kitRoles.filter((r) => !have.has(r));
+      const missing = synthKitFor(pr.genre).filter((r) => !have.has(r));
       if (missing.length) {
         console.log(`[kits] ${pr.genre}: forging ${missing.join('+')}`);
         await processSynthMaterial({ workspaceId: pr.workspaceId, genre: pr.genre, roles: missing });

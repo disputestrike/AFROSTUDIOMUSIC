@@ -17,7 +17,7 @@
  * Nobody can fence this engine off.
  */
 import { prisma } from '@afrohit/db';
-import { blueprintFromMeasured, structureMatch, genreSignature, MATERIAL_GAINS, type SongBlueprint, type MeasuredAnalysis } from '@afrohit/shared';
+import { blueprintFromMeasured, structureMatch, genreSignature, synthKitFor, MATERIAL_GAINS, type SongBlueprint, type MeasuredAnalysis } from '@afrohit/shared';
 import { downloadToBuffer, uploadBytes } from '../lib/storage';
 import { measureAudioQuality, mixBuffers } from '../lib/ffmpeg';
 import { measureAudio, dspAvailable } from '../lib/dsp';
@@ -119,7 +119,8 @@ export async function processOwnEngine(p: OwnEnginePayload): Promise<void> {
     // L1a — ensure the kit: synth-forge any missing signature role (owned, seconds).
     let picks = await pickKit(p.workspaceId, p.genre, bpm);
     const haveRoles = new Set(picks.map((x) => x.role));
-    const missing = genreSignature(p.genre).kitRoles.filter((r) => !haveRoles.has(r));
+    // Genre-correct primitives (afrobeats gets drums, NOT amapiano's log_drum).
+    const missing = synthKitFor(p.genre).filter((r) => !haveRoles.has(r));
     if (missing.length) {
       notes.push(`kit: synth-forged ${missing.join('+')}`);
       await processSynthMaterial({ workspaceId: p.workspaceId, genre: p.genre, bpm, roles: missing });

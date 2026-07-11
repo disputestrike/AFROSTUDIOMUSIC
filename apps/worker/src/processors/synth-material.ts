@@ -15,7 +15,7 @@ import { readFile, unlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { prisma } from '@afrohit/db';
-import { getGenreKit, type GenreKit, type MaterialRole } from '@afrohit/shared';
+import { getGenreKit, synthKitFor, type GenreKit } from '@afrohit/shared';
 import { uploadBytes } from '../lib/storage';
 
 const PYTHON = process.env.PYTHON_BIN || 'python3';
@@ -29,27 +29,6 @@ function defaultKey(genre: string, kit?: GenreKit): string {
   if (/gospel|highlife|afro_pop|soukous|juju|country|reggae/.test(genre)) return 'C major';
   if (/house|afro_house|edm/.test(genre)) return 'A minor';
   return 'A minor';
-}
-
-/**
- * Which SYNTH PRIMITIVES to forge for a genre — derived from its kit, not
- * hardcoded. The synth renders a small primitive set (drums, percussion, bass,
- * chords, log_drum, fill); we turn the kit's rich role list into that set so the
- * bed matches the lane (e.g. house gets four-on-floor drums, no log_drum;
- * amapiano keeps its log_drum; afrobeats gets syncopated drums + shaker + bass).
- */
-function synthRolesFor(genre: string, kit?: GenreKit): string[] {
-  const roles = new Set<MaterialRole>([...(kit?.requiredRoles ?? []), ...(kit?.signatureRoles ?? [])]);
-  const has = (...rs: MaterialRole[]) => rs.some((r) => roles.has(r));
-  const out: string[] = [];
-  if (has('kick', 'kick_808', 'soft_kick', 'club_kick', 'live_kick', 'snare', 'rimshot', 'clap')) out.push('drums');
-  if (has('shaker', 'shekere', 'cabasa', 'maraca', 'conga', 'bongo', 'closed_hat', 'talking_drum', 'djembe')) out.push('percussion');
-  if (roles.has('log_drum')) out.push('log_drum');
-  if (has('bass_guitar', 'synth_bass', 'sub_bass', 'bass_808', 'sliding_808', 'moog_bass', 'reese_bass', 'upright_bass', 'organ_bass', 'pluck_bass')) out.push('bass');
-  if (has('piano', 'rhodes', 'wurlitzer', 'organ', 'hammond', 'gospel_organ', 'guitar_chords', 'highlife_guitar', 'house_piano_stab', 'synth_pad', 'warm_pad')) out.push('chords');
-  out.push('fill');
-  // Always keep at least a minimal bed if the kit was missing/thin.
-  return out.length > 1 ? [...new Set(out)] : ['drums', 'bass', 'chords', 'percussion', 'fill'];
 }
 
 function runSynth(role: string, bpm: number, out: string, genre: string, key: string, fourOnFloor: boolean): Promise<void> {
@@ -68,7 +47,7 @@ export async function processSynthMaterial(p: SynthMaterialPayload): Promise<voi
   const bpm = p.bpm ?? kit?.typicalBpm ?? 112;
   const key = p.keySignature || defaultKey(p.genre, kit);
   const fourOnFloor = !!kit?.fourOnFloor;
-  const roles = p.roles?.length ? p.roles : synthRolesFor(p.genre, kit);
+  const roles = p.roles?.length ? p.roles : synthKitFor(p.genre);
   for (const role of roles) {
     const tmp = join(tmpdir(), `synth-${role}-${Date.now()}.wav`);
     try {

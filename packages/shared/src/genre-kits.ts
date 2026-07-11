@@ -10688,6 +10688,28 @@ export function getGenreKit(genre?: string | null): GenreKit | undefined {
 export const GENRE_KIT_KEYS: string[] = Object.keys(GENRE_KITS);
 
 /**
+ * The SYNTH PRIMITIVE roles to forge for a genre — the single source of truth
+ * shared by the synth bridge AND the owned-engine kit selection (they used to
+ * disagree: genreSignature.kitRoles forced log_drum on afrobeats while kitRolesFor
+ * asked for drums/talking_drum the synth couldn't make). Derived from the genre's
+ * kit and mapped to what the synth + assembler understand: drums, percussion,
+ * bass, chords, log_drum (only for log-drum genres), fill.
+ */
+export function synthKitFor(genre?: string | null): string[] {
+  const kit = getGenreKit(genre);
+  const roles = new Set<MaterialRole>([...(kit?.requiredRoles ?? []), ...(kit?.signatureRoles ?? [])]);
+  const has = (...rs: MaterialRole[]) => rs.some((r) => roles.has(r));
+  const out: string[] = [];
+  if (has('kick', 'kick_808', 'soft_kick', 'club_kick', 'live_kick', 'snare', 'rimshot', 'clap')) out.push('drums');
+  if (has('shaker', 'shekere', 'cabasa', 'maraca', 'conga', 'bongo', 'closed_hat', 'talking_drum', 'djembe')) out.push('percussion');
+  if (roles.has('log_drum')) out.push('log_drum');
+  if (has('bass_guitar', 'synth_bass', 'sub_bass', 'bass_808', 'sliding_808', 'moog_bass', 'reese_bass', 'upright_bass', 'organ_bass', 'pluck_bass')) out.push('bass');
+  if (has('piano', 'rhodes', 'wurlitzer', 'organ', 'hammond', 'gospel_organ', 'guitar_chords', 'highlife_guitar', 'house_piano_stab', 'synth_pad', 'warm_pad')) out.push('chords');
+  out.push('fill');
+  return out.length > 1 ? [...new Set(out)] : ['drums', 'bass', 'chords', 'percussion', 'fill'];
+}
+
+/**
  * Completeness check for a kit — a real record needs all core musical jobs
  * covered. Returns the list of jobs the kit is MISSING (empty = complete).
  * Used by the suite gate so no genre ships a thin, jobless palette.
