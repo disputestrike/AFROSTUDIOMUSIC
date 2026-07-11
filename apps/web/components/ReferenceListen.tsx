@@ -68,6 +68,9 @@ export function ReferenceListen({ projectId }: { projectId: string }) {
   const [prodElapsed, setProdElapsed] = useState(0);
   const [madeUrl, setMadeUrl] = useState<string | null>(null);
   const [prodError, setProdError] = useState('');
+  // NOT an error: the song is still being written/rendered server-side past the
+  // time we're willing to hold the screen. It WILL land in the Catalog.
+  const [handedOff, setHandedOff] = useState('');
   const PROD_STEPS = ['Writing the hook + lyrics (A&R picks the best)', 'Singing & producing the record', 'Done — play it'];
 
   useEffect(() => {
@@ -236,6 +239,7 @@ export function ReferenceListen({ projectId }: { projectId: string }) {
   async function makeFullSong() {
     if (!profile || producing) return;
     setProdError('');
+    setHandedOff('');
     setMadeUrl(null);
     // Step 0 starts IMMEDIATELY — the /drop call alone takes 1-3 minutes (it
     // writes the hook + lyrics server-side before responding), and the user must
@@ -263,9 +267,18 @@ export function ReferenceListen({ projectId }: { projectId: string }) {
       );
       let item: { jobId?: string; error?: string } | undefined;
       let dropErr: string | undefined;
-      for (let i = 0; i < 60; i++) {
+      let lastStatus = 'RUNNING';
+      let netFails = 0;
+      // The writer now drafts + runs a full critic-polish pass + arranges vocals
+      // BEFORE the render is queued — a real record takes minutes. Wait up to ~11
+      // min, and shrug off transient network blips (backgrounded tab, wifi↔cell)
+      // instead of killing a song that's still being written server-side.
+      for (let i = 0; i < 130; i++) {
         await new Promise((r) => setTimeout(r, 5000));
-        const j = await api.get<{ status: string; outputJson?: { drop?: Array<typeof item>; error?: string } }>(`/jobs/${started.jobId}`);
+        let j: { status: string; outputJson?: { drop?: Array<typeof item>; error?: string } };
+        try { j = await api.get(`/jobs/${started.jobId}`); netFails = 0; }
+        catch { if (++netFails >= 24) break; continue; }
+        lastStatus = j.status;
         // Read the TOP-LEVEL reason too: when no take rendered, the drop carries
         // WHY (brain down, no hooks) there — not on a per-take item.
         if (j.status === 'SUCCEEDED') { item = j.outputJson?.drop?.[0]; dropErr = j.outputJson?.error; break; }
@@ -273,7 +286,14 @@ export function ReferenceListen({ projectId }: { projectId: string }) {
       }
       if (!item?.jobId) {
         const reason = item?.error || dropErr;
-        throw new Error(reason === 'insufficient_credits' ? 'Daily limit reached — resets at midnight UTC.' : reason || 'Could not start the render.');
+        if (reason === 'insufficient_credits') throw new Error('Daily limit reached — resets at midnight UTC.');
+        if (reason) throw new Error(reason); // a REAL failure the server named
+        // No result yet but no failure either — the song is STILL being written
+        // (or the connection blipped). It is NOT lost; hand off calmly instead of
+        // crying "Could not start the render" over a song that's still cooking.
+        setHandedOff('This one’s taking a little longer to write — it’s still going and will appear in your Catalog when it’s done. You can leave this page; you don’t need to wait here.');
+        setProducing(null);
+        return;
       }
       setProducing((p) => (p ? { ...p, step: 1, label: PROD_STEPS[1]! } : p));
       const url = await pollRenderedAudio(item.jobId);
@@ -372,6 +392,14 @@ export function ReferenceListen({ projectId }: { projectId: string }) {
               </div>
             )}
 
+            {/* Hand-off — NOT a failure. The song is still being made; say so calmly. */}
+            {handedOff && (
+              <div className="rounded-xl border border-amber-400/40 bg-amber-400/10 p-3 text-sm text-amber-200">
+                Still cooking 🎶 {handedOff}
+                <button onClick={() => setHandedOff('')} className="ml-3 rounded-full border border-white/15 px-3 py-1 text-xs text-slate-200 hover:bg-white/10">Got it</button>
+              </div>
+            )}
+
             {/* LIVE production panel — creating takes 2-4 min and must look alive. */}
             {producing ? (
               <div className="rounded-2xl border-gradient glass p-4">
@@ -392,7 +420,7 @@ export function ReferenceListen({ projectId }: { projectId: string }) {
                   ))}
                 </ul>
                 {producing.step < 2 && (
-                  <p className="mt-2 text-xs text-slate-500">Stay here — writing + singing takes about 2–4 minutes. It’s working the whole time.</p>
+                  <p className="mt-2 text-xs text-slate-500">Stay here — the studio writes, critiques and re-polishes the lyric before singing, so a real record takes about 3–7 minutes. It’s working the whole time; you can also leave and find it in your Catalog.</p>
                 )}
                 {madeUrl && (
                   <div className="mt-3">

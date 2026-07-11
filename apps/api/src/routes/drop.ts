@@ -62,8 +62,15 @@ export type DropInput = ReturnType<typeof dropBatchSchema.parse>;
 /** The actual Drop Machine pipeline — runs detached; result lands on the job row.
  *  Exported so Albums can generate "the next track in this album's style". */
 export async function runDropPipeline(app: FastifyInstance, ctx: DropCtx, input: DropInput, dropJobId: string) {
+  // STAGE TIMING — the writer now drafts + critic-polishes + arranges before the
+  // render is queued, so this can run several minutes. Log where the time goes
+  // so a slow drop is diagnosable from the API logs (not guessed at).
+  const t0 = Date.now();
+  const secs = () => ((Date.now() - t0) / 1000).toFixed(1);
+  app.log.info({ dropJobId, count: input.count }, `[drop] start`);
   // One shared brief for the whole drop.
   await runChatTool({ ...ctx, name: 'polish_brief', args: { rawIdea: input.theme } });
+  app.log.info({ dropJobId }, `[drop] brief polished @${secs()}s`);
 
   const drops: Array<{
         songId?: string;
@@ -121,10 +128,12 @@ export async function runDropPipeline(app: FastifyInstance, ctx: DropCtx, input:
             if (combined[0]) best = combined[0];
           }
 
+          app.log.info({ dropJobId }, `[drop] take ${i + 1}: hook picked @${secs()}s`);
           const ap = (await runChatTool({ ...ctx, name: 'approve_hook', args: { hookId: best.id } })) as {
             songId?: string;
           };
           await runChatTool({ ...ctx, name: 'generate_lyrics', args: { hookId: best.id, cleanVersion: true, languages: input.languages } });
+          app.log.info({ dropJobId }, `[drop] take ${i + 1}: lyrics written (draft+polish) @${secs()}s`);
           const beat = (await runChatTool({
             ...ctx,
             name: 'create_beat_job',
@@ -146,6 +155,7 @@ export async function runDropPipeline(app: FastifyInstance, ctx: DropCtx, input:
             await prisma.lyricDraft.updateMany({ where: { songId: producedSongId }, data: { title: t } }).catch(() => undefined);
           }
 
+          app.log.info({ dropJobId, jobId: beat?.jobId, err: beat?.error }, `[drop] take ${i + 1}: render ${beat?.jobId ? 'QUEUED' : 'NOT queued'} @${secs()}s`);
           drops.push({
             songId: producedSongId,
             hookId: best.id,
