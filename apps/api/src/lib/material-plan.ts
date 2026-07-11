@@ -64,14 +64,17 @@ export function pickMaterial(rows: MaterialRow[], genre: string, bpm: number, ke
   };
   const picks: MaterialPick[] = [];
   for (const role of kitRolesFor(genre)) {
-    const best = rows
-      .filter((m) => m.role === role && m.bpm && Math.abs(m.bpm - bpm) / bpm <= 0.15)
-      .sort(
-        (a, b) =>
-          keyScore(a) - keyScore(b) ||
-          (a.source === 'artist_stem' ? -1 : 0) - (b.source === 'artist_stem' ? -1 : 0) ||
-          Math.abs((a.bpm ?? 0) - bpm) - Math.abs((b.bpm ?? 0) - bpm)
-      )[0];
+    // In-tempo picks first; a harvested stem with NO measured bpm is a valid
+    // LAST-RESORT pick (audit: harvested loops inherit a possibly-null beat bpm,
+    // so a strict bpm filter silently orphaned the artist's own material).
+    const inTempo = rows.filter((m) => m.role === role && m.bpm && Math.abs(m.bpm - bpm) / bpm <= 0.15);
+    const nullBpm = rows.filter((m) => m.role === role && !m.bpm);
+    const best = [...inTempo, ...nullBpm].sort(
+      (a, b) =>
+        keyScore(a) - keyScore(b) ||
+        (a.source === 'artist_stem' ? -1 : 0) - (b.source === 'artist_stem' ? -1 : 0) ||
+        Math.abs((a.bpm ?? bpm) - bpm) - Math.abs((b.bpm ?? bpm) - bpm)
+    )[0];
     if (best) picks.push({ id: best.id, url: best.url, sourceBpm: best.bpm ?? bpm, role, gain: MATERIAL_GAINS[role] ?? 0.9 });
   }
   return picks;

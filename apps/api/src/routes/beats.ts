@@ -3,6 +3,7 @@ import { prisma } from '@afrohit/db';
 import { generateBeatInputSchema, attachBeatUploadSchema, genreSignature } from '@afrohit/shared';
 import { enrichLyricsForVocals, defaultSongEngine, defaultInstrumentalEngine } from '@afrohit/ai';
 import { learnedReferenceBrief, learnedStyleTags, learnedMeasuredTags, learnedUsage } from '../lib/learned';
+import { enqueueHarvest } from '../lib/harvest';
 import { laneDna } from '../lib/lane-pipeline';
 import { requireAuth } from '../middleware/auth';
 import { enqueue, QUEUES } from '../lib/queue';
@@ -218,6 +219,8 @@ export default async function beats(app: FastifyInstance) {
         },
       });
 
+      // Auto-harvest the artist's own uploaded beat into reusable role loops.
+      await enqueueHarvest(app, { workspaceId, projectId: project.id, beatId: beat.id, sourceUrl: beat.url });
       reply.code(201);
       return { ...beat, songId };
     }

@@ -5,6 +5,7 @@ import { nanoid } from 'nanoid';
 import { requireAuth } from '../middleware/auth';
 import { presignUpload, putBytes } from '../lib/storage';
 import { assertSafeUrl, safeFetch } from '../lib/url-guard';
+import { enqueueHarvest } from '../lib/harvest';
 
 /**
  * Bring-your-own-audio uploads + legal URL import.
@@ -187,6 +188,8 @@ export default async function uploads(app: FastifyInstance) {
         },
       },
     });
+    // Auto-harvest the owned import into reusable role loops (drums/bass/other).
+    await enqueueHarvest(app, { workspaceId, projectId: project.id, beatId: beat.id, sourceUrl: url });
     reply.code(201);
     return { kind: input.kind, asset: beat, songId };
   });
