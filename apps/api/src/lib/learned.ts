@@ -68,8 +68,11 @@ async function fetchRefs(workspaceId: string, genre: string, pinnedId?: string |
     return { ...r, recipe, generated: recipe.source === 'generated' };
   });
   // Selection law (pin-first, in-genre only, artist over machine) lives in
-  // shared learned-select.ts — the worker gate proves it holds.
-  return selectLearnedRefs(all, genre, pinnedId);
+  // shared learned-select.ts — the worker gate proves it holds. The seed
+  // ROTATES which real refs teach each render ("184 unused references": the
+  // seedless pick was the newest 3 forever, the rest of the lake sat idle).
+  // Minute-grained so the brief + tags + usage receipt of ONE render agree.
+  return selectLearnedRefs(all, genre, pinnedId, { varietySeed: Math.floor(Date.now() / 60_000) });
 }
 
 function refLines(refs: RefRow[]): string[] {

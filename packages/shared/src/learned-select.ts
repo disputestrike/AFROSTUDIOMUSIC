@@ -32,13 +32,34 @@ export interface LearnedSelectable {
 
 /**
  * Priority: (1) the explicitly pinned reference, (2) the artist's real
- * uploads/listens newest-first (rows arrive newest-first), (3) at most ONE
- * self-training row as seasoning. Never more than 4 total.
+ * uploads/listens, (3) at most ONE self-training row as seasoning. Never more
+ * than 4 total.
+ *
+ * ROTATION (the "184 unused references" fix — the owner caught it on the
+ * utilization table): without a seed the pick is the newest 3 real refs
+ * FOREVER, so a lake of 80 heard songs teaches with only its 3 newest and the
+ * rest sit measured-but-idle. With a varietySeed each render draws a DIFFERENT
+ * window of the lane's real refs (newest still favored: the pool is the newest
+ * 12), so the whole lake cycles through renders over time. No seed = legacy
+ * deterministic behavior (tests + replays depend on it).
  */
-export function selectLearnedRefs<T extends LearnedSelectable>(rows: T[], genre: string, pinnedId?: string | null): T[] {
+export function selectLearnedRefs<T extends LearnedSelectable>(rows: T[], genre: string, pinnedId?: string | null, opts?: { varietySeed?: number }): T[] {
   const inGenre = rows.filter((r) => learnedGenreMatches(r.genre, genre));
   const pinned = pinnedId ? rows.filter((r) => r.id === pinnedId) : [];
   const real = inGenre.filter((r) => !r.generated && r.id !== pinnedId);
   const generated = inGenre.filter((r) => r.generated && r.id !== pinnedId);
-  return [...pinned, ...real.slice(0, 3), ...generated.slice(0, 1)].slice(0, 4);
+  let pickedReal = real.slice(0, 3);
+  if (opts?.varietySeed != null && real.length > 3) {
+    const pool = real.slice(0, Math.min(12, real.length));
+    const seed = Math.abs(Math.floor(opts.varietySeed));
+    pickedReal = [0, 1, 2].map((i) => pool[(seed + i * 5) % pool.length]!);
+    // Distinct picks guaranteed when pool ≥ 4 and stride 5 is coprime-ish with
+    // small pools — dedupe defensively and top up newest-first.
+    pickedReal = [...new Map(pickedReal.map((r) => [r.id, r])).values()];
+    for (const r of pool) {
+      if (pickedReal.length >= 3) break;
+      if (!pickedReal.some((p) => p.id === r.id)) pickedReal.push(r);
+    }
+  }
+  return [...pinned, ...pickedReal, ...generated.slice(0, 1)].slice(0, 4);
 }

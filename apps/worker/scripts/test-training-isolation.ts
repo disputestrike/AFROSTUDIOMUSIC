@@ -48,6 +48,27 @@ const pinned = selectLearnedRefs(rows, 'amapiano', 'afb-own-1');
 if (pinned[0]?.id !== 'afb-own-1') fail('pinned reference must LEAD the selection (artist’s explicit intent)');
 if (pinned.length > 4) fail('selection must never exceed 4 refs');
 
+// ---- 4b: ROTATION — the whole lake teaches, not just the newest 3 ----------
+// (The owner caught it: 184 of 191 references measured but never used — the
+// seedless pick was the newest 3 forever.) Seeded picks must (a) stay in-lane,
+// (b) differ across seeds, (c) cover most of the pool over many seeds, and
+// (d) seedless behavior stays byte-identical for replays.
+const bigLake: Row[] = Array.from({ length: 12 }, (_, i) => ({ id: `ama-own-${i}`, genre: 'amapiano', generated: false }));
+const seen = new Set<string>();
+const combos = new Set<string>();
+for (let seed = 0; seed < 24; seed++) {
+  const picks = selectLearnedRefs(bigLake, 'amapiano', undefined, { varietySeed: seed });
+  if (picks.length !== 3) fail(`seeded selection returned ${picks.length} real refs (wanted 3)`);
+  if (new Set(picks.map((r) => r.id)).size !== picks.length) fail('seeded selection returned duplicate refs');
+  if (picks.some((r) => !r.id.startsWith('ama-'))) fail('seeded rotation leaked another lane');
+  picks.forEach((r) => seen.add(r.id));
+  combos.add(picks.map((r) => r.id).join(','));
+}
+if (seen.size < 10) fail(`rotation only ever used ${seen.size}/12 refs across 24 seeds — the lake must cycle`);
+if (combos.size < 6) fail(`rotation produced only ${combos.size} distinct combinations across 24 seeds`);
+const legacy = selectLearnedRefs(bigLake, 'amapiano');
+if (legacy.map((r) => r.id).join(',') !== 'ama-own-0,ama-own-1,ama-own-2') fail('seedless selection must stay the legacy newest-3 (replays depend on it)');
+
 // ---- 5: Zap origin — chart lessons are FACTS, never the artist's audio -----
 if (referenceOrigin('zap:asake-lonely-at-the-top', { source: 'zap' }) !== 'facts-only') fail("zap rows must classify facts-only, not owned-upload");
 if (referenceOrigin('https://r2.example/own.wav', {}) !== 'owned-upload') fail('a real owned upload must stay owned-upload');

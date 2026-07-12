@@ -130,13 +130,15 @@ export default async function voices(app: FastifyInstance) {
         });
       }
 
-      // Destination = an existing/creatable "user/model" path in the ARTIST's
-      // Replicate account. Never invented: body param or env, else 400.
+      // Destination is only a concept for destination-based trainers (KIND=
+      // training). The default trainer (replicate/train-rvc-model) is a
+      // PREDICTION: the trained model file arrives as its output URL — no
+      // Replicate destination model exists or is needed.
       const destination = input.destination ?? process.env.VOICE_TRAINER_DESTINATION?.trim();
-      if (!destination) {
+      if (cfg.kind === 'training' && !destination) {
         return reply.code(400).send({
           error: 'destination_required',
-          note: 'Pass destination ("user/model" in your Replicate account) or set VOICE_TRAINER_DESTINATION. The trained weights land in that model — keep it private.',
+          note: 'This trainer is destination-based: pass destination ("user/model" in your Replicate account) or set VOICE_TRAINER_DESTINATION. The trained weights land in that model — keep it private.',
         });
       }
 
@@ -189,7 +191,7 @@ export default async function voices(app: FastifyInstance) {
           status: 'TRAINING',
           sampleUrls: [input.datasetZipUrl],
           trainingId: training.id,
-          destinationModel: destination,
+          destinationModel: destination ?? null,
           trainingMeta: {
             datasetZipUrl: input.datasetZipUrl,
             trainer: `${cfg.model}@${cfg.version}`,
