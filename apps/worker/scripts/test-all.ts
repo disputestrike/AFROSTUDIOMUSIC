@@ -82,6 +82,7 @@ const TS: Array<[string, string]> = [
   ['Material system (forge/layer/pan)', 'test-material-system.ts'],
   ['Training isolation (lane/pin/zap)', 'test-training-isolation.ts'],
   ['Singing brain (sung-form laws)', 'test-singing-brain.ts'],
+  ['Melody brain (composed, not guessed)', 'test-melody-brain.ts'],
 ];
 for (const [name, file] of TS) {
   if (!existsSync(join(scripts, file))) { results.push({ name, status: 'SKIP', note: 'script missing', required: false }); continue; }

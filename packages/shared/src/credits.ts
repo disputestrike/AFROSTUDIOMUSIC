@@ -31,6 +31,11 @@ export const CREDIT_COSTS = {
   // 2-3× rule until real cost data lands. Tune when the operator's chosen
   // trainer reports actual run costs.
   voice_clone_training: 50_000, // $5.00 est. per training run
+  // SING WITH MY VOICE — RVC song conversion on Replicate (zsxkib/realistic-
+  // voice-cloning). ESTIMATE: runs a few minutes on T4-class GPU (~$0.000225/s
+  // → roughly $0.05–0.20 of compute per song incl. separation + remix); $1.50
+  // keeps the 2-3× rule with headroom for retries. Tune when real run costs land.
+  voice_sing_render: 15_000, // $1.50 est. per converted song
   // Mix / master
   mix_preset: 10_000, // $1.00
   master_preset: 15_000, // $1.50

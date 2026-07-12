@@ -20,3 +20,4 @@ export * from './genre-palettes';
 export * from './learned-select';
 export * from './expert-priors';
 export * from './lyric-scorecard';
+export * from './melody-score';

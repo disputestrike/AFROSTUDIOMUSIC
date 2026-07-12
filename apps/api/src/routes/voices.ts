@@ -1,10 +1,35 @@
 import type { FastifyInstance } from 'fastify';
 import { prisma } from '@afrohit/db';
-import { voiceConsentInputSchema, voiceProfileInputSchema, voiceTrainInputSchema } from '@afrohit/shared';
+import { voiceConsentInputSchema, voiceDatasetInputSchema, voiceProfileInputSchema, voiceSingInputSchema, voiceTrainInputSchema } from '@afrohit/shared';
 import { requireAuth } from '../middleware/auth';
 import { enqueue } from '../lib/queue';
 import { publicUrlFor } from '../lib/storage';
 import { voiceTrainerConfig, startVoiceTraining, getVoiceTraining } from '../lib/voice-training';
+
+/**
+ * The usable TRAINED MODEL FILE URL for a READY voice profile, read defensively:
+ * the default trainer (replicate/train-rvc-model) is a PREDICTION whose output
+ * is the model-file URL — the training poll stored it on trainedVersion (string
+ * output) and verbatim on trainingMeta.output. Destination-based trainers store
+ * a version hash instead (no downloadable file) → null, and /sing says so
+ * honestly rather than passing a non-URL to the conversion engine.
+ */
+function trainedModelUrl(profile: { trainedVersion: string | null; trainingMeta: unknown }): string | null {
+  const isUrl = (v: unknown): v is string => typeof v === 'string' && /^https?:\/\//i.test(v);
+  if (isUrl(profile.trainedVersion)) return profile.trainedVersion;
+  const out = (profile.trainingMeta as Record<string, unknown> | null)?.output;
+  if (isUrl(out)) return out;
+  if (Array.isArray(out)) {
+    for (let i = out.length - 1; i >= 0; i--) if (isUrl(out[i])) return out[i] as string;
+  }
+  if (out && typeof out === 'object') {
+    for (const k of ['weights', 'model', 'url', 'version']) {
+      const v = (out as Record<string, unknown>)[k];
+      if (isUrl(v)) return v;
+    }
+  }
+  return null;
+}
 
 export default async function voices(app: FastifyInstance) {
   app.get('/consents', async (req) => {
@@ -104,6 +129,44 @@ export default async function voices(app: FastifyInstance) {
 
       reply.code(202);
       return { profile, jobId: job.id };
+    }
+  );
+
+  /**
+   * DATASET BUILDER — one click from raw recordings to a trainer-ready zip.
+   * Worker (lake lane: local ffmpeg, never blocks a render) downloads each
+   * sample, converts to 48k mono wav, splits into ~10s segments and zips them
+   * in the trainer layout `dataset/<name>/split_<i>.wav`. Poll the job for
+   * { datasetZipUrl, segments, totalSeconds }, then POST /voices/train with it.
+   * No credit charge: deterministic local work, no provider cost.
+   */
+  app.post(
+    '/dataset',
+    { schema: { body: voiceDatasetInputSchema } },
+    async (req, reply) => {
+      const { workspaceId } = requireAuth(req);
+      const input = voiceDatasetInputSchema.parse(req.body);
+
+      const job = await prisma.providerJob.create({
+        data: {
+          workspaceId,
+          kind: 'voice_dataset',
+          provider: 'internal',
+          status: 'QUEUED',
+          inputJson: { name: input.name, samples: input.sampleUrls.length } as never,
+        },
+      });
+      await enqueue({
+        queue: app.queues.lake,
+        name: 'voice-dataset',
+        payload: { jobId: job.id, workspaceId, name: input.name, sampleUrls: input.sampleUrls },
+      });
+
+      reply.code(202);
+      return {
+        jobId: job.id,
+        note: '10-20 minutes of clean solo vocals make the best voice; poll the job for datasetZipUrl, then POST /voices/train with it.',
+      };
     }
   );
 
@@ -300,6 +363,119 @@ export default async function voices(app: FastifyInstance) {
       meta: profile.trainingMeta,
     };
   });
+
+  /**
+   * SING WITH MY VOICE — the trained voice performs an existing track.
+   * Source: songUrl, or songId → the song's freshest playable audio (master →
+   * mix → beat, mirrors songs.ts freshestAudioUrl). The conversion runs on the
+   * voice queue (sing-convert → zsxkib/realistic-voice-cloning via @afrohit/ai
+   * singWithVoice); the result is re-hosted, and when a songId was given it's
+   * filed as a VocalRender + Mix so the sung version is playable/downloadable.
+   *
+   * HONEST: the voice sings whatever the INPUT sings — RVC converts a
+   * performance, it does not invent one. The melody comes from the input vocal
+   * (or the melody guide the artist hums over the beat).
+   */
+  app.post<{ Params: { voiceId: string } }>(
+    '/:voiceId/sing',
+    { schema: { body: voiceSingInputSchema } },
+    async (req, reply) => {
+      const { workspaceId } = requireAuth(req);
+      const input = voiceSingInputSchema.parse(req.body);
+      if (!input.songId && !input.songUrl) {
+        return reply.code(400).send({ error: 'source_required', note: 'Pass songId (catalog song) or songUrl (any hosted track/vocal).' });
+      }
+
+      const voice = await prisma.voiceProfile.findFirst({
+        where: { id: req.params.voiceId, workspaceId },
+      });
+      if (!voice) return reply.code(404).send({ error: 'voice_not_found' });
+      if (voice.status !== 'READY') {
+        return reply.code(409).send({
+          error: 'voice_not_ready',
+          status: voice.status,
+          note: 'Train the voice first (POST /voices/train), then poll GET /voices/:id/training until READY.',
+        });
+      }
+      const modelUrl = trainedModelUrl(voice);
+      if (!modelUrl) {
+        return reply.code(409).send({
+          error: 'no_trained_model_file',
+          note: 'This profile has no downloadable trained-model URL. The default prediction trainer (replicate/train-rvc-model) outputs one; destination-based trainers do not — retrain with the default trainer to use /sing.',
+        });
+      }
+
+      // Resolve the performance to convert: explicit URL, or the song's
+      // freshest playable audio (master → mix → beat by createdAt).
+      let songInputUrl = input.songUrl ?? null;
+      let song: { id: string; projectId: string } | null = null;
+      if (!songInputUrl && input.songId) {
+        const s = await prisma.song.findFirst({
+          where: { id: input.songId, workspaceId },
+          include: {
+            masters: { orderBy: { createdAt: 'desc' }, take: 1 },
+            mixes: { orderBy: { createdAt: 'desc' }, take: 1 },
+            beats: { orderBy: { createdAt: 'desc' }, take: 1 },
+          },
+        });
+        if (!s) return reply.code(404).send({ error: 'song_not_found' });
+        const cands = [s.masters[0], s.mixes[0], s.beats[0]].filter(Boolean) as Array<{ url: string; createdAt: Date }>;
+        cands.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+        songInputUrl = cands[0]?.url ?? null;
+        if (!songInputUrl) {
+          return reply.code(400).send({ error: 'song_has_no_audio', note: 'Render the song first — /sing converts an existing performance, it cannot invent one.' });
+        }
+        song = { id: s.id, projectId: s.projectId };
+      }
+
+      const charge = await app.chargeCredits({
+        workspaceId,
+        key: 'voice_sing_render',
+        refTable: 'VoiceProfile',
+        refId: voice.id,
+      });
+      if (!charge.ok) return reply.code(402).send({ error: 'insufficient_credits', ...charge });
+
+      const job = await prisma.providerJob.create({
+        data: {
+          workspaceId,
+          ...(song ? { projectId: song.projectId } : {}),
+          kind: 'voice',
+          provider: 'replicate',
+          status: 'QUEUED',
+          // _charge lets the worker REFUND on failure (charge-before-enqueue).
+          inputJson: {
+            sing: true,
+            voiceProfileId: voice.id,
+            songId: song?.id,
+            songInputUrl,
+            pitchChange: input.pitchChange,
+            _charge: { key: 'voice_sing_render', multiplier: 1 },
+          } as never,
+        },
+      });
+      await enqueue({
+        queue: app.queues.voice,
+        name: 'sing-convert',
+        payload: {
+          jobId: job.id,
+          workspaceId,
+          voiceProfileId: voice.id,
+          modelUrl,
+          songInputUrl,
+          pitchChange: input.pitchChange,
+          songId: song?.id,
+          projectId: song?.projectId,
+        },
+      });
+
+      reply.code(202);
+      return {
+        jobId: job.id,
+        note: 'Converting — the trained voice sings whatever the input sings (melody + timing come from the input vocal). Takes a few minutes; poll GET /jobs/:jobId for the result URL.',
+      };
+    }
+  );
 
   app.post<{ Params: { voiceId: string }; Body: { text: string } }>(
     '/:voiceId/test',

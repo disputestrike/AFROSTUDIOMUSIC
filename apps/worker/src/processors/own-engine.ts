@@ -17,9 +17,11 @@
  * Nobody can fence this engine off.
  */
 import { prisma } from '@afrohit/db';
-import { blueprintFromMeasured, structureMatch, genreSignature, synthKitFor, MATERIAL_GAINS, type SongBlueprint, type MeasuredAnalysis } from '@afrohit/shared';
+import { blueprintFromMeasured, structureMatch, genreSignature, synthKitFor, parseLyricSections, laneFeel, seedFrom, MATERIAL_GAINS, type SongBlueprint, type MeasuredAnalysis, type MelodyScore } from '@afrohit/shared';
+import { melodyBrain, getSoundDNA } from '@afrohit/ai';
 import { downloadToBuffer, uploadBytes } from '../lib/storage';
 import { measureAudioQuality, mixBuffers } from '../lib/ffmpeg';
+import { renderMelodyGuide } from '../lib/melody-guide';
 import { measureAudio, dspAvailable } from '../lib/dsp';
 import { markRunning, markSucceeded, markFailed } from '../lib/jobs';
 import { assessLaneCompliance } from '../lib/lane-assess';
@@ -142,6 +144,62 @@ export async function processOwnEngine(p: OwnEnginePayload): Promise<void> {
     if (done?.status !== 'SUCCEEDED' || !out.beatId || !out.url) throw new Error('own-engine: grid assembly failed (see child job)');
     notes.push(`rhythm: assembled ${picks.map((x) => x.role).join('+')} across ${sections.length} sections`);
 
+    // MELODY BRAIN (Own Singer piece 3) — the studio COMPOSES the vocal melody
+    // itself when this render belongs to a song with a lyric: explicit notes
+    // per syllable from the lane's DNA (home key + Afro pentatonic bias + the
+    // prosody/hook-cell laws), the taste layer only picks phrasing parameters,
+    // code emits every note. The score rides the beat's meta (the OWN-VOICE
+    // seam below sings it once a trained voice is READY) and the guide WAV is
+    // filed as audible evidence. ALL fail-open — a melody failure never breaks
+    // the beat, it just leaves an honest note.
+    let melodyScore: MelodyScore | null = null;
+    if (p.songId) {
+      try {
+        const draft = await prisma.lyricDraft.findUnique({ where: { songId: p.songId } });
+        const lyricSections = draft?.body ? parseLyricSections(draft.body).filter((s) => s.lines.length > 0) : [];
+        if (!lyricSections.length) {
+          notes.push('melody score skipped: no lyric draft for this song');
+        } else {
+          // Anchors come from the Writing Brain's craft object (same read the
+          // singing pipeline does) — absent on old drafts, and that's fine.
+          const craft = (draft?.craftJson ?? null) as { anchors?: unknown } | null;
+          const anchors = Array.isArray(craft?.anchors)
+            ? (craft!.anchors as unknown[]).filter((a): a is string => typeof a === 'string' && !!a.trim())
+            : [];
+          const homeKey = getSoundDNA(p.genre)?.commonKeys?.[0] ?? 'A minor'; // the lane's measured home key
+          const feel = laneFeel(p.genre);
+          melodyScore = await melodyBrain({
+            genre: p.genre, bpm, key: homeKey, seed: seedFrom(p.songId, bpm),
+            swing: feel.swing, syncopation: feel.syncopation,
+            sections: lyricSections.map((s) => ({
+              name: s.name || s.kind, kind: s.kind, lines: s.lines,
+              ...(anchors.length ? { anchors } : {}),
+            })),
+          });
+          const noteCount = melodyScore.sections.reduce((a, s) => a + s.notes.length, 0);
+          notes.push(`melody score: composed ${noteCount} notes across ${melodyScore.sections.length} sections in ${homeKey}`);
+          // AUDIBLE EVIDENCE — the sine guide WAV, filed as owned material.
+          try {
+            const wav = await renderMelodyGuide(melodyScore);
+            const guideUrl = await uploadBytes({ workspaceId: p.workspaceId, kind: 'material', bytes: wav, contentType: 'audio/wav', ext: 'wav' });
+            await prisma.materialAsset.create({
+              data: {
+                workspaceId: p.workspaceId, kind: 'guide', role: 'melody_guide', genre: p.genre, bpm,
+                url: guideUrl, source: 'forged',
+                meta: { origin: 'melody-brain', songId: p.songId, license: 'owned-generation' } as never,
+              },
+            });
+            notes.push('melody guide: rendered + filed as melody_guide material');
+          } catch (err) {
+            notes.push(`melody guide skipped: ${(err as Error)?.message?.slice(0, 100)}`);
+          }
+        }
+      } catch (err) {
+        melodyScore = null;
+        notes.push(`melody score skipped: ${(err as Error)?.message?.slice(0, 100)}`);
+      }
+    }
+
     // L2 — melody, conditioned on OUR groove (optional, fail-open).
     let finalUrl = out.url;
     let finalBeatId = out.beatId;
@@ -188,7 +246,7 @@ export async function processOwnEngine(p: OwnEnginePayload): Promise<void> {
     const beatRow = await prisma.beatAsset.findUnique({ where: { id: finalBeatId }, select: { meta: true } });
     await prisma.beatAsset.update({
       where: { id: finalBeatId },
-      data: { meta: { ...((beatRow?.meta ?? {}) as Record<string, unknown>), ownEngine: { v: 1, layers: notes, blueprintMatch } } as never },
+      data: { meta: { ...((beatRow?.meta ?? {}) as Record<string, unknown>), ...(melodyScore ? { melodyScore } : {}), ownEngine: { v: 1, layers: notes, blueprintMatch } } as never },
     });
 
     // OWN-VOICE seam: once a VoiceProfile trained via POST /voices/train is READY (trainedVersion set), the artist's trained voice sings the lead here — inference wiring lands in a later round.

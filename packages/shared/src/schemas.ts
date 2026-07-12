@@ -178,6 +178,26 @@ export const voiceTrainInputSchema = z.object({
     .optional(),
 });
 
+/** DATASET BUILDER: raw recordings → a trainer-ready zip (layout
+ *  `dataset/<name>/split_<i>.wav`, 48k mono, ~10s segments) — exactly what the
+ *  default trainer (replicate/train-rvc-model) expects. 10–20 minutes of clean
+ *  solo vocals make the best voice. */
+export const voiceDatasetInputSchema = z.object({
+  name: z.string().min(1).max(60),
+  sampleUrls: z.array(z.string().url()).min(1).max(50),
+});
+
+/** SING WITH MY VOICE: the trained voice performs an existing track. HONEST:
+ *  RVC converts the performance in the input (full song or bare vocal) — the
+ *  melody and timing come from the input vocal; it does not invent one.
+ *  songId/songUrl "at least one" is enforced in the route handler (a .refine
+ *  here would break the swagger jsonSchemaTransform). */
+export const voiceSingInputSchema = z.object({
+  songId: z.string().cuid().optional(),
+  songUrl: z.string().url().optional(),
+  pitchChange: z.enum(['no-change', 'male-to-female', 'female-to-male']).default('no-change'),
+});
+
 export const renderVocalInputSchema = z.object({
   projectId: z.string().cuid(),
   songId: z.string().cuid().optional(),
