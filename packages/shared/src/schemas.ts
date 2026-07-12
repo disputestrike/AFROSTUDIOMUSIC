@@ -83,7 +83,9 @@ export type Hook = z.infer<typeof hookSchema>;
 
 export const generateHooksInputSchema = z.object({
   projectId: z.string().cuid(),
-  count: z.number().int().min(1).max(100).default(20),
+  // Owner law (2026-07-12): 3 deep hooks, not 20 shallow drafts — concentrate
+  // the craft in few fully-committed candidates the A&R can really compare.
+  count: z.number().int().min(1).max(12).default(3),
   brief: briefSchema.optional(),
   excludeIds: z.array(z.string().cuid()).optional(),
 });
@@ -144,6 +146,9 @@ export const generateBeatInputSchema = z.object({
   /** Artist LANE to vibe toward (energy/tempo/production feel) — never a copy,
    *  never named in the song. Same semantics as dropBatchSchema.influence. */
   influence: z.string().max(120).optional(),
+  /** Explicit instrument picks — emitted as a high-priority `instrumentation:`
+   *  line in the engine's style prompt (steering; exact on the own engine). */
+  instruments: z.array(z.string().min(2).max(32)).max(8).optional(),
 });
 
 // ---------- Voice -----------------------------------------------------------
@@ -465,6 +470,8 @@ export const dropBatchSchema = z.object({
   // Artist LANE to steer the vibe toward (e.g. "Davido, Wizkid"). Captures the
   // energy/production feel — never copies songs, never named in the output.
   influence: z.string().max(200).optional(),
+  /** Explicit instrument picks threaded to the render's style prompt. */
+  instruments: z.array(z.string().min(2).max(32)).max(8).optional(),
 });
 
 // ---------- Proxied audio upload (browser → API → R2, no R2 CORS) ----------

@@ -151,9 +151,17 @@ export function composeStyleTags(
         ...(fk ? fk.engineTags.slice(0, 3).map(deLatin) : []),
       ];
     });
+  // EXPLICIT INSTRUMENT PICKS (owner directive): when the artist named the
+  // instruments, they lead — right after the identity anchor, BEFORE the kit
+  // tags, so truncation can never drop them. Steering, not a guarantee (text
+  // engines are black boxes); the own engine honors picks exactly.
+  const instrumentation = input.instruments?.length
+    ? `instrumentation: ${input.instruments.slice(0, 8).map((i) => deLatin(i.trim())).filter(Boolean).join(', ')} — feature these instruments prominently`
+    : null;
   const raw = [
     genreLine,
     afro ? afro.signature : null,
+    instrumentation,
     ...fusionTokens,
     // Anti-Latin exclusion applies to every Afro lane (none are reggaeton). The
     // groove note (four-on-the-floor or not) is per-genre in the signature above.

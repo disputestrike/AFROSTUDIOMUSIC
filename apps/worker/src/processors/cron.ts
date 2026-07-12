@@ -16,7 +16,9 @@ import { prompts, generateJson, runWithBrainContext, scoreItems, researchTrends,
 import { debitCredits } from '../lib/credits';
 import { jobDoneEmail, morningDropEmail, releaseRadarEmail, sendEmail } from '../lib/email';
 
-const MORNING_DROP_COUNT = 20;
+// Owner law (2026-07-12): 3 deep hooks, not 20 shallow drafts — same
+// concentration doctrine as the interactive paths.
+const MORNING_DROP_COUNT = 3;
 
 async function ownerEmail(workspaceId: string): Promise<string | null> {
   const owner = await prisma.workspaceMember.findFirst({

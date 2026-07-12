@@ -78,6 +78,22 @@ const latin = composeStyleTags({ genre: 'reggaeton', bpm: 95, dnaTags: ['dembow 
 check(/dembow/i.test(latin), 'reggaeton itself must KEEP its dembow token (scrub is Afro-only)');
 check(!/not reggaeton/i.test(latin), 'non-Afro genre must not get the Afro exclusion clause');
 
+// EXPLICIT INSTRUMENT PICKS (owner directive 2026-07-12): named instruments
+// must reach the engine as a high-priority instrumentation line, early enough
+// that the budget can never truncate them; absent picks add nothing.
+{
+  const withPicks = composeStyleTags(
+    { genre: 'afrobeats', bpm: 104, dnaTags: ['shekere 16ths'], instruments: ['saxophone', 'talking drum', 'highlife guitar'] } as never,
+    { fallbackLiteral: 'radio-ready' }
+  );
+  const line = withPicks.find((t) => t.startsWith('instrumentation:'));
+  check(!!line, 'instruments picks missing their instrumentation: line');
+  check(/saxophone/.test(line ?? '') && /talking drum/.test(line ?? '') && /highlife guitar/.test(line ?? ''), 'instrumentation line dropped a pick');
+  check(withPicks.indexOf(line ?? '') <= 2, 'instrumentation line must ride in the first 3 tags (truncation-proof)');
+  const noPicks = composeStyleTags({ genre: 'afrobeats', bpm: 104, dnaTags: ['shekere 16ths'] } as never, { fallbackLiteral: 'radio-ready' });
+  check(!noPicks.some((t) => t.startsWith('instrumentation:')), 'no picks must add no instrumentation line');
+}
+
 if (failures > 0) {
   console.error(`genre-identity: ${failures} failure(s)`);
   process.exit(1);

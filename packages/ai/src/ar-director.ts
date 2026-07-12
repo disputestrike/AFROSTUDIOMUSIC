@@ -93,7 +93,14 @@ export async function directorRefineHooks(opts: {
   const rubric =
     'You are a ruthless Afrobeats A&R. Score each draft hook 0-10 for HIT potential (weighted to virality: undeniable hook + first-8-seconds + a 5-15s loopable TikTok moment matter most; kill generic filler like "we dey vibe/shine/energy"). ' +
     'Return ONLY JSON {"hooks":[{"text","language":["pcm"],"score":8.2,"viralScore":8,"reason":"one line","needsNativeReview":false}]} — keep each hook\'s text, add the scores, rank best-first. Do NOT rewrite the hooks, do NOT add dimension breakdowns.';
-  const userPayload = JSON.stringify({ genre_lane: (opts.soundDna || '').slice(0, 600), languages: opts.artist.languages, draft_hooks: opts.drafts });
+  // trending_now rides in the lean payload (owner directive: the A&R must know
+  // the wave before naming a favorite) — sliced hard so the pass stays fast.
+  const userPayload = JSON.stringify({
+    genre_lane: (opts.soundDna || '').slice(0, 600),
+    languages: opts.artist.languages,
+    trending_now: (opts.trends || '').slice(0, 400) || undefined,
+    draft_hooks: opts.drafts,
+  });
   if (anthropicEnabled()) {
     try {
       const out = await claudeJson<{ hooks: ARHook[] }>({ system: rubric, user: userPayload, maxTokens: 1_400, timeoutMs: 35_000 });

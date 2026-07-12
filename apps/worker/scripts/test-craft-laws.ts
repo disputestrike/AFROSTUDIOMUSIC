@@ -58,22 +58,40 @@ expect('packages/ai/src/prompts/hooks.ts', read('packages/ai/src/prompts/hooks.t
   'HOOK ECONOMICS',
   'HOOK FINAL LINE',
   'Natural phrasing outranks rhyme',
+  // Owner directive 2026-07-12: the hook cell must be title-grade (it becomes
+  // the song title) and depth beats breadth (3 committed hooks, no filler).
+  'TITLE-GRADE CELL',
+  'DEPTH OVER BREADTH',
 ], 'hooks');
+
+// --- The title law ----------------------------------------------------------
+// The writer's prompt carries the law; the code gate (pickLawfulTitle) backs it
+// at every AI-derived title site so a lawless title can never ship.
+expect('packages/ai/src/prompts/lyrics.ts', read('packages/ai/src/prompts/lyrics.ts'), [
+  'TITLE LAW',
+], 'title:prompt');
 
 // --- Wiring: every writer path runs the same law ---------------------------
 // Studio Chat writer + polish pass
 expect('apps/api/src/services/chat-tools.ts', read('apps/api/src/services/chat-tools.ts'), [
   'LYRIC_SYSTEM',
   'LYRIC_POLISH_SYSTEM',
+  'pickLawfulTitle',
 ], 'wiring:chat');
 // Create-page lyrics route + polish pass
 expect('apps/api/src/routes/lyrics.ts', read('apps/api/src/routes/lyrics.ts'), [
   'LYRIC_SYSTEM',
   'LYRIC_POLISH_SYSTEM',
+  'pickLawfulTitle',
 ], 'wiring:route');
+// Hook approval derives the song title through the same gate
+expect('apps/api/src/routes/hooks.ts', read('apps/api/src/routes/hooks.ts'), [
+  'pickLawfulTitle',
+], 'wiring:hooks');
 // Will-it-blow rewrite loop inherits the writer law
 expect('apps/api/src/lib/will-it-blow.ts', read('apps/api/src/lib/will-it-blow.ts'), [
   'LYRIC_SYSTEM',
+  'pickLawfulTitle',
 ], 'wiring:gate');
 // Writer A/B bench judges both brains under the identical law
 expect('apps/api/src/lib/writer-ab.ts', read('apps/api/src/lib/writer-ab.ts'), [

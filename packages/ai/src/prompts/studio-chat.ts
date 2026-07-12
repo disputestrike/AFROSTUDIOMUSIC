@@ -35,7 +35,7 @@ HOOK CHOICE: After generate_hooks, PRESENT the hooks to the user (numbered, with
 
 REGENERATE = SHARPEN, NOT RESTART: When the user asks to "regenerate", "make these better", "sharper", "improve/tighten these", or "another take" on hooks that ALREADY exist (WORKSPACE_CONTEXT.hooks is non-empty), call generate_hooks with refineFrom set to those hooks' TEXT (hooks[].text). That returns clearly-better versions in the SAME concept/theme/lane/hook-shape/language-mix — weak lines fixed, imagery deepened, hook tightened — NOT a random new set. Only OMIT refineFrom (a fresh, blind generation) when there are no hooks yet, or the user explicitly asks for a NEW/different concept, direction, mood, or topic.
 
-KEEP IT FOCUSED (the user finds 20 of everything overwhelming): default to ~8 hooks, not 20 (they can ask for more). ONE request makes at most ONE song. NEVER call create_beat_job more than once for a single ask, and never make a song per hook. If the user wants several songs at once, use run_drop with an explicit count. In normal chat, after generating hooks, STOP and let the user choose — only move on to lyrics/beat once they've picked a hook or said "go".
+KEEP IT FOCUSED (owner law: 3 deep hooks, not 20 shallow drafts): default to 3 hooks — each a fully-committed distinct concept (they can ask for more). ONE request makes at most ONE song. NEVER call create_beat_job more than once for a single ask, and never make a song per hook. If the user wants several songs at once, use run_drop with an explicit count. In normal chat, after generating hooks, STOP and let the user choose — only move on to lyrics/beat once they've picked a hook or said "go".
 
 MATERIAL BEATS = LET AI RUN IT: when the user wants "the exact beat", a beat from real material, or the material layer, call make_material_beat — it FORGES the missing kit (drums, talking drum, log drum, bass, African percussion, chords) and ASSEMBLES automatically. NEVER make the user run forge then assemble by hand, and never ask them which instruments — pick the right kit for the genre yourself (that's your job). Prefer make_material_beat over forge_materials + assemble_beat.
 
@@ -58,7 +58,7 @@ BREVITY LAW — artists want moves, not memos. Default to 1–2 short sentences.
 export const STUDIO_AUTOPILOT_DIRECTIVE = `
 AUTOPILOT MODE IS ON. Produce the whole song end to end WITHOUT asking the user between steps. Drive this pipeline and keep going every turn:
 1. polish_brief (from the user's idea) if there's no brief yet
-2. generate_hooks (8 unless told otherwise)
+2. generate_hooks (3 unless told otherwise)
 3. hooks come back scored by the A&R — pick EXACTLY ONE hook: the single highest-scored. If several TIE for the top score, break the tie yourself and choose ONE. Call approve_hook ONCE, for that one hook only. NEVER approve more than one hook.
 4. generate_lyrics for that ONE hook, ONCE. Do not call generate_lyrics again for a hook that already has lyrics.
 5. create_beat_job with withVocals=true — this makes the FULL SONG where the AI SINGS the lyrics (the complete record, not just a beat). Only fall back to withVocals=false (instrumental) if the artist explicitly wants to sing it themselves.
@@ -114,7 +114,7 @@ export const STUDIO_CHAT_TOOLS = [
       type: 'object',
       properties: { languages: { type: 'array', items: { type: 'string' }, description: 'HARD constraint: ONLY these language codes (pcm/en/yo/ig/ha/...) may appear in the writing' },
         genre: { type: 'string', description: "The lane for the writing (e.g. amapiano, afrobeats) — PASS IT whenever the user names one: it syncs the session project's genre so briefs, lane context, and learned references pull the RIGHT lane. Omit to keep the project's current genre." },
-        count: { type: 'integer', minimum: 1, maximum: 50, default: 8 },
+        count: { type: 'integer', minimum: 1, maximum: 12, default: 3 },
         excludeIds: { type: 'array', items: { type: 'string' } },
         refineFrom: { type: 'array', items: { type: 'string' }, description: 'REFINE/REGENERATE MODE: the TEXT of the CURRENT hooks (from WORKSPACE_CONTEXT.hooks[].text). Pass these to get SHARPER versions in the SAME concept/theme/lane/hook-shape/language-mix — keep what works, fix the weak lines, no verbatim repeats, no drift to a new idea. OMIT for a fresh first generation or when the user explicitly wants a NEW/different concept.' },
       },
@@ -174,6 +174,7 @@ export const STUDIO_CHAT_TOOLS = [
         mood: { type: 'string', description: 'Production mood (colors the music-model tags), e.g. "celebration", "heartbreak", "luxury".' },
         voice: { type: 'string', enum: ['auto', 'female', 'male', 'duet', 'group'], description: 'Lead-vocal choice: female/male lead, duet (male+female trading lines), or group (choir call-and-response).' },
         influence: { type: 'string', description: 'Artist LANE to steer the sound toward (e.g. "Davido, Wizkid") — energy/production feel only, never a copy, never named in the song.' },
+        instruments: { type: 'array', items: { type: 'string' }, description: 'Explicit instrument picks the user names (e.g. ["log drum", "saxophone", "talking drum"]) — featured prominently in the render.' },
         pinnedReferenceId: { type: 'string', description: 'SoundReference id the user just listened to — the render rebuilds THAT sound.' },
         withStems: { type: 'boolean', default: true },
         withVocals: {

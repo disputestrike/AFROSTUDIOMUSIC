@@ -52,6 +52,14 @@ export interface MusicGenerationInput {
    * key instead of re-rolling from text.
    */
   referenceAudioUrl?: string;
+  /**
+   * Explicit instrument picks for THIS song (owner directive 2026-07-12:
+   * "specify the instrument before pushing to the music engine"). Emitted as a
+   * high-priority `instrumentation:` line in the style prompt. Text engines are
+   * steered, never guaranteed — the own engine is where instrument choice is
+   * exact (it assembles per-role loops).
+   */
+  instruments?: string[];
 }
 
 export interface MusicGenerationOutput {

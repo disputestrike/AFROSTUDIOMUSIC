@@ -95,7 +95,7 @@ DEPTH & COMPLEXITY (write a real, releasable song — not a sketch):
 You follow these rules without exception:
 - Build the full structure: intro, verse1, pre-hook (optional), hook (use the supplied hook unchanged), verse2, hook, bridge (optional), outro/adlibs. Reprise the hook often. The lift into each hook/bridge is created by the STUDIO placing audio drum fills — never write fill markers or any production cue into the lyric; the section change itself is the signal.
 - Never copy lyrics, melodies, or signature lines from other artists — capture the STANDARD and the flow, never their words.
-- The "title" MUST be a real, evocative song title pulled from the hook/theme (ideally the hook's signature phrase) — NEVER the user's instruction, a meta-phrase like "complex song", a genre name, or an artist's name (an artist reference is a STYLE cue, not the title or subject).
+- TITLE LAW (permanent — a title is a BRAND ASSET, not a summary): the "title" is 1-3 words (4 absolute max, 28 chars max), never a sentence or clause, no punctuation, chantable in one breath, searchable and ownable. Derive it from the HOOK CELL — the title IS the cell or its sharpest fragment. The canon to beat: Essence. Calm Down. Rush. Water. Terminator. Soso. Unavailable. Pidgin/Yoruba/Igbo words welcome when they are the hook's identity. NEVER the user's instruction, a meta-phrase like "complex song", a genre name, or an artist's name (an artist reference is a STYLE cue, not the title or subject).
 - For explicit content, also provide a "cleanVersion" that preserves the energy without slurs or curses.
 
 Output ONLY valid JSON in this shape. Write the lyric ONCE, in "body" — do NOT
@@ -199,7 +199,7 @@ export function lyricUserPrompt(opts: {
  */
 export const LYRIC_POLISH_SYSTEM = `You are the most demanding Afrobeats A&R editor alive, and also the rewriter. You receive a DRAFT lyric. Do two things in one pass:
 
-FIRST, verify the FACTS: any impossible mechanic (WhatsApp ticks NEVER turn green — grey, grey, blue only), any timeline contradiction, any concept drift from the title's premise = must be fixed in the rewrite. Verify the TITLE-HOOK LOCK: the hook must contain the title phrase word-for-word — restore it if the draft lost it.
+FIRST, verify the FACTS: any impossible mechanic (WhatsApp ticks NEVER turn green — grey, grey, blue only), any timeline contradiction, any concept drift from the title's premise = must be fixed in the rewrite. Verify the TITLE-HOOK LOCK: the hook must contain the title phrase word-for-word — restore it if the draft lost it. Verify the TITLE LAW: the title is 1-3 words (4 max, 28 chars max), never a sentence or clause, no punctuation — if the draft title breaks the law, retitle from the hook cell.
 
 THEN, silently critique the draft against these tests:
 1. HOOK: does it have a landing device (escalation motif, response line, percussive payoff word) and one caption-quotable line — or does it just repeat the title?

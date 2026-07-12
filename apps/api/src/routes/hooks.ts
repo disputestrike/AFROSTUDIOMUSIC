@@ -1,7 +1,7 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { prisma } from '@afrohit/db';
-import { generateHooksInputSchema, langSchema } from '@afrohit/shared';
+import { generateHooksInputSchema, langSchema, pickLawfulTitle } from '@afrohit/shared';
 import { joinBriefs, prompts, generateJson, directorRefineHooks, researchTrends, anthropicEnabled } from '@afrohit/ai';
 import { laneDnaBrief } from '../lib/lane-pipeline';
 import { requireAuth } from '../middleware/auth';
@@ -164,7 +164,9 @@ export default async function hooks(app: FastifyInstance) {
         data: {
           workspaceId,
           projectId: hook.projectId,
-          title: hook.text.split('\n')[0]!.slice(0, 80),
+          // TITLE LAW: gate the hook's first line; on failure derive a 1-3 word
+          // title from the hook's content words.
+          title: pickLawfulTitle([hook.text.split('\n')[0]!], hook.text),
           status: 'SKETCH',
         },
       });
@@ -226,10 +228,12 @@ export default async function hooks(app: FastifyInstance) {
       // If this hook is bound to a song whose title still mirrors the OLD hook,
       // keep the title in sync. Read-compare-update (no heuristic updateMany).
       if (hook.songId) {
-        const oldTitle = hook.text.split('\n')[0]!.slice(0, 80);
+        // Both derivations run through the TITLE LAW gate — the comparison must
+        // match what approve actually stored.
+        const oldTitle = pickLawfulTitle([hook.text.split('\n')[0]!], hook.text);
         const song = await prisma.song.findFirst({ where: { id: hook.songId, workspaceId }, select: { id: true, title: true } });
         if (song && song.title === oldTitle) {
-          await prisma.song.update({ where: { id: song.id }, data: { title: text.split('\n')[0]!.slice(0, 80) } }).catch(() => {});
+          await prisma.song.update({ where: { id: song.id }, data: { title: pickLawfulTitle([text.split('\n')[0]!], text) } }).catch(() => {});
         }
       }
       return { hookId: updated.id, text: updated.text };

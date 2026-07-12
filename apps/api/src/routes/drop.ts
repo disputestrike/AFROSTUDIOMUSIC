@@ -140,7 +140,7 @@ async function runDropPipelineInner(app: FastifyInstance, ctx: DropCtx, input: D
           // polish-brief LLM re-extracting them from the theme prose was the
           // only carrier before, so a polish hiccup dropped mood/fusion/influence.
           const sel = { mood: input.mood, fusionGenres: input.fusionGenres, influence: input.influence, songTitle: input.songTitle };
-          const hk = (await runChatTool({ ...ctx, name: 'generate_hooks', args: { count: 6, languages: input.languages, ...sel } })) as {
+          const hk = (await runChatTool({ ...ctx, name: 'generate_hooks', args: { count: 3, languages: input.languages, ...sel } })) as {
             hooks?: Array<{ id: string; text: string; score: number | null }>;
           };
           let hooks = hk?.hooks ?? [];
@@ -170,7 +170,7 @@ async function runDropPipelineInner(app: FastifyInstance, ctx: DropCtx, input: D
           // hard-failing the drop (a strong hook is what carries an Afrobeats record).
           const MIN_HOOK_SCORE = Number(process.env.MIN_HOOK_SCORE ?? 6.5);
           if ((best.score ?? 0) < MIN_HOOK_SCORE) {
-            const hk2 = (await runChatTool({ ...ctx, name: 'generate_hooks', args: { count: 6, languages: input.languages, ...sel } })) as {
+            const hk2 = (await runChatTool({ ...ctx, name: 'generate_hooks', args: { count: 3, languages: input.languages, ...sel } })) as {
               hooks?: Array<{ id: string; text: string; score: number | null }>;
             };
             let hooks2 = hk2?.hooks ?? [];
@@ -199,7 +199,7 @@ async function runDropPipelineInner(app: FastifyInstance, ctx: DropCtx, input: D
             // vibe were silently dropped here while the fix landed only in chat.
             // vibe (the raw musical description) is preferred over theme, which is
             // wrapped in title-anchor boilerplate the music engine can't use.
-            args: { genre: input.genre, fusionGenres: input.fusionGenres, mood: input.mood, pinnedReferenceId: input.pinnedReferenceId, bpm: input.bpm, withVocals: input.withVocals, songEngine: input.songEngine, influence: input.influence, languages: input.languages, voice: input.voice, vibePrompt: input.vibe, candidates: input.candidates },
+            args: { genre: input.genre, fusionGenres: input.fusionGenres, mood: input.mood, pinnedReferenceId: input.pinnedReferenceId, bpm: input.bpm, withVocals: input.withVocals, songEngine: input.songEngine, influence: input.influence, languages: input.languages, voice: input.voice, vibePrompt: input.vibe, candidates: input.candidates, instruments: input.instruments },
           })) as { jobId?: string; songId?: string; error?: string };
 
           // The user's typed song name IS the title — the writers already treat it

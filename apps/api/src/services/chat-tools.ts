@@ -16,7 +16,7 @@ import { enqueue } from '../lib/queue';
 import { assertSafeUrl } from '../lib/url-guard';
 import { learnedReferenceBrief, learnedStyleTags, learnedMeasuredTags, learnedUsage, learnedLyricCraftBrief, snapshotTrend, freshnessBrief } from '../lib/learned';
 import { blueprintForReference } from '../lib/blueprint';
-import { genreSignature, structureBrief } from '@afrohit/shared';
+import { genreSignature, structureBrief, pickLawfulTitle } from '@afrohit/shared';
 import { learnLyricCraft, findLearnedLyric } from '../lib/lyric-learn';
 import { dataLakeReport } from '../lib/data-lake';
 import { lexiconPalette } from '../lib/lexicon';
@@ -100,7 +100,7 @@ export async function runChatTool(args: Ctx & { name: string; args: Record<strin
     case 'polish_brief':
       return polishBrief(ctx, String(a.rawIdea ?? ''));
     case 'generate_hooks':
-      return generateHooks(ctx, Number(a.count ?? 8), a.languages as string[] | undefined, a.refineFrom as string[] | undefined, selectionsOf(a), a.genre ? String(a.genre) : undefined);
+      return generateHooks(ctx, Number(a.count ?? 3), a.languages as string[] | undefined, a.refineFrom as string[] | undefined, selectionsOf(a), a.genre ? String(a.genre) : undefined);
     case 'score_hooks':
       return scoreHooks(ctx, (a.hookIds as string[]) ?? []);
     case 'approve_hook':
@@ -398,7 +398,9 @@ async function approveHook(ctx: Ctx, hookId: string) {
     data: {
       workspaceId: ctx.workspaceId,
       projectId: hook.projectId,
-      title: hook.text.split('\n')[0]!.slice(0, 80),
+      // TITLE LAW: the hook's first line is usually a SENTENCE — gate it, and
+      // when it fails, derive a 1-3 word title from the hook's content words.
+      title: pickLawfulTitle([hook.text.split('\n')[0]!], hook.text),
       status: 'SKETCH',
     },
   });
@@ -557,7 +559,13 @@ async function generateLyrics(ctx: Ctx, hookId: string, cleanVersion: boolean, l
   // (Continue/Regenerate) must UPDATE it, not crash on the unique constraint.
   const lyricData = {
     projectId: hook.projectId,
-    title: (typeof output.title === 'string' && output.title.trim()) || hook.text.split('\n')[0]!.slice(0, 80),
+    // TITLE LAW: the writer's title is gated; on failure derive from the hook
+    // cell (the title IS the cell), then the hook text. lyric.title outranks
+    // song.title on every display surface, so this is the title that ships.
+    title: pickLawfulTitle(
+      [typeof output.title === 'string' ? output.title.trim() : ''],
+      craftJson.hookCell || hook.text
+    ),
     body,
     cleanVersion: typeof output.cleanVersion === 'string' ? output.cleanVersion : undefined,
     explicit: output.explicit ?? false,
@@ -581,7 +589,7 @@ async function generateLyrics(ctx: Ctx, hookId: string, cleanVersion: boolean, l
   return { lyric: { id: lyric.id, title: lyric.title }, ...(langViolation.length ? { languageWarning: `still contains: ${langViolation.join(', ')} — regenerate or edit` } : {}) };
 }
 
-async function createBeatJob(ctx: Ctx, a: { genre: string; fusionGenres?: string[]; mood?: string; pinnedReferenceId?: string; bpm: number; keySignature?: string; durationS?: number; vibePrompt?: string; withStems?: boolean; withVocals?: boolean; songEngine?: 'suno' | 'ace_step' | 'minimax' | 'own'; influence?: string; languages?: string[]; voice?: 'auto' | 'female' | 'male' | 'duet' | 'group'; candidates?: number }) {
+async function createBeatJob(ctx: Ctx, a: { genre: string; fusionGenres?: string[]; mood?: string; pinnedReferenceId?: string; bpm: number; keySignature?: string; durationS?: number; vibePrompt?: string; withStems?: boolean; withVocals?: boolean; songEngine?: 'suno' | 'ace_step' | 'minimax' | 'own'; influence?: string; languages?: string[]; voice?: 'auto' | 'female' | 'male' | 'duet' | 'group'; candidates?: number; instruments?: string[] }) {
   if (!ctx.projectId) return { error: 'no_project_in_thread' };
 
   // Honor the requested genre for the whole session — the chat's scratch project
@@ -743,6 +751,9 @@ async function createBeatJob(ctx: Ctx, a: { genre: string; fusionGenres?: string
     // they always reach the engine. The Igbo/Yoruba pronunciation belts
     // ride here — the whole reason "ig" was being sung with Bantu phonetics.
     ...[voiceVocalTag(a.voice), languageVocalTag(a.languages)].filter((t): t is string => !!t),
+    // VOCAL-RHYTHM DIRECTIVE: the sung text carries the syllables; this tag
+    // carries the pocket (parity with the REST path).
+    ...((sungForm as { applied?: boolean } | null)?.applied ? ['vocal delivery: syncopated Afro phrasing, off-beat pushes into the hook, melisma runs held on open vowels'] : []),
     ...dnaTags, ...styleHints.slice(0, 3), ...laneSteer,
   ].slice(0, 12);
   const job = await prisma.providerJob.create({
@@ -1005,7 +1016,7 @@ async function runDropTool(ctx: Ctx, a: { theme: string; count?: number; genre?:
     // writing in the artist-profile defaults regardless of what the user picked.
     // The genre rides along the same way (lane truth): drops synced the project
     // genre only at createBeatJob — AFTER the hooks were already written stale.
-    const hk = (await generateHooks(ctx, 10, a.languages, undefined, undefined, a.genre)) as { hooks?: Array<{ id: string; text: string; score: number | null }> };
+    const hk = (await generateHooks(ctx, 3, a.languages, undefined, undefined, a.genre)) as { hooks?: Array<{ id: string; text: string; score: number | null }> };
     let hooks = hk?.hooks ?? [];
     if (!hooks.length) continue;
     if (hooks.every((h) => h.score == null)) {

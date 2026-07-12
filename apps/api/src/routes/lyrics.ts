@@ -1,7 +1,7 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { prisma } from '@afrohit/db';
-import { generateLyricsInputSchema, GENRES } from '@afrohit/shared';
+import { generateLyricsInputSchema, GENRES, pickLawfulTitle } from '@afrohit/shared';
 import { joinBriefs, prompts, generateJson } from '@afrohit/ai';
 import { laneDnaBrief } from '../lib/lane-pipeline';
 import { requireAuth } from '../middleware/auth';
@@ -106,7 +106,9 @@ export default async function lyrics(app: FastifyInstance) {
       // updates it instead of hitting the unique constraint.
       const lyricData = {
         projectId: project.id,
-        title: (typeof output.title === 'string' && output.title.trim()) || hook.text.slice(0, 80),
+        // TITLE LAW: gate the writer's title; on failure derive 1-3 content
+        // words from the hook text.
+        title: pickLawfulTitle([typeof output.title === 'string' ? output.title.trim() : ''], hook.text),
         body,
         cleanVersion: output.cleanVersion,
         explicit: output.explicit ?? false,

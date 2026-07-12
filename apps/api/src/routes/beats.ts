@@ -200,8 +200,13 @@ export default async function beats(app: FastifyInstance) {
       // ONE final tag set, stored AND sent — the Truth report reads the stored
       // copy (promptStyleTags), the engine renders from the payload copy; they
       // must never diverge.
+      // VOCAL-RHYTHM DIRECTIVE (owner directive): when the Singing Brain shaped
+      // the sung form, tell the engine HOW to deliver it — the sung text carries
+      // the syllables; this tag carries the pocket.
+      const sungApplied = !!(sungForm as { applied?: boolean } | null)?.applied;
       const finalDnaTags = [
         ...[voiceVocalTag(input.voice), input.withVocals ? languageVocalTag(langs) : null].filter((t): t is string => !!t),
+        ...(sungApplied ? ['vocal delivery: syncopated Afro phrasing, off-beat pushes into the hook, melisma runs held on open vowels'] : []),
         ...dnaTags,
         ...styleHints.slice(0, 3),
       ];

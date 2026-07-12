@@ -32,7 +32,7 @@ import {
   researchTrends,
   type HitPrediction,
 } from '@afrohit/ai';
-import { genreSignature } from '@afrohit/shared';
+import { genreSignature, pickLawfulTitle } from '@afrohit/shared';
 import { learnedReferenceBrief } from './learned';
 import { laneContext } from './lane-context';
 import { laneDna, laneDnaBrief } from './lane-pipeline';
@@ -177,7 +177,9 @@ async function resing(
   // THE NAME IS LAW: a rewrite improves EXECUTION, never identity — the existing
   // title (often the artist's own) always survives a redeem. Only a song with no
   // title yet may take the rewrite's suggestion.
-  await prisma.lyricDraft.update({ where: { id: song.lyric.id }, data: { title: song.lyric.title || title, body, approved: true } });
+  // (TITLE LAW gates the rewrite's suggestion; the artist's existing title is
+  // never touched.)
+  await prisma.lyricDraft.update({ where: { id: song.lyric.id }, data: { title: song.lyric.title || pickLawfulTitle([title], body), body, approved: true } });
   await prisma.song.update({ where: { id: song.id }, data: { versionLabel: 'bigger (A&R notes applied)', hitScore: null, viralScore: null } });
   const charge = await app.chargeCredits({ workspaceId, key: 'full_song_demo', refTable: 'Song', refId: song.id });
   if (!charge.ok) return null;

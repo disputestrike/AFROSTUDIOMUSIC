@@ -60,6 +60,14 @@ const MOODS = [
   'street', 'hustle', 'triumphant', 'luxury', 'lifestyle', 'family',
   'gratitude', 'summer', 'motivation', 'freedom',
 ];
+// INSTRUMENTS — explicit picks the artist can feature. Steering on provider
+// engines (they're black boxes); exact on the own engine (per-role loops).
+const INSTRUMENTS = [
+  'log drum', 'talking drum', 'shekere', 'congas', 'djembe', 'steel pan',
+  'saxophone', 'trumpet', 'brass section', 'flute', 'kalimba', 'balafon',
+  'highlife guitar', 'palm-wine guitar', 'piano', 'rhodes', 'organ', 'strings',
+  'warm sub bass', 'amapiano log bass', 'synth pads', 'kora',
+];
 const STEPS = ['Setting up your session', 'Writing hooks + A&R picking the best', 'Writing the lyrics', 'Singing & producing your song'];
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -180,6 +188,9 @@ export default function CreatePage() {
   // among DIFFERENT directions (costs that many renders).
   const [takes, setTakes] = useState<1 | 2 | 3>(1);
   const [influence, setInfluence] = useState('');
+  // Explicit instrument picks — featured prominently in the render's style
+  // prompt (steering on provider engines; exact on the own engine).
+  const [instruments, setInstruments] = useState<string[]>([]);
   // 'auto' = let the backend's defaultSongEngine() choose (Suno when a key
   // exists, else the fallback). Hardcoding 'minimax' here used to OVERRIDE that
   // — so full songs never upgraded to Suno even with a key. Auto is the default.
@@ -313,7 +324,7 @@ export default function CreatePage() {
       // networks). We poll the drop job for the hook/lyrics result…
       const started = await api.post<{ jobId: string }>(
         `/projects/${project.id}/drop`,
-        { theme, vibe: vibe.trim().slice(0, 500) || undefined, songTitle: songName.trim() || undefined, voice: voice === 'auto' ? undefined : voice, candidates: takes > 1 ? takes : undefined, pinnedReferenceId: pinnedRef || undefined, count: 1, genre, fusionGenres: fusion.length ? fusion : undefined, mood, bpm, withVocals: true, songEngine: engine === 'auto' ? undefined : engine, influence: influence.trim() || undefined, languages: langs },
+        { theme, vibe: vibe.trim().slice(0, 500) || undefined, songTitle: songName.trim() || undefined, voice: voice === 'auto' ? undefined : voice, candidates: takes > 1 ? takes : undefined, pinnedReferenceId: pinnedRef || undefined, count: 1, genre, fusionGenres: fusion.length ? fusion : undefined, mood, bpm, withVocals: true, songEngine: engine === 'auto' ? undefined : engine, influence: influence.trim() || undefined, languages: langs, instruments: instruments.length ? instruments : undefined },
         // One key per CLICK: the retry-on-network-death in apiFetch can re-send
         // this POST — the server returns the drop already running instead of
         // starting (and charging) a second one.
@@ -483,6 +494,7 @@ export default function CreatePage() {
         voice: voice === 'auto' ? undefined : voice,
         mood,
         influence: influence.trim() || undefined,
+        instruments: instruments.length ? instruments : undefined,
         candidates: takes > 1 ? takes : undefined,
         pinnedReferenceId: pinnedRef || undefined,
         vibePrompt: [`${mood} energy`, decon?.vocalDirection, fusion.length ? `genre fusion: ${genreLabel}` : null].filter(Boolean).join('. '),
@@ -744,6 +756,23 @@ export default function CreatePage() {
       <div className="mt-6"><div className="mb-2 text-sm text-slate-400">Influence — artist lane (optional)</div>
         <input value={influence} onChange={(e) => setInfluence(e.target.value)} placeholder="e.g. Davido, Wizkid, Asake" className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2.5 text-sm" />
         <p className="mt-1.5 text-xs text-slate-500">Steers the <span className="text-slate-300">vibe/energy/production feel</span> toward artists you love — the kind of record they’d make. It never copies their songs and never names them.</p>
+      </div>
+
+      <div className="mt-6"><div className="mb-2 text-sm text-slate-400">Feature instruments (optional) <span className="text-xs text-slate-500">— pick up to 5; they lead the production</span></div>
+        <div className="flex flex-wrap gap-2">
+          {INSTRUMENTS.map((inst) => {
+            const on = instruments.includes(inst);
+            return (
+              <button
+                key={inst}
+                onClick={() => setInstruments((cur) => (on ? cur.filter((x) => x !== inst) : cur.length >= 5 ? cur : [...cur, inst]))}
+                className={`rounded-full border px-3 py-1.5 text-sm ${on ? 'border-transparent bg-gradient-to-r from-orange-500 to-pink-500 text-white' : 'border-slate-700 bg-slate-900 text-slate-300 hover:border-slate-500'}`}
+              >
+                {inst}
+              </button>
+            );
+          })}
+        </div>
       </div>
 
       <label className="mb-1 mt-4 block text-sm text-slate-300">Voice</label>
