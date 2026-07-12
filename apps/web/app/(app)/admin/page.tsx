@@ -165,6 +165,7 @@ export default function AdminPage() {
           ))}
       </div>
 
+      <AutonomyCard />
       <LakeJobs />
 
       <WriterAb />
@@ -242,6 +243,73 @@ const LAKE_TASKS = [
   { task: 'refile-references', label: 'Refile scan', what: 'propose lane moves for misfiled history (approve below)' },
   { task: 'mine-lexicon', label: 'Mine lexicon', what: 'harvest vocabulary from owned-upload transcripts' },
 ] as const;
+
+/**
+ * AUTONOMY — the on/off switches for every money-spending automatic job. The
+ * API routes existed for days while THIS card didn't (the owner rightly called
+ * it out: "you'll just be telling stuff that is not there"). One click per job;
+ * OFF = that job spends nothing until you flip it back.
+ */
+interface AutonomyJobRow { job: string; enabled: boolean; schedule: string; what: string; valueSignal: string }
+function AutonomyCard() {
+  const api = useApi();
+  const [jobs, setJobs] = useState<AutonomyJobRow[] | null>(null);
+  const [err, setErr] = useState('');
+  const [busy, setBusy] = useState('');
+
+  async function load() {
+    try {
+      const r = await api.get<{ jobs: AutonomyJobRow[] }>('/admin/autonomy');
+      setJobs(r.jobs);
+      setErr('');
+    } catch (e) {
+      const m = String((e as Error)?.message ?? e);
+      setErr(`couldn't load autonomy: ${m.slice(0, 120)}${/^40[13]\b/.test(m) ? ' — set the admin key above first' : ''}`);
+    }
+  }
+  useEffect(() => { void load(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, []);
+
+  async function toggle(job: string, enabled: boolean) {
+    setBusy(job);
+    try {
+      await api.post('/admin/autonomy', { job, enabled });
+      await load();
+    } catch (e) {
+      const m = String((e as Error)?.message ?? e);
+      setErr(`${job}: ${m.slice(0, 120)}${/^40[13]\b/.test(m) ? ' — check the admin key above' : ''}`);
+    } finally {
+      setBusy('');
+    }
+  }
+
+  return (
+    <div className="mt-10 rounded-2xl border border-amber-900/60 bg-slate-900/40 p-4">
+      <h2 className="font-display text-2xl">Autonomy <span className="text-sm font-normal text-slate-500">— every automatic job that can spend money, with its OFF switch.</span></h2>
+      {err && <div className="mt-2 text-xs text-rose-400">{err}</div>}
+      {!jobs && !err && <div className="mt-3 text-xs text-slate-500">Loading…</div>}
+      {jobs && (
+        <div className="mt-3 grid gap-2 lg:grid-cols-2">
+          {jobs.map((j) => (
+            <div key={j.job} className="flex items-start justify-between gap-3 rounded-xl border border-slate-800 bg-slate-950/60 p-3">
+              <div>
+                <div className="text-sm text-slate-200">{j.job.replace(/_/g, ' ')} <span className="text-[11px] text-slate-500">({j.schedule})</span></div>
+                <div className="mt-0.5 text-[11px] leading-snug text-slate-500">{j.what}</div>
+                <div className="mt-0.5 text-[11px] leading-snug text-slate-600">{j.valueSignal}</div>
+              </div>
+              <button
+                onClick={() => void toggle(j.job, !j.enabled)}
+                disabled={busy === j.job}
+                className={`shrink-0 rounded-full px-3 py-1 text-xs font-semibold ${j.enabled ? 'bg-emerald-600/20 text-emerald-300 border border-emerald-700' : 'bg-rose-600/20 text-rose-300 border border-rose-800'} disabled:opacity-50`}
+              >
+                {busy === j.job ? '…' : j.enabled ? 'ON — click to stop' : 'OFF — click to start'}
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
 
 function LakeJobs() {
   const api = useApi();

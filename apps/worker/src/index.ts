@@ -6,6 +6,7 @@ import IORedis from 'ioredis';
 import pino from 'pino';
 import * as Sentry from '@sentry/node';
 
+import { runWithBrainContext } from '@afrohit/ai';
 import { processMusic } from './processors/music';
 import { processForgeMaterial, processAssembleBeat } from './processors/material';
 import { processAnalyze } from './processors/analyze';
@@ -84,19 +85,25 @@ const workers = [
   // local Demucs/librosa are CPU-heavy on this shared container; one at a time
   // keeps renders fast. Nothing user-facing ever waits on this queue.
   new Worker('lake', (async (job: { data: never; name: string }) => {
-    if (job.name === 'deep-measure') await processDeepMeasure(job.data as never);
-    else if (job.name === 'analyze-audio') await processAnalyze(job.data as never);
-    else if (job.name === 'nightly-compound') await processNightlyCompound();
-    else if (job.name === 'measure-backfill') await processMeasureBackfill();
-    else if (job.name === 'learn-backfill') await processLearnBackfill();
-    else if (job.name === 'listen-back') await processListenBack();
-    else if (job.name === 'refile-references') await processRefileReferences();
-    else if (job.name === 'mine-lexicon') await processMineLexicon();
-    else if (job.name === 'lexicon-research') await processLexiconResearch();
-    else if (job.name === 'wiktionary-harvest') await processWiktionaryHarvest();
-    else if (job.name === 'wiktionary-burst') await processWiktionaryHarvest({ all: true });
-    else if (job.name === 'lexicon-gloss') await processGlossPass();
-    else if (job.name === 'lexicon-verify') await processVerifyLexicon();
+    // OWNER LAW: EVERYTHING on the lake queue is background text/analysis work
+    // — Cerebras-first for every LLM call, whether the nightly cron fired it or
+    // the owner clicked a Data-lake button in Admin. Claude never bills for
+    // lake work; the ladder stays as the failure safety only.
+    await runWithBrainContext({ forceTier: 'bulk', runId: `lake:${job.name}` }, async () => {
+      if (job.name === 'deep-measure') await processDeepMeasure(job.data as never);
+      else if (job.name === 'analyze-audio') await processAnalyze(job.data as never);
+      else if (job.name === 'nightly-compound') await processNightlyCompound();
+      else if (job.name === 'measure-backfill') await processMeasureBackfill();
+      else if (job.name === 'learn-backfill') await processLearnBackfill();
+      else if (job.name === 'listen-back') await processListenBack();
+      else if (job.name === 'refile-references') await processRefileReferences();
+      else if (job.name === 'mine-lexicon') await processMineLexicon();
+      else if (job.name === 'lexicon-research') await processLexiconResearch();
+      else if (job.name === 'wiktionary-harvest') await processWiktionaryHarvest();
+      else if (job.name === 'wiktionary-burst') await processWiktionaryHarvest({ all: true });
+      else if (job.name === 'lexicon-gloss') await processGlossPass();
+      else if (job.name === 'lexicon-verify') await processVerifyLexicon();
+    });
   }) as never, { connection, concurrency: 1 }),
   makeWorker('voice', async (job: { data: never; name: string }) => {
     if (job.name === 'setup-voice-profile') await processVoiceProfile(job.data as never);
