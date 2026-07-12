@@ -28,7 +28,9 @@ export function buildFillFilterGraph(placements: number[], opts?: FillOverlayOpt
   const pts = placements.filter((t) => Number.isFinite(t) && t >= 0);
   if (!pts.length) return null;
   const gain = Math.max(0, Math.min(1, opts?.fillGain ?? 0.5));
-  const limit = Math.max(0.1, Math.min(1, opts?.limit ?? 0.97));
+  // -1 dB ceiling, same as the assembly bus — NOT 0.97, which left no true-peak
+  // headroom and tripped the QC clipping gate.
+  const limit = Math.max(0.1, Math.min(1, opts?.limit ?? 0.891));
   const n = pts.length;
   const labels = Array.from({ length: n }, (_, i) => `[f${i}]`).join('');
   const parts = [`[1:a]volume=${gain},asplit=${n}${labels}`];
@@ -39,7 +41,12 @@ export function buildFillFilterGraph(placements: number[], opts?: FillOverlayOpt
     delayed.push(`[d${i}]`);
   });
   parts.push(`[0:a]${delayed.join('')}amix=inputs=${n + 1}:normalize=0:duration=first[mix]`);
-  parts.push(`[mix]alimiter=limit=${limit}[out]`);
+  // level=false is LOAD-BEARING: alimiter defaults level=true, which AUTO-BOOSTS
+  // the output up to the ceiling — it re-normalized every fill-overlaid take to
+  // -0.26 dB, defeating the assembly bus's -1 dB headroom AND the ×0.6 clipping
+  // retry (the boost undid the trim), so dense takes failed QC twice and the
+  // whole own-engine render died ("grid assembly failed", hit live 2026-07-12).
+  parts.push(`[mix]alimiter=level=false:limit=${limit}:attack=2:release=80[out]`);
   return parts.join(';');
 }
 

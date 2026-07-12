@@ -22,6 +22,15 @@ assert(g.includes('adelay=30000|30000'), 'second fill delayed to 30s');
 assert(g.includes('amix=inputs=3'), 'mixes 2 fills + the track (3 inputs)');
 assert(g.includes('volume=0.5'), 'fill kept subtle (gain applied)');
 assert(g.includes('alimiter'), 'peak-limited so it never clips');
+// LOAD-BEARING: alimiter defaults level=true (auto-boost to the ceiling), which
+// re-normalized every overlaid take to -0.26 dB, defeated the bus headroom AND
+// the ×0.6 clipping retry, and killed own-engine renders live ("grid assembly
+// failed", 2026-07-12). The overlay limiter must never re-level.
+assert(g.includes('alimiter=level=false'), 'overlay limiter does NOT re-level (level=false)');
+{
+  const m = /alimiter=level=false:limit=([0-9.]+)/.exec(g);
+  assert(!!m && Number(m[1]) <= 0.891, 'overlay ceiling keeps -1 dB true-peak headroom (limit <= 0.891)');
+}
 assert(g.trim().endsWith('[out]'), 'graph ends at the [out] pad ffmpeg maps');
 
 // Honesty / safety: nothing to place -> null (caller keeps the original take).
