@@ -164,6 +164,20 @@ export const voiceProfileInputSchema = z.object({
   language: langSchema.optional(),
 });
 
+/** OWN-VOICE TRAINING kickoff: consent-gated, dataset is ONE zip of the
+ *  artist's own recordings, destination is a "user/model" path in the ARTIST's
+ *  Replicate account (falls back to VOICE_TRAINER_DESTINATION when omitted). */
+export const voiceTrainInputSchema = z.object({
+  artistId: z.string().cuid(),
+  consentId: z.string().cuid(),
+  name: z.string().min(1).max(80),
+  datasetZipUrl: z.string().url(),
+  destination: z
+    .string()
+    .regex(/^[a-z0-9][a-z0-9-]*\/[a-zA-Z0-9][a-zA-Z0-9._-]*$/, 'destination must be "user/model"')
+    .optional(),
+});
+
 export const renderVocalInputSchema = z.object({
   projectId: z.string().cuid(),
   songId: z.string().cuid().optional(),

@@ -790,6 +790,21 @@ export async function processNightlyCompound(): Promise<void> {
   // wrapper routes it bulk-first like everything else tonight.)
   return runWithBrainContext({ forceTier: 'bulk', runId: 'nightly-compound' }, async () => {
     if (!(await isAutonomyEnabled('nightly_compound'))) { console.log('[nightly-compound] disabled by operator (autonomy off) — skipped'); return; }
+    // MONEY LEAK FIX (lived it): the after-deploy trigger's dated-jobId dedup
+    // SELF-DEFEATS — removeOnComplete deletes the record, so every deploy re-ran
+    // the FULL pass (forge budget + LLM work, ×6 on a busy dev day, drained the
+    // owner's Replicate AND brain credit with zero songs). DB cooldown survives
+    // deploys: skip when the last completed run is under COMPOUND_COOLDOWN_HOURS
+    // (default 20 — the 02:45 nightly always clears it).
+    const cooldownH = Math.max(0, Number(process.env.COMPOUND_COOLDOWN_HOURS ?? 20));
+    try {
+      const last = await prisma.systemSetting.findUnique({ where: { key: 'compound.lastRunAt' } });
+      const lastAt = last ? Date.parse(last.value) : 0;
+      if (lastAt && Date.now() - lastAt < cooldownH * 3_600_000) {
+        console.log(`[nightly-compound] ran ${((Date.now() - lastAt) / 3_600_000).toFixed(1)}h ago (< ${cooldownH}h cooldown) — skipped`);
+        return;
+      }
+    } catch { /* cooldown read failure never blocks the scheduled run */ }
     console.log('[nightly-compound] start');
     await ensureSignatureKits();
     await processReportCard();
@@ -802,6 +817,11 @@ export async function processNightlyCompound(): Promise<void> {
     await processWiktionaryHarvest();
     await processGlossPass();
     await processVerifyLexicon({ limit: 30 });
+    await prisma.systemSetting.upsert({
+      where: { key: 'compound.lastRunAt' },
+      create: { key: 'compound.lastRunAt', value: new Date().toISOString() },
+      update: { value: new Date().toISOString() },
+    }).catch(() => undefined);
     console.log('[nightly-compound] done');
   });
 }

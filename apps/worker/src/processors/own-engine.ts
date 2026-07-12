@@ -191,6 +191,7 @@ export async function processOwnEngine(p: OwnEnginePayload): Promise<void> {
       data: { meta: { ...((beatRow?.meta ?? {}) as Record<string, unknown>), ownEngine: { v: 1, layers: notes, blueprintMatch } } as never },
     });
 
+    // OWN-VOICE seam: once a VoiceProfile trained via POST /voices/train is READY (trainedVersion set), the artist's trained voice sings the lead here — inference wiring lands in a later round.
     await markSucceeded(p.jobId, {
       engine: 'afrohit-own-v1', beatId: finalBeatId, url: finalUrl, blueprintMatch, layers: notes,
       voice: 'record or upload your vocal (POST /projects/:id/vocals/upload) — the mixer picks it up as lead',

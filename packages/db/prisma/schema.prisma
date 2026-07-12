@@ -188,6 +188,12 @@ model VoiceProfile {
   sampleUrls    String[] @default([])  // raw uploaded samples
   language      String?  // primary language
   meta          Json?
+  // OWN-VOICE TRAINING (Replicate trainings API): the artist trains a singing
+  // model on HIS OWN recordings; weights land in HIS Replicate account.
+  trainingId       String? // Replicate training id (polled via GET /voices/:id/training)
+  destinationModel String? // "user/model" destination in the artist's Replicate account (keep private)
+  trainedVersion   String? // version identifier once training succeeds
+  trainingMeta     Json?   // {datasetZipUrl, trainer, at, externalDataset?, output?, error?}
   createdAt     DateTime @default(now()) @db.Timestamptz(6)
 
   workspace     Workspace    @relation(fields: [workspaceId], references: [id], onDelete: Cascade)

@@ -26,6 +26,11 @@ export const CREDIT_COSTS = {
   voice_render_30s: 30_000, // $3.00
   voice_render_full: 80_000, // $8.00
   voice_profile_setup: 200_000, // $20.00 one-time per voice
+  // Own-voice training kickoff (Replicate trainings API). ESTIMATE: RVC-family
+  // GPU training runs are typically a few dollars of compute; $5 covers the
+  // 2-3× rule until real cost data lands. Tune when the operator's chosen
+  // trainer reports actual run costs.
+  voice_clone_training: 50_000, // $5.00 est. per training run
   // Mix / master
   mix_preset: 10_000, // $1.00
   master_preset: 15_000, // $1.50
