@@ -20,7 +20,9 @@
 import { replicateToken } from '@afrohit/ai';
 
 const DEFAULT_TRAINER_MODEL = 'replicate/train-rvc-model';
-const DEFAULT_TRAINER_VERSION = 'cf360587a27f67500c30fc31de1e0f0f9aa26dcd7b866e6ac937a07bd104bad9';
+// Latest enabled version (verified on the model's versions page 2026-07-13 —
+// the previously pinned cf360587… was disabled by Replicate for failing setup).
+const DEFAULT_TRAINER_VERSION = '0397d5e28c9b54665e1e5d29d5cf4f722a7b89ec20e9dbf31487235305b1a101';
 // The trainer's own documented defaults (48k / v2 / rmvpe_gpu recommended);
 // epoch 50 per its README training example.
 const DEFAULT_EXTRA_INPUT: Record<string, unknown> = { sample_rate: '48k', version: 'v2', f0method: 'rmvpe_gpu', epoch: 50, batch_size: '7' };
@@ -69,6 +71,21 @@ export interface StartTrainingResult {
 }
 
 /**
+ * Replicate disables versions that stop completing setup (the fate of the
+ * previous default pin). When a kickoff 422s as "Version disabled", resolve the
+ * model's current latest version and retry once — same runtime-resolution
+ * pattern as voice-sing.ts.
+ */
+async function resolveLatestVersion(model: string, token: string): Promise<string | null> {
+  const res = await fetch(`https://api.replicate.com/v1/models/${model}`, {
+    headers: { authorization: `Bearer ${token}` },
+  });
+  if (!res.ok) return null;
+  const data = (await res.json()) as { latest_version?: { id?: string } };
+  return data.latest_version?.id ?? null;
+}
+
+/**
  * Kick off a training run. KIND=prediction (default — train-rvc-model):
  * POST /v1/predictions { version, input } and the trained model file arrives
  * as the prediction OUTPUT (a URL). KIND=training (destination-based trainers):
@@ -99,16 +116,36 @@ export async function startVoiceTraining(opts: {
   if (cfg.kind === 'training' && !opts.destination) {
     throw Object.assign(new Error('destination required for a destination-based trainer'), { statusCode: 400 });
   }
-  const res = await fetch(url, {
+  let res = await fetch(url, {
     method: 'POST',
     headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
     body: JSON.stringify(body),
   });
   if (!res.ok) {
     const detail = (await res.text()).slice(0, 300);
-    throw Object.assign(new Error(`replicate training kickoff ${res.status}: ${detail}`), {
-      statusCode: 502,
-    });
+    if (res.status === 422 && /disabled/i.test(detail) && cfg.kind === 'prediction') {
+      const latest = await resolveLatestVersion(cfg.model, token);
+      if (latest && latest !== cfg.version) {
+        res = await fetch(url, {
+          method: 'POST',
+          headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+          body: JSON.stringify({ version: latest, input }),
+        });
+        if (!res.ok) {
+          const retryDetail = (await res.text()).slice(0, 300);
+          throw Object.assign(
+            new Error(`replicate training kickoff ${res.status} (after latest-version retry): ${retryDetail}`),
+            { statusCode: 502 },
+          );
+        }
+      } else {
+        throw Object.assign(new Error(`replicate training kickoff 422: ${detail}`), { statusCode: 502 });
+      }
+    } else {
+      throw Object.assign(new Error(`replicate training kickoff ${res.status}: ${detail}`), {
+        statusCode: 502,
+      });
+    }
   }
   const data = (await res.json()) as { id?: string; status?: string };
   if (!data.id) throw Object.assign(new Error('replicate training response had no id'), { statusCode: 502 });
