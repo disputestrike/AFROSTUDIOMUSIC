@@ -8,6 +8,7 @@ import { genreSignature } from '@afrohit/shared';
  */
 
 import { useEffect, useRef, useState } from 'react';
+import { BringYourOwn } from '@/components/BringYourOwn';
 import { MumbleBooth } from '@/components/MumbleBooth';
 import WorkspaceLibrary from '@/components/WorkspaceLibrary';
 import { useRouter } from 'next/navigation';
@@ -831,6 +832,18 @@ export default function CreatePage() {
           <audio ref={playerRef} controls autoPlay src={nowPlaying.url} className="mt-3 w-full" />
         </div>
       )}
+
+      {/* BRING YOUR OWN — beat/chorus/vocal doors. All logic lives in the
+          component; a chorus typed there lands in the from-lyrics flow above
+          (same hand-off as MumbleBooth). */}
+      <BringYourOwn
+        onChorusText={(lyric) => {
+          setLyricsText(lyric);
+          setDecon(null);
+          setPath('lyrics');
+          void deconstruct(lyric);
+        }}
+      />
     </div>
 
     {/* Independent column: sticky with its OWN scrollbar so browsing the

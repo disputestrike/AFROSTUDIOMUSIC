@@ -149,6 +149,16 @@ export default async function uploads(app: FastifyInstance) {
     }
 
     if (input.kind === 'song') {
+      // TRAINING-ONLY door (the owner found his old catalog track sitting in the
+      // studio catalog after a training import): learn + harvest WITHOUT filing
+      // a catalog Song/Mix — the lake and the shelf get everything, the catalog
+      // stays the artist's working space.
+      if (input.trainingOnly) {
+        await enqueueLearn(app, { workspaceId, projectId: project.id, url, source: 'song-import-training' });
+        await enqueueHarvest(app, { workspaceId, projectId: project.id, sourceUrl: url, owned: true });
+        reply.code(201);
+        return { kind: 'song', trainingOnly: true, url, note: 'Learned + harvested for training — not added to the catalog.' };
+      }
       const songId = input.songId ?? (await ensureSong(workspaceId, project.id, input.title ?? `${project.title} — import`));
       const mix = await prisma.mix.create({
         data: {

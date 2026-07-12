@@ -329,6 +329,9 @@ export const importUrlSchema = z.object({
   keySignature: z.string().max(12).optional(),
   role: z.enum(['lead', 'double', 'ad-lib', 'harmony']).optional(),
   title: z.string().max(120).optional(),
+  /** kind 'song' only: learn + harvest WITHOUT filing a catalog Song — training
+   *  uploads must never appear in the artist's working catalog. */
+  trainingOnly: z.boolean().optional(),
 });
 
 // ---------- Mixer console (hands-on, DAW-style) ----------------------------

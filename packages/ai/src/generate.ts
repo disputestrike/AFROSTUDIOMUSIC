@@ -120,6 +120,21 @@ export async function generateJson<T>(opts: GenerateOptions): Promise<T> {
     }
   } else if (effTier === 'bulk' && cerebrasEnabled()) {
     console.log(`[brains] bulk prompt ${promptChars} chars > context guard — routed to judgment brain`);
+  } else if (effTier === 'bulk' && !cerebrasEnabled()) {
+    // COST LAW GUARD (lived it: the worker service was missing the Cerebras key
+    // and every "bulk" analyze call silently billed CLAUDE during the owner's
+    // catalog training). Bulk work NEVER falls to the expensive brain — cheap
+    // OpenAI draft model instead, Claude only as the final failure ladder below.
+    console.warn(`[brains] bulk tier requested but Cerebras is NOT configured on this service — routing to the cheap draft brain, never Sonnet (set CEREBRAS_API_KEY here)`);
+    try {
+      const t0 = Date.now();
+      const data = await responsesJson<T>({ system: opts.system, user: opts.user, temperature: opts.temperature, maxOutputTokens: opts.maxTokens });
+      lastBrain = 'openai';
+      recordLlmUsage({ tier: 'bulk', task: opts.task ?? 'unlabeled', brain: 'openai', ms: Date.now() - t0, estCostUsd: lastOpenAiUsage?.estCostUsd ?? null, degraded: 'cerebras not configured on this service' });
+      return data;
+    } catch {
+      // draft brain failed too — fall through to the normal ladder below.
+    }
   }
 
   if (wantClaude && anthropicEnabled()) {
@@ -144,15 +159,18 @@ export async function generateJson<T>(opts: GenerateOptions): Promise<T> {
   try {
     lastBrain = 'openai';
     const t0 = Date.now();
-    // EXPLICIT brain:'openai' (e.g. the Writer A/B bench) means "the flagship
-    // GPT" (OPENAI_TEXT_MODEL). The silent-fallback path keeps the cheap draft
-    // model — a fallback should never quietly bill flagship rates.
+    // EXPLICIT brain:'openai' (the Writer A/B bench) = the flagship GPT.
+    // OWNER DIRECTIVE (2026-07-13): the BRAIN's fallback must match the brain's
+    // quality — when a JUDGMENT call (lyrics/hooks/singing retry) falls here
+    // because Claude failed, it runs the flagship OPENAI_TEXT_MODEL, never the
+    // cheap draft. Bulk-tier falls keep the draft model (cost law).
+    const wantFlagship = opts.brain === 'openai' || (effTier ?? 'judgment') === 'judgment';
     const data = await responsesJson<T>({
       system: opts.system,
       user: opts.user,
       temperature: opts.temperature,
       maxOutputTokens: opts.maxTokens,
-      model: opts.brain === 'openai' ? MODELS.text : undefined,
+      model: wantFlagship ? MODELS.text : undefined,
     });
     recordLlmUsage({ tier: opts.tier ?? 'judgment', task: opts.task ?? 'unlabeled', brain: 'openai', ms: Date.now() - t0, estCostUsd: lastOpenAiUsage?.estCostUsd ?? null });
     return data;

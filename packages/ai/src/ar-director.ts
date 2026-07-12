@@ -10,6 +10,8 @@
  * and the caller keeps the GPT drafts. The pipeline never breaks.
  */
 import { anthropicEnabled, claudeJson } from './anthropic-client';
+import { responsesJson } from './providers/text';
+import { MODELS } from './openai-client';
 import { AR_DIRECTOR_SYSTEM, arDirectorUserPrompt } from './prompts/ar-director';
 import type { ArtistDna, Brief } from '@afrohit/shared';
 
@@ -85,24 +87,30 @@ export async function directorRefineHooks(opts: {
       needsNativeReview: false,
     }));
   }
-  if (!anthropicEnabled()) return null;
+  // LEAN scoring pass — the full 7-dimension + rewrite prompt generated ~4k
+  // tokens and timed out (~55s). This keeps the SAME A&R judgment but emits a
+  // compact result (score/viral/reason), so it's ~3x faster and never stalls.
+  const rubric =
+    'You are a ruthless Afrobeats A&R. Score each draft hook 0-10 for HIT potential (weighted to virality: undeniable hook + first-8-seconds + a 5-15s loopable TikTok moment matter most; kill generic filler like "we dey vibe/shine/energy"). ' +
+    'Return ONLY JSON {"hooks":[{"text","language":["pcm"],"score":8.2,"viralScore":8,"reason":"one line","needsNativeReview":false}]} — keep each hook\'s text, add the scores, rank best-first. Do NOT rewrite the hooks, do NOT add dimension breakdowns.';
+  const userPayload = JSON.stringify({ genre_lane: (opts.soundDna || '').slice(0, 600), languages: opts.artist.languages, draft_hooks: opts.drafts });
+  if (anthropicEnabled()) {
+    try {
+      const out = await claudeJson<{ hooks: ARHook[] }>({ system: rubric, user: userPayload, maxTokens: 1_400, timeoutMs: 35_000 });
+      const hooks = (out.hooks ?? []).filter((h) => h && typeof h.text === 'string');
+      if (hooks.length) return hooks;
+    } catch {
+      // fall through to the flagship-GPT fallback below
+    }
+  }
+  // OWNER DIRECTIVE (2026-07-13): the brain's fallback is the FLAGSHIP GPT,
+  // wired 100% — a dead Anthropic account must never silently skip the A&R
+  // pass (the drafts shipped unscored for hours during the credit outage).
   try {
-    // LEAN scoring pass — the full 7-dimension + rewrite prompt generated ~4k
-    // tokens and timed out (~55s). This keeps the SAME A&R judgment but emits a
-    // compact result (score/viral/reason), so it's ~3x faster and never stalls.
-    const rubric =
-      'You are a ruthless Afrobeats A&R. Score each draft hook 0-10 for HIT potential (weighted to virality: undeniable hook + first-8-seconds + a 5-15s loopable TikTok moment matter most; kill generic filler like "we dey vibe/shine/energy"). ' +
-      'Return ONLY JSON {"hooks":[{"text","language":["pcm"],"score":8.2,"viralScore":8,"reason":"one line","needsNativeReview":false}]} — keep each hook\'s text, add the scores, rank best-first. Do NOT rewrite the hooks, do NOT add dimension breakdowns.';
-    const out = await claudeJson<{ hooks: ARHook[] }>({
-      system: rubric,
-      user: JSON.stringify({ genre_lane: (opts.soundDna || '').slice(0, 600), languages: opts.artist.languages, draft_hooks: opts.drafts }),
-      maxTokens: 1_400,
-      timeoutMs: 35_000,
-    });
+    const out = await responsesJson<{ hooks: ARHook[] }>({ system: rubric, user: userPayload, maxOutputTokens: 1_400, model: MODELS.text });
     const hooks = (out.hooks ?? []).filter((h) => h && typeof h.text === 'string');
     return hooks.length ? hooks : null;
   } catch {
-    // Anthropic unavailable / bad model / parse error → caller keeps GPT drafts.
-    return null;
+    return null; // both brains down → caller keeps the raw drafts
   }
 }
