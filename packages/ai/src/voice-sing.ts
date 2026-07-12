@@ -23,12 +23,48 @@ const DEFAULT_SING_MODEL = 'zsxkib/realistic-voice-cloning';
 
 export type SingPitchChange = 'no-change' | 'male-to-female' | 'female-to-male';
 
+/**
+ * Realism knobs (schema-verified on the model 2026-07-13). The AI-sounding
+ * artifacts live here: fixed loudness flattens human dynamics, unprotected
+ * consonants/breaths get synthesis tearing, and the model's baked-in reverb
+ * reads as "AI voice in a box".
+ */
+export interface SingTuning {
+  /** 0–1: how much of the trained voice's character (feature index) to apply. */
+  indexRate?: number;
+  /** 0–1: 0 keeps the source performance's natural loudness dynamics; 1 = fixed. */
+  rmsMixRate?: number;
+  /** 0–0.5: breath/voiceless-consonant protection; 0.5 disables protection. */
+  protect?: number;
+  /** rmvpe (clarity, default) | mangio-crepe (smoother). */
+  pitchAlgo?: 'rmvpe' | 'mangio-crepe';
+  reverbWetness?: number;
+  reverbSize?: number;
+  reverbDryness?: number;
+}
+
+/**
+ * Studio realism defaults — differ from the model's where the model's default
+ * is the robotic choice: rms_mix_rate 0 (keep the human dynamics, model
+ * default 0.25 partially flattens), drier reverb (our mix chain owns space).
+ */
+const REALISM_DEFAULTS = {
+  index_rate: 0.5,
+  rms_mix_rate: 0,
+  protect: 0.33,
+  pitch_detection_algorithm: 'rmvpe',
+  reverb_wetness: 0.15,
+  reverb_size: 0.1,
+  reverb_dryness: 0.85,
+} as const;
+
 export interface SingWithVoiceOpts {
   /** A full song (or bare vocal) URL — the performance the voice will sing. */
   songInputUrl: string;
   /** Trained RVC model file URL (VoiceProfile training output). */
   modelUrl: string;
   pitchChange?: SingPitchChange;
+  tuning?: SingTuning;
   /** Workspace-pasted Replicate key overrides the env token. */
   apiKey?: string;
 }
@@ -64,6 +100,20 @@ export async function singWithVoice(
     if (!version) throw new Error('sing model has no version');
   }
 
+  // Operator seam: SING_EXTRA_INPUT (JSON) merges LAST — experiment with any
+  // model input without a code push. Malformed JSON must not silently change
+  // the render — throw honestly.
+  let envExtra: Record<string, unknown> = {};
+  const rawExtra = process.env.SING_EXTRA_INPUT?.trim();
+  if (rawExtra) {
+    try {
+      const parsed = JSON.parse(rawExtra) as unknown;
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) envExtra = parsed as Record<string, unknown>;
+    } catch {
+      throw new Error('SING_EXTRA_INPUT is not valid JSON');
+    }
+  }
+  const t = opts.tuning ?? {};
   const res = await fetch('https://api.replicate.com/v1/predictions', {
     method: 'POST',
     headers: { ...auth, 'content-type': 'application/json' },
@@ -74,6 +124,14 @@ export async function singWithVoice(
         custom_rvc_model_download_url: opts.modelUrl,
         pitch_change: opts.pitchChange ?? 'no-change',
         output_format: 'wav',
+        index_rate: t.indexRate ?? REALISM_DEFAULTS.index_rate,
+        rms_mix_rate: t.rmsMixRate ?? REALISM_DEFAULTS.rms_mix_rate,
+        protect: t.protect ?? REALISM_DEFAULTS.protect,
+        pitch_detection_algorithm: t.pitchAlgo ?? REALISM_DEFAULTS.pitch_detection_algorithm,
+        reverb_wetness: t.reverbWetness ?? REALISM_DEFAULTS.reverb_wetness,
+        reverb_size: t.reverbSize ?? REALISM_DEFAULTS.reverb_size,
+        reverb_dryness: t.reverbDryness ?? REALISM_DEFAULTS.reverb_dryness,
+        ...envExtra,
       },
     }),
   });

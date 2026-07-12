@@ -15,7 +15,7 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { prisma } from '@afrohit/db';
-import { singWithVoice, type SingPitchChange } from '@afrohit/ai';
+import { singWithVoice, type SingPitchChange, type SingTuning } from '@afrohit/ai';
 import { markFailed, markRunning, markSucceeded } from '../lib/jobs';
 import { downloadToBuffer, uploadBytes } from '../lib/storage';
 import { probeDurationS } from '../lib/ffmpeg';
@@ -29,6 +29,7 @@ interface SingConvertPayload {
   /** The performance to convert — full song or bare vocal. */
   songInputUrl: string;
   pitchChange?: SingPitchChange;
+  tuning?: SingTuning;
   songId?: string;
   projectId?: string;
 }
@@ -47,6 +48,7 @@ export async function processSingConvert(p: SingConvertPayload) {
       songInputUrl: p.songInputUrl,
       modelUrl: p.modelUrl,
       pitchChange: p.pitchChange,
+      tuning: p.tuning,
       apiKey: ws?.musicApiKey ?? undefined,
     });
 

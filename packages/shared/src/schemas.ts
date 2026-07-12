@@ -196,6 +196,18 @@ export const voiceSingInputSchema = z.object({
   songId: z.string().cuid().optional(),
   songUrl: z.string().url().optional(),
   pitchChange: z.enum(['no-change', 'male-to-female', 'female-to-male']).default('no-change'),
+  // Realism knobs (all optional — studio realism defaults apply when omitted).
+  tuning: z
+    .object({
+      indexRate: z.number().min(0).max(1).optional(),
+      rmsMixRate: z.number().min(0).max(1).optional(),
+      protect: z.number().min(0).max(0.5).optional(),
+      pitchAlgo: z.enum(['rmvpe', 'mangio-crepe']).optional(),
+      reverbWetness: z.number().min(0).max(1).optional(),
+      reverbSize: z.number().min(0).max(1).optional(),
+      reverbDryness: z.number().min(0).max(1).optional(),
+    })
+    .optional(),
 });
 
 export const renderVocalInputSchema = z.object({
