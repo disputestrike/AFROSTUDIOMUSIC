@@ -13,6 +13,7 @@ import { claudeJson, anthropicEnabled } from './anthropic-client';
 import { responsesJson, lastOpenAiUsage } from './providers/text';
 import { cerebrasJson, cerebrasEnabled, lastCerebrasUsage } from './cerebras-client';
 import { recordLlmUsage } from './llm-usage';
+import { brainContext } from './brain-context';
 import { MODELS } from './openai-client';
 
 export type Brain = 'claude' | 'openai' | 'cerebras' | 'stub';
@@ -95,11 +96,18 @@ export async function generateJson<T>(opts: GenerateOptions): Promise<T> {
   const callClaude = () =>
     claudeJson<T>({ system: opts.system + JSON_ONLY, user: opts.user, maxTokens: opts.maxTokens, temperature: opts.temperature, timeoutMs: opts.timeoutMs, model: opts.model });
 
+  // NIGHT LAW (owner): a run wrapped with forceTier:'bulk' (morning drop, zap
+  // radar, nightly compound) sends EVERY call — judgment included — Cerebras-
+  // first. The failure ladder below still protects the run; taste rates are for
+  // songs the owner asked for, never for the studio's own overnight work.
+  const forcedBulk = brainContext()?.forceTier === 'bulk';
+  const effTier = forcedBulk ? 'bulk' : opts.tier;
+
   // A3-5 — BULK TIER: Cerebras first for non-creative bulk work. Context guard:
   // ~7K tokens ≈ 28K chars auto-routes UP (never truncate to fit down). Ladder:
   // any Cerebras failure falls to the judgment path below with a logged reason.
   const promptChars = opts.system.length + opts.user.length;
-  if (opts.tier === 'bulk' && cerebrasEnabled() && promptChars < 28_000) {
+  if (effTier === 'bulk' && cerebrasEnabled() && promptChars < 28_000) {
     const t0 = Date.now();
     try {
       const data = await cerebrasJson<T>({ system: opts.system + JSON_ONLY, user: opts.user, maxTokens: opts.maxTokens });
@@ -110,7 +118,7 @@ export async function generateJson<T>(opts: GenerateOptions): Promise<T> {
       console.warn(`[brains] bulk tier failed (${(err as Error).message.slice(0, 120)}) — laddering to judgment brain`);
       recordLlmUsage({ tier: 'bulk', task: opts.task ?? 'unlabeled', brain: 'cerebras', ms: Date.now() - t0, estCostUsd: null, degraded: (err as Error).message.slice(0, 160) });
     }
-  } else if (opts.tier === 'bulk' && cerebrasEnabled()) {
+  } else if (effTier === 'bulk' && cerebrasEnabled()) {
     console.log(`[brains] bulk prompt ${promptChars} chars > context guard — routed to judgment brain`);
   }
 

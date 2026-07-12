@@ -1,5 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import { prisma } from '@afrohit/db';
+import { runWithBrainContext, brainRunCosts } from '@afrohit/ai';
 import { dropBatchSchema } from '@afrohit/shared';
 import { requireAuth } from '../middleware/auth';
 import { runChatTool } from '../services/chat-tools';
@@ -79,6 +80,14 @@ export type DropInput = ReturnType<typeof dropBatchSchema.parse>;
 /** The actual Drop Machine pipeline — runs detached; result lands on the job row.
  *  Exported so Albums can generate "the next track in this album's style". */
 export async function runDropPipeline(app: FastifyInstance, ctx: DropCtx, input: DropInput, dropJobId: string) {
+  // COST RECEIPT: the whole pipeline runs inside a metered brain context — every
+  // LLM call lands on this run's bill, and the drop's outputJson carries it
+  // ("one song, this much", not a vibe). User drops keep their taste tiers;
+  // only the NIGHT runs force bulk.
+  return runWithBrainContext({ runId: dropJobId }, () => runDropPipelineInner(app, ctx, input, dropJobId));
+}
+
+async function runDropPipelineInner(app: FastifyInstance, ctx: DropCtx, input: DropInput, dropJobId: string) {
   // STAGE TIMING — the writer now drafts + critic-polishes + arranges before the
   // render is queued, so this can run several minutes. Log where the time goes
   // so a slow drop is diagnosable from the API logs (not guessed at).
@@ -234,12 +243,22 @@ export async function runDropPipeline(app: FastifyInstance, ctx: DropCtx, input:
   const failReason = rendered.length === 0
     ? (drops.find((d) => d.error)?.error ?? 'the studio produced no song this run — check the API brain keys (ANTHROPIC / OPENAI) and try again')
     : undefined;
+  // The run's LLM bill (metered by the brain context; estimates, labeled so).
+  // The RENDER cost lands on the render job itself when the engine reports it.
+  const costs = brainRunCosts();
   await prisma.providerJob.update({
     where: { id: dropJobId },
     data: {
       status: 'SUCCEEDED',
       finishedAt: new Date(),
-      outputJson: { theme: input.theme, requested: input.count, produced: rendered.length, drop: drops, error: failReason } as never,
+      outputJson: {
+        theme: input.theme,
+        requested: input.count,
+        produced: rendered.length,
+        drop: drops,
+        error: failReason,
+        ...(costs ? { llmCosts: { estUsd: +costs.estUsd.toFixed(4), calls: costs.calls, byBrain: Object.fromEntries(Object.entries(costs.byBrain).map(([k, v]) => [k, { calls: v.calls, estUsd: +v.estUsd.toFixed(4) }])), degraded: costs.degraded, note: 'LLM writing bill (estimates); the render cost lands on the render job' } } : {}),
+      } as never,
     },
   });
 

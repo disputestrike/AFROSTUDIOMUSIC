@@ -13,7 +13,7 @@
  *                      while Benjamin sleeps (roadmap #3, now real).
  */
 import { prisma, isAutonomyEnabled } from '@afrohit/db';
-import { generateJson, tavilySearchRaw, lastBrain, replicateToken, getSoundDNA } from '@afrohit/ai';
+import { generateJson, runWithBrainContext, tavilySearchRaw, lastBrain, replicateToken, getSoundDNA } from '@afrohit/ai';
 import { LANGUAGES, GENRES, genreSignature, synthKitFor, forgeKitFor, scoreLaneCompliance, planRepairs, promotionEligible, type MeasuredAnalysis } from '@afrohit/shared';
 import { enqueueJob } from '../lib/enqueue';
 import { assessLaneCompliance, loadLaneProfile, laneGrounding } from '../lib/lane-assess';
@@ -783,18 +783,25 @@ export async function processVerifyLexicon(opts?: { limit?: number }): Promise<v
 
 /** Roadmap #3 — the nightly compounding job. Cost-capped by the batch limits. */
 export async function processNightlyCompound(): Promise<void> {
-  if (!(await isAutonomyEnabled('nightly_compound'))) { console.log('[nightly-compound] disabled by operator (autonomy off) — skipped'); return; }
-  console.log('[nightly-compound] start');
-  await ensureSignatureKits();
-  await processReportCard();
-  await processLearnBackfill({ limit: 5 });
-  await processRefileReferences({ limit: 25 });
-  await processListenBack({ limit: 20 });
-  await processMeasureBackfill({ refLimit: 20, beatLimit: 8 });
-  await processMineLexicon({ refLimit: 4 });
-  await processLexiconResearch({ queries: 6 });
-  await processWiktionaryHarvest();
-  await processGlossPass();
-  await processVerifyLexicon({ limit: 30 });
-  console.log('[nightly-compound] done');
+  // NIGHT LAW (owner): the ENTIRE nightly pass — kits, report card, backfills,
+  // refile, listen-back, lexicon — is bulk-brained (Cerebras-first on every LLM
+  // call; the failure ladder stays as safety). Overnight work never burns taste
+  // rates. (lexicon-verify keeps its judgment tag for the ledger, but the run
+  // wrapper routes it bulk-first like everything else tonight.)
+  return runWithBrainContext({ forceTier: 'bulk', runId: 'nightly-compound' }, async () => {
+    if (!(await isAutonomyEnabled('nightly_compound'))) { console.log('[nightly-compound] disabled by operator (autonomy off) — skipped'); return; }
+    console.log('[nightly-compound] start');
+    await ensureSignatureKits();
+    await processReportCard();
+    await processLearnBackfill({ limit: 5 });
+    await processRefileReferences({ limit: 25 });
+    await processListenBack({ limit: 20 });
+    await processMeasureBackfill({ refLimit: 20, beatLimit: 8 });
+    await processMineLexicon({ refLimit: 4 });
+    await processLexiconResearch({ queries: 6 });
+    await processWiktionaryHarvest();
+    await processGlossPass();
+    await processVerifyLexicon({ limit: 30 });
+    console.log('[nightly-compound] done');
+  });
 }

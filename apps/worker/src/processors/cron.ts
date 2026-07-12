@@ -12,7 +12,7 @@
  */
 import { prisma, isAutonomyEnabled } from '@afrohit/db';
 import { GENRES } from '@afrohit/shared';
-import { prompts, responsesJson, scoreItems, researchTrends, extractSongCraft, parseTrendSong } from '@afrohit/ai';
+import { prompts, generateJson, runWithBrainContext, scoreItems, researchTrends, extractSongCraft, parseTrendSong } from '@afrohit/ai';
 import { debitCredits } from '../lib/credits';
 import { jobDoneEmail, morningDropEmail, releaseRadarEmail, sendEmail } from '../lib/email';
 
@@ -27,6 +27,11 @@ async function ownerEmail(workspaceId: string): Promise<string | null> {
 }
 
 export async function processMorningDrop() {
+  // NIGHT LAW (owner): overnight work never burns taste rates — the WHOLE run
+  // is bulk-brained (Cerebras-first on every call; the ladder stays as safety).
+  return runWithBrainContext({ forceTier: 'bulk', runId: 'morning-drop' }, morningDropRun);
+}
+async function morningDropRun() {
   if (!(await isAutonomyEnabled('morning_drop'))) { console.log('[morning-drop] disabled by operator (autonomy off) — skipped'); return; }
   const artists = await prisma.artist.findMany({
     where: { morningDrop: true, workspace: { suspendedAt: null, deletedAt: null } },
@@ -66,9 +71,13 @@ export async function processMorningDrop() {
         }),
       ]);
 
-      const result = await responsesJson<{
+      // NIGHT LAW: overnight hook drafts ride the bulk brain (the run wrapper
+      // forces it anyway — this call also declares it for the economics log).
+      const result = await generateJson<{
         hooks: Array<{ text: string; language?: string[]; bpm?: number }>;
       }>({
+        tier: 'bulk',
+        task: 'morning-drop-hooks',
         system: prompts.HOOK_SYSTEM,
         user: prompts.hookUserPrompt({
           artist: artist as never,
@@ -80,7 +89,7 @@ export async function processMorningDrop() {
           },
         }),
         temperature: 0.95,
-        maxOutputTokens: 4_000,
+        maxTokens: 4_000,
       });
 
       const created = await prisma.$transaction(
@@ -176,6 +185,10 @@ function radarSlice(): string[] {
 const RADAR_MAX_PER_RUN = Number(process.env.ZAP_RADAR_MAX ?? 10);
 
 export async function processZapRadar() {
+  // NIGHT LAW: radar craft/lessons are bulk-brained end to end.
+  return runWithBrainContext({ forceTier: 'bulk', runId: 'zap-radar' }, zapRadarRun);
+}
+async function zapRadarRun() {
   if (!(await isAutonomyEnabled('zap_radar'))) { console.log('[zap-radar] disabled by operator (autonomy off) — skipped'); return; }
   const { backgroundLlmBudgetOk } = await import('./compound');
   if (!(await backgroundLlmBudgetOk('zap-radar'))) return;
