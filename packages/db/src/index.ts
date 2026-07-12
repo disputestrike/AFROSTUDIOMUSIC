@@ -27,7 +27,7 @@ export * from '@prisma/client';
  * unchanged; a row with value 'off' disables that job at run time. Cached 30s so
  * a cron loop doesn't hammer the DB.
  */
-export type AutonomyJob = 'morning_drop' | 'zap_radar' | 'nightly_compound';
+export type AutonomyJob = 'morning_drop' | 'zap_radar' | 'nightly_compound' | 'will_it_blow';
 const _flagCache = new Map<string, { on: boolean; at: number }>();
 export async function isAutonomyEnabled(job: AutonomyJob): Promise<boolean> {
   const key = `autonomy.${job}`;
@@ -52,7 +52,7 @@ export async function setAutonomyEnabled(job: AutonomyJob, enabled: boolean): Pr
   _flagCache.set(key, { on: enabled, at: Date.now() });
 }
 export async function allAutonomyFlags(): Promise<Record<AutonomyJob, boolean>> {
-  const jobs: AutonomyJob[] = ['morning_drop', 'zap_radar', 'nightly_compound'];
+  const jobs: AutonomyJob[] = ['morning_drop', 'zap_radar', 'nightly_compound', 'will_it_blow'];
   const rows = await prisma.systemSetting.findMany({ where: { key: { in: jobs.map((j) => `autonomy.${j}`) } } });
   const byKey = new Map(rows.map((r) => [r.key, r.value]));
   return Object.fromEntries(jobs.map((j) => [j, byKey.get(`autonomy.${j}`) !== 'off'])) as Record<AutonomyJob, boolean>;

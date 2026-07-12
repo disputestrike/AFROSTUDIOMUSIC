@@ -11,7 +11,7 @@ import * as db from '@afrohit/db';
 /** The sandbox compile shim (tools/shim/db-shim.d.ts) only declares the prisma
  *  exports, so the autonomy helpers are pulled through a typed view of the
  *  module. The union + signatures mirror packages/db/src/index.ts exactly. */
-type AutonomyJob = 'morning_drop' | 'zap_radar' | 'nightly_compound';
+type AutonomyJob = 'morning_drop' | 'zap_radar' | 'nightly_compound' | 'will_it_blow';
 const { allAutonomyFlags, setAutonomyEnabled } = db as unknown as {
   allAutonomyFlags(): Promise<Record<AutonomyJob, boolean>>;
   setAutonomyEnabled(job: AutonomyJob, enabled: boolean): Promise<void>;
@@ -267,7 +267,8 @@ export default async function admin(app: FastifyInstance) {
       jobs: [
         { job: 'morning_drop', enabled: flags.morning_drop, schedule: 'daily 05:00 UTC', what: '20 hooks + A&R score + email, per enrolled artist', valueSignal: 'only useful if you want a daily hook drop' },
         { job: 'zap_radar', enabled: flags.zap_radar, schedule: `${process.env.ZAP_RUNS_PER_DAY ?? '1'}×/day`, what: 'pull charts + learn trend craft into the lake', valueSignal: 'marginal — trend seasoning' },
-        { job: 'nightly_compound', enabled: flags.nightly_compound, schedule: 'daily 02:45 UTC + after each deploy', what: 're-score back-catalog (A&R) + MEASURE references + refile', valueSignal: 'the useful one — measuring makes your training actually influence renders' },
+        { job: 'nightly_compound', enabled: flags.nightly_compound, schedule: 'daily 02:45 UTC + after each deploy (20h cooldown)', what: 're-score back-catalog (A&R) + MEASURE references + refile + forge shelf loops', valueSignal: 'the useful one — measuring makes your training actually influence renders' },
+        { job: 'will_it_blow', enabled: flags.will_it_blow, schedule: 'after EVERY produced song', what: 'A&R score + one rewrite + ONE EXTRA RENDER per under-bar song (bar 90 ⇒ nearly every song)', valueSignal: 'the invisible per-song spender — off = songs ship as rendered, no auto-improve' },
       ],
       costLast: Object.fromEntries(Object.entries(cost).map(([k, v]) => [k, { calls: v.calls, estUsd: +v.usd.toFixed(2) }])),
       paidStemsEstUsd: +stemUsd.toFixed(2),
@@ -277,7 +278,7 @@ export default async function admin(app: FastifyInstance) {
   app.post<{ Body: { job: AutonomyJob; enabled: boolean } }>('/autonomy', async (req, reply) => {
     await requireAdmin(req);
     const { job, enabled } = req.body ?? {};
-    if (!['morning_drop', 'zap_radar', 'nightly_compound'].includes(job)) return reply.code(400).send({ error: 'unknown_job' });
+    if (!['morning_drop', 'zap_radar', 'nightly_compound', 'will_it_blow'].includes(job)) return reply.code(400).send({ error: 'unknown_job' });
     await setAutonomyEnabled(job, !!enabled);
     return { job, enabled: !!enabled };
   });

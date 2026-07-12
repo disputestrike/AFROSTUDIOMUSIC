@@ -35,9 +35,11 @@ export async function predictHit(opts: {
   if (!anthropicEnabled() && process.env.STUB_AI !== '1' && !process.env.OPENAI_API_KEY) return null;
   try {
     const out = await generateJson<HitPrediction>({
-      // JUDGMENT tier (owner's policy): hit prediction is A&R scoring — the
-      // specific brain, never the bulk tier.
-      tier: 'judgment',
+      // BULK tier (owner's revised cost law 2026-07-12: "was Cerebras not
+      // supposed to do all that kind of analysis?"): scoring/analysis rides the
+      // bulk brain; ONLY writing the lyric words stays on the taste brain. The
+      // ladder still climbs on failure — never a silent quality drop.
+      tier: 'bulk',
       task: 'hit-prediction',
       system: HIT_PREDICTOR_SYSTEM,
       user: hitPredictorUserPrompt(opts),

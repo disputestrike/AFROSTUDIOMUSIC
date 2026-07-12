@@ -23,7 +23,7 @@
  * attempts, default 3, max 6; set 0 to score-only).
  */
 import type { FastifyInstance } from 'fastify';
-import { prisma } from '@afrohit/db';
+import { prisma, isAutonomyEnabled } from '@afrohit/db';
 import {
   generateJson,
   prompts,
@@ -376,6 +376,14 @@ export async function willItBlowGate(
   workspaceId: string,
   items: Array<{ songId?: string; jobId?: string }>
 ): Promise<void> {
+  // OWNER KILL SWITCH (the invisible spender: every song under the 90 bar
+  // earned an automatic score + rewrite + a WHOLE EXTRA RENDER). One click in
+  // Admin → Autonomy stops the entire gate; WILL_IT_BLOW_MAX_PASSES=0 keeps
+  // score-only. Default ON — existing behavior unchanged.
+  if (!(await isAutonomyEnabled('will_it_blow'))) {
+    console.log('[will-it-blow] disabled by operator (autonomy off) — skipped');
+    return;
+  }
   for (const d of items) {
     if (d.songId && d.jobId) {
       await runGateForSong(app, workspaceId, d.songId, d.jobId).catch(() => {});

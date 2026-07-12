@@ -31,12 +31,11 @@ export async function scoreItems(opts: {
   model?: string;
 }): Promise<TasteScore[]> {
   if (opts.items.length === 0) return [];
-  // generateJson = Claude-first (resilient) instead of OpenAI-only — the taste
-  // scorer must not hard-fail when the OpenAI account is quota-exhausted.
-  // JUDGMENT tier (owner's policy): taste/A&R scoring is the specific brain —
-  // it never routes down to the bulk tier.
+  // BULK tier (owner's revised cost law 2026-07-12): SCORING is analysis —
+  // Cerebras-class work. Only writing the lyric words stays on the taste
+  // brain. The ladder climbs on failure, never a silent quality drop.
   const result = await generateJson<{ scores: TasteScore[] }>({
-    tier: 'judgment',
+    tier: 'bulk',
     task: 'taste-hook-scoring',
     system: TASTE_SYSTEM,
     user: tasteUserPrompt({ artist: opts.artist, items: opts.items }),
