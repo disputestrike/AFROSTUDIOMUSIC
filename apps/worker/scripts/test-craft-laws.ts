@@ -63,6 +63,8 @@ expect('packages/ai/src/prompts/lyrics.ts', lyrics, [
   'PICK ONE LYRIC MODE',
   'AUTHENTICITY LAW',
   'THE BRIDGE IS OPTIONAL',
+  // The writer is now TRAINED on the owner's exemplars (few-shot anchors).
+  'writerTrainingBrief',
 ], 'record-law');
 
 // --- The hook law ----------------------------------------------------------

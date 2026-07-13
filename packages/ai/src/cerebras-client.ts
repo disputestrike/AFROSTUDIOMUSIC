@@ -112,3 +112,26 @@ export async function cerebrasJson<T>(opts: { system: string; user: string; maxT
   }
   throw lastErr instanceof Error ? lastErr : new Error('cerebras: all keys failed');
 }
+
+/**
+ * Live health check: ping EVERY configured key with the real model and report
+ * which work (owner 2026-07-13: "make sure ALL cerebras are working and with the
+ * right model"). Surfaced on /debug/ai so the operator can verify at a glance.
+ */
+export async function cerebrasHealth(): Promise<{
+  model: string; keyCount: number; allOk: boolean;
+  keys: Array<{ index: number; ok: boolean; error?: string }>;
+}> {
+  const keys = cerebrasKeys();
+  const model = CEREBRAS_MODEL();
+  const results: Array<{ index: number; ok: boolean; error?: string }> = [];
+  for (let i = 0; i < keys.length; i++) {
+    try {
+      await cerebrasCall<{ ok?: boolean }>(keys[i]!, { system: 'Reply with JSON {"ok":true} only.', user: 'ping', maxTokens: 50, timeoutMs: 15_000 });
+      results.push({ index: i + 1, ok: true });
+    } catch (e) {
+      results.push({ index: i + 1, ok: false, error: (e as Error).message.slice(0, 140) });
+    }
+  }
+  return { model, keyCount: keys.length, allOk: keys.length > 0 && results.every((r) => r.ok), keys: results };
+}

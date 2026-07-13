@@ -4,7 +4,7 @@
  * "gbe body" failures were UPSTREAM — props instead of a feeling).
  * Run: pnpm --filter @afrohit/worker exec tsx scripts/test-concept-gate.ts
  */
-import { conceptSceneryDependent, POSITIVE_CONCEPT_EXEMPLARS, NEGATIVE_CONCEPT_EXEMPLARS, HUMAN_ENGINES } from '@afrohit/shared';
+import { conceptSceneryDependent, POSITIVE_CONCEPT_EXEMPLARS, NEGATIVE_CONCEPT_EXEMPLARS, HUMAN_ENGINES, writerTrainingBrief, WRITER_HOOK_ANCHORS } from '@afrohit/shared';
 
 function assert(cond: boolean, msg: string) { if (!cond) { console.error('FAIL:', msg); process.exitCode = 1; } else console.log('  ok:', msg); }
 
@@ -24,5 +24,11 @@ assert(POSITIVE_CONCEPT_EXEMPLARS.length >= 45, `>=45 positive exemplars loaded 
 assert(POSITIVE_CONCEPT_EXEMPLARS.every((e) => !conceptSceneryDependent(e.engine)), 'EVERY positive exemplar passes the object-removal test');
 assert(NEGATIVE_CONCEPT_EXEMPLARS.some((e) => /sip am bam|gbe body|danfo/i.test(e.title + e.why)), 'negative exemplars name the real failures');
 assert((HUMAN_ENGINES as readonly string[]).includes('defiance') && (HUMAN_ENGINES as readonly string[]).includes('longing'), 'human-engine menu present');
+
+// WRITER TRAINING — the exemplars now train the LYRIC (not just the concept).
+const brief = writerTrainingBrief();
+assert(brief.includes('STUDY THESE') && brief.includes('No Permission'), 'writer training brief carries the positive hook anchors');
+assert(/NEVER write hooks like these/.test(brief) && /Sip am bam/i.test(brief), 'writer training brief carries the negative hooks');
+assert(WRITER_HOOK_ANCHORS.length >= 8, `>=8 writer hook anchors (${WRITER_HOOK_ANCHORS.length})`);
 
 console.log(process.exitCode ? '\n❌ Concept gate test FAILED' : '\n✅ Concept gate test PASSED');

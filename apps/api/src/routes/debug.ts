@@ -1,5 +1,5 @@
 import type { FastifyInstance } from 'fastify';
-import { anthropicPing, openaiPing, tavilyKey, braveKey, tavilyPing, researchTrends, prompts, joinBriefs, claudeRaw, getLastStudioChatClaudeError } from '@afrohit/ai';
+import { anthropicPing, openaiPing, tavilyKey, braveKey, tavilyPing, researchTrends, prompts, joinBriefs, claudeRaw, getLastStudioChatClaudeError, cerebrasHealth } from '@afrohit/ai';
 import { recommendEngine } from '@afrohit/shared';
 import { laneDnaBrief } from '../lib/lane-pipeline';
 import { requireAuth } from '../middleware/auth';
@@ -15,11 +15,12 @@ import { fuseSoundDna } from '../lib/fuse';
 export default async function debug(app: FastifyInstance) {
   app.get('/ai', async (req) => {
     await requireAdmin(req); // §1.11 THE WALL: vendor names + key status are INTERNAL
-    const [anthropic, openai, tavily, trend] = await Promise.all([
+    const [anthropic, openai, tavily, trend, cerebras] = await Promise.all([
       anthropicPing(),
       openaiPing(),
       tavilyPing(),
       researchTrends({ genre: 'afrobeats' }),
+      cerebrasHealth(), // owner: verify ALL keys work + the right model
     ]);
     // The brain is DOWN when neither text model can be reached — every LLM feature
     // (lyrics, hooks, A&R, reference analysis, Zap craft-learning) fails or goes
@@ -32,6 +33,10 @@ export default async function debug(app: FastifyInstance) {
         : 'DOWN — both Claude and OpenAI unreachable (usually exhausted credits). Top up Anthropic and/or OpenAI; lyrics/hooks/A&R/analysis/Zap-learn will fail until then.',
       anthropic,
       openai,
+      // The BULK brain (Cerebras): every key pinged with the real model. allOk:false
+      // means a key is dead/rate-limited — the leak-safe ladder covers it, but fix
+      // the key so bulk work never has to fall back.
+      cerebras,
       // Why the last chat turn fell off Claude (null = it didn't) — a swallowed
       // billing 400 here used to read as "the chat is weak".
       lastChatClaudeError: getLastStudioChatClaudeError(),

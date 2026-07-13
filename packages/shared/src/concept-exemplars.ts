@@ -95,6 +95,39 @@ export const CONCEPT_LAW_BRIEF = `HIT CONCEPT LAW (this decides whether a song s
 - The title is a compact emotional phrase (1-4 words, open vowels, chantable) that survives with all setting words removed. The canon this session authored: No Permission, Call My Bluff, Only You Know, My Side, No Dey Hide, Again Again, Say Less.
 - Local language/detail may ONLY enter later, where the character naturally speaks that way — never to "prove" the song is African.`;
 
+/** Real hook anchors from the owner's exemplars — the WRITER studies these for
+ *  emotion-first economy (short, open-vowel, repeatable, NO scenery). */
+export const WRITER_HOOK_ANCHORS: Array<{ title: string; hook: string }> = [
+  { title: 'No Permission', hook: 'No permission / I don move already / No permission / You fit doubt, I no dey beg you' },
+  { title: 'Call My Bluff', hook: "Call my bluff / Tell me make I leave / You say 'Go' / But your hand still hold me" },
+  { title: 'Only You Know', hook: 'Only you know / Where my hard face break / Whole world see fire / You see the smoke' },
+  { title: 'No Dey Hide', hook: 'No dey hide / I see am for your face / Every time I leave, you wait' },
+  { title: 'Again Again', hook: 'Again, again / I swear na last time / Still I find myself / For your door again' },
+  { title: 'Say Less', hook: 'Say less / Your eyes don finish the sentence / One step / I go meet you in the middle' },
+  { title: 'Too Late To Form', hook: 'Too late to form / You remember me now / I wanted your love / You wanted proof' },
+  { title: 'My Side', hook: 'Come my side / No need to hide / If your heart say yes / Make your mouth no lie' },
+];
+
+/** The failures — the writer must NOT produce hooks like these. */
+export const WRITER_NEGATIVE_HOOKS: Array<{ hook: string; why: string }> = [
+  { hook: 'Mama Titi broth by the bus stop, steam dey rise', why: 'a description / food-vendor advert, not a hook — strip the setting and nothing emotional survives' },
+  { hook: 'We dey sip am — bam! Sip am bam!', why: 'manufactured filler ("bam") with no emotional meaning or proven melody' },
+  { hook: 'Gbe body, we dey groove by Danfo lane / Who dey feel am? We dey feel am—boom!', why: 'tells the whole scene + fake crowd animation + "boom" filler' },
+];
+
+/** The distilled writer training — injected into the songwriter so the LYRIC
+ *  itself (not just the concept) learns emotion-first economy from the exemplars. */
+export function writerTrainingBrief(): string {
+  return [
+    'STUDY THESE (owner training set — write LIKE these, never copy their words):',
+    ...WRITER_HOOK_ANCHORS.slice(0, 8).map((e) => `+ "${e.title}": ${e.hook}`),
+    'WHY THEY WORK: each hook is the EMOTIONAL TRUTH in a few words; it survives with every setting word removed; open vowels; heavy repetition; the chorus carries FEWER ideas and words than the verse; a listener remembers the phrase after ONE play.',
+    'NEVER write hooks like these (rejected):',
+    ...WRITER_NEGATIVE_HOOKS.map((e) => `- "${e.hook}" — ${e.why}`),
+    'LESSONS: (1) begin from a feeling, not a prop; (2) the hook is the emotional truth, not a summary of the environment; (3) natural speech outranks rhyme — never a line no real person would say; (4) leave space for breath, held vowels, silence, and repetition; (5) not every song needs a pre-hook, bridge, confession, or explained outro; (6) NEVER announce that the crowd loves it / everyone is dancing / it went viral — earn it, do not state it.',
+  ].join('\n');
+}
+
 /** Pure OBJECT-REMOVAL TEST: is a concept/premise scenery-dependent — i.e. does
  *  its meaning collapse to environment nouns? True when, after removing setting
  *  words and stopwords, almost nothing emotional remains, OR setting nouns are
