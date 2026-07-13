@@ -12,6 +12,13 @@
 import { anthropicEnabled, claudeJson } from './anthropic-client';
 import { responsesJson } from './providers/text';
 import { MODELS } from './openai-client';
+import { brainContext } from './brain-context';
+
+/** These call claudeJson() DIRECTLY (bypassing generateJson's tier routing), so
+ *  the forceTier:'bulk' night law can't protect them automatically. This makes
+ *  them honor it: inside a bulk run they SKIP Claude and take the GPT path —
+ *  belt-and-braces against a future cron wiring (owner cost-leak audit 2026-07-13). */
+const bulkRun = (): boolean => brainContext()?.forceTier === 'bulk';
 import { AR_DIRECTOR_SYSTEM, arDirectorUserPrompt } from './prompts/ar-director';
 import type { ArtistDna, Brief } from '@afrohit/shared';
 
@@ -29,7 +36,7 @@ export async function writeAndScoreHooks(opts: {
   trends?: string;
   soundDna?: string;
 }): Promise<ARHook[] | null> {
-  if (!anthropicEnabled() || process.env.STUB_AI === '1') return null;
+  if (!anthropicEnabled() || process.env.STUB_AI === '1' || bulkRun()) return null;
   const n = Math.max(3, Math.min(opts.count || 8, 12));
   try {
     const out = await claudeJson<{ hooks: ARHook[] }>({
@@ -101,7 +108,7 @@ export async function directorRefineHooks(opts: {
     trending_now: (opts.trends || '').slice(0, 400) || undefined,
     draft_hooks: opts.drafts,
   });
-  if (anthropicEnabled()) {
+  if (anthropicEnabled() && !bulkRun()) {
     try {
       const out = await claudeJson<{ hooks: ARHook[] }>({ system: rubric, user: userPayload, maxTokens: 1_400, timeoutMs: 35_000 });
       const hooks = (out.hooks ?? []).filter((h) => h && typeof h.text === 'string');

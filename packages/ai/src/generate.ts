@@ -137,7 +137,13 @@ export async function generateJson<T>(opts: GenerateOptions): Promise<T> {
     }
   }
 
-  if (wantClaude && anthropicEnabled()) {
+  // NIGHT LAW IS ABSOLUTE (owner cost-leak audit 2026-07-13): a forceTier:'bulk'
+  // run (morning-drop / zap-radar / nightly-compound) must NEVER bill Claude —
+  // not on the first attempt, and NOT down the failure ladder. Before this guard,
+  // a Cerebras hiccup or a >28k-char prompt fell through to callClaude() here and
+  // silently billed Anthropic overnight with zero songs made. In a bulk run we
+  // now top out at the OpenAI draft / Cerebras last-resort below; Claude is off.
+  if (wantClaude && anthropicEnabled() && !forcedBulk) {
     const t0 = Date.now();
     try {
       const data = await callClaude();
@@ -177,8 +183,9 @@ export async function generateJson<T>(opts: GenerateOptions): Promise<T> {
   } catch (e) {
     // OpenAI billing can be exhausted (429 insufficient_quota). Rather than
     // surface a confusing quota error, give Claude a real second attempt —
-    // it's the only working brain in that state.
-    if (anthropicEnabled() && /quota|insufficient|429|rate limit/i.test((e as Error).message)) {
+    // it's the only working brain in that state. NIGHT LAW: never in a bulk run
+    // (Claude stays off overnight even when OpenAI is out of quota).
+    if (anthropicEnabled() && !forcedBulk && /quota|insufficient|429|rate limit/i.test((e as Error).message)) {
       await new Promise((r) => setTimeout(r, 1200));
       try {
         const data = await callClaude();
