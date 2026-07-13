@@ -25,6 +25,7 @@ import { notifyJobDone, processMorningDrop, processReleaseRadar, processZapRadar
 import { processDeepMeasure } from './processors/deep-measure';
 import { processTransform } from './processors/transform';
 import { processOwnEngine } from './processors/own-engine';
+import { processProduce } from './processors/produce';
 import { processSongEdit } from './processors/song-edit';
 import { processSynthMaterial } from './processors/synth-material';
 import { enqueueJob } from './lib/enqueue';
@@ -76,6 +77,7 @@ const workers = [
     else if (job.name === 'assemble-beat') await processAssembleBeat(job.data as never);
     else if (job.name === 'transform') await processTransform(job.data as never);
     else if (job.name === 'own-engine') await processOwnEngine(job.data as never);
+    else if (job.name === 'produce') await processProduce(job.data as never);
     else if (job.name === 'song-edit') await processSongEdit(job.data as never);
     else if (job.name === 'synth-material') await processSynthMaterial(job.data as never);
     // BACKGROUND work found on the render queue (legacy enqueues) migrates to

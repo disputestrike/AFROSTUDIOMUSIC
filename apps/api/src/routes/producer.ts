@@ -9,9 +9,8 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { prisma } from '@afrohit/db';
-import { pickLawfulTitle } from '@afrohit/shared';
 import { requireAuth } from '../middleware/auth';
-import { runProducerPipeline } from '../lib/producer-pipeline';
+import { enqueue } from '../lib/queue';
 
 const bodySchema = z.object({
   theme: z.string().min(3).max(2000),
@@ -36,43 +35,22 @@ export default async function producer(app: FastifyInstance) {
       data: { workspaceId, projectId: project.id, title: 'Producing…', status: 'SKETCH' },
     });
 
-    let state;
-    try {
-      state = await runProducerPipeline({
-        workspaceId, projectId: project.id, songId: song.id,
-        theme: input.theme, genre: input.genre, bpm: input.bpm, mood: input.mood,
-        languages: input.languages, fusion: input.fusionGenres,
-      });
-    } catch (err) {
-      await prisma.song.update({ where: { id: song.id }, data: { quarantined: true, quarantineReason: `pipeline error: ${(err as Error).message.slice(0, 200)}` } }).catch(() => {});
-      return reply.code(502).send({ error: 'pipeline_failed', message: (err as Error).message.slice(0, 300) });
-    }
+    // The pipeline RENDERS the topline audio before the songwriter runs, so it
+    // must execute in the worker (ffmpeg + minutes). Enqueue + return a jobId;
+    // the client polls GET /jobs/:jobId. The result's outputJson carries the
+    // decision; GET /songs/:id/proof carries the full SONG_STATE.
+    const job = await prisma.providerJob.create({
+      data: {
+        workspaceId, projectId: project.id, kind: 'music', provider: 'afrohit-producer', status: 'QUEUED',
+        inputJson: { produce: true, songId: song.id, theme: input.theme, genre: input.genre, bpm: input.bpm, mood: input.mood, languages: input.languages, fusion: input.fusionGenres } as never,
+      },
+    });
+    await enqueue({
+      queue: app.queues.music, name: 'produce',
+      payload: { jobId: job.id, workspaceId, projectId: project.id, songId: song.id, theme: input.theme, genre: input.genre, bpm: input.bpm, mood: input.mood, languages: input.languages, fusion: input.fusionGenres },
+    });
 
-    // Persist the fitted lyric + the full SONG_STATE (proofPack). A CANDIDATE
-    // becomes a real, renderable draft; a REJECT is quarantined (not deleted).
-    const sung = state.sungWords?.sections.flatMap((s) => s.lines).join('\n') ?? '';
-    const fittedTitle = (() => {
-      const t = state.log.find((l) => l.stage === 'lyric_fitting')?.changed?.match(/title="([^"]+)"/)?.[1];
-      return t || pickLawfulTitle([], sung || project.title);
-    })();
-    if (state.decision === 'CANDIDATE_FOR_HUMAN_AR' && sung) {
-      const lyric = await prisma.lyricDraft.create({ data: { projectId: project.id, songId: song.id, title: fittedTitle, body: sung, approved: false } });
-      await prisma.song.update({ where: { id: song.id }, data: { title: fittedTitle, lyricId: lyric.id, status: 'DEMO', proofPack: state as never } });
-    } else {
-      await prisma.song.update({ where: { id: song.id }, data: { title: fittedTitle, quarantined: true, quarantineReason: `pipeline: ${state.decision}`, proofPack: state as never } });
-    }
-
-    return {
-      songId: song.id,
-      decision: state.decision,
-      version: state.version,
-      title: fittedTitle,
-      brief: state.brief,
-      beatDna: state.beatDna,
-      qaScores: state.qaScores,
-      languageReview: state.languageReview,
-      rejections: state.rejections,
-      log: state.log,
-    };
+    reply.code(202);
+    return { jobId: job.id, songId: song.id, note: 'Producing — the topline is rendered to audio BEFORE the songwriter runs; poll GET /jobs/:jobId for the decision (CANDIDATE_FOR_HUMAN_AR / REVISE_FROM_STAGE_X / REJECT_AND_RESTART / TOPLINE_NOT_PROVEN — never "mastered").' };
   });
 }
