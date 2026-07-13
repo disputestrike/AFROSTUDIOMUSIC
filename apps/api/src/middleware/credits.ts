@@ -35,7 +35,7 @@ declare module 'fastify' {
       refTable?: string;
       refId?: string;
       idempotencyKey?: string;
-    }): Promise<{ ok: true; balance: number } | { ok: false; needed: number; balance: number; reason?: string }>;
+    }): Promise<{ ok: true; balance: number; chargeId: string; key: CreditKey; replayed?: boolean } | { ok: false; needed: number; balance: number; reason?: string }>;
 
     refundCredits(opts: {
       workspaceId: string;
@@ -43,7 +43,8 @@ declare module 'fastify' {
       multiplier?: number;
       refTable?: string;
       refId?: string;
-    }): Promise<void>;
+      chargeId?: string;
+    }): Promise<{ refunded: boolean; refundId?: string }>;
   }
 }
 
@@ -105,7 +106,7 @@ export const creditsPlugin = fp(async function (app) {
       }
       // Ledger the charge so the cap has a uniform unit across all generation types.
       try {
-        await prisma.creditLedger.create({
+        const ledger = await prisma.creditLedger.create({
           data: {
             ...(ledgerId ? { id: ledgerId } : {}),
             workspaceId: opts.workspaceId,
@@ -113,13 +114,16 @@ export const creditsPlugin = fp(async function (app) {
             reason: opts.key,
             refTable: opts.refTable,
             refId: opts.refId,
+            idempotencyKey: opts.idempotencyKey,
           },
         });
+        return { ok: true as const, balance: Number.MAX_SAFE_INTEGER, chargeId: ledger.id, key: opts.key };
       } catch (e) {
-        if ((e as { code?: string }).code === 'P2002') return { ok: true as const, balance: Number.MAX_SAFE_INTEGER }; // already charged — idempotent
+        if ((e as { code?: string }).code === 'P2002' && ledgerId) {
+          return { ok: true as const, balance: Number.MAX_SAFE_INTEGER, chargeId: ledgerId, key: opts.key, replayed: true };
+        }
         throw e;
       }
-      return { ok: true as const, balance: Number.MAX_SAFE_INTEGER };
     }
     // PLAN_LIMITS enforcement (audit DEAD: the table was advertised but never
     // enforced). For real tenants, refuse an action once this month's usage in its
@@ -156,7 +160,7 @@ export const creditsPlugin = fp(async function (app) {
         return { ok: false as const, needed: cost, balance: ws.creditsCents };
       }
       try {
-        await tx.creditLedger.create({
+        const ledger = await tx.creditLedger.create({
           data: {
             ...(ledgerId ? { id: ledgerId } : {}),
             workspaceId: opts.workspaceId,
@@ -164,20 +168,21 @@ export const creditsPlugin = fp(async function (app) {
             reason: opts.key,
             refTable: opts.refTable,
             refId: opts.refId,
+            idempotencyKey: opts.idempotencyKey,
           },
         });
+        const ws = await tx.workspace.findUnique({ where: { id: opts.workspaceId }, select: { creditsCents: true } });
+        return { ok: true as const, balance: ws?.creditsCents ?? 0, chargeId: ledger.id, key: opts.key };
       } catch (e) {
         // Idempotent replay: the charge already exists — undo this debit and
         // report success (money mutations atomic; success only on full success).
         if ((e as { code?: string }).code === 'P2002') {
           await tx.workspace.update({ where: { id: opts.workspaceId }, data: { creditsCents: { increment: cost } } });
           const ws = await tx.workspace.findUnique({ where: { id: opts.workspaceId }, select: { creditsCents: true } });
-          return { ok: true as const, balance: ws?.creditsCents ?? 0 };
+          return { ok: true as const, balance: ws?.creditsCents ?? 0, chargeId: ledgerId!, key: opts.key, replayed: true };
         }
         throw e;
       }
-      const ws = await tx.workspace.findUnique({ where: { id: opts.workspaceId }, select: { creditsCents: true } });
-      return { ok: true as const, balance: ws?.creditsCents ?? 0 };
     });
   });
 
@@ -187,22 +192,42 @@ export const creditsPlugin = fp(async function (app) {
     multiplier?: number;
     refTable?: string;
     refId?: string;
+    chargeId?: string;
   }) => {
-    const amount = costOf(opts.key) * (opts.multiplier ?? 1);
-    await prisma.$transaction(async (tx: Tx) => {
+    const { createHash } = await import('node:crypto');
+    return prisma.$transaction(async (tx: Tx) => {
+      const charge = opts.chargeId
+        ? await tx.creditLedger.findFirst({
+            where: { id: opts.chargeId, workspaceId: opts.workspaceId, delta: { lt: 0 } },
+            select: { id: true, delta: true },
+          })
+        : null;
+      const amount = charge ? -charge.delta : costOf(opts.key) * (opts.multiplier ?? 1);
+      const reversalOfId = charge?.id;
+      const refundId = `refund_${createHash('sha256')
+        .update(reversalOfId ?? `${opts.workspaceId}|${opts.key}|${opts.refTable ?? ''}|${opts.refId ?? ''}`)
+        .digest('hex')
+        .slice(0, 24)}`;
+      const existing = await tx.creditLedger.findUnique({ where: { id: refundId }, select: { id: true } });
+      if (existing || (opts.chargeId && !charge)) {
+        return { refunded: false as const, ...(existing ? { refundId: existing.id } : {}) };
+      }
       await tx.workspace.update({
         where: { id: opts.workspaceId },
         data: { creditsCents: { increment: amount } },
       });
-      await tx.creditLedger.create({
+      const refund = await tx.creditLedger.create({
         data: {
+          id: refundId,
           workspaceId: opts.workspaceId,
           delta: amount,
           reason: `refund_${opts.key}`,
           refTable: opts.refTable,
           refId: opts.refId,
+          reversalOfId,
         },
       });
+      return { refunded: true as const, refundId: refund.id };
     });
   });
 });

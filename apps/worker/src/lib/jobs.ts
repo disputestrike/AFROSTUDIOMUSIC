@@ -40,7 +40,7 @@ export async function markFailed(jobId: string, err: unknown) {
       finishedAt: new Date(),
       errorJson: { message: wallSafe(real).slice(0, 800) } as never,
     },
-    select: { id: true, workspaceId: true, inputJson: true },
+    select: { id: true, workspaceId: true, inputJson: true, chargeLedgerId: true },
   });
   // REFUND ON FAILURE (audit DEAD: charge-before-enqueue never refunded). If the
   // route stamped a `_charge` on the job, credit it back — atomically and once
@@ -48,8 +48,38 @@ export async function markFailed(jobId: string, err: unknown) {
   await refundJobCharge(job).catch((e) => console.warn(`[job ${jobId}] refund skipped:`, (e as Error)?.message));
 }
 
-async function refundJobCharge(job: { id: string; workspaceId: string; inputJson: unknown }) {
+async function refundJobCharge(job: { id: string; workspaceId: string; inputJson: unknown; chargeLedgerId?: string | null }) {
   if ((process.env.AUTH_MODE ?? 'internal').toLowerCase() === 'internal') return; // owner pays providers directly
+  if (job.chargeLedgerId) {
+    const charge = await prisma.creditLedger.findFirst({
+      where: { id: job.chargeLedgerId, workspaceId: job.workspaceId, delta: { lt: 0 } },
+      select: { id: true, delta: true, reason: true },
+    });
+    if (!charge) return;
+    const amount = -charge.delta;
+    try {
+      await prisma.$transaction([
+        prisma.workspace.update({ where: { id: job.workspaceId }, data: { creditsCents: { increment: amount } } }),
+        prisma.creditLedger.create({
+          data: {
+            id: `refund_${charge.id}`,
+            workspaceId: job.workspaceId,
+            delta: amount,
+            reason: `refund_${charge.reason}`,
+            refTable: 'ProviderJob',
+            refId: job.id,
+            reversalOfId: charge.id,
+          },
+        }),
+      ]);
+      console.log(`[job ${job.id}] reversed charge ${charge.id} on failure`);
+    } catch (error) {
+      if ((error as { code?: string }).code !== 'P2002') throw error;
+    }
+    return;
+  }
+
+  // Compatibility for jobs created before chargeLedgerId existed.
   const charge = (job.inputJson as { _charge?: { key?: string; multiplier?: number } } | null)?._charge;
   if (!charge?.key) return;
   const amount = costOf(charge.key as never) * (charge.multiplier ?? 1);

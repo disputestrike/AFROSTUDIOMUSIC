@@ -10,11 +10,13 @@ import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { prisma } from '@afrohit/db';
 import { recognizeSong, extractSongCraft, parseTrendSong, researchTrends } from '@afrohit/ai';
-import { enqueue } from '../lib/queue';
+import { createQueuedProviderJob, scopedRequestKey } from '../lib/queued-job';
 import { laneBpm } from '../lib/lane-pipeline';
 import { GENRES } from '@afrohit/shared';
 import { requireAuth } from '../middleware/auth';
 import { presignAssetRef, publicUrlFor, verifyUploadedAudio } from '../lib/storage';
+import { assertSafeUrl } from '../lib/url-guard';
+import { operationErrorBody, runIdempotentOperation } from '../lib/idempotent-operation';
 
 const identifySchema = z.object({ key: z.string().min(4) });
 const learnSchema = z.object({
@@ -59,26 +61,51 @@ export default async function zap(app: FastifyInstance) {
     const { workspaceId } = requireAuth(req);
     const { key } = identifySchema.parse(req.body);
     const uploaded = await verifyUploadedAudio(workspaceId, key);
-    const charge = await app.chargeCredits({ workspaceId, key: 'analyze_audio' });
+    const idempotencyKey = scopedRequestKey(req.headers as Record<string, unknown>, 'zap-identify');
+    const charge = await app.chargeCredits({ workspaceId, key: 'analyze_audio', refTable: 'Workspace', refId: workspaceId, idempotencyKey });
     if (!charge.ok) return reply.code(402).send({ error: 'insufficient_credits', ...charge });
-    const url = await presignAssetRef(publicUrlFor(uploaded.key), 900);
-    const out = await recognizeSong({ url });
+    const operation = await runIdempotentOperation({
+      workspaceId,
+      kind: 'zap-identify',
+      provider: 'audio-recognition',
+      idempotencyKey,
+      chargeLedgerId: charge.chargeId,
+      inputJson: { key: uploaded.key },
+      execute: async () => {
+    try {
+      const url = await presignAssetRef(publicUrlFor(uploaded.key), 900);
+      const out = await recognizeSong({ url });
     if (!out.ok) {
-      return reply.code(out.error === 'recognition_not_configured' ? 501 : 502).send(out);
+      await app.refundCredits({ workspaceId, key: 'analyze_audio', refTable: 'Workspace', refId: workspaceId, chargeId: charge.chargeId });
+      return { statusCode: out.error === 'recognition_not_configured' ? 501 as const : 502 as const, body: out };
     }
     if (out.match) {
-      void prisma.analyticsEvent
+      await prisma.analyticsEvent
         .create({ data: { workspaceId, name: 'zap.identify', properties: { title: out.match.title, artist: out.match.artist, genre: out.match.genre } as never } })
         .catch(() => {});
-      return { match: out.match };
+      return { statusCode: 200 as const, body: { match: out.match } };
     }
     // AudD heard the clip but matched nothing (common on short/quiet captures, live
     // versions, or very new/underground tracks). Tell the user WHY + how to fix it,
     // instead of a silent "no result" that reads as "it didn't work".
     return {
-      match: null,
-      hint: 'Heard the clip but could not identify it. Capture ~10-15s of a clear, loud part (ideally the hook), reduce background noise, or upload the audio file directly. Very new/underground tracks may not be in the recognition database.',
+      statusCode: 200 as const,
+      body: {
+        match: null,
+        hint: 'Heard the clip but could not identify it. Capture ~10-15s of a clear, loud part (ideally the hook), reduce background noise, or upload the audio file directly. Very new/underground tracks may not be in the recognition database.',
+      },
     };
+    } catch (error) {
+      await app.refundCredits({ workspaceId, key: 'analyze_audio', refTable: 'Workspace', refId: workspaceId, chargeId: charge.chargeId });
+      throw error;
+    }
+      },
+    });
+    if (operation.state !== 'completed') {
+      const failure = operationErrorBody(operation);
+      return reply.code(failure.statusCode).send(failure.body);
+    }
+    return reply.code(operation.value.statusCode).send(operation.value.body);
   });
 
   /** LEARN — extract the identified song's UNCOPYRIGHTABLE CRAFT into the lake.
@@ -90,11 +117,24 @@ export default async function zap(app: FastifyInstance) {
     const existing = await prisma.soundReference.findFirst({ where: { workspaceId, sourceUrl: marker }, select: { id: true } });
     if (existing) return { learned: true, referenceId: existing.id, deduped: true };
 
-    const charge = await app.chargeCredits({ workspaceId, key: 'analyze_audio' });
+    const idempotencyKey = scopedRequestKey(req.headers as Record<string, unknown>, 'zap-learn');
+    const charge = await app.chargeCredits({ workspaceId, key: 'analyze_audio', refTable: 'Workspace', refId: workspaceId, idempotencyKey });
     if (!charge.ok) return reply.code(402).send({ error: 'insufficient_credits', ...charge });
 
+    const operation = await runIdempotentOperation({
+      workspaceId,
+      kind: 'zap-learn',
+      provider: 'text',
+      idempotencyKey,
+      chargeLedgerId: charge.chargeId,
+      inputJson: m,
+      execute: async () => {
+    try {
     const craft = await extractSongCraft({ title: m.title, artist: m.artist, genre: m.genre, releaseDate: m.releaseDate });
-    if (!craft?.craft?.length) return reply.code(503).send({ error: 'learn_failed', message: 'Could not extract craft — try again.' });
+    if (!craft?.craft?.length) {
+      await app.refundCredits({ workspaceId, key: 'analyze_audio', refTable: 'Workspace', refId: workspaceId, chargeId: charge.chargeId });
+      return { statusCode: 503 as const, body: { error: 'learn_failed', message: 'Could not extract craft — try again.' } };
+    }
 
     const genre = normGenre(craft.genre || m.genre);
     const ref = await prisma.soundReference.create({
@@ -112,12 +152,39 @@ export default async function zap(app: FastifyInstance) {
     // recipe.measured so "make in this lane" matches the actual record's speed,
     // not an LLM's guess. The preview is never stored; only numbers land.
     if (m.previewUrl) {
-      await enqueue({ queue: app.queues.lake, name: 'deep-measure', payload: { referenceId: ref.id, url: m.previewUrl, workspaceId } }).catch(() => undefined);
+      const safe = await assertSafeUrl(m.previewUrl);
+      if (safe.ok) {
+        await createQueuedProviderJob({
+          app,
+          queue: app.queues.lake,
+          jobName: 'deep-measure',
+          workspaceId,
+          kind: 'lake',
+          provider: 'internal',
+          inputJson: { referenceId: ref.id, source: 'licensed-preview' },
+          idempotencyKey: `zap-measure:${ref.id}`,
+          payload: (jobId) => ({ jobId, referenceId: ref.id, url: m.previewUrl!, workspaceId }),
+        });
+      }
     }
-    void prisma.analyticsEvent
+    await prisma.analyticsEvent
       .create({ data: { workspaceId, name: 'zap.learn', properties: { title: m.title, genre, measuredPreview: !!m.previewUrl } as never } })
       .catch(() => {});
-    return { learned: true, referenceId: ref.id, genre, craft: craft.craft, vibe: craft.vibe, whatToLearn: craft.whatToLearn, bpm: craft.suggestedBpm ?? null, mood: craft.mood ?? null, languages: craft.languages ?? null };
+    return {
+      statusCode: 200 as const,
+      body: { learned: true, referenceId: ref.id, genre, craft: craft.craft, vibe: craft.vibe, whatToLearn: craft.whatToLearn, bpm: craft.suggestedBpm ?? null, mood: craft.mood ?? null, languages: craft.languages ?? null },
+    };
+    } catch (error) {
+      await app.refundCredits({ workspaceId, key: 'analyze_audio', refTable: 'Workspace', refId: workspaceId, chargeId: charge.chargeId });
+      throw error;
+    }
+      },
+    });
+    if (operation.state !== 'completed') {
+      const failure = operationErrorBody(operation);
+      return reply.code(failure.statusCode).send(failure.body);
+    }
+    return reply.code(operation.value.statusCode).send(operation.value.body);
   });
 
   /** HISTORY — everything you've Zapped (button + radar), newest first, so you can
@@ -168,7 +235,13 @@ export default async function zap(app: FastifyInstance) {
     // BACKFILL missing lane facts (old zaps) by deriving from the song's metadata,
     // then PERSIST so it's a one-time cost — the artist's real language sticks.
     if ((!genre || !rec.languages || !rec.languages.length || !rec.mood || !rec.bpm) && rec.title) {
-      const craft = await extractSongCraft({ title: rec.title, artist: rec.artist, genre: genre ?? undefined });
+      const idempotencyKey = scopedRequestKey(req.headers as Record<string, unknown>, `zap-lane-brief:${ref.id}`);
+      const charge = await app.chargeCredits({ workspaceId, key: 'brief_polish', refTable: 'SoundReference', refId: ref.id, idempotencyKey });
+      if (!charge.ok) return reply.code(402).send({ error: 'insufficient_credits', ...charge });
+      const craft = await extractSongCraft({ title: rec.title, artist: rec.artist, genre: genre ?? undefined }).catch(() => null);
+      if (!craft) {
+        await app.refundCredits({ workspaceId, key: 'brief_polish', refTable: 'SoundReference', refId: ref.id, chargeId: charge.chargeId });
+      }
       if (craft) {
         genre = genre ?? normGenre(craft.genre);
         rec = {
@@ -223,12 +296,16 @@ export default async function zap(app: FastifyInstance) {
         if (learned >= MAX) break;
         const marker = `zap:${`${song.artist ?? ''}-${song.title}`.toLowerCase().replace(/[^a-z0-9]+/g, '-').slice(0, 80)}`;
         if (await prisma.soundReference.findFirst({ where: { workspaceId, sourceUrl: marker }, select: { id: true } })) continue;
-        const charge = await app.chargeCredits({ workspaceId, key: 'brief_polish' });
+        const idempotencyKey = `zap-radar:${marker}`;
+        const charge = await app.chargeCredits({ workspaceId, key: 'brief_polish', refTable: 'Workspace', refId: workspaceId, idempotencyKey });
         if (!charge.ok) { learned = MAX; break; }
-        const craft = await extractSongCraft({ title: song.title, artist: song.artist, genre });
-        if (!craft?.craft?.length) continue;
-        await prisma.soundReference
-          .create({
+        const craft = await extractSongCraft({ title: song.title, artist: song.artist, genre }).catch(() => null);
+        if (!craft?.craft?.length) {
+          await app.refundCredits({ workspaceId, key: 'brief_polish', refTable: 'Workspace', refId: workspaceId, chargeId: charge.chargeId });
+          continue;
+        }
+        try {
+          await prisma.soundReference.create({
             data: {
               workspaceId,
               genre,
@@ -237,8 +314,11 @@ export default async function zap(app: FastifyInstance) {
               recipe: { source: 'zap', radar: true, title: song.title, artist: song.artist, genre, craft: craft.craft, vibe: craft.vibe, bpm: craft.suggestedBpm, mood: craft.mood, languages: craft.languages } as never,
               summary: (craft.whatToLearn || craft.vibe || '').slice(0, 400),
             },
-          })
-          .catch(() => {});
+          });
+        } catch {
+          await app.refundCredits({ workspaceId, key: 'brief_polish', refTable: 'Workspace', refId: workspaceId, chargeId: charge.chargeId });
+          continue;
+        }
         learned++;
         added.push({ genre, title: song.title, artist: song.artist });
       }

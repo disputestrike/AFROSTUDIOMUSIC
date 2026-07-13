@@ -11,18 +11,20 @@
  * renders its own pocket (afrobeats ≠ amapiano ≠ house).
  */
 import { spawn } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { readFile, unlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { prisma } from '@afrohit/db';
 import { getGenreKit, synthKitFor } from '@afrohit/shared';
 import { uploadBytes } from '../lib/storage';
+import { markFailed, markRunning, markSucceeded } from '../lib/jobs';
 
 const PYTHON = process.env.PYTHON_BIN || 'python3';
 // CJS worker (module: CommonJS) — resolve like lib/dsp.ts does: dist/processors -> ../../py
 const SCRIPT = join(__dirname, '..', '..', 'py', 'synth_material.py');
 
-export interface SynthMaterialPayload { workspaceId: string; genre: string; bpm?: number; keySignature?: string; roles?: string[] }
+export interface SynthMaterialPayload { jobId?: string; workspaceId: string; genre: string; bpm?: number; keySignature?: string; roles?: string[] }
 
 /** Fallback home key per genre family (only used when none is supplied). */
 function defaultKey(genre: string): string {
@@ -31,10 +33,10 @@ function defaultKey(genre: string): string {
   return 'A minor';
 }
 
-function runSynth(role: string, bpm: number, out: string, genre: string, key: string, fourOnFloor: boolean): Promise<void> {
+function runSynth(role: string, bpm: number, out: string, genre: string, key: string, fourOnFloor: boolean, seed: number): Promise<void> {
   return new Promise((resolve, reject) => {
     // ARGS: role bpm out seed genre key four_on_floor
-    const p = spawn(PYTHON, [SCRIPT, role, String(bpm), out, String(Date.now() % 9973), genre, key, fourOnFloor ? '1' : '0']);
+    const p = spawn(PYTHON, [SCRIPT, role, String(bpm), out, String(seed), genre, key, fourOnFloor ? '1' : '0']);
     let err = '';
     p.stderr.on('data', (d) => (err += d.toString()));
     p.on('error', reject);
@@ -43,30 +45,50 @@ function runSynth(role: string, bpm: number, out: string, genre: string, key: st
 }
 
 export async function processSynthMaterial(p: SynthMaterialPayload): Promise<void> {
-  const kit = getGenreKit(p.genre);
-  const bpm = p.bpm ?? kit?.typicalBpm ?? 112;
-  const key = p.keySignature || defaultKey(p.genre);
-  const fourOnFloor = !!kit?.fourOnFloor;
-  const roles = p.roles?.length ? p.roles : synthKitFor(p.genre);
-  for (const role of roles) {
-    const tmp = join(tmpdir(), `synth-${role}-${Date.now()}.wav`);
-    try {
-      await runSynth(role, bpm, tmp, p.genre, key, fourOnFloor);
-      const bytes = await readFile(tmp);
-      const url = await uploadBytes({ workspaceId: p.workspaceId, kind: 'materials', bytes, contentType: 'audio/wav', ext: 'wav' });
-      const durationS = (60 / bpm) * 8;
-      await prisma.materialAsset.create({
-        data: {
-          workspaceId: p.workspaceId, kind: 'loop', role, genre: p.genre, bpm, bars: 2,
-          durationS, url, source: 'forged',
-          meta: { synth: true, generator: 'signature-synth-v2', key, fourOnFloor, note: 'synthesized owned material — genre + key aware' } as never,
-        },
-      });
-      console.log(`[synth-material] ${p.genre}/${role} @${bpm} key=${key} forged`);
-    } catch (err) {
-      console.warn(`[synth-material] ${role} failed (non-fatal):`, (err as Error)?.message);
-    } finally {
-      await unlink(tmp).catch(() => undefined);
+  if (p.jobId) await markRunning(p.jobId);
+  try {
+    const kit = getGenreKit(p.genre);
+    const bpm = p.bpm ?? kit?.typicalBpm ?? 112;
+    const key = p.keySignature || defaultKey(p.genre);
+    const fourOnFloor = !!kit?.fourOnFloor;
+    const roles = p.roles?.length ? p.roles : synthKitFor(p.genre);
+    const completed: string[] = [];
+    const failed: string[] = [];
+    for (const role of roles) {
+      const digest = createHash('sha256').update(`${p.workspaceId}|${p.jobId ?? p.genre}|${role}`).digest('hex');
+      const materialId = `synth_${digest.slice(0, 24)}`;
+      const existing = await prisma.materialAsset.findUnique({ where: { id: materialId }, select: { id: true } });
+      if (existing) {
+        completed.push(role);
+        continue;
+      }
+      const tmp = join(tmpdir(), `synth-${role}-${digest.slice(0, 10)}.wav`);
+      try {
+        await runSynth(role, bpm, tmp, p.genre, key, fourOnFloor, Number.parseInt(digest.slice(0, 6), 16) % 9973);
+        const bytes = await readFile(tmp);
+        const url = await uploadBytes({ workspaceId: p.workspaceId, kind: 'materials', bytes, contentType: 'audio/wav', ext: 'wav' });
+        const durationS = (60 / bpm) * 8;
+        await prisma.materialAsset.create({
+          data: {
+            id: materialId,
+            workspaceId: p.workspaceId, kind: 'loop', role, genre: p.genre, bpm, bars: 2,
+            durationS, url, source: 'forged',
+            meta: { synth: true, generator: 'signature-synth-v2', key, fourOnFloor, jobId: p.jobId, note: 'synthesized owned material — genre + key aware' } as never,
+          },
+        });
+        completed.push(role);
+        console.log(`[synth-material] ${p.genre}/${role} @${bpm} key=${key} forged`);
+      } catch (err) {
+        failed.push(role);
+        console.warn(`[synth-material] ${role} failed:`, (err as Error)?.message);
+      } finally {
+        await unlink(tmp).catch(() => undefined);
+      }
     }
+    if (!completed.length) throw new Error(`all synthesized material roles failed: ${failed.join(', ')}`);
+    if (p.jobId) await markSucceeded(p.jobId, { completed, failed, bpm, key });
+  } catch (error) {
+    if (p.jobId) await markFailed(p.jobId, error);
+    throw error;
   }
 }

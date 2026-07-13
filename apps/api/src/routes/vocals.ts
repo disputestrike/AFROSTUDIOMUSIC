@@ -3,7 +3,7 @@ import { prisma } from '@afrohit/db';
 import { renderVocalInputSchema, attachVocalUploadSchema } from '@afrohit/shared';
 import { prompts, responsesJson } from '@afrohit/ai';
 import { requireAuth } from '../middleware/auth';
-import { enqueue } from '../lib/queue';
+import { createQueuedProviderJob, scopedRequestKey } from '../lib/queued-job';
 import { publicUrlFor, verifyUploadedAudio } from '../lib/storage';
 
 export default async function vocals(app: FastifyInstance) {
@@ -24,14 +24,10 @@ export default async function vocals(app: FastifyInstance) {
       const lyric = await prisma.lyricDraft.findFirstOrThrow({
         where: { id: input.lyricId, projectId: project.id, approved: true },
       });
-
-      const charge = await app.chargeCredits({
-        workspaceId,
-        key: 'voice_render_full',
-        refTable: 'Lyric',
-        refId: lyric.id,
+      const song = await prisma.song.findFirstOrThrow({
+        where: { id: input.songId, projectId: project.id, workspaceId },
+        select: { id: true },
       });
-      if (!charge.ok) return reply.code(402).send({ error: 'insufficient_credits', ...charge });
 
       // A sung vocal needs a melody. Generate one on first render and persist
       // it on the lyric so re-renders (doubles, harmonies) reuse the same spec.
@@ -56,25 +52,32 @@ export default async function vocals(app: FastifyInstance) {
         });
       }
 
-      const job = await prisma.providerJob.create({
-        data: {
-          workspaceId,
-          projectId: project.id,
-          kind: 'voice',
-          provider: voice.provider,
-          status: 'QUEUED',
-          inputJson: input as never,
-        },
+      const idempotencyKey = scopedRequestKey(req.headers as Record<string, unknown>, 'vocal-render');
+      const charge = await app.chargeCredits({
+        workspaceId,
+        key: 'voice_render_full',
+        refTable: 'Lyric',
+        refId: lyric.id,
+        idempotencyKey,
       });
+      if (!charge.ok) return reply.code(402).send({ error: 'insufficient_credits', ...charge });
 
-      await enqueue({
+      const job = await createQueuedProviderJob({
+        app,
         queue: app.queues.voice,
-        name: 'render-vocal',
-        payload: {
-          jobId: job.id,
+        jobName: 'render-vocal',
+        workspaceId,
+        projectId: project.id,
+        kind: 'voice',
+        provider: voice.provider,
+        inputJson: input,
+        charge,
+        idempotencyKey,
+        payload: (jobId) => ({
+          jobId,
           workspaceId,
           projectId: project.id,
-          songId: input.songId,
+          songId: song.id,
           voiceProfileId: voice.id,
           providerVoiceId: voice.providerVoiceId,
           lyricBody: lyric.cleanVersion ?? lyric.body,
@@ -82,11 +85,11 @@ export default async function vocals(app: FastifyInstance) {
           role: input.role,
           pitchCorrection: input.pitchCorrection,
           effects: input.effects,
-        },
+        }),
       });
 
       reply.code(202);
-      return { jobId: job.id, status: 'queued', melodyGenerated: !lyric.melody };
+      return { jobId: job.jobId, status: 'queued', replayed: job.replayed, melodyGenerated: !lyric.melody };
     }
   );
 
@@ -105,8 +108,14 @@ export default async function vocals(app: FastifyInstance) {
 
       // Bind to a song so the mix picks this vocal up (mix reads the latest
       // approved lead vocal for the song).
+      const requestedSong = input.songId
+        ? await prisma.song.findFirstOrThrow({
+            where: { id: input.songId, projectId: project.id, workspaceId },
+            select: { id: true },
+          })
+        : null;
       const songId =
-        input.songId ??
+        requestedSong?.id ??
         (
           await prisma.song.findFirst({
             where: { projectId: project.id },

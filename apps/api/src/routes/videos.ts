@@ -3,7 +3,7 @@ import { prisma } from '@afrohit/db';
 import { generateStoryboardInputSchema, renderVideoInputSchema } from '@afrohit/shared';
 import { prompts, responsesJson } from '@afrohit/ai';
 import { requireAuth } from '../middleware/auth';
-import { enqueue } from '../lib/queue';
+import { createQueuedProviderJob, scopedRequestKey } from '../lib/queued-job';
 
 export default async function videos(app: FastifyInstance) {
   /**
@@ -71,47 +71,49 @@ export default async function videos(app: FastifyInstance) {
       const concept = await prisma.videoConcept.findFirstOrThrow({
         where: { id: input.conceptId, project: { workspaceId } },
       });
+      if (concept.projectId !== input.projectId) {
+        return reply.code(409).send({ error: 'concept_project_mismatch' });
+      }
 
       const shots = (concept.storyboard as Array<{ duration_s?: number }>) ?? [];
       const totalSec =
         input.shotIndex == null
           ? shots.reduce((s, sh) => s + (sh.duration_s ?? 3), 0)
           : shots[input.shotIndex]?.duration_s ?? 3;
+      const idempotencyKey = scopedRequestKey(req.headers as Record<string, unknown>, 'video-render');
       const charge = await app.chargeCredits({
         workspaceId,
         key: totalSec <= 8 ? 'video_8s' : 'video_20s',
         refTable: 'VideoConcept',
         refId: concept.id,
+        idempotencyKey,
       });
       if (!charge.ok) return reply.code(402).send({ error: 'insufficient_credits', ...charge });
 
-      const job = await prisma.providerJob.create({
-        data: {
-          workspaceId,
-          projectId: input.projectId,
-          kind: 'video',
-          provider: process.env.VIDEO_PROVIDER ?? 'stub',
-          status: 'QUEUED',
-          inputJson: input as never,
-        },
-      });
-
-      await enqueue({
+      const job = await createQueuedProviderJob({
+        app,
         queue: app.queues.video,
-        name: 'render-video',
-        payload: {
-          jobId: job.id,
+        jobName: 'render-video',
+        workspaceId,
+        projectId: concept.projectId,
+        kind: 'video',
+        provider: process.env.VIDEO_PROVIDER ?? 'stub',
+        inputJson: input,
+        charge,
+        idempotencyKey,
+        payload: (jobId) => ({
+          jobId,
           workspaceId,
-          projectId: input.projectId,
+          projectId: concept.projectId,
           conceptId: concept.id,
           shotIndex: input.shotIndex,
           shots,
           format: concept.format,
-        },
+        }),
       });
 
       reply.code(202);
-      return { jobId: job.id };
+      return { jobId: job.jobId, replayed: job.replayed };
     }
   );
 }

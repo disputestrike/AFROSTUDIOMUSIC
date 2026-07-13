@@ -9,8 +9,12 @@ export async function blueprintForReference(workspaceId: string, referenceId: st
   return blueprintFromMeasured(rec.measured);
 }
 
-export async function blueprintForSong(songId: string): Promise<SongBlueprint | null> {
-  const beat = await prisma.beatAsset.findFirst({ where: { songId }, orderBy: { createdAt: 'desc' }, select: { meta: true } });
+export async function blueprintForSong(workspaceId: string, songId: string): Promise<SongBlueprint | null> {
+  const beat = await prisma.beatAsset.findFirst({
+    where: { songId, song: { workspaceId } },
+    orderBy: { createdAt: 'desc' },
+    select: { meta: true },
+  });
   const meta = (beat?.meta ?? {}) as { measured?: MeasuredAnalysis };
   return blueprintFromMeasured(meta.measured);
 }

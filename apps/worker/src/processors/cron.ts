@@ -55,6 +55,7 @@ async function morningDropRun() {
         workspaceId: artist.workspaceId,
         key: 'hooks_batch_20',
         reasonSuffix: 'morning_drop',
+        idempotencyKey: `morning-drop:${new Date().toISOString().slice(0, 10)}:${artist.id}`,
       });
       if (!charge.ok) {
         console.log(`[morning-drop] skip ${artist.stageName} — insufficient credits`);
@@ -219,7 +220,12 @@ async function zapRadarRun() {
           const exists = await prisma.soundReference.findFirst({ where: { workspaceId: ws.id, sourceUrl: marker }, select: { id: true } });
           if (exists) continue; // already zapped — free, no re-learn
           // Budget guard — a cheap debit; if the daily cap is hit, stop this run.
-          const charge = await debitCredits({ workspaceId: ws.id, key: 'brief_polish', reasonSuffix: 'zap_radar' });
+          const charge = await debitCredits({
+            workspaceId: ws.id,
+            key: 'brief_polish',
+            reasonSuffix: 'zap_radar',
+            idempotencyKey: `zap-radar:${marker}`,
+          });
           if (!charge.ok) { learned = RADAR_MAX_PER_RUN; break; }
           const craft = await extractSongCraft({ title: song.title, artist: song.artist, genre });
           if (!craft?.craft?.length) continue;

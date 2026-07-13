@@ -5,7 +5,7 @@ import { prisma, Prisma } from '@afrohit/db';
 import { predictHit, researchTrends, enrichLyricsForVocals, cleanLyricsForMinimax, defaultSongEngine } from '@afrohit/ai';
 import { laneDna, laneDnaBrief } from '../lib/lane-pipeline';
 import { requireAuth } from '../middleware/auth';
-import { enqueue } from '../lib/queue';
+import { createQueuedProviderJob, scopedRequestKey } from '../lib/queued-job';
 import { learnedReferenceBrief } from '../lib/learned';
 import { laneContext } from '../lib/lane-context';
 import { arReadAfterRender } from '../lib/ar-read';
@@ -16,6 +16,8 @@ import { languageVocalTag } from '../services/chat-tools';
 import { requireAdmin } from './admin';
 import { presignAssetRef } from '../lib/storage';
 import { safeFetch } from '../lib/url-guard';
+import { queueAssetDeletion, songAssetRefs } from '../lib/asset-lifecycle';
+import { operationErrorBody, runIdempotentOperation } from '../lib/idempotent-operation';
 
 /** Freshest playable audio for a song: the most RECENT of master/mix/beat by
  *  createdAt — so a re-sing (new beat) or a re-master (new master) both become
@@ -399,14 +401,24 @@ export default async function songs(app: FastifyInstance) {
     const target = ded[idx] ?? ded[ded.length - 1];
     const beat = song.beats[0];
     if (!target || !beat) return reply.code(400).send({ error: 'no_audio_to_separate' });
-    const charge = await app.chargeCredits({ workspaceId, key: 'beat_idea_short_30s', refTable: 'Song', refId: song.id });
+    const idempotencyKey = scopedRequestKey(req.headers as Record<string, unknown>, `song-instrumental-version:${idx}`);
+    const charge = await app.chargeCredits({ workspaceId, key: 'beat_idea_short_30s', refTable: 'Song', refId: song.id, idempotencyKey });
     if (!charge.ok) return reply.code(402).send({ error: 'insufficient_credits', ...charge });
-    const job = await prisma.providerJob.create({
-      data: { workspaceId, projectId: song.projectId, kind: 'stems', provider: 'replicate', status: 'QUEUED', inputJson: { songId: song.id, beatId: beat.id, mode: 'instrumental', sourceUrl: target.url } as never },
+    const job = await createQueuedProviderJob({
+      app,
+      queue: app.queues.music,
+      jobName: 'stems',
+      workspaceId,
+      projectId: song.projectId,
+      kind: 'stems',
+      provider: 'replicate',
+      inputJson: { songId: song.id, beatId: beat.id, mode: 'instrumental', sourceUrl: target.url },
+      charge,
+      idempotencyKey,
+      payload: (jobId) => ({ jobId, workspaceId, projectId: song.projectId, songId: song.id, beatId: beat.id, mode: 'instrumental', sourceUrl: target.url }),
     });
-    await enqueue({ queue: app.queues.music, name: 'stems', payload: { jobId: job.id, workspaceId, projectId: song.projectId, songId: song.id, beatId: beat.id, mode: 'instrumental', sourceUrl: target.url } });
     reply.code(202);
-    return { jobId: job.id, status: 'queued', versionIndex: idx, note: 'Instrumental is separating — download it from this version when the job completes.' };
+    return { jobId: job.jobId, status: 'queued', replayed: job.replayed, versionIndex: idx, note: 'Instrumental is separating — download it from this version when the job completes.' };
   });
 
   // ---- Download manifest (audio + stems + cover + lyrics) ----
@@ -519,12 +531,21 @@ export default async function songs(app: FastifyInstance) {
     if (!song) return reply.code(404).send({ error: 'song_not_found' });
     const sourceUrl = song.masters[0]?.url ?? song.beats[0]?.url;
     if (!sourceUrl) return reply.code(400).send({ error: 'no_audio_yet', message: 'Render the song first, then transform it.' });
-    const job = await prisma.providerJob.create({
-      data: { workspaceId, projectId: song.projectId, kind: 'music', provider: 'internal', status: 'QUEUED', inputJson: { transform: true, songId: song.id, ...input } as never },
+    const idempotencyKey = scopedRequestKey(req.headers as Record<string, unknown>, `song-transform:${input.tempo ?? 1}:${input.semitones ?? 0}`);
+    const job = await createQueuedProviderJob({
+      app,
+      queue: app.queues.music,
+      jobName: 'transform',
+      workspaceId,
+      projectId: song.projectId,
+      kind: 'music',
+      provider: 'internal',
+      inputJson: { transform: true, songId: song.id, ...input },
+      idempotencyKey,
+      payload: (jobId) => ({ jobId, workspaceId, projectId: song.projectId, songId: song.id, sourceUrl, ...input }),
     });
-    await enqueue({ queue: app.queues.music, name: 'transform', payload: { jobId: job.id, workspaceId, projectId: song.projectId, songId: song.id, sourceUrl, ...input } });
     reply.code(202);
-    return { jobId: job.id, status: 'queued', note: 'New version lands in Compare Versions in seconds; revert anytime.' };
+    return { jobId: job.jobId, status: 'queued', replayed: job.replayed, note: 'New version lands in Compare Versions in seconds; revert anytime.' };
   });
 
   app.post<{ Params: { id: string }; Body: { preset?: string } }>('/:id/master', async (req, reply) => {
@@ -556,13 +577,16 @@ export default async function songs(app: FastifyInstance) {
     } else {
       const sourceUrl = latestBeat?.url ?? latestMix?.url ?? song.masters[0]?.url;
       if (!sourceUrl) return reply.code(400).send({ error: 'nothing_to_master — no audio on this song yet' });
-      const mix = await prisma.mix.create({
-        data: { projectId: song.projectId, songId: song.id, preset: 'source', url: sourceUrl, notes: 'Master source (current rendered audio)', approved: true },
-      });
+      const mix =
+        (await prisma.mix.findFirst({ where: { projectId: song.projectId, songId: song.id, preset: 'source', url: sourceUrl } })) ??
+        (await prisma.mix.create({
+          data: { projectId: song.projectId, songId: song.id, preset: 'source', url: sourceUrl, notes: 'Master source (current rendered audio)', approved: true },
+        }));
       mixId = mix.id;
     }
 
-    const charge = await app.chargeCredits({ workspaceId, key: 'master_preset', refTable: 'Song', refId: song.id });
+    const idempotencyKey = scopedRequestKey(req.headers as Record<string, unknown>, `song-master:${requestedPreset ?? 'default'}`);
+    const charge = await app.chargeCredits({ workspaceId, key: 'master_preset', refTable: 'Song', refId: song.id, idempotencyKey });
     if (!charge.ok) return reply.code(402).send({ error: 'insufficient_credits', ...charge });
 
     // 'finished' routes the CHAIN, not the target: a MiniMax/Suno render (or a
@@ -576,12 +600,21 @@ export default async function songs(app: FastifyInstance) {
     // two-pass driven) for every path; 'breathe_-16.5' is the dynamics opt-in.
     const preset = requestedPreset || 'afro_stream_-9';
 
-    const job = await prisma.providerJob.create({
-      data: { workspaceId, projectId: song.projectId, kind: 'master', provider: 'internal', status: 'QUEUED', inputJson: { songId: song.id, mixId, preset, finished } as never },
+    const job = await createQueuedProviderJob({
+      app,
+      queue: app.queues.master,
+      jobName: 'create-master',
+      workspaceId,
+      projectId: song.projectId,
+      kind: 'master',
+      provider: 'internal',
+      inputJson: { songId: song.id, mixId, preset, finished },
+      charge,
+      idempotencyKey,
+      payload: (jobId) => ({ jobId, workspaceId, projectId: song.projectId, songId: song.id, mixId, preset, finished }),
     });
-    await enqueue({ queue: app.queues.master, name: 'create-master', payload: { jobId: job.id, workspaceId, projectId: song.projectId, songId: song.id, mixId, preset, finished } });
     reply.code(202);
-    return { jobId: job.id, mixId };
+    return { jobId: job.jobId, mixId, replayed: job.replayed };
   });
 
   // ---- Reuse the beat in a NEW song (optionally a different project) ----
@@ -738,9 +771,6 @@ export default async function songs(app: FastifyInstance) {
     const songEngine =
       (req.body?.songEngine as 'suno' | 'ace_step' | 'minimax' | undefined) ??
       (['suno', 'minimax', 'ace_step'].includes(prev) ? (prev as 'suno' | 'ace_step' | 'minimax') : undefined);
-    const charge = await app.chargeCredits({ workspaceId, key: 'full_song_demo', refTable: 'Song', refId: song.id });
-    if (!charge.ok) return reply.code(402).send({ error: 'insufficient_credits', ...charge });
-
     // PHASE 4 loop — this IS a regen, so inject the repair steering stored on the
     // song's last measured take (from laneContext) as concrete style directives, the
     // same as createBeatJob. This is where a drifted take gets pushed back in-lane.
@@ -749,15 +779,23 @@ export default async function songs(app: FastifyInstance) {
       ? lane.repair.split('\n').filter((l) => l.startsWith('- ')).map((l) => l.slice(2).trim()).slice(0, 3)
       : [];
 
+    const idempotencyKey = scopedRequestKey(req.headers as Record<string, unknown>, 'song-regenerate');
+    const charge = await app.chargeCredits({ workspaceId, key: 'full_song_demo', refTable: 'Song', refId: song.id, idempotencyKey });
+    if (!charge.ok) return reply.code(402).send({ error: 'insufficient_credits', ...charge });
 
-    const job = await prisma.providerJob.create({
-      data: { workspaceId, projectId: song.projectId, kind: 'music', provider: songEngine ?? defaultSongEngine(), status: 'QUEUED', inputJson: { regenerate: true, songId: song.id } as never },
-    });
-    await enqueue({
+    const job = await createQueuedProviderJob({
+      app,
       queue: app.queues.music,
-      name: 'generate-music',
-      payload: {
-        jobId: job.id, workspaceId, projectId: song.projectId, songId: song.id,
+      jobName: 'generate-music',
+      workspaceId,
+      projectId: song.projectId,
+      kind: 'music',
+      provider: songEngine ?? defaultSongEngine(),
+      inputJson: { regenerate: true, songId: song.id },
+      charge,
+      idempotencyKey,
+      payload: (jobId) => ({
+        jobId, workspaceId, projectId: song.projectId, songId: song.id,
         input: {
           genre, bpm: song.project.bpm ?? 103, withVocals: true, withStems: false, songEngine,
           // A3-2: Adjust passes conditionOnCurrent — the song's own audio goes IN
@@ -773,10 +811,10 @@ export default async function songs(app: FastifyInstance) {
           dnaTags: [languageVocalTag(song.project.artist.languages), ...(dna.tags ?? []), ...styleHints.slice(0, 3), ...laneSteer, ...(selfBp ? [`structure ${selfBp.sections.length} sections`] : [])].slice(0, 12),
           blueprint: selfBp ?? undefined,
         },
-      },
+      }),
     });
     reply.code(202);
-    return { jobId: job.id, status: 'queued', message: "Re-singing with your edited lyrics — it becomes the song's current audio when it finishes." };
+    return { jobId: job.jobId, status: 'queued', replayed: job.replayed, message: "Re-singing with your edited lyrics — it becomes the song's current audio when it finishes." };
   });
 
   // ---- Duplicate a song (deep copy: song + lyric + latest beat + stems) ----
@@ -843,15 +881,25 @@ export default async function songs(app: FastifyInstance) {
     // finished song minus the voice. Resolved server-side; the worker gets a URL.
     const sourceUrl = freshestAudioUrl(song) ?? beat.url;
 
-    const charge = await app.chargeCredits({ workspaceId, key: 'beat_idea_short_30s', refTable: 'Song', refId: song.id });
+    const idempotencyKey = scopedRequestKey(req.headers as Record<string, unknown>, `song-stems:${mode}`);
+    const charge = await app.chargeCredits({ workspaceId, key: 'beat_idea_short_30s', refTable: 'Song', refId: song.id, idempotencyKey });
     if (!charge.ok) return reply.code(402).send({ error: 'insufficient_credits', ...charge });
 
-    const job = await prisma.providerJob.create({
-      data: { workspaceId, projectId: song.projectId, kind: 'stems', provider: 'replicate', status: 'QUEUED', inputJson: { songId: song.id, beatId: beat.id, mode, sourceUrl } as never },
+    const job = await createQueuedProviderJob({
+      app,
+      queue: app.queues.music,
+      jobName: 'stems',
+      workspaceId,
+      projectId: song.projectId,
+      kind: 'stems',
+      provider: 'replicate',
+      inputJson: { songId: song.id, beatId: beat.id, mode, sourceUrl },
+      charge,
+      idempotencyKey,
+      payload: (jobId) => ({ jobId, workspaceId, projectId: song.projectId, songId: song.id, beatId: beat.id, mode, sourceUrl }),
     });
-    await enqueue({ queue: app.queues.music, name: 'stems', payload: { jobId: job.id, workspaceId, projectId: song.projectId, songId: song.id, beatId: beat.id, mode, sourceUrl } });
     reply.code(202);
-    return { jobId: job.id, status: 'queued', mode };
+    return { jobId: job.jobId, status: 'queued', replayed: job.replayed, mode };
   });
 
   // ---- A&R hit predictor: will it hit / go viral, and how to make it bigger ----
@@ -868,24 +916,66 @@ export default async function songs(app: FastifyInstance) {
     });
     if (!song) return reply.code(404).send({ error: 'song_not_found' });
 
-    const charge = await app.chargeCredits({ workspaceId, key: 'hit_predict', refTable: 'Song', refId: song.id });
+    const idempotencyKey = scopedRequestKey(req.headers as Record<string, unknown>, 'song-hit-score');
+    const charge = await app.chargeCredits({ workspaceId, key: 'hit_predict', refTable: 'Song', refId: song.id, idempotencyKey });
     if (!charge.ok) return reply.code(402).send({ error: 'insufficient_credits', ...charge });
+
+    if (charge.replayed) {
+      const prior = await prisma.providerJob.findUnique({ where: { chargeLedgerId: charge.chargeId }, select: { status: true, outputJson: true } });
+      if (prior?.status === 'SUCCEEDED' && prior.outputJson) return prior.outputJson;
+      if (prior?.status === 'RUNNING' || prior?.status === 'QUEUED') {
+        return reply.code(409).send({ error: 'hit_score_in_progress' });
+      }
+      if (prior?.status === 'FAILED') {
+        return reply.code(503).send({ error: 'a&r_unavailable', message: 'The prior hit-scout attempt failed. Start a new request to retry.' });
+      }
+    }
+
+    let auditJob: { id: string };
+    try {
+      auditJob = await prisma.providerJob.create({
+        data: {
+          workspaceId,
+          projectId: song.projectId,
+          kind: 'hit-score',
+          provider: 'anthropic',
+          status: 'RUNNING',
+          inputJson: { songId: song.id } as never,
+          chargeLedgerId: charge.chargeId,
+          idempotencyKey,
+          startedAt: new Date(),
+        },
+        select: { id: true },
+      });
+    } catch (error) {
+      if ((error as { code?: string }).code !== 'P2002') throw error;
+      return reply.code(409).send({ error: 'hit_score_in_progress' });
+    }
 
     const genre = song.project.genre;
     const trends = (await researchTrends({ genre }).catch(() => null))?.digest;
     const hook = song.hooks[0]?.text ?? undefined;
-    const prediction = await predictHit({
-      title: song.lyric?.title || song.title,
-      genre,
-      bpm: song.project.bpm ?? undefined,
-      hook,
-      lyrics: song.lyric?.body ?? undefined,
-      soundDna: laneDnaBrief(genre),
-      trends,
-      hasMaster: song.masters.length > 0,
-      languages: song.project.artist.languages,
-    });
-    if (!prediction) return reply.code(503).send({ error: 'a&r_unavailable', message: 'Hit scout needs a Claude/OpenAI key. Add ANTHROPIC_API_KEY.' });
+    let prediction: Awaited<ReturnType<typeof predictHit>>;
+    try {
+      prediction = await predictHit({
+        title: song.lyric?.title || song.title,
+        genre,
+        bpm: song.project.bpm ?? undefined,
+        hook,
+        lyrics: song.lyric?.body ?? undefined,
+        soundDna: laneDnaBrief(genre),
+        trends,
+        hasMaster: song.masters.length > 0,
+        languages: song.project.artist.languages,
+      });
+      if (!prediction) throw new Error('hit predictor unavailable');
+    } catch (error) {
+      await Promise.all([
+        prisma.providerJob.update({ where: { id: auditJob.id }, data: { status: 'FAILED', finishedAt: new Date(), errorJson: { message: error instanceof Error ? error.message : 'hit predictor failed' } as never } }),
+        app.refundCredits({ workspaceId, key: 'hit_predict', refTable: 'Song', refId: song.id, chargeId: charge.chargeId }),
+      ]);
+      return reply.code(503).send({ error: 'a&r_unavailable', message: 'Hit scout needs a configured AI provider and a healthy provider connection.' });
+    }
 
     // Compounding library: a genuine hit signal teaches the artist's taste graph,
     // so future hooks/lyrics pull toward what actually scores. Real feedback loop.
@@ -897,7 +987,9 @@ export default async function songs(app: FastifyInstance) {
     await prisma.song
       .update({ where: { id: song.id }, data: { hitScore: prediction.hitScore, viralScore: prediction.viralScore, hitRead: prediction as never } })
       .catch(() => {});
-    return { songId: song.id, ...prediction };
+    const result = { songId: song.id, ...prediction };
+    await prisma.providerJob.update({ where: { id: auditJob.id }, data: { status: 'SUCCEEDED', finishedAt: new Date(), outputJson: result as never } });
+    return result;
   });
 
   /**
@@ -911,7 +1003,20 @@ export default async function songs(app: FastifyInstance) {
     const { workspaceId } = requireAuth(req);
     // Shared core with the automatic Will-it-blow gate: rewrite the lyric executing
     // the A&R notes → re-sing (auto-masters + re-scores when it lands).
-    const res = await improveSongOnce(app, workspaceId, req.params.id);
+    const operationKey = scopedRequestKey(req.headers as Record<string, unknown>, 'make-it-bigger');
+    const operation = await runIdempotentOperation({
+      workspaceId,
+      kind: 'make-it-bigger',
+      provider: 'internal',
+      idempotencyKey: operationKey,
+      inputJson: { songId: req.params.id },
+      execute: () => improveSongOnce(app, workspaceId, req.params.id, { operationKey }),
+    });
+    if (operation.state !== 'completed') {
+      const failure = operationErrorBody(operation);
+      return reply.code(failure.statusCode).send(failure.body);
+    }
+    const res = operation.value;
     if ('error' in res) {
       const status: Record<string, number> = { song_not_found: 404, no_lyrics: 400, 'a&r_unavailable': 503, insufficient_credits: 402, rewrite_failed: 503 };
       const message: Record<string, string> = {
@@ -920,14 +1025,31 @@ export default async function songs(app: FastifyInstance) {
       };
       return reply.code(status[res.error] ?? 400).send({ error: res.error, ...(message[res.error] ? { message: message[res.error] } : {}) });
     }
-    void arReadAfterRender(app, workspaceId, [{ songId: req.params.id, jobId: res.jobId }]).catch(() => {});
+    await arReadAfterRender(app, workspaceId, [{ songId: req.params.id, jobId: res.jobId }]);
     reply.code(202);
     return { jobId: res.jobId, status: 'queued', whatChanged: res.whatChanged, message: 'A&R notes implemented — re-singing the bigger version. It auto-masters and re-scores when done.' };
   });
 
   app.delete<{ Params: { id: string } }>('/:id', async (req, reply) => {
     const { workspaceId } = requireAuth(req);
-    await prisma.song.deleteMany({ where: { id: req.params.id, workspaceId } });
+    const song = await prisma.song.findFirst({
+      where: { id: req.params.id, workspaceId },
+      include: {
+        beats: { select: { url: true, stems: { select: { url: true } } } },
+        vocalRenders: { select: { url: true } },
+        mixes: { select: { url: true } },
+        masters: { select: { url: true } },
+        exports: { select: { bundle: true } },
+      },
+    });
+    if (song) {
+      const refs = songAssetRefs(song);
+      await prisma.$transaction(async (tx) => {
+        await queueAssetDeletion(tx, { workspaceId, refs, reason: `song:${song.id}` });
+        await tx.song.delete({ where: { id: song.id } });
+      });
+      void app.dispatchPendingJobs().catch((error) => req.log.error({ err: error }, 'asset cleanup dispatch failed'));
+    }
     reply.code(204);
     return null;
   });

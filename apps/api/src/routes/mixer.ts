@@ -3,7 +3,7 @@ import { prisma } from '@afrohit/db';
 import { mixerRenderSchema, mixerAiSchema, type MixerTrack } from '@afrohit/shared';
 import { responsesJson } from '@afrohit/ai';
 import { requireAuth } from '../middleware/auth';
-import { enqueue } from '../lib/queue';
+import { createQueuedProviderJob, scopedRequestKey } from '../lib/queued-job';
 
 type TrackDefaults = Omit<MixerTrack, 'id' | 'kind' | 'label'>;
 const DEFAULTS: TrackDefaults = {
@@ -94,6 +94,7 @@ export default async function mixer(app: FastifyInstance) {
       const project = await prisma.project.findFirstOrThrow({
         where: { id: req.params.projectId, workspaceId },
       });
+      await prisma.song.findFirstOrThrow({ where: { id: input.songId, projectId: project.id, workspaceId } });
 
       // Match each posted track to a real asset to get its authentic url.
       const [beats, vocals] = await Promise.all([
@@ -111,39 +112,39 @@ export default async function mixer(app: FastifyInstance) {
         return reply.code(400).send({ error: 'no_matching_tracks' });
       }
 
+      const idempotencyKey = scopedRequestKey(req.headers as Record<string, unknown>, 'mixer-console');
       const charge = await app.chargeCredits({
         workspaceId,
         key: 'mix_preset',
         refTable: 'Song',
         refId: input.songId,
+        idempotencyKey,
       });
       if (!charge.ok) return reply.code(402).send({ error: 'insufficient_credits', ...charge });
 
-      const job = await prisma.providerJob.create({
-        data: {
-          workspaceId,
-          projectId: project.id,
-          kind: 'mix',
-          provider: 'internal',
-          status: 'QUEUED',
-          inputJson: { songId: input.songId, preset: 'console' } as never,
-        },
-      });
-      await enqueue({
+      const job = await createQueuedProviderJob({
+        app,
         queue: app.queues.mix,
-        name: 'create-mix',
-        payload: {
-          jobId: job.id,
+        jobName: 'create-mix',
+        workspaceId,
+        projectId: project.id,
+        kind: 'mix',
+        provider: 'internal',
+        inputJson: { songId: input.songId, preset: 'console' },
+        charge,
+        idempotencyKey,
+        payload: (jobId) => ({
+          jobId,
           workspaceId,
           projectId: project.id,
           songId: input.songId,
           preset: 'console',
           settings,
-        },
+        }),
       });
 
       reply.code(202);
-      return { jobId: job.id };
+      return { jobId: job.jobId, replayed: job.replayed };
     }
   );
 

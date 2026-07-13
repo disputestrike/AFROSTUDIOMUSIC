@@ -1,10 +1,12 @@
 import type { FastifyInstance } from 'fastify';
+import { createHash } from 'node:crypto';
 import { z } from 'zod';
 import { prisma } from '@afrohit/db';
 import { genreSchema } from '@afrohit/shared';
 import { getSoundDNA } from '@afrohit/ai';
 import { requireAuth } from '../middleware/auth';
-import { enqueue } from '../lib/queue';
+import { createQueuedProviderJob, scopedRequestKey } from '../lib/queued-job';
+import { operationErrorBody, runIdempotentOperation } from '../lib/idempotent-operation';
 import { kitRolesFor, homeKeyFor, pickMaterial, claudeArrangement } from '../lib/material-plan';
 import { blueprintForSong, blueprintForReference } from '../lib/blueprint';
 import { autoMaterialBeat } from '../lib/material-auto';
@@ -78,20 +80,25 @@ export default async function materials(app: FastifyInstance) {
     const jobs: Array<{ role: string; jobId: string }> = [];
     for (let i = 0; i < roles.length; i++) {
       const role = roles[i]!;
-      const charge = await app.chargeCredits({ workspaceId, key: 'beat_idea_short_30s' });
+      const idempotencyKey = scopedRequestKey(req.headers as Record<string, unknown>, `material-forge:${role}:${i}`);
+      const charge = await app.chargeCredits({ workspaceId, key: 'beat_idea_short_30s', idempotencyKey });
       if (!charge.ok) return reply.code(402).send({ error: 'insufficient_credits', forged: jobs, ...charge });
-      const job = await prisma.providerJob.create({
-        data: { workspaceId, kind: 'material', provider: 'replicate', status: 'QUEUED', inputJson: { genre: input.genre, role, bpm, keySignature } as never },
-      });
-      await enqueue({
+      const job = await createQueuedProviderJob({
+        app,
         queue: app.queues.music,
-        name: 'forge-material',
-        payload: { jobId: job.id, workspaceId, genre: input.genre, role, bpm, keySignature },
+        jobName: 'forge-material',
+        workspaceId,
+        kind: 'material',
+        provider: 'replicate',
+        inputJson: { genre: input.genre, role, bpm, keySignature },
+        charge,
+        idempotencyKey,
+        payload: (jobId) => ({ jobId, workspaceId, genre: input.genre, role, bpm, keySignature }),
         // STAGGER: Replicate throttles prediction creation (observed live: 6/min,
         // burst 1) — parallel forges 429'd. 30s spacing keeps the kit flowing.
         delayMs: i * 30_000,
       });
-      jobs.push({ role, jobId: job.id });
+      jobs.push({ role, jobId: job.jobId });
     }
     reply.code(202);
     return { forging: jobs, keySignature, note: `Forging ${jobs.length} isolated ${input.genre} loops at ${bpm}bpm in ${keySignature} — poll each job; QC-passed loops land in the library.` };
@@ -114,8 +121,8 @@ export default async function materials(app: FastifyInstance) {
   /**
    * AUTO — "let AI run it." One action: forge whatever the genre's kit is missing
    * near this bpm, then assemble the exact beat automatically. No manual forge-then-
-   * assemble. Returns 'assembling' if the shelf was stocked, else 'forging' (a
-   * detached waiter assembles once the loops land).
+   * assemble. Returns 'assembling' if the shelf was stocked, else 'forging'; a
+   * durable orchestration job assembles once the loops land.
    */
   const autoSchema = z.object({
     projectId: z.string().cuid(),
@@ -131,9 +138,20 @@ export default async function materials(app: FastifyInstance) {
     const input = synthSchema.parse(req.body);
     // Owned synthesized material (log_drum / shaker / bass glide) — near-zero cost,
     // rights-clean, disclosed as source:'forged' + meta.synth in the shelf.
-    await enqueue({ queue: app.queues.music, name: 'synth-material', payload: { workspaceId, genre: input.genre, bpm: input.bpm, roles: ['log_drum', 'percussion', 'bass'] } });
+    const idempotencyKey = scopedRequestKey(req.headers as Record<string, unknown>, 'material-synth');
+    const job = await createQueuedProviderJob({
+      app,
+      queue: app.queues.music,
+      jobName: 'synth-material',
+      workspaceId,
+      kind: 'material-synth',
+      provider: 'internal',
+      inputJson: { genre: input.genre, bpm: input.bpm, roles: ['log_drum', 'percussion', 'bass'] },
+      idempotencyKey,
+      payload: (jobId) => ({ jobId, workspaceId, genre: input.genre, bpm: input.bpm, roles: ['log_drum', 'percussion', 'bass'] }),
+    });
     reply.code(202);
-    return { queued: true, roles: ['log_drum', 'percussion', 'bass'], note: 'Synthesized signature loops landing on the shelf in ~seconds.' };
+    return { queued: true, jobId: job.jobId, replayed: job.replayed, roles: ['log_drum', 'percussion', 'bass'], note: 'Synthesized signature loops landing on the shelf in ~seconds.' };
   });
 
   // THE AFROHIT ENGINE v1 — composed, not rented. One call: owned kit ->
@@ -153,26 +171,43 @@ export default async function materials(app: FastifyInstance) {
     const { workspaceId } = requireAuth(req);
     const input = ownEngineSchema.parse(req.body);
     await prisma.project.findFirstOrThrow({ where: { id: input.projectId, workspaceId } });
+    if (input.songId) {
+      await prisma.song.findFirstOrThrow({ where: { id: input.songId, projectId: input.projectId, workspaceId } });
+    }
     const blueprint = input.blueprintSongId
-      ? await blueprintForSong(input.blueprintSongId)
+      ? await blueprintForSong(workspaceId, input.blueprintSongId)
       : input.blueprintReferenceId
         ? await blueprintForReference(workspaceId, input.blueprintReferenceId)
         : null;
-    const charge = await app.chargeCredits({ workspaceId, key: 'beat_idea_short_30s', refTable: 'Project', refId: input.projectId });
+    const idempotencyKey = scopedRequestKey(req.headers as Record<string, unknown>, 'own-engine');
+    const charge = await app.chargeCredits({ workspaceId, key: 'beat_idea_short_30s', refTable: 'Project', refId: input.projectId, idempotencyKey });
     if (!charge.ok) return reply.code(402).send({ error: 'insufficient_credits', ...charge });
-    const job = await prisma.providerJob.create({
-      data: { workspaceId, projectId: input.projectId, kind: 'music', provider: 'afrohit-own', status: 'QUEUED', inputJson: { ownEngine: true, ...input } as never },
+    const job = await createQueuedProviderJob({
+      app,
+      queue: app.queues.music,
+      jobName: 'own-engine',
+      workspaceId,
+      projectId: input.projectId,
+      kind: 'music',
+      provider: 'afrohit-own',
+      inputJson: { ownEngine: true, ...input },
+      charge,
+      idempotencyKey,
+      payload: (jobId) => ({ jobId, workspaceId, projectId: input.projectId, songId: input.songId, genre: input.genre, bpm: input.bpm, melody: input.melody, melodyPrompt: input.melodyPrompt, blueprint }),
     });
-    await enqueue({ queue: app.queues.music, name: 'own-engine', payload: { jobId: job.id, workspaceId, projectId: input.projectId, songId: input.songId, genre: input.genre, bpm: input.bpm, melody: input.melody, melodyPrompt: input.melodyPrompt, blueprint } });
     reply.code(202);
-    return { jobId: job.id, status: 'queued', engine: 'afrohit-own-v1', layers: ['owned rhythm (synth+material, grid-locked)', input.melody === false ? 'melody: off' : 'melody: MusicGen conditioned on our groove (fail-open)', 'voice: your upload via /vocals/upload', 'proof: lane compliance + blueprint verify'], note: 'Poll the job; the beat lands approved with measured receipts on its meta.' };
+    return { jobId: job.jobId, status: 'queued', replayed: job.replayed, engine: 'afrohit-own-v1', layers: ['owned rhythm (synth+material, grid-locked)', input.melody === false ? 'melody: off' : 'melody: MusicGen conditioned on our groove (fail-open)', 'voice: your upload via /vocals/upload', 'proof: lane compliance + blueprint verify'], note: 'Poll the job; the beat lands approved with measured receipts on its meta.' };
   });
 
   app.post('/auto', { schema: { body: autoSchema } }, async (req, reply) => {
     const { workspaceId } = requireAuth(req);
     const input = autoSchema.parse(req.body);
     await prisma.project.findFirstOrThrow({ where: { id: input.projectId, workspaceId } });
-    const result = await autoMaterialBeat(app, workspaceId, input);
+    if (input.songId) {
+      await prisma.song.findFirstOrThrow({ where: { id: input.songId, projectId: input.projectId, workspaceId } });
+    }
+    const operationKey = scopedRequestKey(req.headers as Record<string, unknown>, 'material-auto');
+    const result = await autoMaterialBeat(app, workspaceId, { ...input, operationKey });
     reply.code(202);
     return result;
   });
@@ -181,15 +216,22 @@ export default async function materials(app: FastifyInstance) {
     const { workspaceId } = requireAuth(req);
     const input = assembleSchema.parse(req.body);
     await prisma.project.findFirstOrThrow({ where: { id: input.projectId, workspaceId } });
+    if (input.songId) {
+      await prisma.song.findFirstOrThrow({ where: { id: input.songId, projectId: input.projectId, workspaceId } });
+    }
 
     const rows = await prisma.materialAsset.findMany({
       where: { workspaceId, genre: input.genre },
       orderBy: { createdAt: 'desc' },
       take: 100,
     });
-    // Fresh variety seed per request — same shelf, different combination each
-    // assemble (the deterministic pick made every beat in a lane identical).
-    const picks = pickMaterial(rows, input.genre, input.bpm, input.keySignature, { varietySeed: Date.now() % 100000 });
+    const idempotencyKey = scopedRequestKey(req.headers as Record<string, unknown>, 'material-assemble');
+    // A new request gets a fresh combination, while retries of that request get
+    // the exact same picks and arrangement.
+    const varietySeed = idempotencyKey
+      ? Number.parseInt(createHash('sha256').update(idempotencyKey).digest('hex').slice(0, 8), 16) % 100000
+      : Date.now() % 100000;
+    const picks = pickMaterial(rows, input.genre, input.bpm, input.keySignature, { varietySeed });
     if (picks.length < 2) {
       return reply.code(400).send({
         error: 'not_enough_material',
@@ -199,22 +241,52 @@ export default async function materials(app: FastifyInstance) {
       });
     }
 
-    const charge = await app.chargeCredits({ workspaceId, key: 'beat_idea_short_30s', refTable: 'Project', refId: input.projectId });
+    const charge = await app.chargeCredits({ workspaceId, key: 'beat_idea_short_30s', refTable: 'Project', refId: input.projectId, idempotencyKey });
     if (!charge.ok) return reply.code(402).send({ error: 'insufficient_credits', ...charge });
+    let arrangement;
+    try {
+      arrangement = await runIdempotentOperation({
+        workspaceId,
+        projectId: input.projectId,
+        kind: 'material-arrangement',
+        provider: 'text',
+        idempotencyKey: idempotencyKey ? `${idempotencyKey}:arrangement` : undefined,
+        inputJson: { ...input, picks: picks.map((p) => p.id) },
+        execute: () => claudeArrangement(input.genre, input.bpm, picks.map((p) => p.role), input.vibe),
+      });
+    } catch (error) {
+      await app.refundCredits({
+        workspaceId,
+        key: 'beat_idea_short_30s',
+        refTable: 'Project',
+        refId: input.projectId,
+        chargeId: charge.chargeId,
+      });
+      throw error;
+    }
+    if (arrangement.state !== 'completed') {
+      const failure = operationErrorBody(arrangement);
+      return reply.code(failure.statusCode).send(failure.body);
+    }
+    const sections = arrangement.value;
 
-    const sections = await claudeArrangement(input.genre, input.bpm, picks.map((p) => p.role), input.vibe);
-
-    const job = await prisma.providerJob.create({
-      data: { workspaceId, projectId: input.projectId, kind: 'music', provider: 'material', status: 'QUEUED', inputJson: { assemble: true, ...input, picks: picks.map((p) => p.role), sections } as never },
-    });
-    await enqueue({
+    const job = await createQueuedProviderJob({
+      app,
       queue: app.queues.music,
-      name: 'assemble-beat',
-      payload: { jobId: job.id, workspaceId, projectId: input.projectId, songId: input.songId, bpm: input.bpm, genre: input.genre, picks, sections },
+      jobName: 'assemble-beat',
+      workspaceId,
+      projectId: input.projectId,
+      kind: 'music',
+      provider: 'material',
+      inputJson: { assemble: true, ...input, picks: picks.map((p) => p.role), sections },
+      charge,
+      idempotencyKey,
+      payload: (jobId) => ({ jobId, workspaceId, projectId: input.projectId, songId: input.songId, bpm: input.bpm, genre: input.genre, picks, sections }),
     });
     reply.code(202);
     return {
-      jobId: job.id,
+      jobId: job.jobId,
+      replayed: job.replayed,
       status: 'queued',
       roles: picks.map((p) => p.role),
       arrangement: sections ? sections.map((s) => `${s.name}:${s.bars}bars[${s.roles.join('+')}]`) : 'classic template',

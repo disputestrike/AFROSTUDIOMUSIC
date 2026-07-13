@@ -30,6 +30,7 @@ import {
   enrichLyricsForVocals,
   predictHit,
   researchTrends,
+  defaultSongEngine,
   type HitPrediction,
 } from '@afrohit/ai';
 import { genreSignature, pickLawfulTitle } from '@afrohit/shared';
@@ -37,10 +38,11 @@ import { learnedReferenceBrief } from './learned';
 import { laneContext } from './lane-context';
 import { laneDna, laneDnaBrief } from './lane-pipeline';
 import { arReadSong } from './ar-read';
-import { enqueue } from './queue';
+import { createQueuedProviderJob } from './queued-job';
 import { snapshotLyricVersion } from './lyric-versions';
 import { applySingingBrain, craftOf } from './singing-pipeline';
 import { languageVocalTag, voiceVocalTag } from '../services/chat-tools';
+import { runIdempotentOperation } from './idempotent-operation';
 
 // Benjamin's call: the release bar is 90 ("it needs to be perfect"). NOTE: on the
 // current MiniMax engine, writing-driven scores top out ~65-70 (the A&R itself says
@@ -133,23 +135,45 @@ async function scoreVariant(
   workspaceId: string,
   song: FullSong,
   lyricBody: string,
-  hasMaster: boolean
+  hasMaster: boolean,
+  operationKey: string
 ): Promise<HitPrediction | null> {
-  const charge = await app.chargeCredits({ workspaceId, key: 'hit_predict', refTable: 'Song', refId: song.id });
+  const charge = await app.chargeCredits({ workspaceId, key: 'hit_predict', refTable: 'Song', refId: song.id, idempotencyKey: operationKey });
   if (!charge.ok) return null;
-  const genre = song.project.genre;
-  const trends = (await researchTrends({ genre }).catch(() => null))?.digest;
-  return predictHit({
-    title: song.lyric?.title || song.title,
-    genre,
-    bpm: song.project.bpm ?? undefined,
-    hook: song.hooks[0]?.text ?? undefined,
-    lyrics: lyricBody,
-    soundDna: laneDnaBrief(genre),
-    trends,
-    hasMaster,
-    languages: song.project.artist.languages,
-  }).catch(() => null);
+  try {
+    const operation = await runIdempotentOperation({
+      workspaceId,
+      projectId: song.projectId,
+      kind: 'hit-score-variant',
+      provider: 'text',
+      idempotencyKey: operationKey,
+      chargeLedgerId: charge.chargeId,
+      inputJson: { songId: song.id, lyricBody, hasMaster },
+      execute: async () => {
+        const genre = song.project.genre;
+        const trends = (await researchTrends({ genre }).catch(() => null))?.digest;
+        const prediction = await predictHit({
+          title: song.lyric?.title || song.title,
+          genre,
+          bpm: song.project.bpm ?? undefined,
+          hook: song.hooks[0]?.text ?? undefined,
+          lyrics: lyricBody,
+          soundDna: laneDnaBrief(genre),
+          trends,
+          hasMaster,
+          languages: song.project.artist.languages,
+        });
+        if (!prediction) {
+          await app.refundCredits({ workspaceId, key: 'hit_predict', refTable: 'Song', refId: song.id, chargeId: charge.chargeId });
+        }
+        return prediction;
+      },
+    });
+    return operation.state === 'completed' ? operation.value : null;
+  } catch {
+    await app.refundCredits({ workspaceId, key: 'hit_predict', refTable: 'Song', refId: song.id, chargeId: charge.chargeId });
+    return null;
+  }
 }
 
 /** Persist a lyric and re-sing it (one render). Delayed so the background gate's
@@ -160,7 +184,7 @@ async function resing(
   song: FullSong,
   title: string,
   body: string,
-  opts?: { delayMs?: number }
+  opts?: { delayMs?: number; operationKey?: string }
 ): Promise<string | null> {
   if (!song.lyric) return null;
   // VERBATIM LAW, belt-and-braces: both callers already reject artist-authored
@@ -171,18 +195,6 @@ async function resing(
     console.warn(`[resing] ${song.id}: artist-authored lyric — refusing to rewrite/re-sing (verbatim law)`);
     return null;
   }
-  // Preserve the CURRENT lyric before overwriting it — the artist must always be
-  // able to revert to the original (sometimes it's the better take).
-  await snapshotLyricVersion(song.lyric.id, 'before make-it-bigger');
-  // THE NAME IS LAW: a rewrite improves EXECUTION, never identity — the existing
-  // title (often the artist's own) always survives a redeem. Only a song with no
-  // title yet may take the rewrite's suggestion.
-  // (TITLE LAW gates the rewrite's suggestion; the artist's existing title is
-  // never touched.)
-  await prisma.lyricDraft.update({ where: { id: song.lyric.id }, data: { title: song.lyric.title || pickLawfulTitle([title], body), body, approved: true } });
-  await prisma.song.update({ where: { id: song.id }, data: { versionLabel: 'bigger (A&R notes applied)', hitScore: null, viralScore: null } });
-  const charge = await app.chargeCredits({ workspaceId, key: 'full_song_demo', refTable: 'Song', refId: song.id });
-  if (!charge.ok) return null;
   const genre = song.project.genre;
   // THE USER'S SELECTIONS SURVIVE THE GATE: the original render job carries the
   // create's languages/voice/mood/fusion (inputJson = {...input}). The re-sing
@@ -235,28 +247,60 @@ async function resing(
   const songEngine = ['suno', 'minimax', 'ace_step'].includes(prev)
     ? (prev as 'suno' | 'ace_step' | 'minimax')
     : (['suno', 'minimax', 'ace_step'].includes(orig.songEngine ?? '') ? (orig.songEngine as 'suno' | 'ace_step' | 'minimax') : undefined);
-  const job = await prisma.providerJob.create({
-    data: { workspaceId, projectId: song.projectId, kind: 'music', provider: songEngine ?? 'suno', status: 'QUEUED', inputJson: { makeItBigger: true, songId: song.id, sungForm: sung.sungForm } as never },
-  });
-  await enqueue({
-    queue: app.queues.music,
-    name: 'generate-music',
-    ...(opts?.delayMs ? { delayMs: opts.delayMs } : {}),
-    payload: {
-      jobId: job.id, workspaceId, projectId: song.projectId, songId: song.id,
-      input: {
-        genre, bpm: song.project.bpm ?? 103, withVocals: true, withStems: false, songEngine,
-        // The improved take must stay FULL LENGTH — match the take it replaces,
-        // genre standard otherwise. With no durationS, an ACE-Step fallback
-        // rendered 120s and the gate SHORTENED the shipped song.
-        durationS: song.beats[0]?.duration && song.beats[0].duration > 30 ? Math.round(song.beats[0].duration) : genreSignature(genre).durationS,
-        lyrics: lyricsForSong,
-        artistTone: song.project.artist.vocalTone, languages: selLangs,
-        dnaTags: [...[voiceVocalTag(orig.voice ?? null)].filter((t): t is string => !!t), languageVocalTag(selLangs), ...(dna.tags ?? []), ...styleHints.slice(0, 3), ...laneSteer],
-      },
-    },
-  });
-  return job.id;
+  const idempotencyKey = opts?.operationKey ? `${opts.operationKey}:resing` : undefined;
+  const charge = await app.chargeCredits({ workspaceId, key: 'full_song_demo', refTable: 'Song', refId: song.id, idempotencyKey });
+  if (!charge.ok) return null;
+  if (charge.replayed) {
+    const existing = await prisma.providerJob.findUnique({ where: { chargeLedgerId: charge.chargeId }, select: { id: true } });
+    if (existing) return existing.id;
+  }
+
+  const lawfulTitle = song.lyric.title || pickLawfulTitle([title], body);
+  try {
+    await snapshotLyricVersion(song.lyric.id, 'before make-it-bigger');
+    await prisma.$transaction([
+      prisma.lyricDraft.update({ where: { id: song.lyric.id }, data: { title: lawfulTitle, body, cleanVersion: null, approved: true } }),
+      prisma.song.update({ where: { id: song.id }, data: { versionLabel: 'bigger (A&R notes applied)', hitScore: null, viralScore: null } }),
+    ]);
+  } catch {
+    await app.refundCredits({ workspaceId, key: 'full_song_demo', refTable: 'Song', refId: song.id, chargeId: charge.chargeId });
+    return null;
+  }
+
+  let job;
+  try {
+    job = await createQueuedProviderJob({
+      app,
+      queue: app.queues.music,
+      jobName: 'generate-music',
+      workspaceId,
+      projectId: song.projectId,
+      kind: 'music',
+      provider: songEngine ?? defaultSongEngine(),
+      inputJson: { makeItBigger: true, songId: song.id, sungForm: sung.sungForm },
+      charge,
+      idempotencyKey,
+      delayMs: opts?.delayMs,
+      payload: (jobId) => ({
+        jobId, workspaceId, projectId: song.projectId, songId: song.id,
+        input: {
+          genre, bpm: song.project.bpm ?? 103, withVocals: true, withStems: false, songEngine,
+          // The improved take must stay full length and match the take it replaces.
+          durationS: song.beats[0]?.duration && song.beats[0].duration > 30 ? Math.round(song.beats[0].duration) : genreSignature(genre).durationS,
+          lyrics: lyricsForSong,
+          artistTone: song.project.artist.vocalTone, languages: selLangs,
+          dnaTags: [...[voiceVocalTag(orig.voice ?? null)].filter((tag): tag is string => !!tag), languageVocalTag(selLangs), ...(dna.tags ?? []), ...styleHints.slice(0, 3), ...laneSteer],
+        },
+      }),
+    });
+  } catch {
+    await prisma.$transaction([
+      prisma.lyricDraft.update({ where: { id: song.lyric.id }, data: { title: song.lyric.title, body: song.lyric.body, cleanVersion: song.lyric.cleanVersion, approved: song.lyric.approved } }),
+      prisma.song.update({ where: { id: song.id }, data: { versionLabel: song.versionLabel, hitScore: song.hitScore, viralScore: song.viralScore } }),
+    ]).catch(() => undefined);
+    return null;
+  }
+  return job.jobId;
 }
 
 export interface ImproveResult {
@@ -271,26 +315,46 @@ export async function improveSongOnce(
   app: FastifyInstance,
   workspaceId: string,
   songId: string,
-  opts?: { delayMs?: number }
+  opts?: { delayMs?: number; operationKey?: string }
 ): Promise<ImproveResult | { error: ImproveError }> {
   const song = await loadSong(workspaceId, songId);
   if (!song) return { error: 'song_not_found' };
   if (!song.lyric?.body) return { error: 'no_lyrics' };
+  if (opts?.operationKey) {
+    const existing = await prisma.providerJob.findFirst({
+      where: { workspaceId, kind: 'music', idempotencyKey: `${opts.operationKey}:resing` },
+      select: { id: true },
+    });
+    if (existing) return { jobId: existing.id, whatChanged: [] };
+  }
   // THE ARTIST'S WORDS ARE LAW: a from-lyrics/mumble-authored draft is never
   // rewritten by the machine — not by Make-it-bigger, not by the gate. Score
   // it, advise, stop. (Root cause of "it doesn't follow my lyrics".)
   if ((song.lyric as { artistAuthored?: boolean }).artistAuthored) return { error: 'artist_authored' };
   let read = song.hitRead as { toMakeItBigger?: string[]; risks?: string[] } | null;
   if (!read?.toMakeItBigger?.length) {
-    read = await arReadSong(app, workspaceId, songId);
+    read = await arReadSong(app, workspaceId, songId, opts?.operationKey ? `${opts.operationKey}:read` : undefined);
     if (!read) return { error: 'a&r_unavailable' };
   }
-  const lyricCharge = await app.chargeCredits({ workspaceId, key: 'lyrics_full', refTable: 'Song', refId: songId });
+  const rewriteKey = opts?.operationKey ? `${opts.operationKey}:rewrite` : undefined;
+  const lyricCharge = await app.chargeCredits({ workspaceId, key: 'lyrics_full', refTable: 'Song', refId: songId, idempotencyKey: rewriteKey });
   if (!lyricCharge.ok) return { error: 'insufficient_credits' };
-  const rw = await rewriteLyric(song.project.genre, song.lyric.body, read);
-  if (!rw) return { error: 'rewrite_failed' };
+  let rw;
+  try {
+    rw = await rewriteLyric(song.project.genre, song.lyric.body, read);
+  } catch {
+    await app.refundCredits({ workspaceId, key: 'lyrics_full', refTable: 'Song', refId: songId, chargeId: lyricCharge.chargeId });
+    return { error: 'rewrite_failed' };
+  }
+  if (!rw) {
+    await app.refundCredits({ workspaceId, key: 'lyrics_full', refTable: 'Song', refId: songId, chargeId: lyricCharge.chargeId });
+    return { error: 'rewrite_failed' };
+  }
   const jobId = await resing(app, workspaceId, song, rw.title, rw.body, opts);
-  if (!jobId) return { error: 'insufficient_credits' };
+  if (!jobId) {
+    await app.refundCredits({ workspaceId, key: 'lyrics_full', refTable: 'Song', refId: songId, chargeId: lyricCharge.chargeId });
+    return { error: 'insufficient_credits' };
+  }
   return { jobId, whatChanged: rw.whatChanged ?? [] };
 }
 
@@ -307,7 +371,8 @@ async function stamp(songId: string, bestScore: number, passes: number, willBlow
 async function runGateForSong(app: FastifyInstance, workspaceId: string, songId: string, renderJobId: string) {
   try {
     if (!(await waitForJob(renderJobId))) return; // the initial render must land first
-    const pred0 = await arReadSong(app, workspaceId, songId);
+    const gateKey = `will-it-blow:${renderJobId}:${songId}`;
+    const pred0 = await arReadSong(app, workspaceId, songId, `${gateKey}:initial-read`);
     if (!pred0) return;
     const initialScore = bestOf(pred0.hitScore, pred0.viralScore);
     let bestScore = initialScore;
@@ -337,10 +402,30 @@ async function runGateForSong(app: FastifyInstance, workspaceId: string, songId:
     let rewrites = 0;
     while (bestScore < BLOW_TARGET && rewrites < MAX_REWRITES) {
       rewrites++;
-      const rw = await rewriteLyric(song.project.genre, bestLyric.body, read);
-      if (!rw) break;
-      const sc = await scoreVariant(app, workspaceId, song, rw.body, true);
-      if (!sc) break; // out of credits / A&R down → stop cleanly, keep best so far
+      const rewriteCharge = await app.chargeCredits({
+        workspaceId,
+        key: 'lyrics_full',
+        refTable: 'Song',
+        refId: songId,
+        idempotencyKey: `${gateKey}:rewrite:${rewrites}`,
+      });
+      if (!rewriteCharge.ok) break;
+      let rw;
+      try {
+        rw = await rewriteLyric(song.project.genre, bestLyric.body, read);
+      } catch {
+        await app.refundCredits({ workspaceId, key: 'lyrics_full', refTable: 'Song', refId: songId, chargeId: rewriteCharge.chargeId });
+        break;
+      }
+      if (!rw) {
+        await app.refundCredits({ workspaceId, key: 'lyrics_full', refTable: 'Song', refId: songId, chargeId: rewriteCharge.chargeId });
+        break;
+      }
+      const sc = await scoreVariant(app, workspaceId, song, rw.body, true, `${gateKey}:score:${rewrites}`);
+      if (!sc) {
+        await app.refundCredits({ workspaceId, key: 'lyrics_full', refTable: 'Song', refId: songId, chargeId: rewriteCharge.chargeId });
+        break;
+      }
       const s = bestOf(sc.hitScore, sc.viralScore);
       if (s > bestScore) {
         bestScore = s;
@@ -356,9 +441,9 @@ async function runGateForSong(app: FastifyInstance, workspaceId: string, songId:
     const worthRendering =
       bestLyric.body !== song.lyric.body && (bestScore >= BLOW_TARGET || bestScore >= initialScore + 4);
     if (worthRendering) {
-      const jobId = await resing(app, workspaceId, song, bestLyric.title, bestLyric.body, { delayMs: 60_000 });
+      const jobId = await resing(app, workspaceId, song, bestLyric.title, bestLyric.body, { delayMs: 60_000, operationKey: gateKey });
       if (jobId && (await waitForJob(jobId, 120))) {
-        finalPred = (await arReadSong(app, workspaceId, songId)) ?? finalPred;
+        finalPred = (await arReadSong(app, workspaceId, songId, `${gateKey}:final-read`)) ?? finalPred;
         bestScore = bestOf(finalPred?.hitScore, finalPred?.viralScore);
       }
     }
@@ -370,7 +455,8 @@ async function runGateForSong(app: FastifyInstance, workspaceId: string, songId:
 
 /**
  * Run the Will-it-blow gate over every rendered song of a drop. SEQUENTIAL so its
- * background renders can never burst the queue. Detached — never throws. Set
+ * background renders can never burst the queue. The drop orchestration worker
+ * awaits this function, so retries and restarts remain owned by BullMQ. Set
  * WILL_IT_BLOW_MAX_PASSES=0 to score-only.
  */
 export async function willItBlowGate(

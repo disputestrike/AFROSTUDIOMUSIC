@@ -4,6 +4,7 @@
  * 'llm.call') so /admin/economics can show LLM spend by task and tier.
  * Fire-and-forget by design — usage logging may never break generation.
  */
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { brainRunCosts, brainLabel } from './brain-context';
 
 export interface LlmCallRecord {
@@ -15,8 +16,27 @@ export interface LlmCallRecord {
   degraded?: string; // set when a bulk call laddered up, with the internal reason
 }
 
-type Sink = (rec: LlmCallRecord) => void;
+export interface LlmUsageContext {
+  workspaceId?: string;
+  userId?: string;
+  requestId?: string;
+  jobId?: string;
+}
+
+export type AttributedLlmCallRecord = LlmCallRecord & LlmUsageContext;
+
+type Sink = (rec: AttributedLlmCallRecord) => void;
 let sink: Sink | null = null;
+const context = new AsyncLocalStorage<LlmUsageContext>();
+
+export function runWithLlmUsageContext<T>(value: LlmUsageContext, fn: () => T): T {
+  return context.run({ ...value }, fn);
+}
+
+export function setLlmUsageContext(value: Partial<LlmUsageContext>): void {
+  const current = context.getStore();
+  if (current) Object.assign(current, value);
+}
 
 export function setLlmUsageSink(fn: Sink): void {
   sink = fn;
@@ -24,7 +44,7 @@ export function setLlmUsageSink(fn: Sink): void {
 
 export function recordLlmUsage(rec: LlmCallRecord): void {
   try {
-    sink?.(rec);
+    sink?.({ ...rec, ...(context.getStore() ?? {}) });
   } catch {
     /* never break generation over telemetry */
   }

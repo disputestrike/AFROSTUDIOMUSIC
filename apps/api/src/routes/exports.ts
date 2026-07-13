@@ -2,7 +2,7 @@ import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { prisma } from '@afrohit/db';
 import { requireAuth } from '../middleware/auth';
-import { enqueue } from '../lib/queue';
+import { createQueuedProviderJob, scopedRequestKey } from '../lib/queued-job';
 
 const exportSchema = z.object({
   songId: z.string().cuid(),
@@ -45,22 +45,25 @@ export default async function exportsRoute(app: FastifyInstance) {
         return reply.code(409).send({ error: 'not_release_ready', hint: 'pass the green-light gate (/release/check) before exporting' });
       }
 
-      const charge = await app.chargeCredits({ workspaceId, key: 'release_export', refTable: 'Song', refId: song.id });
+      const idempotencyKey = scopedRequestKey(req.headers as Record<string, unknown>, 'release-export');
+      const charge = await app.chargeCredits({ workspaceId, key: 'release_export', refTable: 'Song', refId: song.id, idempotencyKey });
       if (!charge.ok) return reply.code(402).send({ error: 'insufficient_credits', ...charge });
 
-      const job = await prisma.providerJob.create({
-        data: {
-          workspaceId, projectId: song.projectId, kind: 'export',
-          provider: 'internal', status: 'QUEUED', inputJson: { songId, receiptId: receipt.id } as never,
-        },
-      });
-      await enqueue({
+      const job = await createQueuedProviderJob({
+        app,
         queue: app.queues.export,
-        name: 'export-release',
-        payload: { jobId: job.id, workspaceId, projectId: song.projectId, songId, receiptId: receipt.id },
+        jobName: 'export-release',
+        workspaceId,
+        projectId: song.projectId,
+        kind: 'export',
+        provider: 'internal',
+        inputJson: { songId, receiptId: receipt.id },
+        charge,
+        idempotencyKey,
+        payload: (jobId) => ({ jobId, workspaceId, projectId: song.projectId, songId, receiptId: receipt.id }),
       });
       reply.code(202);
-      return { jobId: job.id };
+      return { jobId: job.jobId, replayed: job.replayed };
     }
   );
 }

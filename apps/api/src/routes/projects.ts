@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { prisma } from '@afrohit/db';
 import { genreSchema } from '@afrohit/shared';
 import { requireAuth } from '../middleware/auth';
+import { queueAssetDeletion, uniqueAssetRefs } from '../lib/asset-lifecycle';
 
 const createProjectSchema = z.object({
   artistId: z.string().cuid().optional(), // resolved to the default artist if omitted
@@ -29,7 +30,11 @@ export default async function projects(app: FastifyInstance) {
     // Resolve the artist (default to the first, create one if none) so the
     // Create panel can start a project without the user managing artists.
     let artistId = providedArtistId;
-    if (!artistId) {
+    if (artistId) {
+      const ownedArtist = await prisma.artist.findFirst({ where: { id: artistId, workspaceId }, select: { id: true } });
+      if (!ownedArtist) return reply.code(404).send({ error: 'artist_not_found' });
+      artistId = ownedArtist.id;
+    } else {
       const artist =
         (await prisma.artist.findFirst({ where: { workspaceId }, orderBy: { createdAt: 'asc' } })) ??
         (await prisma.artist.create({
@@ -76,11 +81,19 @@ export default async function projects(app: FastifyInstance) {
   app.patch<{ Params: { id: string } }>(
     '/:id',
     { schema: { body: createProjectSchema.partial() } },
-    async (req) => {
+    async (req, reply) => {
       const { workspaceId } = requireAuth(req);
+      const data = createProjectSchema.partial().parse(req.body);
+      if (data.artistId) {
+        const ownedArtist = await prisma.artist.findFirst({
+          where: { id: data.artistId, workspaceId },
+          select: { id: true },
+        });
+        if (!ownedArtist) return reply.code(404).send({ error: 'artist_not_found' });
+      }
       return prisma.project.update({
         where: { id: req.params.id, workspaceId },
-        data: createProjectSchema.partial().parse(req.body),
+        data,
       });
     }
   );
@@ -114,8 +127,47 @@ export default async function projects(app: FastifyInstance) {
 
   app.delete<{ Params: { id: string } }>('/:id', async (req, reply) => {
     const { workspaceId } = requireAuth(req);
-    // Relations cascade on delete (hooks, songs, lyrics, assets, jobs, etc.).
-    await prisma.project.deleteMany({ where: { id: req.params.id, workspaceId } });
+    type ProjectAssetGraph = {
+      id: string;
+      songs: Array<{ instrumentalUrl: string | null; acapellaUrl: string | null }>;
+      beats: Array<{ url: string; stems: Array<{ url: string }> }>;
+      vocalRenders: Array<{ url: string }>;
+      mixes: Array<{ url: string }>;
+      masters: Array<{ url: string }>;
+      imageAssets: Array<{ url: string }>;
+      videoRenders: Array<{ url: string }>;
+      exports: Array<{ bundle: unknown }>;
+    };
+    const project: ProjectAssetGraph | null = await prisma.project.findFirst({
+      where: { id: req.params.id, workspaceId },
+      include: {
+        songs: { select: { instrumentalUrl: true, acapellaUrl: true } },
+        beats: { select: { url: true, stems: { select: { url: true } } } },
+        vocalRenders: { select: { url: true } },
+        mixes: { select: { url: true } },
+        masters: { select: { url: true } },
+        imageAssets: { select: { url: true } },
+        videoRenders: { select: { url: true } },
+        exports: { select: { bundle: true } },
+      },
+    });
+    if (project) {
+      const refs = uniqueAssetRefs([
+        ...project.songs.flatMap((song) => [song.instrumentalUrl, song.acapellaUrl]),
+        ...project.beats.flatMap((beat) => [beat.url, ...beat.stems.map((stem) => stem.url)]),
+        ...project.vocalRenders.map((asset) => asset.url),
+        ...project.mixes.map((asset) => asset.url),
+        ...project.masters.map((asset) => asset.url),
+        ...project.imageAssets.map((asset) => asset.url),
+        ...project.videoRenders.map((asset) => asset.url),
+        ...project.exports.map((asset) => asset.bundle),
+      ]);
+      await prisma.$transaction(async (tx) => {
+        await queueAssetDeletion(tx, { workspaceId, refs, reason: `project:${project.id}` });
+        await tx.project.delete({ where: { id: project.id } });
+      });
+      void app.dispatchPendingJobs().catch((error) => req.log.error({ err: error }, 'asset cleanup dispatch failed'));
+    }
     reply.code(204);
     return null;
   });

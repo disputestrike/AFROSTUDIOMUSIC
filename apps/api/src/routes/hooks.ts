@@ -10,6 +10,8 @@ import { learnedReferenceBrief, learnedLyricCraftBrief, snapshotTrend, freshness
 import { lexiconPalette } from '../lib/lexicon';
 import { fuseSoundDna } from '../lib/fuse';
 import { presongIntelligence } from '../lib/presong';
+import { scopedRequestKey } from '../lib/queued-job';
+import { operationErrorBody, runIdempotentOperation } from '../lib/idempotent-operation';
 
 export default async function hooks(app: FastifyInstance) {
   app.get<{ Params: { projectId: string } }>(
@@ -35,15 +37,28 @@ export default async function hooks(app: FastifyInstance) {
         include: { artist: true, briefs: { orderBy: { createdAt: 'desc' }, take: 1 } },
       });
 
+      const multiplier = Math.max(1, Math.ceil(input.count / 20));
+      const idempotencyKey = scopedRequestKey(req.headers as Record<string, unknown>, `hooks-generate:${project.id}`);
       const charge = await app.chargeCredits({
         workspaceId,
         key: 'hooks_batch_20',
-        multiplier: Math.max(1, Math.ceil(input.count / 20)),
+        multiplier,
         refTable: 'Project',
         refId: project.id,
+        idempotencyKey,
       });
       if (!charge.ok) return reply.code(402).send({ error: 'insufficient_credits', ...charge });
 
+      const operation = await runIdempotentOperation({
+        workspaceId,
+        projectId: project.id,
+        kind: 'hooks-generate',
+        provider: 'text',
+        idempotencyKey,
+        chargeLedgerId: charge.chargeId,
+        inputJson: { projectId: project.id, input },
+        execute: async () => {
+          try {
       const brief = input.brief ?? project.briefs[0] ?? undefined;
       // Taste feedback loop — recent approvals/rejections steer generation.
       const tasteMemory = await memoryContext(project.artistId);
@@ -51,7 +66,7 @@ export default async function hooks(app: FastifyInstance) {
       // is shelved in the data lake (one snapshot/genre/day) so it compounds.
       const trendData = await researchTrends({ genre: project.genre }).catch(() => null);
       const trends = trendData?.digest;
-      void snapshotTrend(workspaceId, project.genre, trendData);
+      await snapshotTrend(workspaceId, project.genre, trendData).catch(() => {});
       // Genre Sound DNA + the artist's LEARNED references + STUDIED lyric craft
       // + HIT-CRAFT + the WORD BANK — the full data lake, each layer capped so
       // ALL of it reaches the writer (not just the first two).
@@ -100,7 +115,7 @@ export default async function hooks(app: FastifyInstance) {
             ['yo', 'ig', 'ha', 'pcm', 'en', 'fr', 'pt', 'sw', 'zu', 'xh', 'twi'].includes(c)
         );
 
-      const rows = refined
+      const rows = refined && refined.length
         ? refined.map((h) => ({
             text: h.text,
             language: langFilter(h.language ?? []),
@@ -119,6 +134,21 @@ export default async function hooks(app: FastifyInstance) {
             },
           }));
 
+      if (!rows.length) {
+        await app.refundCredits({
+          workspaceId,
+          key: 'hooks_batch_20',
+          multiplier,
+          refTable: 'Project',
+          refId: project.id,
+          chargeId: charge.chargeId,
+        });
+        return {
+          statusCode: 503,
+          body: { error: 'hooks_generation_empty', message: 'The writer returned no usable hooks. Try again.' },
+        };
+      }
+
       const created = await prisma.$transaction(
         rows.map((r) =>
           prisma.hookCandidate.create({
@@ -135,15 +165,35 @@ export default async function hooks(app: FastifyInstance) {
       // Best-first when the A&R director scored them.
       created.sort((a: { score: number | null }, b: { score: number | null }) => (b.score ?? 0) - (a.score ?? 0));
 
-      reply.code(201);
       return {
-        hooks: created,
-        charged: charge.balance,
-        director: refined ? 'claude' : 'none',
-        // Diagnostics: does the API actually see the keys?
-        anthropicKeyOnApi: anthropicEnabled(),
-        trendsPulled: !!trends,
+        statusCode: 201,
+        body: {
+          hooks: created,
+          charged: charge.balance,
+          director: refined ? 'claude' : 'none',
+          // Diagnostics: does the API actually see the keys?
+          anthropicKeyOnApi: anthropicEnabled(),
+          trendsPulled: !!trends,
+        },
       };
+      } catch (error) {
+        await app.refundCredits({
+          workspaceId,
+          key: 'hooks_batch_20',
+          multiplier,
+          refTable: 'Project',
+          refId: project.id,
+          chargeId: charge.chargeId,
+        });
+        throw error;
+      }
+        },
+      });
+      if (operation.state !== 'completed') {
+        const failure = operationErrorBody(operation);
+        return reply.code(failure.statusCode).send(failure.body);
+      }
+      return reply.code(operation.value.statusCode).send(operation.value.body);
     }
   );
 
@@ -152,7 +202,7 @@ export default async function hooks(app: FastifyInstance) {
     async (req) => {
       const { workspaceId } = requireAuth(req);
       const hook = await prisma.hookCandidate.findFirstOrThrow({
-        where: { id: req.params.hookId, project: { workspaceId } },
+        where: { id: req.params.hookId, projectId: req.params.projectId, project: { workspaceId } },
         include: { project: { select: { artistId: true } } },
       });
       // Idempotent: re-approving an already-approved hook returns its song instead
@@ -160,19 +210,31 @@ export default async function hooks(app: FastifyInstance) {
       if (hook.approved && hook.songId) {
         return { hookId: hook.id, songId: hook.songId, alreadyApproved: true };
       }
-      const song = await prisma.song.create({
-        data: {
-          workspaceId,
-          projectId: hook.projectId,
-          // TITLE LAW: gate the hook's first line; on failure derive a 1-3 word
-          // title from the hook's content words.
-          title: pickLawfulTitle([hook.text.split('\n')[0]!], hook.text),
-          status: 'SKETCH',
-        },
-      });
-      await prisma.hookCandidate.update({
-        where: { id: hook.id },
-        data: { approved: true, songId: song.id },
+      const approved = await prisma.$transaction(async (tx) => {
+        const claimed = await tx.hookCandidate.updateMany({
+          where: { id: hook.id, projectId: hook.projectId, approved: false, songId: null },
+          data: { approved: true },
+        });
+        if (claimed.count === 0) {
+          const existing = await tx.hookCandidate.findUnique({ where: { id: hook.id }, select: { songId: true } });
+          if (existing?.songId) return { songId: existing.songId, alreadyApproved: true };
+          throw new Error('hook approval is already in progress');
+        }
+        const song = await tx.song.create({
+          data: {
+            workspaceId,
+            projectId: hook.projectId,
+            // TITLE LAW: gate the hook's first line; on failure derive a 1-3 word
+            // title from the hook's content words.
+            title: pickLawfulTitle([hook.text.split('\n')[0]!], hook.text),
+            status: 'SKETCH',
+          },
+        });
+        await tx.hookCandidate.update({
+          where: { id: hook.id },
+          data: { songId: song.id },
+        });
+        return { songId: song.id, alreadyApproved: false };
       });
       // Feed the taste loop — future generations converge on this.
       await recordFeedback({
@@ -183,7 +245,7 @@ export default async function hooks(app: FastifyInstance) {
         sourceKind: 'hook',
         sourceId: hook.id,
       });
-      return { hookId: hook.id, songId: song.id };
+      return { hookId: hook.id, songId: approved.songId, ...(approved.alreadyApproved ? { alreadyApproved: true } : {}) };
     }
   );
 
@@ -192,7 +254,7 @@ export default async function hooks(app: FastifyInstance) {
     async (req) => {
       const { workspaceId } = requireAuth(req);
       const hook = await prisma.hookCandidate.findFirstOrThrow({
-        where: { id: req.params.hookId, project: { workspaceId } },
+        where: { id: req.params.hookId, projectId: req.params.projectId, project: { workspaceId } },
         include: { project: { select: { artistId: true } } },
       });
       await prisma.hookCandidate.update({
@@ -219,7 +281,7 @@ export default async function hooks(app: FastifyInstance) {
     async (req, reply) => {
       const { workspaceId } = requireAuth(req);
       const { text } = hookEditSchema.parse(req.body);
-      const hook = await prisma.hookCandidate.findFirst({ where: { id: req.params.hookId, project: { workspaceId } } });
+      const hook = await prisma.hookCandidate.findFirst({ where: { id: req.params.hookId, projectId: req.params.projectId, project: { workspaceId } } });
       if (!hook) return reply.code(404).send({ error: 'hook_not_found' });
       const updated = await prisma.hookCandidate.update({
         where: { id: hook.id },

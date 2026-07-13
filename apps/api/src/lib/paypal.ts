@@ -55,7 +55,7 @@ async function paypal<T>(
   method: 'GET' | 'POST' | 'PATCH',
   path: string,
   body?: unknown,
-  extraHeaders?: Record<string, string>
+  requestId?: string
 ): Promise<T> {
   const token = await getAccessToken();
   const res = await fetch(`${PAYPAL_BASE}${path}`, {
@@ -63,9 +63,7 @@ async function paypal<T>(
     headers: {
       authorization: `Bearer ${token}`,
       'content-type': 'application/json',
-      // A unique request id makes PayPal calls idempotent server-side.
-      'PayPal-Request-Id': `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`,
-      ...(extraHeaders ?? {}),
+      ...(method === 'POST' ? { 'PayPal-Request-Id': requestId ?? crypto.randomUUID() } : {}),
     },
     body: body == null ? undefined : JSON.stringify(body),
     signal: AbortSignal.timeout(30_000),
@@ -88,14 +86,15 @@ export interface PaypalSubscription {
 
 export async function createSubscription(opts: {
   planId: string;
-  workspaceId: string;
+  intentId: string;
+  requestId: string;
   returnUrl: string;
   cancelUrl: string;
   brandName?: string;
 }): Promise<PaypalSubscription> {
   return paypal<PaypalSubscription>('POST', '/v1/billing/subscriptions', {
     plan_id: opts.planId,
-    custom_id: opts.workspaceId, // surfaces in BILLING.SUBSCRIPTION.* webhooks
+    custom_id: opts.intentId,
     application_context: {
       brand_name: opts.brandName ?? 'AfroHit Studio',
       user_action: 'SUBSCRIBE_NOW',
@@ -103,11 +102,11 @@ export async function createSubscription(opts: {
       return_url: opts.returnUrl,
       cancel_url: opts.cancelUrl,
     },
-  });
+  }, opts.requestId);
 }
 
-export async function cancelSubscription(subscriptionId: string, reason = 'user_request'): Promise<void> {
-  await paypal('POST', `/v1/billing/subscriptions/${encodeURIComponent(subscriptionId)}/cancel`, { reason });
+export async function cancelSubscription(subscriptionId: string, reason = 'user_request', requestId?: string): Promise<void> {
+  await paypal('POST', `/v1/billing/subscriptions/${encodeURIComponent(subscriptionId)}/cancel`, { reason }, requestId);
 }
 
 export async function getSubscription(subscriptionId: string) {
@@ -127,9 +126,9 @@ export interface PaypalOrder {
 
 export async function createOrder(opts: {
   amountUsd: number; // e.g. 25 for a $25 pack
-  workspaceId: string;
+  intentId: string;
+  requestId: string;
   packKey: string; // "pack_25"
-  creditsCents: number; // micro-cents of credit to grant
   returnUrl: string;
   cancelUrl: string;
 }): Promise<PaypalOrder> {
@@ -139,12 +138,8 @@ export async function createOrder(opts: {
       {
         amount: { currency_code: 'USD', value: opts.amountUsd.toFixed(2) },
         description: `AfroHit Studio credits — ${opts.packKey}`,
-        // custom_id surfaces on the capture event for idempotent crediting.
-        custom_id: JSON.stringify({
-          workspaceId: opts.workspaceId,
-          pack: opts.packKey,
-          creditsCents: opts.creditsCents,
-        }),
+        // Opaque server-owned intent id; prices and credits never ride metadata.
+        custom_id: opts.intentId,
       },
     ],
     application_context: {
@@ -153,10 +148,10 @@ export async function createOrder(opts: {
       return_url: opts.returnUrl,
       cancel_url: opts.cancelUrl,
     },
-  });
+  }, opts.requestId);
 }
 
-export async function captureOrder(orderId: string) {
+export async function captureOrder(orderId: string, requestId: string) {
   return paypal<{
     id: string;
     status: string;
@@ -166,7 +161,7 @@ export async function captureOrder(orderId: string) {
         captures?: Array<{ id: string; status: string; amount: { value: string; currency_code: string }; custom_id?: string }>;
       };
     }>;
-  }>('POST', `/v2/checkout/orders/${encodeURIComponent(orderId)}/capture`, {});
+  }>('POST', `/v2/checkout/orders/${encodeURIComponent(orderId)}/capture`, {}, requestId);
 }
 
 // ---------- Webhook signature verification ----------------------------------

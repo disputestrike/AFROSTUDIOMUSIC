@@ -12,12 +12,13 @@ import swaggerUI from '@fastify/swagger-ui';
 import { serializerCompiler, validatorCompiler, jsonSchemaTransform } from 'fastify-type-provider-zod';
 import pino from 'pino';
 
-import { assertSecretConfiguration, migratePlaintextWorkspaceSecrets, prisma } from '@afrohit/db';
+import { assertSecretConfiguration, migratePlaintextWorkspaceSecrets } from '@afrohit/db';
 import { redactSensitiveText } from '@afrohit/shared';
 import { authPlugin } from './middleware/auth';
 import { privateAssetsPlugin } from './middleware/private-assets';
 import { creditsPlugin } from './middleware/credits';
 import { queuePlugin } from './lib/queue';
+import { startOrchestrationWorker } from './lib/orchestration-worker';
 import { captureError, initObservability } from './lib/observability';
 import { assertStorageConfiguration } from './lib/storage';
 
@@ -257,6 +258,20 @@ async function bootstrap() {
 
   // webhooks (no prefix, raw body)
   await app.register(webhooks, { prefix: '/webhooks' });
+  await startOrchestrationWorker(app);
+
+  const [{ setLlmUsageSink }, { prisma }] = await Promise.all([import('@afrohit/ai'), import('@afrohit/db')]);
+  setLlmUsageSink((record) => {
+    const { workspaceId, userId, ...properties } = record;
+    void prisma.analyticsEvent.create({
+      data: {
+        workspaceId: workspaceId ?? null,
+        userId: userId ?? null,
+        name: 'llm.call',
+        properties: properties as never,
+      },
+    }).catch((error: unknown) => app.log.warn({ err: error }, 'llm usage event could not be persisted'));
+  });
 
   // Sentry capture on unhandled route errors (after Fastify's own handling).
   app.addHook('onError', async (req, _reply, err) => {
@@ -267,31 +282,6 @@ async function bootstrap() {
   await app.listen({ port, host: '0.0.0.0' });
   app.log.info(`API listening on :${port}`);
 
-  // ZOMBIE-DROP SWEEP. The drop pipeline runs DETACHED IN THIS PROCESS
-  // (drop.ts: void runDropPipeline...), so a redeploy/restart kills it mid-write
-  // and the ProviderJob stays RUNNING forever — the client polls 8 minutes, then
-  // shows the misleading "check the API brain keys" error. Two-part fix:
-  //  (a) on BOOT: every kind:'drop' still RUNNING is definitionally dead (its
-  //      pipeline lived in the previous process) → fail it honestly;
-  //  (b) WATCHDOG every 5 min: fail drops running >30 min (hung LLM call etc.).
-  const failZombieDrops = async (where: Record<string, unknown>, reason: string) => {
-    try {
-      const n = await prisma.providerJob.updateMany({
-        where: { kind: 'drop', status: 'RUNNING', ...where },
-        data: { status: 'FAILED', finishedAt: new Date(), errorJson: { message: reason } as never },
-      });
-      if (n.count) app.log.warn({ count: n.count }, `[drop-sweep] ${reason}`);
-    } catch (e) {
-      app.log.warn({ err: (e as Error)?.message }, '[drop-sweep] failed (non-fatal)');
-    }
-  };
-  await failZombieDrops({}, 'the studio restarted while writing this song — it did not finish. Start another take.');
-  setInterval(() => {
-    void failZombieDrops(
-      { startedAt: { lt: new Date(Date.now() - 30 * 60 * 1000) } },
-      'the writer took too long and was stopped — try again.'
-    );
-  }, 5 * 60 * 1000).unref();
   // The API runs the WRITERS (hooks/lyrics/A&R) — its brain config must be as
   // loud as the worker's: a stale Railway ANTHROPIC_MODEL here burns silently.
   app.log.info(
@@ -308,17 +298,6 @@ async function bootstrap() {
 
   // A3-6 — LLM usage sink: every generateJson call (tier/task/brain/cost) lands
   // as AnalyticsEvent 'llm.call' so /admin/economics can show spend by tier.
-  void import('@afrohit/ai').then(async ({ setLlmUsageSink }) => {
-    const { prisma } = await import('@afrohit/db');
-    let wsId: string | null = null;
-    setLlmUsageSink((rec) => {
-      void (async () => {
-        wsId ??= (await prisma.workspace.findFirst({ select: { id: true } }))?.id ?? null;
-        if (!wsId) return;
-        await prisma.analyticsEvent.create({ data: { workspaceId: wsId, name: 'llm.call', properties: rec as never } }).catch(() => undefined);
-      })();
-    });
-  }).catch(() => undefined);
 }
 
 bootstrap().catch((err) => {

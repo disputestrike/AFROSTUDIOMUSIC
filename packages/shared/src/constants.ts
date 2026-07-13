@@ -178,10 +178,12 @@ export const PLAN_LIMITS: Record<
 
 /**
  * Monthly credit allowance (in 1/100-cent micro-cents) granted when a
- * subscription activates AND on each recurring PAYMENT.SALE.COMPLETED. Sized to
+ * each completed recurring PAYMENT.SALE.COMPLETED event. Activation changes the
+ * plan but grants nothing, preventing the first billing cycle from being counted
+ * twice. The allowance is sized to
  * the tier's promised demo-song volume at the full_song_demo price (75_000) plus
  * a cover-art base, so a paying customer actually RECEIVES the capability their
- * plan advertises (audit DANGEROUS: activation used to grant delta:0 = nothing).
+ * plan advertises.
  */
 export const PLAN_CREDIT_GRANT_CENTS: Record<PlanTier, number> = {
   STARTER: 30_000, // ~5 cover arts, no demo songs

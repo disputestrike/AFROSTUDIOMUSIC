@@ -3,8 +3,17 @@
  *  ELSE (imports, signatures, syntax) — the error class that broke two deploys.
  *  Railway/CI never use this: only tsconfig.shim.json includes it. */
 declare module '@afrohit/db' {
-  export const prisma: any;
+  interface PrismaShimClient {
+    [key: string]: any;
+    $transaction<T>(fn: (tx: PrismaShimClient) => Promise<T>): Promise<T>;
+    $transaction<T extends readonly unknown[]>(queries: T): Promise<T>;
+  }
+  export const prisma: PrismaShimClient;
   export const Prisma: any;
+  export namespace Prisma {
+    type InputJsonValue = any;
+    type TransactionClient = PrismaShimClient;
+  }
   export const JobStatus: any;
   export type JobStatus = any;
   export const VoiceProfileStatus: any;

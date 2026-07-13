@@ -41,7 +41,7 @@ async function proxy(request: NextRequest, context: RouteContext): Promise<Respo
   const safePath = path.map((segment) => encodeURIComponent(segment)).join('/');
   const target = `${API_URL}/api/v1/${safePath}${request.nextUrl.search}`;
   const headers = new Headers();
-  for (const name of ['accept', 'authorization', 'content-type', 'cookie', 'if-none-match', 'range', 'x-afrohit-request']) {
+  for (const name of ['accept', 'authorization', 'content-type', 'cookie', 'idempotency-key', 'if-none-match', 'range', 'x-afrohit-request']) {
     const value = request.headers.get(name);
     if (value) headers.set(name, value);
   }

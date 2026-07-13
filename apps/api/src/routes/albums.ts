@@ -3,7 +3,7 @@ import { z } from 'zod';
 import { prisma } from '@afrohit/db';
 import { dropBatchSchema } from '@afrohit/shared';
 import { requireAuth } from '../middleware/auth';
-import { runDropPipeline } from './drop';
+import { createQueuedProviderJob, scopedRequestKey } from '../lib/queued-job';
 
 /**
  * ALBUMS — anchored to ONE song's sound.
@@ -134,24 +134,22 @@ export default async function albums(app: FastifyInstance) {
       ...(engine ? { songEngine: engine } : {}),
     });
 
-    const dropJob = await prisma.providerJob.create({
-      data: { workspaceId, projectId: anchor.projectId, kind: 'drop', provider: 'internal', status: 'RUNNING', startedAt: new Date(), inputJson: { ...input, albumId: album.id } as never },
+    const idempotencyKey = scopedRequestKey(req.headers as Record<string, unknown>, `album-next:${album.id}`);
+    const dropJob = await createQueuedProviderJob({
+      app,
+      queue: app.queues.orchestration,
+      jobName: 'run-drop',
+      workspaceId,
+      projectId: anchor.projectId,
+      kind: 'drop',
+      provider: 'internal',
+      inputJson: { ...input, albumId: album.id },
+      idempotencyKey,
+      payload: (jobId) => ({ jobId, workspaceId, userId, projectId: anchor.projectId, input, albumId: album.id }),
     });
-    const ctx = { app, workspaceId, userId, projectId: anchor.projectId };
-    void runDropPipeline(app, ctx, input, dropJob.id)
-      .then(async () => {
-        // Stamp the new song into the album once the pipeline lands it.
-        const done = await prisma.providerJob.findUnique({ where: { id: dropJob.id }, select: { outputJson: true } });
-        const songId = (done?.outputJson as { drop?: Array<{ songId?: string }> } | null)?.drop?.[0]?.songId;
-        if (songId) await prisma.song.update({ where: { id: songId }, data: { albumId: album.id } }).catch(() => {});
-      })
-      .catch(async (err) => {
-        app.log.error({ err, dropJobId: dropJob.id }, 'album next-track pipeline crashed');
-        await prisma.providerJob.update({ where: { id: dropJob.id }, data: { status: 'FAILED', finishedAt: new Date(), errorJson: 'album track failed — try again' as never } }).catch(() => {});
-      });
 
     reply.code(202);
-    return { jobId: dropJob.id, status: 'queued', albumId: album.id };
+    return { jobId: dropJob.jobId, status: 'queued', albumId: album.id, replayed: dropJob.replayed };
   });
 
   /** Delete an album (songs keep existing — only the grouping dies). */

@@ -51,6 +51,7 @@ async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
     headers: {
       ...(hasBody ? { 'content-type': 'application/json' } : {}),
       ...(unsafe ? { 'x-afrohit-request': '1' } : {}),
+      ...(unsafe ? { 'idempotency-key': crypto.randomUUID() } : {}),
       ...(init?.headers ?? {}),
     },
     cache: 'no-store',
@@ -179,9 +180,10 @@ export function useApi() {
       body: unknown,
       onEvent: (evt: Record<string, unknown>) => void
     ): Promise<void> {
+      const idempotencyKey = crypto.randomUUID();
       const res = await fetchWithRetry(`${API_URL}${path}`, {
         method: 'POST',
-        headers: { 'content-type': 'application/json', 'x-afrohit-request': '1' },
+        headers: { 'content-type': 'application/json', 'x-afrohit-request': '1', 'idempotency-key': idempotencyKey },
         body: JSON.stringify(body),
         credentials: 'include',
       });

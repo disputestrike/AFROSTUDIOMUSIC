@@ -5,7 +5,7 @@
  */
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { z } from 'zod';
-import { prisma } from '@afrohit/db';
+import { prisma, Prisma } from '@afrohit/db';
 import * as db from '@afrohit/db';
 
 /** The sandbox compile shim (tools/shim/db-shim.d.ts) only declares the prisma
@@ -19,7 +19,8 @@ const { allAutonomyFlags, setAutonomyEnabled } = db as unknown as {
 import { isInternalMode, requireAuth } from '../middleware/auth';
 import { validAdminGrant } from '../lib/session';
 import { isFirstPartyWorkspace, resolveEngineForWorkspace } from '@afrohit/shared';
-import { enqueue, QUEUES, type QueueName } from '../lib/queue';
+import { createQueuedProviderJob, scopedRequestKey } from '../lib/queued-job';
+import { operationErrorBody, runIdempotentOperation } from '../lib/idempotent-operation';
 
 export async function hasAdminAccess(req: FastifyRequest): Promise<boolean> {
   const { userId, workspaceId } = requireAuth(req);
@@ -60,11 +61,23 @@ export default async function admin(app: FastifyInstance) {
   const runSchema = z.object({ task: z.enum(['nightly-compound', 'measure-backfill', 'learn-backfill', 'listen-back', 'refile-references', 'mine-lexicon', 'lexicon-research', 'wiktionary-harvest', 'wiktionary-burst', 'lexicon-gloss', 'lexicon-verify']) });
   app.post('/run', { schema: { body: runSchema } }, async (req, reply) => {
     await requireAdmin(req);
+    const { workspaceId } = requireAuth(req);
     const { task } = runSchema.parse(req.body);
     // Background tasks run on the LAKE queue — they never contend with renders.
-    await enqueue({ queue: app.queues.lake, name: task, payload: {} });
+    const idempotencyKey = scopedRequestKey(req.headers as Record<string, unknown>, `admin-lake:${task}`);
+    const job = await createQueuedProviderJob({
+      app,
+      queue: app.queues.lake,
+      jobName: task,
+      workspaceId,
+      kind: 'lake',
+      provider: 'internal',
+      inputJson: { task },
+      idempotencyKey,
+      payload: (jobId) => ({ jobId, workspaceId }),
+    });
     reply.code(202);
-    return { queued: task, note: 'Running on the worker now — watch worker logs; results land in /lanes/inventory.' };
+    return { queued: task, jobId: job.jobId, replayed: job.replayed, note: 'Running on the worker now; results land in /lanes/inventory.' };
   });
 
   // WRITER A/B — blind bench: same hook/brief/polish, Claude vs OpenAI writer
@@ -81,12 +94,39 @@ export default async function admin(app: FastifyInstance) {
     await requireAdmin(req);
     const { workspaceId } = requireAuth(req);
     const input = abSchema.parse(req.body);
-    const charge = await app.chargeCredits({ workspaceId, key: 'lyrics_full', multiplier: 2, refTable: 'WriterAb' });
+    const idempotencyKey = scopedRequestKey(req.headers as Record<string, unknown>, 'admin-writer-ab');
+    const charge = await app.chargeCredits({ workspaceId, key: 'lyrics_full', multiplier: 2, refTable: 'WriterAb', idempotencyKey });
     if (!charge.ok) return reply.code(402).send({ error: 'insufficient_credits', ...charge });
-    const { runWriterAb } = await import('../lib/writer-ab');
-    const out = await runWriterAb({ workspaceId, ...input });
-    if ('error' in out) return reply.code(503).send(out);
-    return { ...out, note: 'Judge blind, pick A or B, THEN decode reveal (base64). Same hook, same brief, same polish — the model is the only variable.' };
+    const operation = await runIdempotentOperation({
+      workspaceId,
+      kind: 'admin-writer-ab',
+      provider: 'text',
+      idempotencyKey,
+      chargeLedgerId: charge.chargeId,
+      inputJson: input,
+      execute: async () => {
+        const { runWriterAb } = await import('../lib/writer-ab');
+        try {
+          const out = await runWriterAb({ workspaceId, ...input });
+          if ('error' in out) {
+            await app.refundCredits({ workspaceId, key: 'lyrics_full', multiplier: 2, refTable: 'WriterAb', chargeId: charge.chargeId });
+            return { statusCode: 503 as const, body: out };
+          }
+          return {
+            statusCode: 200 as const,
+            body: { ...out, note: 'Judge blind, pick A or B, THEN decode reveal (base64). Same hook, same brief, same polish - the model is the only variable.' },
+          };
+        } catch (error) {
+          await app.refundCredits({ workspaceId, key: 'lyrics_full', multiplier: 2, refTable: 'WriterAb', chargeId: charge.chargeId });
+          throw error;
+        }
+      },
+    });
+    if (operation.state !== 'completed') {
+      const failure = operationErrorBody(operation);
+      return reply.code(failure.statusCode).send(failure.body);
+    }
+    return reply.code(operation.value.statusCode).send(operation.value.body);
   });
 
   // A3-3 — ENGINE STATUS CARD: "which engine is being used" answered at a
@@ -419,31 +459,21 @@ export default async function admin(app: FastifyInstance) {
   /** Re-enqueue a failed job from its persisted inputJson. */
   app.post<{ Params: { id: string } }>('/jobs/:id/retry', async (req, reply) => {
     await requireAdmin(req);
-    const job = await prisma.providerJob.findUniqueOrThrow({ where: { id: req.params.id } });
+    const job = await prisma.providerJob.findUniqueOrThrow({ where: { id: req.params.id }, include: { outbox: true } });
     if (job.status !== 'FAILED') return reply.code(400).send({ error: 'only_failed_jobs' });
+    if (!job.outbox) return reply.code(409).send({ error: 'legacy_job_payload_unavailable', message: 'This pre-outbox job cannot be replayed safely; start the action again.' });
 
-    const queueForKind: Record<string, QueueName> = {
-      music: QUEUES.music,
-      voice: QUEUES.voice,
-      voice_profile: QUEUES.voice,
-      mix: QUEUES.mix,
-      master: QUEUES.master,
-      image: QUEUES.image,
-      video: QUEUES.video,
-      export: QUEUES.exportBundle,
-    };
-    const queueName = queueForKind[job.kind];
-    if (!queueName) return reply.code(400).send({ error: `no_queue_for_kind:${job.kind}` });
-
-    await prisma.providerJob.update({
-      where: { id: job.id },
-      data: { status: 'QUEUED', errorJson: undefined, startedAt: null, finishedAt: null },
-    });
-    await enqueue({
-      queue: app.queues[queueName],
-      name: job.kind === 'voice_profile' ? 'setup-voice-profile' : `retry-${job.kind}`,
-      payload: { jobId: job.id, workspaceId: job.workspaceId, projectId: job.projectId, ...(job.inputJson as Record<string, unknown>) },
-    });
+    await prisma.$transaction([
+      prisma.providerJob.update({
+        where: { id: job.id },
+        data: { status: 'QUEUED', errorJson: Prisma.DbNull, startedAt: null, finishedAt: null },
+      }),
+      prisma.jobOutbox.update({
+        where: { id: job.outbox.id },
+        data: { status: 'PENDING', attempts: 0, nextAttemptAt: new Date(), dispatchedAt: null, lastError: null },
+      }),
+    ]);
+    await app.dispatchPendingJobs();
     return { id: job.id, status: 'requeued' };
   });
 

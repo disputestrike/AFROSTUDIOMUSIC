@@ -5,6 +5,8 @@ import { scoreItems } from '@afrohit/ai';
 import { referenceOrigin } from '@afrohit/shared';
 import { lexiconStats } from '../lib/lexicon';
 import { requireAuth } from '../middleware/auth';
+import { scopedRequestKey } from '../lib/queued-job';
+import { operationErrorBody, runIdempotentOperation } from '../lib/idempotent-operation';
 
 const scoreInputSchema = z.object({
   hookIds: z.array(z.string().cuid()).optional(),
@@ -262,68 +264,202 @@ export default async function taste(app: FastifyInstance) {
     { schema: { body: scoreInputSchema } },
     async (req, reply) => {
       const { workspaceId } = requireAuth(req);
-      const { hookIds = [], lyricIds = [] } = scoreInputSchema.parse(req.body);
+      const { hookIds = [], lyricIds = [], songIds = [] } = scoreInputSchema.parse(req.body);
+      const uniqueHookIds = [...new Set(hookIds)];
+      const uniqueLyricIds = [...new Set(lyricIds)];
+      const uniqueSongIds = [...new Set(songIds)];
 
-      const hooks = hookIds.length
+      type ArtistRow = Record<string, unknown>;
+      type HookRow = { id: string; text: string; project: { artistId: string; artist: ArtistRow } };
+      type LyricRow = { id: string; body: string; project: { artistId: string; artist: ArtistRow } };
+      type SongRow = {
+        id: string;
+        title: string;
+        project: { artistId: string; artist: ArtistRow };
+        lyric: { body: string } | null;
+        hooks: Array<{ text: string }>;
+      };
+      const hooks: HookRow[] = uniqueHookIds.length
         ? await prisma.hookCandidate.findMany({
-            where: { id: { in: hookIds }, project: { workspaceId } },
+            where: { id: { in: uniqueHookIds }, project: { workspaceId } },
             include: { project: { include: { artist: true } } },
           })
         : [];
-      const lyricRows = lyricIds.length
+      const lyricRows: LyricRow[] = uniqueLyricIds.length
         ? await prisma.lyricDraft.findMany({
-            where: { id: { in: lyricIds }, project: { workspaceId } },
+            where: { id: { in: uniqueLyricIds }, project: { workspaceId } },
             include: { project: { include: { artist: true } } },
+          })
+        : [];
+      const songs: SongRow[] = uniqueSongIds.length
+        ? await prisma.song.findMany({
+            where: { id: { in: uniqueSongIds }, workspaceId },
+            include: {
+              project: { include: { artist: true } },
+              lyric: { select: { body: true } },
+              hooks: { orderBy: [{ approved: 'desc' }, { score: 'desc' }], take: 1, select: { text: true } },
+            },
           })
         : [];
 
-      if (hooks.length + lyricRows.length === 0) {
+      const requested = uniqueHookIds.length + uniqueLyricIds.length + uniqueSongIds.length;
+      if (requested === 0) {
         return reply.code(400).send({ error: 'no items' });
       }
+      if (hooks.length + lyricRows.length + songs.length !== requested) {
+        return reply.code(404).send({ error: 'score_subject_not_found' });
+      }
 
+      type Subject = {
+        token: string;
+        id: string;
+        kind: 'hook' | 'lyric' | 'song';
+        artistId: string;
+        artist: ArtistRow;
+        text: string;
+      };
+      const subjects: Subject[] = [
+        ...hooks.map((hook) => ({
+          token: `hook:${hook.id}`,
+          id: hook.id,
+          kind: 'hook' as const,
+          artistId: hook.project.artistId,
+          artist: hook.project.artist,
+          text: hook.text,
+        })),
+        ...lyricRows.map((lyric) => ({
+          token: `lyric:${lyric.id}`,
+          id: lyric.id,
+          kind: 'lyric' as const,
+          artistId: lyric.project.artistId,
+          artist: lyric.project.artist,
+          text: lyric.body.slice(0, 4_000),
+        })),
+        ...songs.map((song) => ({
+          token: `song:${song.id}`,
+          id: song.id,
+          kind: 'song' as const,
+          artistId: song.project.artistId,
+          artist: song.project.artist,
+          text: `${song.title}\n${song.lyric?.body ?? song.hooks[0]?.text ?? ''}`.slice(0, 4_000),
+        })),
+      ];
+
+      const multiplier = Math.ceil(subjects.length / 50);
+      const idempotencyKey = scopedRequestKey(req.headers as Record<string, unknown>, 'taste-score');
       const charge = await app.chargeCredits({
         workspaceId,
         key: 'taste_score_batch_50',
-        multiplier: Math.ceil((hooks.length + lyricRows.length) / 50),
+        multiplier,
+        refTable: 'Workspace',
+        refId: workspaceId,
+        idempotencyKey,
       });
       if (!charge.ok) return reply.code(402).send({ error: 'insufficient_credits', ...charge });
 
-      const artist = (hooks[0]?.project.artist ?? lyricRows[0]?.project.artist)!;
-      const items = [
-        ...hooks.map((h: { id: string; text: string }) => ({ id: h.id, text: h.text, kind: 'hook' as const })),
-        ...lyricRows.map((l: { id: string; body: string }) => ({ id: l.id, text: l.body.slice(0, 4_000), kind: 'lyric' as const })),
-      ];
-
-      const scores = await scoreItems({ artist: artist as never, items });
-
-      // Persist taste scores + update best-known hook scores for ranking.
-      await prisma.$transaction(
-        scores.map((s) =>
-          prisma.tasteScore.create({
-            data: {
-              hookId: hooks.find((h: { id: string }) => h.id === s.id) ? s.id : undefined,
-              songId: undefined,
-              dimensions: s.dimensions as never,
-              overall: s.overall,
-              similarityRisk: s.similarityRisk,
-              tooAiRisk: s.tooAiRisk,
-              notes: s.notes,
-            },
-          })
-        )
-      );
-      await Promise.all(
-        scores
-          .filter((s) => hooks.find((h: { id: string }) => h.id === s.id))
-          .map((s) =>
-            prisma.hookCandidate.update({
-              where: { id: s.id },
-              data: { score: s.overall },
-            })
+      const operation = await runIdempotentOperation({
+        workspaceId,
+        kind: 'taste-score',
+        provider: 'text',
+        idempotencyKey,
+        chargeLedgerId: charge.chargeId,
+        inputJson: {
+          hookIds: [...uniqueHookIds].sort(),
+          lyricIds: [...uniqueLyricIds].sort(),
+          songIds: [...uniqueSongIds].sort(),
+        },
+        execute: async () => {
+      try {
+        const byArtist = new Map<string, Subject[]>();
+        for (const subject of subjects) {
+          const group = byArtist.get(subject.artistId) ?? [];
+          group.push(subject);
+          byArtist.set(subject.artistId, group);
+        }
+        const scores = (
+          await Promise.all(
+            [...byArtist.values()].map((group) =>
+              scoreItems({
+                artist: group[0]!.artist as never,
+                items: group.map((subject) => ({
+                  id: subject.token,
+                  text: subject.text,
+                  kind: subject.kind === 'hook' ? 'hook' as const : 'lyric' as const,
+                })),
+              })
+            )
           )
-      );
+        ).flat();
+        const subjectByToken = new Map(subjects.map((subject) => [subject.token, subject]));
+        const validScores = scores.filter((score) => subjectByToken.has(score.id));
+        if (validScores.length !== subjects.length || new Set(validScores.map((score) => score.id)).size !== subjects.length) {
+          await app.refundCredits({
+            workspaceId,
+            key: 'taste_score_batch_50',
+            multiplier,
+            refTable: 'Workspace',
+            refId: workspaceId,
+            chargeId: charge.chargeId,
+          });
+          return {
+            statusCode: 503,
+            body: { error: 'taste_scoring_incomplete', message: 'The scorer did not return every requested item.' },
+          };
+        }
 
-      return { scores };
+        await prisma.$transaction([
+          ...validScores.map((score) => {
+            const subject = subjectByToken.get(score.id)!;
+            return prisma.tasteScore.create({
+              data: {
+                ...(subject.kind === 'hook' ? { hookId: subject.id } : {}),
+                ...(subject.kind === 'lyric' ? { lyricId: subject.id } : {}),
+                ...(subject.kind === 'song' ? { songId: subject.id } : {}),
+                dimensions: score.dimensions as never,
+                overall: score.overall,
+                similarityRisk: score.similarityRisk,
+                tooAiRisk: score.tooAiRisk,
+                notes: score.notes,
+              },
+            });
+          }),
+          ...validScores
+            .filter((score) => subjectByToken.get(score.id)?.kind === 'hook')
+            .map((score) =>
+              prisma.hookCandidate.update({
+                where: { id: subjectByToken.get(score.id)!.id },
+                data: { score: score.overall },
+              })
+            ),
+        ]);
+
+        return {
+          statusCode: 200,
+          body: {
+            scores: validScores.map((score) => {
+              const subject = subjectByToken.get(score.id)!;
+              return { ...score, id: subject.id, kind: subject.kind };
+            }),
+          },
+        };
+      } catch (error) {
+        await app.refundCredits({
+          workspaceId,
+          key: 'taste_score_batch_50',
+          multiplier,
+          refTable: 'Workspace',
+          refId: workspaceId,
+          chargeId: charge.chargeId,
+        });
+        throw error;
+      }
+        },
+      });
+      if (operation.state !== 'completed') {
+        const failure = operationErrorBody(operation);
+        return reply.code(failure.statusCode).send(failure.body);
+      }
+      return reply.code(operation.value.statusCode).send(operation.value.body);
     }
   );
 }

@@ -14,7 +14,7 @@ import { verifyWebhookSignature, type WebhookHeaders } from '../lib/paypal';
 import { creditReceiptEmail, sendEmail } from '../lib/email';
 import { track } from '../lib/observability';
 import { constantTimeSecretEqual } from '../lib/session';
-import { validateCreditPackCapture } from '../lib/billing-catalog';
+import { applyCreditCapture, resolveCreditIntent } from '../lib/billing-service';
 
 export default async function webhooks(app: FastifyInstance) {
   // Override the default JSON parser within this plugin scope so we keep the
@@ -60,50 +60,99 @@ export default async function webhooks(app: FastifyInstance) {
       return reply.code(400).send({ error: 'bad_signature' });
     }
 
-    // Global idempotency — PayPal retries the same event id on failure.
-    const dup = await prisma.creditLedger.findUnique({ where: { paypalEventId: event.id } });
-    if (dup) return reply.send({ received: true, idempotent: true });
+    const now = new Date();
+    const staleBefore = new Date(now.getTime() - 15 * 60_000);
+    let claimed = false;
+    let audit = await prisma.billingEvent.findUnique({ where: { paypalEventId: event.id } });
+    if (audit?.status === 'processed' || audit?.status === 'ignored' || audit?.status === 'unmatched') {
+      return reply.send({ received: true, idempotent: true });
+    }
+    if (!audit) {
+      try {
+        audit = await prisma.billingEvent.create({
+          data: {
+            paypalEventId: event.id,
+            eventType: event.event_type,
+            resourceId: typeof event.resource.id === 'string' ? event.resource.id : null,
+            processingAt: now,
+          },
+        });
+        claimed = true;
+      } catch (error) {
+        if ((error as { code?: string }).code !== 'P2002') throw error;
+        audit = await prisma.billingEvent.findUniqueOrThrow({ where: { paypalEventId: event.id } });
+      }
+    }
+    if (!claimed) {
+      const lease = await prisma.billingEvent.updateMany({
+        where: {
+          id: audit.id,
+          status: { notIn: ['processed', 'ignored', 'unmatched'] },
+          OR: [
+            { status: { not: 'processing' } },
+            { processingAt: null },
+            { processingAt: { lte: staleBefore } },
+          ],
+        },
+        data: { status: 'processing', errorCode: null, processingAt: now, attempts: { increment: 1 } },
+      });
+      if (lease.count === 0) return reply.send({ received: true, idempotent: true, processing: true });
+    }
 
     try {
+      let workspaceId: string | null = null;
+      let recognized = true;
       switch (event.event_type) {
         case 'BILLING.SUBSCRIPTION.ACTIVATED': {
-          await activateSubscription(event);
+          workspaceId = await activateSubscription(event);
           break;
         }
         case 'BILLING.SUBSCRIPTION.CANCELLED':
         case 'BILLING.SUBSCRIPTION.EXPIRED':
         case 'BILLING.SUBSCRIPTION.SUSPENDED': {
-          await downgradeSubscription(event);
+          workspaceId = await downgradeSubscription(event);
           break;
         }
         case 'PAYMENT.CAPTURE.COMPLETED': {
           // One-off credit pack purchases land here as well as the return URL.
-          await creditCapture(event);
+          workspaceId = await creditCapture(event);
           break;
         }
         case 'PAYMENT.SALE.COMPLETED': {
           // Recurring subscription payment → grant this cycle's credit allowance
           // (audit: previously a no-op, so month 2+ delivered nothing).
-          await grantRecurring(event);
+          workspaceId = await grantRecurring(event);
           req.log.info({ eventId: event.id }, 'paypal recurring sale completed');
           break;
         }
         default:
+          recognized = false;
           req.log.info({ eventType: event.event_type }, 'paypal webhook unhandled');
           break;
       }
-    } catch (err) {
-      // Concurrent delivery race (webhook + return-URL landing at once): the
-      // check-then-act dup test can pass on both, but the @unique paypalEventId
-      // aborts the LOSER'S whole transaction — so credits can never double-apply.
-      // Treat that unique violation as idempotent success instead of 500ing
-      // (a 500 would make PayPal retry forever).
-      const code = (err as { code?: string })?.code;
-      if (code === 'P2002') {
-        req.log.info({ eventId: event.id }, 'paypal webhook idempotent (concurrent duplicate)');
-        return reply.send({ received: true, idempotent: true });
+      if (recognized && !workspaceId) {
+        req.log.warn({ eventId: event.id, eventType: event.event_type }, 'paypal event did not match a trusted billing intent');
+        await prisma.billingEvent.update({
+          where: { id: audit.id },
+          data: { status: 'unmatched', errorCode: 'unmatched_resource', processedAt: new Date(), processingAt: null },
+        });
+        return { received: true, matched: false };
       }
-      throw err;
+      await prisma.billingEvent.update({
+        where: { id: audit.id },
+        data: {
+          status: recognized ? 'processed' : 'ignored',
+          processedAt: new Date(),
+          processingAt: null,
+          workspaceId,
+        },
+      });
+    } catch (error) {
+      await prisma.billingEvent.update({
+        where: { id: audit.id },
+        data: { status: 'failed', processingAt: null, errorCode: (error as { code?: string }).code ?? 'handler_failed' },
+      }).catch(() => undefined);
+      throw error;
     }
 
     return { received: true };
@@ -142,122 +191,112 @@ interface PaypalEvent {
 
 // --------- handlers ---------------------------------------------------------
 
-async function activateSubscription(event: PaypalEvent) {
+async function activateSubscription(event: PaypalEvent): Promise<string | null> {
   const r = event.resource as { id?: string; plan_id?: string; custom_id?: string };
-  const workspaceId = r.custom_id;
-  if (!workspaceId || !r.plan_id || !r.id) return;
+  if (!r.custom_id || !r.plan_id || !r.id) return null;
   const plan = mapPlanIdToTier(r.plan_id);
-  if (!plan) return;
-  // GRANT THE TIER'S CREDITS (audit DANGEROUS): activation used to write a
-  // delta:0 ledger row — a paying PRO/STUDIO customer received ZERO capability.
-  // Now the plan flip, the credit grant, and the idempotency stamp commit as one
-  // transaction (paypalEventId unique = replay-safe: a re-delivered webhook
-  // collides on the ledger row and grants nothing twice).
-  const grant = PLAN_CREDIT_GRANT_CENTS[plan] ?? 0;
+  if (!plan) return null;
+  // Activation proves the subscription and flips the plan. Credits are granted
+  // only by a completed sale event, so activation plus the first-cycle sale
+  // cannot double-credit the workspace.
+  const intent = await prisma.billingIntent.findFirst({
+    where: { id: r.custom_id, kind: 'SUBSCRIPTION' },
+  });
+  if (!intent || intent.plan !== plan) return null;
+  if (intent.paypalSubscriptionId && intent.paypalSubscriptionId !== r.id) {
+    throw new Error('subscription intent provider mismatch');
+  }
   await prisma.$transaction([
     prisma.workspace.update({
-      where: { id: workspaceId },
-      data: { plan, paypalSubscriptionId: r.id, creditsCents: { increment: grant } },
+      where: { id: intent.workspaceId },
+      data: { plan, paypalSubscriptionId: r.id },
     }),
-    prisma.creditLedger.create({
-      data: {
-        workspaceId,
-        delta: grant,
-        reason: 'paypal_subscription_activated',
-        paypalEventId: event.id,
-        meta: { subscriptionId: r.id, planId: r.plan_id, grant } as never,
-      },
+    prisma.billingIntent.update({
+      where: { id: intent.id },
+      data: { paypalSubscriptionId: r.id, status: 'APPROVED' },
     }),
   ]);
+  return intent.workspaceId;
 }
 
 /** Grant a subscription cycle's credit allowance. Idempotent via the unique
  *  paypalEventId — a re-delivered webhook grants nothing twice. */
-async function grantRecurring(event: PaypalEvent) {
-  const r = event.resource as { billing_agreement_id?: string; custom_id?: string };
+async function grantRecurring(event: PaypalEvent): Promise<string | null> {
+  const r = event.resource as { id?: string; billing_agreement_id?: string };
   const subId = r.billing_agreement_id;
-  const ws = subId
-    ? await prisma.workspace.findUnique({ where: { paypalSubscriptionId: subId } })
-    : r.custom_id
-      ? await prisma.workspace.findUnique({ where: { id: r.custom_id } })
-      : null;
-  if (!ws) return;
+  if (!subId || !r.id) return null;
+  const ws = await prisma.workspace.findUnique({ where: { paypalSubscriptionId: subId } });
+  if (!ws) return null;
   const grant = PLAN_CREDIT_GRANT_CENTS[ws.plan as keyof typeof PLAN_CREDIT_GRANT_CENTS] ?? 0;
-  if (!grant) return;
+  if (!grant) return ws.id;
   try {
     await prisma.$transaction([
       prisma.workspace.update({ where: { id: ws.id }, data: { creditsCents: { increment: grant } } }),
       prisma.creditLedger.create({
-        data: { workspaceId: ws.id, delta: grant, reason: 'paypal_subscription_renewal', paypalEventId: event.id, meta: { grant } as never },
+        data: {
+          workspaceId: ws.id,
+          delta: grant,
+          reason: 'paypal_subscription_cycle',
+          paypalEventId: event.id,
+          idempotencyKey: `paypal-sale:${subId}:${r.id}`,
+          meta: { grant, subscriptionId: subId, saleId: r.id } as never,
+        },
+      }),
+      prisma.billingIntent.updateMany({
+        where: { paypalSubscriptionId: subId },
+        data: { status: 'COMPLETED', completedAt: new Date() },
       }),
     ]);
   } catch (e) {
-    // Unique paypalEventId collision = already granted for this delivery. Fine.
     if ((e as { code?: string }).code !== 'P2002') throw e;
   }
+  return ws.id;
 }
 
-async function downgradeSubscription(event: PaypalEvent) {
+async function downgradeSubscription(event: PaypalEvent): Promise<string | null> {
   const r = event.resource as { id?: string; custom_id?: string };
   const subscriptionId = r.id;
-  if (!subscriptionId) return;
+  if (!subscriptionId) return null;
   // Find workspace by subscription id (custom_id may not be present on cancel events).
   const ws = await prisma.workspace.findUnique({ where: { paypalSubscriptionId: subscriptionId } });
-  if (!ws) return;
-  // One transaction: the downgrade and its idempotency stamp commit together.
+  if (!ws) return null;
   await prisma.$transaction([
     prisma.workspace.update({
       where: { id: ws.id },
       data: { plan: 'STARTER', paypalSubscriptionId: null },
     }),
-    prisma.creditLedger.create({
-      data: {
-        workspaceId: ws.id,
-        delta: 0,
-        reason: `paypal_${event.event_type.toLowerCase()}`,
-        paypalEventId: event.id,
-        meta: { subscriptionId } as never,
-      },
+    prisma.billingIntent.updateMany({
+      where: { paypalSubscriptionId: subscriptionId },
+      data: { status: 'CANCELED' },
     }),
   ]);
+  return ws.id;
 }
 
-async function creditCapture(event: PaypalEvent) {
+async function creditCapture(event: PaypalEvent): Promise<string | null> {
   const r = event.resource as { id?: string; status?: string; custom_id?: string; amount?: { value: string; currency_code: string } };
-  if (!r.id || !r.custom_id) return;
-  if (r.status !== 'COMPLETED') return;
-  const meta = validateCreditPackCapture(r.custom_id, r.amount);
-  if (!meta) return;
+  if (!r.id || !r.custom_id || r.status !== 'COMPLETED') return null;
+  const intent = await resolveCreditIntent({ intentId: r.custom_id, amount: r.amount });
+  if (!intent) return null;
   // Idempotency — keyed by capture id (r.id), not the event id, so the
   // return-URL path and the webhook path collapse to the same row.
-  const existing = await prisma.creditLedger.findUnique({ where: { paypalEventId: r.id } });
-  if (existing) return;
-  const [ws] = await prisma.$transaction([
-    prisma.workspace.update({
-      where: { id: meta.workspaceId },
-      data: { creditsCents: { increment: meta.creditsCents } },
-    }),
-    prisma.creditLedger.create({
-      data: {
-        workspaceId: meta.workspaceId,
-        delta: meta.creditsCents,
-        reason: 'topup_paypal',
-        paypalEventId: r.id,
-        meta: { pack: meta.pack, captureAmount: r.amount, webhookEventId: event.id } as never,
-      },
-    }),
-  ]);
+  const result = await applyCreditCapture({
+    intent,
+    captureId: r.id,
+    webhookEventId: event.id,
+  });
   // Receipt email to the workspace owner (best-effort).
   const owner = await prisma.workspaceMember.findFirst({
-    where: { workspaceId: meta.workspaceId, role: 'OWNER' },
+    where: { workspaceId: intent.workspaceId, role: 'OWNER' },
     include: { user: { select: { email: true, id: true } } },
   });
-  if (owner) {
+  if (owner && result.applied) {
     const usd = (n: number) => `$${(n / 10_000).toFixed(2)}`;
-    const tpl = creditReceiptEmail(usd(meta.creditsCents), usd(ws.creditsCents));
+    const tpl = creditReceiptEmail(usd(intent.creditsCents!), usd(result.balance));
     await sendEmail({ to: owner.user.email, ...tpl });
-    track('credits_purchased', owner.user.id, { pack: meta.pack, creditsCents: meta.creditsCents });
+    track('credits_purchased', owner.user.id, { pack: intent.packKey, creditsCents: intent.creditsCents });
   }
+  return intent.workspaceId;
 }
 
 function mapPlanIdToTier(planId: string): 'STARTER' | 'CREATOR' | 'PRO' | 'STUDIO' | null {

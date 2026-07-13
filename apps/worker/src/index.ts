@@ -6,8 +6,8 @@ import IORedis from 'ioredis';
 import pino from 'pino';
 import * as Sentry from '@sentry/node';
 
-import { runWithBrainContext } from '@afrohit/ai';
-import { assertSecretConfiguration, migratePlaintextWorkspaceSecrets } from '@afrohit/db';
+import { runWithBrainContext, runWithLlmUsageContext, setLlmUsageSink } from '@afrohit/ai';
+import { assertSecretConfiguration, migratePlaintextWorkspaceSecrets, prisma } from '@afrohit/db';
 import { redactSensitiveText } from '@afrohit/shared';
 import { processMusic } from './processors/music';
 import { processForgeMaterial, processAssembleBeat } from './processors/material';
@@ -32,9 +32,11 @@ import { processOwnEngine } from './processors/own-engine';
 import { processProduce } from './processors/produce';
 import { processSongEdit } from './processors/song-edit';
 import { processSynthMaterial } from './processors/synth-material';
+import { processAssetCleanup } from './processors/asset-cleanup';
 import { enqueueJob } from './lib/enqueue';
 import { assertStorageConfiguration } from './lib/storage';
 import { processNightlyCompound, processMeasureBackfill, processLearnBackfill, processListenBack, processRefileReferences, processMineLexicon, processLexiconResearch, processWiktionaryHarvest, processGlossPass, processVerifyLexicon } from './processors/compound';
+import { markFailed, markRunning, markSucceeded } from './lib/jobs';
 
 const safeError = (error: unknown) => {
   const serialized = pino.stdSerializers.err(error as Error);
@@ -45,6 +47,17 @@ const safeError = (error: unknown) => {
   };
 };
 const log = pino({ level: process.env.LOG_LEVEL ?? 'info', serializers: { err: safeError, error: safeError } });
+setLlmUsageSink((record) => {
+  const { workspaceId, userId, ...properties } = record;
+  void prisma.analyticsEvent.create({
+    data: {
+      workspaceId: workspaceId ?? null,
+      userId: userId ?? null,
+      name: 'llm.call',
+      properties: properties as never,
+    },
+  }).catch((error: unknown) => log.warn({ err: error }, 'llm usage event could not be persisted'));
+});
 assertSecretConfiguration();
 assertStorageConfiguration();
 const secretsReady = process.env.ENCRYPTION_KEY
@@ -79,10 +92,29 @@ const connection = new IORedis(process.env.REDIS_URL ?? 'redis://localhost:6379'
 /** Job kinds whose completion the user cares about → email notification. */
 const NOTIFY_QUEUES = new Set(['music', 'voice', 'video', 'export']);
 
+async function withWorkerUsageContext<T>(job: unknown, fn: () => Promise<T>): Promise<T> {
+  const typed = job as { id?: string | number; data?: { jobId?: string; workspaceId?: string } };
+  const data = typed.data ?? {};
+  let workspaceId = data.workspaceId;
+  if (!workspaceId && data.jobId) {
+    workspaceId = (await prisma.providerJob.findUnique({
+      where: { id: data.jobId },
+      select: { workspaceId: true },
+    }))?.workspaceId;
+  }
+  return runWithLlmUsageContext(
+    {
+      ...(workspaceId ? { workspaceId } : {}),
+      jobId: data.jobId ?? String(typed.id ?? 'unknown'),
+    },
+    fn
+  );
+}
+
 function makeWorker(queue: string, handler: (job: never) => Promise<void>) {
   const guarded = async (job: never) => {
     await secretsReady;
-    await handler(job);
+    await withWorkerUsageContext(job, () => handler(job));
   };
   const w = new Worker(queue, guarded as never, {
     connection,
@@ -120,13 +152,20 @@ const workers = [
   // THE LAKE — background learning/measurement lane. CONCURRENCY 1 by design:
   // local Demucs/librosa are CPU-heavy on this shared container; one at a time
   // keeps renders fast. Nothing user-facing ever waits on this queue.
-  new Worker('lake', (async (job: { data: never; name: string }) => {
+  new Worker('lake', (async (job: { id?: string | number; data: never; name: string }) => {
     await secretsReady;
+    await withWorkerUsageContext(job, async () => {
+    const data = job.data as { jobId?: string };
+    const managed = data.jobId
+      ? await prisma.providerJob.findFirst({ where: { id: data.jobId, kind: 'lake' }, select: { id: true } })
+      : null;
+    if (managed) await markRunning(managed.id);
     // OWNER LAW: EVERYTHING on the lake queue is background text/analysis work
     // — Cerebras-first for every LLM call, whether the nightly cron fired it or
     // the owner clicked a Data-lake button in Admin. Claude never bills for
     // lake work; the ladder stays as the failure safety only.
-    await runWithBrainContext({ forceTier: 'bulk', runId: `lake:${job.name}` }, async () => {
+    try {
+    await runWithBrainContext({ forceTier: 'bulk', runId: managed?.id ?? `lake:${job.name}` }, async () => {
       if (job.name === 'deep-measure') await processDeepMeasure(job.data as never);
       else if (job.name === 'analyze-audio') await processAnalyze(job.data as never);
       else if (job.name === 'nightly-compound') await processNightlyCompound();
@@ -144,6 +183,12 @@ const workers = [
       // by design (CPU work, never blocks a render; no LLM, so the bulk brain
       // context wrapper is a no-op for it).
       else if (job.name === 'voice-dataset') await processVoiceDataset(job.data as never);
+    });
+    if (managed) await markSucceeded(managed.id, { task: job.name, completed: true });
+    } catch (error) {
+      if (managed) await markFailed(managed.id, error);
+      throw error;
+    }
     });
   }) as never, { connection, concurrency: 1 }),
   makeWorker('voice', async (job: { data: never; name: string }) => {
@@ -167,6 +212,10 @@ const workers = [
   }),
   makeWorker('export', async (job: { data: never }) => {
     await processExport(job.data as never);
+  }),
+  makeWorker('cleanup', async (job: { data: never; name: string }) => {
+    if (job.name !== 'delete-assets') throw new Error(`unknown cleanup job: ${job.name}`);
+    await processAssetCleanup(job.data as never);
   }),
   makeWorker('cron', async (job: { data: never; name: string }) => {
     if (job.name === 'morning-drop') await processMorningDrop();
@@ -270,17 +319,3 @@ void (async () => {
 
 // A3-6 — LLM usage sink (worker side): radar/gloss/verify calls log tier + task
 // + brain + est cost as AnalyticsEvent 'llm.call' for /admin/economics.
-void (async () => {
-  try {
-    const { setLlmUsageSink } = await import('@afrohit/ai');
-    const { prisma } = await import('@afrohit/db');
-    let wsId: string | null = null;
-    setLlmUsageSink((rec) => {
-      void (async () => {
-        wsId ??= (await prisma.workspace.findFirst({ select: { id: true } }))?.id ?? null;
-        if (!wsId) return;
-        await prisma.analyticsEvent.create({ data: { workspaceId: wsId, name: 'llm.call', properties: rec as never } }).catch(() => undefined);
-      })();
-    });
-  } catch { /* telemetry never blocks boot */ }
-})();

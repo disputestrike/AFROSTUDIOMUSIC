@@ -1,6 +1,7 @@
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import fp from 'fastify-plugin';
 import { prisma } from '@afrohit/db';
+import { runWithLlmUsageContext, setLlmUsageContext } from '@afrohit/ai';
 import {
   assertSessionConfiguration,
   constantTimeSecretEqual,
@@ -74,6 +75,10 @@ async function resolveMembership(userId: string, workspaceId: string) {
 export const authPlugin = fp(async function auth(app: FastifyInstance) {
   app.decorateRequest('auth', undefined);
 
+  app.addHook('onRequest', (req, _reply, done) => {
+    runWithLlmUsageContext({ requestId: String(req.id) }, done);
+  });
+
   if (isInternalMode() && process.env.NODE_ENV === 'production') {
     throw new Error('REFUSING TO BOOT: production requires AUTH_MODE=jwt');
   } else if (AUTH_MODE() === 'jwt') {
@@ -111,6 +116,7 @@ export const authPlugin = fp(async function auth(app: FastifyInstance) {
       if (workspace.suspendedAt) return reply.forbidden('workspace suspended');
       if (unsafe && membership.role === 'VIEWER') return reply.forbidden('viewer role is read-only');
       req.auth = { userId, workspaceId, role: membership.role, isService: true };
+      setLlmUsageContext({ userId, workspaceId });
       return;
     }
 
@@ -120,6 +126,7 @@ export const authPlugin = fp(async function auth(app: FastifyInstance) {
         const workspace = await prisma.workspace.findUnique({ where: { id: identity.workspaceId }, select: { suspendedAt: true } });
         if (workspace?.suspendedAt) return reply.forbidden('workspace suspended');
         req.auth = { ...identity, role: 'OWNER', isService: false };
+        setLlmUsageContext(identity);
         return;
       } catch (error) {
         req.log.error({ error }, 'internal auth bootstrap failed');
@@ -148,6 +155,7 @@ export const authPlugin = fp(async function auth(app: FastifyInstance) {
       role: membership.role,
       isService: false,
     };
+    setLlmUsageContext({ userId: claims.sub, workspaceId: claims.workspaceId });
   });
 });
 

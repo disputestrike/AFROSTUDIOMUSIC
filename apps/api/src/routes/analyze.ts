@@ -2,7 +2,7 @@ import type { FastifyInstance } from 'fastify';
 import { prisma } from '@afrohit/db';
 import { analyzeAudioSchema } from '@afrohit/shared';
 import { requireAuth } from '../middleware/auth';
-import { enqueue } from '../lib/queue';
+import { createQueuedProviderJob, scopedRequestKey } from '../lib/queued-job';
 import { assertSafeUrl } from '../lib/url-guard';
 import { assertWorkspaceAsset } from '../lib/storage';
 
@@ -33,27 +33,26 @@ export default async function analyze(app: FastifyInstance) {
 
       // Paid Replicate inference → subject to the daily cap like every other
       // generation path (was previously the one uncapped entry point).
-      const charge = await app.chargeCredits({ workspaceId, key: 'analyze_audio', refTable: 'Project', refId: project.id });
+      const idempotencyKey = scopedRequestKey(req.headers as Record<string, unknown>, 'analyze-audio');
+      const charge = await app.chargeCredits({ workspaceId, key: 'analyze_audio', refTable: 'Project', refId: project.id, idempotencyKey });
       if (!charge.ok) return reply.code(402).send({ error: 'insufficient_credits', ...charge });
 
-      const job = await prisma.providerJob.create({
-        data: {
-          workspaceId,
-          projectId: project.id,
-          kind: 'analyze',
-          provider: 'replicate',
-          status: 'QUEUED',
-          inputJson: { url, factsOnly } as never,
-        },
-      });
-      await enqueue({
+      const job = await createQueuedProviderJob({
+        app,
         queue: app.queues.music,
-        name: 'analyze-audio',
-        payload: { jobId: job.id, workspaceId, projectId: project.id, url, purgeAfter, factsOnly },
+        jobName: 'analyze-audio',
+        workspaceId,
+        projectId: project.id,
+        kind: 'analyze',
+        provider: 'replicate',
+        inputJson: { url, factsOnly },
+        charge,
+        idempotencyKey,
+        payload: (jobId) => ({ jobId, workspaceId, projectId: project.id, url, purgeAfter, factsOnly }),
       });
 
       reply.code(202);
-      return { jobId: job.id, status: 'queued' };
+      return { jobId: job.jobId, status: 'queued', replayed: job.replayed };
     }
   );
 }
