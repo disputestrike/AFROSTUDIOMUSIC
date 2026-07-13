@@ -158,7 +158,7 @@ export function StudioUpload({ projectId }: { projectId: string }) {
             ) : (
               <button onClick={stopRecording} className="flex-1 animate-pulse rounded-full bg-red-600 px-4 py-2 text-sm font-medium text-white">■ Stop &amp; save</button>
             )}
-            <input ref={fileInputs.vocal} type="file" accept="audio/*,.wav,.mp3,.m4a,.ogg,.webm" className="hidden" onChange={(e) => e.target.files?.[0] && uploadVocal(e.target.files[0], e.target.files[0].name)} />
+            <input ref={fileInputs.vocal} type="file" accept="audio/*,audio/mpeg,.wav,.mp3,.m4a,.ogg,.webm,.mpeg,.mpg" className="hidden" onChange={(e) => e.target.files?.[0] && uploadVocal(e.target.files[0], e.target.files[0].name)} />
             <button onClick={() => fileInputs.vocal.current?.click()} disabled={status.vocal?.kind === 'uploading' || recording} className="flex-1 rounded-full border border-slate-700 px-4 py-2 text-sm hover:bg-slate-800 disabled:opacity-50">
               {status.vocal?.kind === 'uploading' ? `Uploading… ${status.vocal.pct ?? 0}%` : 'Upload take'}
             </button>
@@ -203,7 +203,7 @@ function UploadCard({
     <div className={`rounded-xl border p-4 ${accent ? 'border-afrobrand-500/40 bg-afrobrand-500/5' : 'border-slate-800 bg-slate-900/40'}`}>
       <div className="font-display text-lg">{title}</div>
       <p className="mt-1 text-[11px] text-slate-500">{hint}</p>
-      <input ref={inputRef} type="file" accept="audio/*,.wav,.mp3,.flac,.aiff,.m4a,.ogg" className="hidden" onChange={(e) => e.target.files?.[0] && onFile(e.target.files[0])} />
+      <input ref={inputRef} type="file" accept="audio/*,audio/mpeg,.wav,.mp3,.flac,.aiff,.m4a,.ogg,.mpeg,.mpg" className="hidden" onChange={(e) => e.target.files?.[0] && onFile(e.target.files[0])} />
       <button onClick={onClick} disabled={status?.kind === 'uploading'} className={`mt-3 w-full rounded-full px-4 py-2 text-sm font-medium disabled:opacity-50 ${accent ? 'bg-afrobrand-500 text-ink hover:bg-afrobrand-400' : 'border border-slate-700 hover:bg-slate-800'}`}>
         {status?.kind === 'uploading' ? `Uploading… ${status.pct ?? 0}%` : label}
       </button>

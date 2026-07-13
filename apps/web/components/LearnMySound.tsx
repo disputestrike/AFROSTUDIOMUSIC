@@ -99,7 +99,7 @@ export function LearnMySound({ projectId }: { projectId: string }) {
       </p>
 
       <div className="mt-4 rounded-2xl glass p-4">
-        <input ref={fileRef} type="file" multiple accept="audio/*,.wav,.mp3,.m4a,.ogg,.flac" className="hidden" onChange={(e) => onFiles(e.target.files)} />
+        <input ref={fileRef} type="file" multiple accept="audio/*,audio/mpeg,.wav,.mp3,.m4a,.ogg,.flac,.mpeg,.mpg" className="hidden" onChange={(e) => onFiles(e.target.files)} />
         <button
           onClick={() => fileRef.current?.click()}
           disabled={running}

@@ -135,7 +135,7 @@ export function MumbleBooth({ onPick }: { onPick: (lyric: string, title: string)
             <Square className="h-4 w-4" /> Stop ({MAX_SECS - elapsed}s left)
           </button>
         )}
-        <input ref={fileRef} type="file" accept="audio/*" className="hidden" onChange={(e) => { const f = e.target.files?.[0]; if (f) void convert(f); }} />
+        <input ref={fileRef} type="file" accept="audio/*,audio/mpeg,.mp3,.wav,.m4a,.ogg,.mpeg,.mpg" className="hidden" onChange={(e) => { const f = e.target.files?.[0]; if (f) void convert(f); }} />
         <button onClick={() => fileRef.current?.click()} disabled={busy || recording} className="flex items-center gap-2 rounded-full border border-white/15 bg-white/5 px-4 py-2.5 text-sm text-slate-200 hover:bg-white/10 disabled:opacity-50">
           <UploadCloud className="h-4 w-4" /> or upload a take
         </button>

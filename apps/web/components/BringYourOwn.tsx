@@ -485,7 +485,7 @@ export function BringYourOwn({ onChorusText }: { onChorusText: (lyrics: string) 
               <div className="mt-3 grid gap-3 sm:grid-cols-2">
                 <div className="rounded-xl border border-slate-800 bg-slate-900/40 p-4">
                   <div className="font-display text-lg">1 · Your beat</div>
-                  <input ref={aBeatFile} type="file" accept="audio/*,.wav,.mp3,.flac,.aiff,.m4a,.ogg" className="hidden" onChange={(e) => e.target.files?.[0] && void uploadBeatA(e.target.files[0])} />
+                  <input ref={aBeatFile} type="file" accept="audio/*,audio/mpeg,.wav,.mp3,.flac,.aiff,.m4a,.ogg,.mpeg,.mpg" className="hidden" onChange={(e) => e.target.files?.[0] && void uploadBeatA(e.target.files[0])} />
                   <button
                     onClick={() => aBeatFile.current?.click()}
                     disabled={aBeat.kind === 'uploading'}
@@ -530,7 +530,7 @@ export function BringYourOwn({ onChorusText }: { onChorusText: (lyrics: string) 
               <div className="mt-3 flex flex-wrap gap-2">
                 <input value={bBpm} onChange={(e) => setBBpm(e.target.value.replace(/[^0-9]/g, ''))} placeholder="BPM (optional)" inputMode="numeric" className="w-32 rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm" />
                 <input value={bKey} onChange={(e) => setBKey(e.target.value)} placeholder="Key e.g. Am (optional)" className="w-44 rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm" />
-                <input ref={bBeatFile} type="file" accept="audio/*,.wav,.mp3,.flac,.aiff,.m4a,.ogg" className="hidden" onChange={(e) => e.target.files?.[0] && void uploadBeatB(e.target.files[0])} />
+                <input ref={bBeatFile} type="file" accept="audio/*,audio/mpeg,.wav,.mp3,.flac,.aiff,.m4a,.ogg,.mpeg,.mpg" className="hidden" onChange={(e) => e.target.files?.[0] && void uploadBeatB(e.target.files[0])} />
                 <button
                   onClick={() => bBeatFile.current?.click()}
                   disabled={bBeat.kind === 'uploading' || bAnalyze.kind === 'listening'}
@@ -731,7 +731,7 @@ function VocalIn({
         <input
           ref={fileRef}
           type="file"
-          accept="audio/*,.wav,.mp3,.m4a,.ogg,.webm"
+          accept="audio/*,audio/mpeg,.wav,.mp3,.m4a,.ogg,.webm,.mpeg,.mpg"
           className="hidden"
           onChange={(e) => e.target.files?.[0] && onAudio(e.target.files[0], e.target.files[0].name)}
         />

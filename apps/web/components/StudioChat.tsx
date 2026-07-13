@@ -329,7 +329,7 @@ export default function StudioChat({ projectId }: { projectId?: string }) {
               <input
                 ref={listenRef}
                 type="file"
-                accept="audio/*,.wav,.mp3,.m4a,.ogg,.flac"
+                accept="audio/*,audio/mpeg,.wav,.mp3,.m4a,.ogg,.flac,.mpeg,.mpg"
                 className="hidden"
                 onChange={(e) => e.target.files?.[0] && onListenFile(e.target.files[0])}
               />

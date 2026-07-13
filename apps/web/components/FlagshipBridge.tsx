@@ -111,7 +111,7 @@ export function FlagshipBridge({ songId, projectId, onClose, onDone }: Props) {
                   <label className={`flex cursor-pointer items-center justify-center gap-2 rounded-xl border border-dashed border-white/20 bg-white/5 px-4 py-5 text-sm text-slate-300 hover:bg-white/10 ${phase === 'uploading' ? 'pointer-events-none opacity-60' : ''}`}>
                     {phase === 'uploading' ? <Loader2 className="h-4 w-4 animate-spin" /> : <UploadCloud className="h-5 w-5 text-afrobrand-400" />}
                     {phase === 'uploading' ? 'Uploading…' : 'Drop the finished file (mp3/wav) — masters + scores it'}
-                    <input type="file" accept="audio/*" className="hidden" disabled={phase === 'uploading'} onChange={(e) => bringBack(e.target.files?.[0])} />
+                    <input type="file" accept="audio/*,audio/mpeg,.mp3,.wav,.m4a,.ogg,.flac,.mpeg,.mpg" className="hidden" disabled={phase === 'uploading'} onChange={(e) => bringBack(e.target.files?.[0])} />
                   </label>
                   {phase === 'error' && <div className="mt-2 text-xs text-red-400">{msg}</div>}
                 </>

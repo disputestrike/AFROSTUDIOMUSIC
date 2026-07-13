@@ -220,7 +220,7 @@ export default function ZapPage() {
         {!busy && (
           <label className="mt-3 inline-flex cursor-pointer items-center gap-1.5 text-xs text-slate-500 hover:text-slate-300">
             <Upload className="h-3.5 w-3.5" /> or upload a clip
-            <input type="file" accept="audio/*" className="hidden" onChange={(e) => { const f = e.target.files?.[0]; if (f) void identify(f); }} />
+            <input type="file" accept="audio/*,audio/mpeg,.mp3,.wav,.m4a,.ogg,.mpeg,.mpg" className="hidden" onChange={(e) => { const f = e.target.files?.[0]; if (f) void identify(f); }} />
           </label>
         )}
       </div>

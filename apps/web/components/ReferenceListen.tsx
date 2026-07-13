@@ -320,7 +320,7 @@ export function ReferenceListen({ projectId }: { projectId: string }) {
         <input
           ref={fileRef}
           type="file"
-          accept="audio/*,.wav,.mp3,.m4a,.ogg,.flac"
+          accept="audio/*,audio/mpeg,.wav,.mp3,.m4a,.ogg,.flac,.mpeg,.mpg"
           className="hidden"
           onChange={(e) => e.target.files?.[0] && onFile(e.target.files[0])}
         />
