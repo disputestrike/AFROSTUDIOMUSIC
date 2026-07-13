@@ -535,7 +535,7 @@ async function generateLyrics(ctx: Ctx, hookId: string, cleanVersion: boolean, l
   // arrive without it — never pass undefined to Prisma (that's the ugly
   // "Invalid prisma.lyricDraft.upsert()" the user saw). If the body is missing,
   // this take failed cleanly; the drop batch continues.
-  const body = typeof output.body === 'string' ? output.body.trim() : '';
+  let body = typeof output.body === 'string' ? output.body.trim() : '';
   if (body.length < 20) {
     throw new Error('lyric came back empty/truncated — regenerating recommended');
   }
@@ -583,18 +583,52 @@ async function generateLyrics(ctx: Ctx, hookId: string, cleanVersion: boolean, l
     take: 300,
     orderBy: { createdAt: 'desc' },
   });
-  const qa = lyricQaCheck({
+  const catalogue = catRows.map((s: { id: string; title: string; lyric: { body: string } | null }) => ({ id: s.id, title: s.title, bodyNorm: normalizeLyricBody(s.lyric?.body ?? '') }));
+  let qa = lyricQaCheck({
     title: lyricData.title,
     body,
     hookCell: craftJson.hookCell,
     languageMix: output.languageMix as Record<string, number> | undefined,
     artistAuthored: false,
-    catalogue: catRows.map((s: { id: string; title: string; lyric: { body: string } | null }) => ({ id: s.id, title: s.title, bodyNorm: normalizeLyricBody(s.lyric?.body ?? '') })),
+    catalogue,
   });
+  // REJECT_AND_RESTART loop (owner spec + feedback): a blocked lyric is not a
+  // dead take — feed the exact QA failures back to the writer and REGENERATE, up
+  // to 2 corrective passes, so Create self-corrects (e.g. strips environment
+  // stuffing) instead of just erroring. The last attempt either clears the gate
+  // or fails honestly.
+  let curLangMix = output.languageMix as Record<string, number> | undefined;
+  for (let fix = 0; !qa.ok && fix < 2; fix++) {
+    const rewrite = await generateJson<LyricOut>({
+      tier: 'judgment',
+      task: 'lyric-qa-fix',
+      system: prompts.LYRIC_SYSTEM,
+      user: JSON.stringify({
+        REWRITE_REASON: 'Your previous lyric was REJECTED by the A&R gate. Rewrite it obeying THE RECORD LAW and fixing EVERY failure below. Keep the hook cell and the language; make it leaner and less descriptive.',
+        QA_FAILURES_MUST_FIX: qa.blocks,
+        AVOID: 'Do NOT open on a location. Do NOT put a place/food/transport noun in most lines. Do NOT write a confession bridge or an explaining outro. The hook must survive with the setting words removed.',
+        hook: hook.text,
+        keep_hook_cell: craftJson.hookCell,
+        languages: languages?.length ? languages : hook.project.artist.languages,
+      }),
+      temperature: 0.7,
+      maxTokens: 4_000,
+      timeoutMs: 90_000,
+      model: process.env.WRITER_MODEL,
+    }).catch(() => null);
+    if (!rewrite?.body || rewrite.body.trim().length < 20) break;
+    body = rewrite.body.trim();
+    if (typeof rewrite.hookCell === 'string' && rewrite.hookCell.trim()) craftJson.hookCell = rewrite.hookCell.trim();
+    lyricData.body = body;
+    lyricData.title = pickLawfulTitle([typeof rewrite.title === 'string' ? rewrite.title.trim() : ''], craftJson.hookCell || hook.text);
+    curLangMix = (rewrite.languageMix as Record<string, number>) ?? curLangMix;
+    lyricData.languageMix = (rewrite.languageMix ?? lyricData.languageMix) as never;
+    qa = lyricQaCheck({ title: lyricData.title, body, hookCell: craftJson.hookCell, languageMix: curLangMix, artistAuthored: false, catalogue });
+  }
   if (!qa.ok) {
     // Quarantine the shell song if one exists so nothing half-written lingers visible.
     if (hook.songId) await prisma.song.update({ where: { id: hook.songId }, data: { quarantined: true, quarantineReason: qa.blocks.join('; ') } }).catch(() => {});
-    return { error: `lyric_qa_blocked: ${qa.blocks.join('; ')}`, qa: { blocks: qa.blocks, band: qa.band } };
+    return { error: `lyric_qa_blocked (after 2 corrective rewrites): ${qa.blocks.join('; ')}`, qa: { blocks: qa.blocks, band: qa.band } };
   }
   const lyric = hook.songId
     ? await prisma.lyricDraft.upsert({
