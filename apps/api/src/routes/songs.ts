@@ -226,6 +226,10 @@ export default async function songs(app: FastifyInstance) {
     title: z.string().min(1).max(200).optional(),
     versionLabel: z.string().max(60).nullable().optional(),
     status: z.enum(['SKETCH', 'DEMO', 'FULL', 'MIXED', 'MASTERED', 'RELEASED']).optional(),
+    // QA quarantine toggle (operator + the QA gate). Reversible; hides the song
+    // from the catalogue/release/public without deleting it.
+    quarantined: z.boolean().optional(),
+    quarantineReason: z.string().max(300).nullable().optional(),
   });
   app.patch<{ Params: { id: string } }>('/:id', async (req, reply) => {
     const { workspaceId } = requireAuth(req);
