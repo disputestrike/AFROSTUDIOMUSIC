@@ -1,0 +1,230 @@
+/**
+ * CATALOGUE CONTAMINATION DETECTOR — the HARD block the owner demanded
+ * (2026-07-13, the "Pepper Kiss" report).
+ *
+ * The concept/QA gates were tuned for the OLD failure (dense scenery + a
+ * "Truth be say…" confession bridge). The writer ADAPTED around them and shipped
+ * Mama-Titi-with-new-nouns: a food-seller romance, a literal object title
+ * ("pepper on the lip" -> "Pepper Kiss"), a DIALOGUE bridge, calendar dialogue
+ * ("Friday, Iyana, eight"), decorative Yoruba, and "gbam" impact filler. None of
+ * that is what the old code looks for, so the song sailed through band B.
+ *
+ * This detects the owner's TWELVE forbidden catalogue patterns FROM THE LYRIC
+ * ITSELF. When TWO OR MORE fire, it returns CATALOGUE_CONTAMINATION_DETECTED — a
+ * rejection that BLOCKS the lyric. A rejection is a successful output. Pure,
+ * zero-dependency, regex/wordlist heuristics; the >=2 threshold is the guard so a
+ * single weak signal can never false-block a good record.
+ */
+
+// --- word fields (self-contained; no import to keep this leaf dependency-free) ---
+const FOOD = new Set([
+  'suya', 'pepper', 'soup', 'broth', 'jollof', 'amala', 'eba', 'garri', 'akara', 'boli',
+  'corn', 'roast', 'meat', 'fish', 'kilishi', 'moimoi', 'dodo', 'plantain', 'zobo', 'kunu',
+  'isiewu', 'nkwobi', 'ofada', 'egusi', 'efo', 'ewa', 'pap', 'shawarma', 'stew', 'sauce', 'barbecue',
+]);
+// Scenery OBJECTS that must not carry a song alone (title check). Food + place/transport props.
+const SCENERY_OBJECTS = new Set([
+  ...FOOD,
+  'streetlight', 'generator', 'nepa', 'danfo', 'keke', 'okada', 'busstop', 'bus', 'conductor', 'garage',
+  'market', 'junction', 'gutter', 'compound', 'gate', 'stall', 'kiosk', 'counter', 'blade',
+  'gele', 'ankara', 'agbada', 'crate', 'bench', 'ladle', 'pot', 'steam', 'smoke',
+]);
+const VENDOR_LINE = /\b(turn(?:ing|s)?|wrap(?:ping|s)?|serv(?:e|es|ed|ing)|sell(?:ing|s)?|fry(?:ing)?|fried|roast(?:ing|s)?|grill(?:ing|s)?|dish(?:ing|es)?|hand(?:s|ing)?|pack(?:ing|s)?)\b/;
+const VENDOR_NOUN = /\b(seller|vendor|stand|stall|kiosk|counter|customer|change|balance)\b/;
+const ROMANCE = /\b(kiss|love|dance|baby|fine boy|fine girl|collar|lip|lips|honey|darling|sweet|hold me|hold my hand|my heart|romance|crush|my dear|near me)\b/;
+const NAMES = new Set([
+  'bimbo', 'titi', 'kemi', 'chidi', 'ada', 'ngozi', 'tunde', 'emeka', 'uche', 'sade', 'yemi', 'funke',
+  'bola', 'sandra', 'amara', 'chioma', 'ifeoma', 'tobi', 'dele', 'segun', 'wale', 'tayo', 'seyi',
+  'folake', 'ronke', 'bukola', 'ranti', 'shola', 'nkechi', 'obinna', 'ifeanyi', 'adaeze', 'zainab',
+  'aisha', 'halima', 'fatima', 'blessing', 'precious', 'chinedu', 'ebuka', 'kunle', 'lekan', 'sikira',
+]);
+// Manufactured comedic impact sounds — any one is a strong tell. NOTE: legit
+// percussive VOCABLES ("kpokpokpo", "nawo nawo", "soso") are the SOUL of Afro
+// hooks (the app's own writer law celebrates them) — they must NOT be flagged.
+// Only the out-of-place cartoon impacts the owner named belong here.
+const IMPACT_STRONG = /\b(gbam|gbadum|gbadu)\b/i;
+// Ambiguous ones only count as an ad-lib in a parenthetical, and need repetition.
+const IMPACT_WEAK = /\b(bam|boom|pow|pah|pak)\b/i;
+const DAYS = /\b(monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b/i;
+const CLOCK = /\b(\d{1,2}\s*(?:am|pm|o'?clock)|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|noon|midnight)\b/i;
+const APPOINTMENT = /\b(come back|show my face|keep your word|see you again|meet me|i go dey there|link up|pull up)\b/i;
+const TRANSACTION = /\b(pay|money|price|charge|cash|order|owe|fee|balance|change)\b/i;
+const YORUBA_DIACRITIC = /[àáèéìíòóùúẹọṣǹńẹ́ọ́]/i;
+const YORUBA_PHRASE = /\b(je ka jo|jare|o wa|mo gbo|se ni|ba mi|fun mi|omo|jor|abeg no)\b/i;
+
+export interface ContaminationPattern {
+  code: string;
+  label: string;
+  evidence: string;
+}
+
+export interface ContaminationResult {
+  patterns: ContaminationPattern[];
+  count: number;
+  decision: 'CATALOGUE_CONTAMINATION_DETECTED' | null;
+  resembles: string | null;
+  titleSalvageable: boolean;
+  titleNote: string;
+  requiredEngine: string;
+}
+
+function lyricLines(body: string): string[] {
+  return (body ?? '')
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .filter((l) => l && !/^\[[^\]]*\]\s*$/.test(l));
+}
+
+function sectionLines(body: string, rx: RegExp): string[] {
+  const out: string[] = [];
+  let inSec = false;
+  for (const raw of (body ?? '').split(/\r?\n/)) {
+    const h = /^\s*\[([^\]]+)\]\s*$/.exec(raw);
+    if (h) { inSec = rx.test(h[1]!); continue; }
+    if (inSec && raw.trim()) out.push(raw.trim());
+  }
+  return out;
+}
+
+const tokens = (s: string): string[] => (s ?? '').toLowerCase().replace(/[^a-z\s]/g, ' ').split(/\s+/).filter(Boolean);
+
+/**
+ * Detect the owner's 12 forbidden catalogue patterns in a finished lyric.
+ * >=2 patterns => CATALOGUE_CONTAMINATION_DETECTED.
+ */
+export function detectCatalogueContamination(input: {
+  title: string;
+  body: string;
+  languageMix?: Record<string, number> | null;
+}): ContaminationResult {
+  const body = input.body ?? '';
+  const title = input.title ?? '';
+  const lines = lyricLines(body);
+  const bodyLow = body.toLowerCase();
+  const titleTok = tokens(title);
+  const p: ContaminationPattern[] = [];
+
+  const hasFood = tokens(body).some((w) => FOOD.has(w));
+  const romance = ROMANCE.test(bodyLow);
+
+  // 1. Romantic attraction to a food seller.
+  const vendorLine = lines.find((l) => {
+    const t = tokens(l);
+    return t.some((w) => FOOD.has(w)) && (VENDOR_LINE.test(l.toLowerCase()) || VENDOR_NOUN.test(l.toLowerCase()));
+  });
+  if (hasFood && romance && vendorLine) {
+    p.push({ code: 'food_seller_romance', label: 'romantic attraction to a food seller', evidence: vendorLine });
+  }
+
+  // 2. A local object / food / transport prop as the CENTRAL idea (in the title).
+  const titleObject = titleTok.find((w) => SCENERY_OBJECTS.has(w));
+  if (titleObject) {
+    p.push({ code: 'local_object_central', label: 'a local object is the central idea (in the title)', evidence: `title "${title}" is built on the object "${titleObject}"` });
+  }
+
+  // 3. A random Nigerian name dropped in to simulate authenticity.
+  const nameHit = tokens(body).find((w) => NAMES.has(w)) || (/^\s*\(?\s*([A-Z][a-z]+)\s*:/m.exec(body)?.[1] ?? '').toLowerCase();
+  if (nameHit && NAMES.has(nameHit)) {
+    p.push({ code: 'decorative_name', label: 'a character name added to simulate authenticity', evidence: `named character "${nameHit}"` });
+  }
+
+  // 4. Flirtation created through buying / serving FOOD (owner pattern #4). A
+  //    plain money/brag line ("money dey my hand") is normal Afro and must NOT
+  //    trip this — it requires a FOOD/vendor context.
+  if (TRANSACTION.test(bodyLow) && (hasFood || !!vendorLine) && (romance || /\bdance\b/.test(bodyLow))) {
+    const line = lines.find((l) => TRANSACTION.test(l.toLowerCase()) && (ROMANCE.test(l.toLowerCase()) || /\bdance\b/i.test(l))) || 'a food/serving transaction used as flirtation';
+    p.push({ code: 'flirt_through_transaction', label: 'flirtation built on buying/serving food', evidence: line });
+  }
+
+  // 5. The title is the LITERAL result of an event in the verse (not a metaphor).
+  if (titleObject) {
+    const literalLine = lines.find((l) => {
+      const low = l.toLowerCase();
+      return tokens(l).includes(titleObject) && /\b(wipe|lip|lips|hand|thumb|mouth|blade|plate|from my|on my|turn|red|pour|hold)\b/.test(low);
+    });
+    if (literalLine) {
+      p.push({ code: 'literal_object_title', label: 'the title is the literal result of a physical event, not a metaphor', evidence: literalLine });
+    }
+  }
+
+  // 6. Yoruba/Igbo inserted decoratively (not essential to meaning) in a mostly non-native song.
+  const yo = input.languageMix?.yo ?? 0;
+  const ig = input.languageMix?.ig ?? 0;
+  const nativeShare = yo + ig;
+  const hasYoruba = YORUBA_DIACRITIC.test(body) || YORUBA_PHRASE.test(bodyLow);
+  if (hasYoruba && nativeShare < 0.5) {
+    // decorative when it is a small, repeated sprinkle rather than the song's language
+    const phrase = (YORUBA_PHRASE.exec(bodyLow)?.[0]) || (body.split(/\r?\n/).find((l) => YORUBA_DIACRITIC.test(l))?.trim() ?? 'native-language phrase');
+    p.push({ code: 'decorative_local_language', label: 'Yoruba/Igbo used as decoration, not essential meaning', evidence: phrase });
+  }
+
+  // 7. Fake hook-impact sounds ("gbam", "boom", "kpokpokpo"...).
+  const parenAdlibs = (body.match(/\(([^)]*)\)/g) ?? []).join(' ').toLowerCase();
+  const weakCount = (parenAdlibs.match(IMPACT_WEAK) ? (parenAdlibs.match(new RegExp(IMPACT_WEAK.source, 'gi'))?.length ?? 0) : 0);
+  if (IMPACT_STRONG.test(bodyLow) || weakCount >= 2) {
+    const ev = (IMPACT_STRONG.exec(bodyLow)?.[0]) || (IMPACT_WEAK.exec(parenAdlibs)?.[0]) || 'impact filler';
+    p.push({ code: 'impact_sound_filler', label: 'manufactured impact sound as fake hook energy', evidence: `"${ev}"` });
+  }
+
+  // 8. Dialogue carrying schedules / addresses / appointments / prices.
+  const apptLine = lines.find((l) => {
+    const low = l.toLowerCase();
+    return (DAYS.test(low) && (CLOCK.test(low) || APPOINTMENT.test(low))) || (TRANSACTION.test(low) && /\b(then|come|dance|money)\b/.test(low) && /["“]/.test(l));
+  });
+  if (apptLine || (DAYS.test(bodyLow) && CLOCK.test(bodyLow))) {
+    p.push({ code: 'transactional_dialogue', label: 'dialogue carrying a schedule / appointment / price', evidence: apptLine ?? 'day + time appointment in the lyric' });
+  }
+
+  // 9. A screenplay: heavy quoted dialogue telling a chronological scene.
+  const quotedLines = lines.filter((l) => /["“][^"”]{2,}["”]/.test(l) || /\b(she|he|i)\s+(say|said|ask|asked|smile|laugh|reply)\b/i.test(l));
+  if (quotedLines.length >= 3) {
+    p.push({ code: 'screenplay_scene', label: `${quotedLines.length} dialogue/narration lines — a screenplay, not a record`, evidence: quotedLines[0]! });
+  }
+
+  // 10. A bridge built from character dialogue.
+  const bridge = sectionLines(body, /bridge/i);
+  const dialogueBridge = bridge.find((l) => /["“]/.test(l) || /^\s*\(?\s*[A-Z][a-z]+\s*:/.test(l) || /\b(she|he)\s+(say|said|ask)\b/i.test(l));
+  if (dialogueBridge) {
+    p.push({ code: 'dialogue_bridge', label: 'the bridge is character dialogue', evidence: dialogueBridge });
+  }
+
+  // 11. An outro that CONFIRMS the relationship / resolves the scene (a reunion,
+  //     an appointment kept, a "dance with me" payoff). NOTE: the title/hook line
+  //     recurring in the outro is NORMAL for a hook record and is NOT this — only
+  //     narrative RESOLUTION counts.
+  const outro = sectionLines(body, /outro/i);
+  const explained = outro.find((l) => {
+    const low = l.toLowerCase();
+    return APPOINTMENT.test(low) || (DAYS.test(low) && CLOCK.test(low)) || /\bdance with me\b/.test(low);
+  });
+  if (outro.length && explained) {
+    p.push({ code: 'explained_outro', label: 'the outro confirms the relationship / explains the title', evidence: explained });
+  }
+
+  // 12. The same screenplay skeleton as previously-rejected songs.
+  const structural = ['screenplay_scene', 'dialogue_bridge', 'explained_outro'].filter((c) => p.some((x) => x.code === c)).length;
+  if (structural >= 2 || (p.some((x) => x.code === 'food_seller_romance') && p.some((x) => x.code === 'literal_object_title'))) {
+    p.push({ code: 'rejected_skeleton', label: 'the same skeleton as previously-rejected songs, nouns swapped', evidence: 'scene-open -> transaction/flirtation -> dialogue -> appointment -> explained outro' });
+  }
+
+  const count = p.length;
+  const decision = count >= 2 ? 'CATALOGUE_CONTAMINATION_DETECTED' : null;
+  const resembles =
+    p.some((x) => x.code === 'food_seller_romance' || x.code === 'literal_object_title')
+      ? 'Sip Am Bam / Mama Titi (food-vendor romance template)'
+      : structural >= 2
+        ? 'the catalogue screenplay template'
+        : count >= 2
+          ? 'a previously-rejected catalogue pattern'
+          : null;
+
+  const titleSalvageable = !!titleObject; // an object title can live IF re-based as a metaphor
+  const titleNote = titleObject
+    ? `Keep "${title}" ONLY as a metaphor (an emotion the object stands for), never the literal event that produced it.`
+    : `The title may be reusable once the concept is emotion-first.`;
+  const requiredEngine = romance
+    ? 'a human engine, e.g. dangerous/addictive attraction — the sweetness that keeps you returning even though you know it will hurt later. Emotion first, metaphor second, no vendor screenplay.'
+    : 'a human engine (a feeling, desire, conflict, or victory) that survives with every prop, name, place and local word removed.';
+
+  return { patterns: p, count, decision, resembles, titleSalvageable, titleNote, requiredEngine };
+}

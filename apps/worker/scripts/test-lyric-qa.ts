@@ -123,4 +123,37 @@ assert(!sg.ok && sg.blocks.some((b) => b.startsWith('catalogue_template_signatur
 // The clean lean record STILL passes all the new gates (no false positive).
 assert(good.ok && !good.blocks.length, 'clean lean record still passes the new stuffing/hook/template gates');
 
+// CATALOGUE CONTAMINATION — the "Pepper Kiss" failure (owner 2026-07-13): Mama
+// Titi with the nouns swapped. The writer adapted around the scenery/confession
+// gates (dialogue bridge, literal title, calendar dialogue, "gbam"). >=2 of the
+// 12 forbidden patterns => hard reject.
+const pepper = `[Hook]
+Pepper Kiss, e dey burn slow (gbam!)
+[Verse]
+Bimbo dey turn suya, pepper red for blade
+She wrap my suya, "pay your money, then dance with me"
+Her thumb wipe pepper from my lip
+[Bridge]
+(Bimbo: "You go come back?")
+Friday, Iyana, eight — I go dey there
+[Outro]
+She hand me suya, "Dance with me"`;
+const pk = lyricQaCheck({ title: 'Pepper Kiss', body: pepper, hookCell: 'pepper kiss', languageMix: { pcm: 0.8, en: 0.2 } });
+assert(!pk.ok && pk.blocks.some((b) => b.startsWith('catalogue_contamination_detected')), 'Pepper Kiss (food-seller/screenplay/gbam) blocked as catalogue contamination');
+assert((pk.contamination?.count ?? 0) >= 2, `contamination count >= 2 (got ${pk.contamination?.count})`);
+assert(pk.contamination?.decision === 'CATALOGUE_CONTAMINATION_DETECTED', 'decision is CATALOGUE_CONTAMINATION_DETECTED');
+
+// Emotion-first record must NOT false-trip the contamination gate.
+const cleanRec = `[Hook]
+No permission, I don move already
+No permission, you fit doubt, I no dey beg you
+[Verse]
+Dem talk say make I wait my turn
+I wait too long, now I burn
+[Verse]
+You go doubt, na your own
+But my mind don set like stone`;
+const cl = lyricQaCheck({ title: 'No Permission', body: cleanRec, hookCell: 'no permission', languageMix: { pcm: 0.85, en: 0.15 } });
+assert(cl.ok, `emotion-first record passes the contamination gate (blocks: ${cl.blocks.join('; ')})`);
+
 console.log(process.exitCode ? '\n❌ Lyric QA test FAILED' : '\n✅ Lyric QA test PASSED');

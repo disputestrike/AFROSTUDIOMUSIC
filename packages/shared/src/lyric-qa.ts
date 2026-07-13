@@ -13,6 +13,8 @@
  * of the catalogue (normalized bodies); everything else is self-contained.
  */
 
+import { detectCatalogueContamination, type ContaminationResult } from './contamination';
+
 /** Normalize a lyric body for duplicate comparison and word counting: strip
  *  [section headers] and (parentheticals/ad-libs), lowercase, drop punctuation,
  *  collapse whitespace. Stable — both sides of a dup check run through it. */
@@ -133,6 +135,9 @@ export interface LyricQaResult {
   bodyNorm: string;
   wordCount: number;
   duplicateOf?: string; // catalogue id of the exact/near match
+  /** The 12-pattern catalogue-contamination read (owner 2026-07-13). Present for
+   *  non-artist-authored lyrics; when decision is set it also raised a fatal block. */
+  contamination?: ContaminationResult;
 }
 
 /** Total content-word count and distinct-word count of a body. */
@@ -232,6 +237,22 @@ export function lyricQaCheck(input: LyricQaInput): LyricQaResult {
     }
   }
 
+  // 8. CATALOGUE CONTAMINATION (owner 2026-07-13, the "Pepper Kiss" report). The
+  //    writer ADAPTED around the scenery/confession gates above — fewer setting
+  //    nouns per line, a DIALOGUE bridge, a literal object title, calendar
+  //    dialogue, "gbam" filler, decorative Yoruba. This detects the owner's 12
+  //    forbidden catalogue patterns; TWO OR MORE is a HARD rejection. Our writer's
+  //    output only — the artist's own words are never "contaminated" by us.
+  let contamination: ContaminationResult | undefined;
+  if (!input.artistAuthored) {
+    contamination = detectCatalogueContamination({ title: input.title, body, languageMix: input.languageMix });
+    if (contamination.decision) {
+      blocks.push(
+        `catalogue_contamination_detected: ${contamination.count} patterns [${contamination.patterns.map((p) => p.code).join(', ')}] — resembles ${contamination.resembles}. ${contamination.decision}. Restart from emotion (${contamination.requiredEngine})`,
+      );
+    }
+  }
+
   // --- ADVISORY WARNINGS (craft — skipped for artist-authored) ---------------
   if (!input.artistAuthored) {
     // Over-length: the audit's median was 353 words; hook-led Afro should be leaner.
@@ -268,5 +289,5 @@ export function lyricQaCheck(input: LyricQaInput): LyricQaResult {
 
   const ok = blocks.length === 0;
   const band: LyricBand = !ok ? 'F' : warnings.length >= 3 ? 'C' : warnings.length >= 1 ? 'B' : 'A';
-  return { ok, blocks, warnings, band, bodyNorm, wordCount: total, duplicateOf };
+  return { ok, blocks, warnings, band, bodyNorm, wordCount: total, duplicateOf, contamination };
 }

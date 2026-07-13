@@ -45,7 +45,7 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 function prettyError(raw: string): string {
   if (/insufficient_credits|\b402\b/.test(raw)) return "Not enough credits — voice cloning is a paid step. Top up in Billing, then try again.";
-  if (/voice_training_not_configured|\b501\b/.test(raw)) return "Voice training isn't switched on for this studio yet — the operator needs to connect the Replicate voice trainer.";
+  if (/voice_training_not_configured|\b501\b/.test(raw)) return "Voice training isn't switched on for this studio yet — the operator needs to enable the voice trainer.";
   if (/no audio segments|under 1 second|record longer/.test(raw)) return "Those takes produced no usable audio — upload longer, clean solo-vocal takes.";
   if (/ffmpeg is not available/.test(raw)) return 'The studio worker is missing its audio tools right now — try again shortly.';
   const tail = raw.split(': ').slice(1).join(': ') || raw;

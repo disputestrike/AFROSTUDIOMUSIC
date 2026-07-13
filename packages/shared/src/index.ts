@@ -23,5 +23,6 @@ export * from './lyric-scorecard';
 export * from './melody-score';
 export * from './title-law';
 export * from './lyric-qa';
+export * from './contamination';
 export * from './song-state';
 export * from './concept-exemplars';

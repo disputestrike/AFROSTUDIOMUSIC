@@ -1,7 +1,7 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { prisma } from '@afrohit/db';
-import { generateLyricsInputSchema, GENRES, pickLawfulTitle } from '@afrohit/shared';
+import { generateLyricsInputSchema, GENRES, pickLawfulTitle, lyricQaCheck, normalizeLyricBody } from '@afrohit/shared';
 import { joinBriefs, prompts, generateJson } from '@afrohit/ai';
 import { laneDnaBrief } from '../lib/lane-pipeline';
 import { requireAuth } from '../middleware/auth';
@@ -100,20 +100,83 @@ export default async function lyrics(app: FastifyInstance) {
       }
 
       // GUARD: after 3 tries still empty → honest error (rare now).
-      const body = typeof output.body === 'string' ? output.body.trim() : '';
+      let body = typeof output.body === 'string' ? output.body.trim() : '';
       if (body.length < 20) return reply.code(503).send({ error: 'lyric_incomplete', message: 'The lyric came back empty after retries — try again.' });
+
+      // A&R HARD GATE (owner 2026-07-13, the "Pepper Kiss" report). The Create path
+      // shipped lyrics with NO gate — the exact hole that let a food-seller/
+      // screenplay/"gbam" record reach DEMO. Run the SAME catalogue QA the Studio-
+      // Chat writer runs (contamination detector included) and REJECT_AND_RESTART
+      // up to twice. A contaminated lyric must never save or flip the song to DEMO.
+      // TITLE LAW: gate the writer's title; on failure derive from the hook text.
+      let title = pickLawfulTitle([typeof output.title === 'string' ? output.title.trim() : ''], hook.text);
+      let langMix = output.languageMix as Record<string, number> | undefined;
+      const catRows = await prisma.song.findMany({
+        where: { workspaceId, quarantined: false, lyric: { isNot: null }, ...(hook.songId ? { NOT: { id: hook.songId } } : {}) },
+        select: { id: true, title: true, lyric: { select: { body: true } } },
+        take: 300,
+        orderBy: { createdAt: 'desc' },
+      });
+      const catalogue = catRows.map((s: { id: string; title: string; lyric: { body: string } | null }) => ({ id: s.id, title: s.title, bodyNorm: normalizeLyricBody(s.lyric?.body ?? '') }));
+      let qa = lyricQaCheck({ title, body, hookCell: hook.text, languageMix: langMix, catalogue });
+      for (let fixp = 0; !qa.ok && fixp < 2; fixp++) {
+        const rewrite = await generateJson<LyricOut>({
+          tier: 'judgment',
+          task: 'lyric-qa-fix',
+          system: prompts.LYRIC_SYSTEM,
+          user: JSON.stringify({
+            REWRITE_REASON: 'Your previous lyric was REJECTED by the A&R gate. Rewrite from the EMOTION, fixing EVERY failure below. Keep the hook feeling and the language; make it leaner and less descriptive.',
+            QA_FAILURES_MUST_FIX: qa.blocks,
+            CONTAMINATION: qa.contamination?.decision
+              ? { patterns: qa.contamination.patterns.map((cp) => cp.label), resembles: qa.contamination.resembles, restart_from: qa.contamination.requiredEngine }
+              : undefined,
+            AVOID: 'No food-seller/vendor scene. No random character names. No "gbam"/"boom" impact filler. No dialogue bridge. No calendar/appointment dialogue. No Yoruba/Igbo used as decoration. The title must be a metaphor, never the literal result of an event.',
+            hook: hook.text,
+            languages: reqLangs,
+          }),
+          temperature: 0.7,
+          maxTokens: 4_000,
+          timeoutMs: 90_000,
+          model: process.env.WRITER_MODEL,
+        }).catch(() => null);
+        if (!rewrite?.body || rewrite.body.trim().length < 20) break;
+        body = rewrite.body.trim();
+        title = pickLawfulTitle([typeof rewrite.title === 'string' ? rewrite.title.trim() : ''], hook.text);
+        langMix = (rewrite.languageMix as Record<string, number>) ?? langMix;
+        qa = lyricQaCheck({ title, body, hookCell: hook.text, languageMix: langMix, catalogue });
+      }
+      if (!qa.ok) {
+        // A rejection is a successful output (owner doctrine). Refund the charge —
+        // no usable lyric shipped — and do NOT save or flip the song to DEMO.
+        await app.refundCredits({ workspaceId, key: 'lyrics_full', refTable: 'Hook', refId: hook.id }).catch(() => {});
+        reply.code(200);
+        return {
+          rejected: true,
+          decision: qa.contamination?.decision ?? 'REJECT_AND_RESTART',
+          reason: qa.blocks,
+          contamination: qa.contamination?.decision
+            ? {
+                patterns: qa.contamination.patterns.map((cp) => ({ code: cp.code, label: cp.label, evidence: cp.evidence })),
+                resembles: qa.contamination.resembles,
+                titleSalvageable: qa.contamination.titleSalvageable,
+                titleNote: qa.contamination.titleNote,
+                requiredEngine: qa.contamination.requiredEngine,
+              }
+            : undefined,
+          note: 'This came back as scenery/screenplay, not a record. Restart from the emotion — a rejection is the correct output here.',
+        };
+      }
+
       // songId is @unique on LyricDraft — upsert so re-generating a song's lyric
       // updates it instead of hitting the unique constraint.
       const lyricData = {
         projectId: project.id,
-        // TITLE LAW: gate the writer's title; on failure derive 1-3 content
-        // words from the hook text.
-        title: pickLawfulTitle([typeof output.title === 'string' ? output.title.trim() : ''], hook.text),
+        title,
         body,
         cleanVersion: output.cleanVersion,
         explicit: output.explicit ?? false,
         structure: output.structure as never,
-        languageMix: output.languageMix as never,
+        languageMix: (langMix ?? output.languageMix) as never,
         approved: false,
       };
       const lyric = hook.songId
