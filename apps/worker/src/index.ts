@@ -16,6 +16,7 @@ import { processVoice } from './processors/voice';
 import { processVoiceProfile } from './processors/voice-profile';
 import { processVoiceDataset } from './processors/voice-dataset';
 import { processSingConvert } from './processors/voice-sing';
+import { processVoiceRehost } from './processors/voice-rehost';
 import { processImage } from './processors/image';
 import { processVideo } from './processors/video';
 import { processMix } from './processors/mix';
@@ -116,6 +117,7 @@ const workers = [
   makeWorker('voice', async (job: { data: never; name: string }) => {
     if (job.name === 'setup-voice-profile') await processVoiceProfile(job.data as never);
     else if (job.name === 'sing-convert') await processSingConvert(job.data as never);
+    else if (job.name === 'rehost-voice-model') await processVoiceRehost(job.data as never);
     else await processVoice(job.data as never);
   }),
   makeWorker('image', async (job: { data: never }) => {

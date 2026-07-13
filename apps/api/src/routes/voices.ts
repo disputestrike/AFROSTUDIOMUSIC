@@ -324,6 +324,17 @@ export default async function voices(app: FastifyInstance) {
           trainingMeta: { ...meta, output: state.output ?? null, finishedAt: new Date().toISOString() } as never,
         },
       });
+      // DURABILITY (audit 2026-07-13): the trained model file arrives as an
+      // EPHEMERAL replicate.delivery URL — re-host it to OWNED storage so the
+      // voice can still /sing after the provider link expires. Fire on the worker
+      // (streams a 100-500MB weights file; never blocks this poll).
+      if (typeof trainedVersion === 'string' && /replicate\.delivery|\.blob\.core\.windows|fal\.media/i.test(trainedVersion)) {
+        await enqueue({
+          queue: app.queues.voice,
+          name: 'rehost-voice-model',
+          payload: { workspaceId, voiceProfileId: profile.id, modelUrl: trainedVersion },
+        }).catch(() => {});
+      }
       return {
         profileId: updated.id,
         status: updated.status,
@@ -362,6 +373,26 @@ export default async function voices(app: FastifyInstance) {
       replicateStatus: state.status,
       meta: profile.trainingMeta,
     };
+  });
+
+  /**
+   * RE-HOST the trained model to durable storage (durability audit 2026-07-13).
+   * Backfill for voices trained before the fix, whose trainedVersion is still an
+   * ephemeral provider URL — without this they stop being able to /sing once the
+   * link expires. Idempotent; the worker streams the weights and repoints
+   * trainedVersion at the owned URL. Workspace-scoped — your own models only.
+   */
+  app.post<{ Params: { voiceId: string } }>('/:voiceId/rehost', async (req, reply) => {
+    const { workspaceId } = requireAuth(req);
+    const profile = await prisma.voiceProfile.findFirstOrThrow({ where: { id: req.params.voiceId, workspaceId } });
+    const url = trainedModelUrl(profile);
+    if (!url) return reply.code(400).send({ error: 'no_model_url', note: 'This profile has no downloadable trained-model URL to re-host.' });
+    if (!/replicate\.delivery|\.blob\.core\.windows|fal\.media/i.test(url)) {
+      return reply.code(200).send({ ok: true, alreadyDurable: true, note: 'Model is already on owned storage — nothing to re-host.' });
+    }
+    await enqueue({ queue: app.queues.voice, name: 'rehost-voice-model', payload: { workspaceId, voiceProfileId: profile.id, modelUrl: url } });
+    reply.code(202);
+    return { ok: true, note: 'Re-hosting the trained model to durable storage — poll GET /voices to watch trainedVersion flip to an owned URL.' };
   });
 
   /**
