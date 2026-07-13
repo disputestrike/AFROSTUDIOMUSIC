@@ -14,7 +14,7 @@
 import { prisma } from '@afrohit/db';
 import {
   produceBeatDna, reviewLanguage, produceVocal, scoreForAR, titleTooClose,
-  generateJson, prompts,
+  directConcept, generateJson, prompts, type ConceptResult,
 } from '@afrohit/ai';
 import {
   composeMelody, lyricQaCheck, normalizeLyricBody, pickLawfulTitle,
@@ -66,22 +66,19 @@ async function cataloguePrecheck(workspaceId: string): Promise<CatalogueSimilari
   };
 }
 
-async function buildBrief(p: ProducePayload, sim: CatalogueSimilarity): Promise<CreativeBrief> {
+/** The brief is now built FROM the approved emotion-first concept (no separate
+ *  LLM call — the Concept Director already did the human-engine work). */
+function buildBrief(p: ProducePayload, sim: CatalogueSimilarity, concept: ConceptResult): CreativeBrief {
   const bpm = p.bpm ?? 104;
-  const raw = await generateJson<{ primaryEmotion?: string; listenerMoment?: string; artistIdentity?: string; corePremise?: string; tension?: string; borrowedQualities?: string[]; lyricMode?: string }>({
-    tier: 'bulk', task: 'exec-producer-brief', system: BRIEF_SYSTEM,
-    user: JSON.stringify({ idea: p.theme, genre: p.genre, mood: p.mood, bpm, forbidden: sim.forbiddenVocab.slice(0, 12) }), maxTokens: 700,
-  }).catch(() => ({} as Record<string, never>));
-  const mode = (LYRIC_MODES.includes(raw.lyricMode as LyricMode) ? raw.lyricMode : 'chant') as LyricMode;
   return {
-    primaryEmotion: raw.primaryEmotion?.trim() || p.mood || 'confident',
-    listenerMoment: raw.listenerMoment?.trim() || 'the floor',
-    artistIdentity: raw.artistIdentity?.trim() || 'a Nigerian Afro-fusion artist',
+    primaryEmotion: concept.humanEngine,
+    listenerMoment: concept.lyricMode === 'chant' ? 'the floor' : 'headphones',
+    artistIdentity: concept.artistIdentity,
     genre: p.genre, fusion: p.fusion, tempoRange: [bpm - 4, bpm + 4],
-    corePremise: raw.corePremise?.trim() || p.theme.slice(0, 160),
-    tension: raw.tension?.trim() || undefined,
-    borrowedQualities: Array.isArray(raw.borrowedQualities) ? raw.borrowedQualities.slice(0, 3) : [],
-    forbidden: sim.forbiddenVocab.slice(0, 8), lyricMode: mode,
+    corePremise: concept.humanEngine,
+    tension: undefined,
+    borrowedQualities: [],
+    forbidden: sim.forbiddenVocab.slice(0, 8), lyricMode: concept.lyricMode,
   };
 }
 
@@ -122,11 +119,25 @@ export async function processProduce(p: ProducePayload): Promise<void> {
   try {
     let state: SongState = newSongState(p.songId);
 
-    // Stage 0-1.
+    // Stage 0 — catalogue precheck.
     const sim = await cataloguePrecheck(p.workspaceId);
     state = advanceState(state, { catalogueSimilarity: sim }, { stage: 'catalogue_precheck', by: 'executive-producer', changed: 'forbidden list', why: sim.note });
-    const brief = await buildBrief(p, sim);
-    state = advanceState(state, { brief }, { stage: 'creative_brief', by: 'executive-producer', changed: `mode=${brief.lyricMode}`, why: brief.primaryEmotion });
+
+    // Stage 0.5 — HIT CONCEPT & ARTIST IDENTITY GATE (owner directive 2026-07-13:
+    // the danfo/pepper-soup/"gbe body" failures were UPSTREAM of the lyricist —
+    // scenery-first premises, not feelings). Kill a scenery-dependent concept
+    // BEFORE any production, before a single credit is spent on a beat or melody.
+    const concept = await directConcept({ idea: p.theme, genre: p.genre, mood: p.mood });
+    if (!concept.approved) {
+      state = advanceState(state, { decision: 'REJECT_CONCEPT_SCENERY_DEPENDENT' }, { stage: 'creative_brief', by: 'concept-director', changed: `concept "${concept.title}" REJECTED`, why: concept.reason });
+      await prisma.song.update({ where: { id: p.songId }, data: { title: concept.title || 'Rejected concept', quarantined: true, quarantineReason: concept.reason, proofPack: state as never } }).catch(() => {});
+      await markSucceeded(p.jobId, { decision: 'REJECT_CONCEPT_SCENERY_DEPENDENT', songId: p.songId, reason: concept.reason }, 0.02);
+      return;
+    }
+
+    // Stage 1 — brief, built FROM the approved emotion-first concept.
+    const brief = buildBrief(p, sim, concept);
+    state = advanceState(state, { brief }, { stage: 'creative_brief', by: 'concept-director', changed: `"${concept.title}" | mode=${brief.lyricMode} | emo ${concept.scores.emotionalPower}/hook ${concept.scores.hookPotential}`, why: concept.humanEngine });
 
     // Stage 2 — Music Producer.
     const { beatDna, arrangement } = await produceBeatDna({ brief, similarity: sim });
@@ -158,7 +169,7 @@ export async function processProduce(p: ProducePayload): Promise<void> {
     } catch (e) {
       state = advanceState(state, { toplineProof: proof }, { stage: 'topline', by: 'topline-composer', why: `topline render failed: ${(e as Error).message.slice(0, 120)}` });
     }
-    const hookCell = await makeHookCell(brief);
+    const hookCell = concept.hookCell; // the Concept Director already chose the chantable spine
     state = advanceState(state, {
       toplineProof: proof,
       selectedTopline: { candidateId: 'topline-1', hookCell, melodyRhythmMap: mrm, reason: `Melody Brain composed; hook cell "${hookCell}" rendered to audio guides.` },

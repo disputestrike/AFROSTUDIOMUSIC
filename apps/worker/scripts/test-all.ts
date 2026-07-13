@@ -87,6 +87,7 @@ const TS: Array<[string, string]> = [
   ['Catalogue QA (blocks the garbage)', 'test-lyric-qa.ts'],
   ['SONG_STATE (no AI "mastered")', 'test-song-state.ts'],
   ['Night law (bulk run never bills Claude)', 'test-night-law.ts'],
+  ['Hit concept gate (emotion, not scenery)', 'test-concept-gate.ts'],
 ];
 for (const [name, file] of TS) {
   if (!existsSync(join(scripts, file))) { results.push({ name, status: 'SKIP', note: 'script missing', required: false }); continue; }

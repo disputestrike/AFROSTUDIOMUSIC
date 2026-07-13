@@ -77,7 +77,7 @@ const PRODUCTION_IN_LYRIC: Array<[RegExp, string]> = [
 // Environment / setting / cultural-object nouns. The audit's #1 authenticity
 // failure: the writer stuffs these into every line to manufacture "Nigerian-ness"
 // instead of earning it. A record is not an inventory of its surroundings.
-const ENVIRONMENT_NOUNS = new Set([
+export const ENVIRONMENT_NOUNS = new Set([
   'streetlight', 'generator', 'nepa', 'danfo', 'keke', 'okada', 'bus', 'busstop', 'stop', 'conductor', 'garage', 'motor',
   'road', 'junction', 'park', 'town', 'city',
   'market', 'corner', 'gutter', 'compound', 'gate', 'shop', 'stall', 'counter', 'kiosk', 'mama',

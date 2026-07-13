@@ -35,6 +35,7 @@ export const PRODUCER_STAGES: ProducerStage[] = [
 /** The ONLY verdicts an AI agent may reach — never "mastered"/"release-ready"/"10/10". */
 export type ProducerDecision =
   | 'IN_PROGRESS'
+  | 'REJECT_CONCEPT_SCENERY_DEPENDENT' // the concept was props, not a feeling — killed before production
   | 'TOPLINE_NOT_PROVEN' // the topline has no audio artifacts — the songwriter is BLOCKED
   | 'REJECT_AND_RESTART'
   | 'REVISE_FROM_STAGE_X'

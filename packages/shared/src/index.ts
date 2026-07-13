@@ -24,3 +24,4 @@ export * from './melody-score';
 export * from './title-law';
 export * from './lyric-qa';
 export * from './song-state';
+export * from './concept-exemplars';
