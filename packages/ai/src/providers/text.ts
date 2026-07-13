@@ -193,7 +193,7 @@ function stubHooks(userJson: string): { hooks: Array<Record<string, unknown>> } 
     const u = JSON.parse(userJson) as { task?: string };
     const m = /generate (\d+) hooks/.exec(u.task ?? '');
     if (m) count = Math.min(50, Math.max(1, Number(m[1])));
-  } catch {}
+  } catch { /* Invalid stub input uses the default count. */ }
   const hooks = Array.from({ length: count }, (_, i) => ({
     text: `Omo see as you sweet for my eye (line ${i + 1})\nShey you go let me love you tonight?`,
     language: ['pcm', 'yo'],
@@ -231,7 +231,7 @@ function stubTaste(userJson: string): { scores: Array<Record<string, unknown>> }
   try {
     const u = JSON.parse(userJson) as { items?: Array<{ id: string; text: string; kind: string }> };
     items = u.items ?? [];
-  } catch {}
+  } catch { /* Invalid stub input produces an empty score list. */ }
   const scores = items.map((it, i) => ({
     id: it.id,
     dimensions: {

@@ -409,7 +409,7 @@ export default function CatalogGrid({ initial }: { initial: SongRow[] }) {
             <button onClick={(e) => { e.preventDefault(); e.stopPropagation(); setChatFor(chatFor === s.id ? null : s.id); }} title="Talk to this song" className="absolute left-2 top-2 z-10 rounded-full bg-gradient-to-r from-orange-500 to-pink-500 px-2.5 py-1 text-[11px] font-semibold text-white shadow-lg">💬 Talk</button>
             <div className="aspect-square w-full bg-slate-800">
               {s.coverUrl ? (
-                // eslint-disable-next-line @next/next/no-img-element
+
                 <img src={s.coverUrl} alt={s.title} loading="lazy" decoding="async" className="h-full w-full object-cover" />
               ) : (
                 <div className="flex h-full items-center justify-center font-display text-5xl text-slate-700">♪</div>

@@ -182,7 +182,7 @@ function HookList({ hooks, projectId, onAction }: { hooks: HookItem[]; projectId
     } catch { /* keep the old text */ } finally { setEditId(null); setBusy(''); }
   }
 
-  async function useHook(h: HookItem) {
+  async function selectHook(h: HookItem) {
     setBusy(`${h.id}:use`);
     try {
       if (projectId) await api.post(`/projects/${projectId}/hooks/${h.id}/approve`, {});
@@ -240,7 +240,7 @@ function HookList({ hooks, projectId, onAction }: { hooks: HookItem[]; projectId
                     <Pencil className="mr-0.5 inline h-3 w-3" />Edit
                   </button>
                   <button
-                    onClick={() => void useHook(h)}
+                    onClick={() => void selectHook(h)}
                     disabled={busy === `${h.id}:use` || usedId === h.id}
                     className="rounded-full border border-afrobrand-500/40 bg-afrobrand-500/10 px-2.5 py-0.5 text-xs text-afrobrand-300 hover:bg-afrobrand-500/20 disabled:opacity-50"
                   >

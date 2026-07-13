@@ -130,7 +130,7 @@ export default function CreatePage() {
     }
     setPhase('producing'); setStepIdx(saved.renderJobId ? 3 : 1);
     void (async () => {
-      let dropJobId = saved!.dropJobId; let renderJobId = saved!.renderJobId; let projectId = saved!.projectId;
+      const dropJobId = saved!.dropJobId; let renderJobId = saved!.renderJobId; let projectId = saved!.projectId;
       let hook = saved!.hook ?? ''; let score = saved!.score ?? null; let title = saved!.title ?? 'Your song';
       try {
         for (let i = 0; i < 200; i++) {
@@ -166,7 +166,7 @@ export default function CreatePage() {
         setPhase('finishing'); clearProduce();
       } catch { setSong({ title: 'Your song', score: null, url: '', projectId: '' }); setPhase('finishing'); clearProduce(); }
     })();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+
   }, []);
   // MULTI-GENRE: first pick = the backbone; a second pick FUSES into it.
   const [genres, setGenres] = useState<string[]>(['afrobeats']);
@@ -264,7 +264,7 @@ export default function CreatePage() {
       setAutoProduce(false);
       void createSong();
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+
   }, [autoProduce]);
 
   // SALIENCE: the software knows each lane's natural tempo and tongue — picking a
@@ -278,7 +278,7 @@ export default function CreatePage() {
       const cand = [...new Set(sigs.flatMap((x) => x.languages))].filter((l) => LANGS.some((x) => x.value === l));
       if (cand.length) setLangs(cand);
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+
   }, [genres]);
 
   const toggleLang = (l: string) => { langsTouched.current = true; setLangs((p) => (p.includes(l) ? p.filter((x) => x !== l) : [...p, l])); };
@@ -318,7 +318,7 @@ export default function CreatePage() {
         ? ` In the VIBE/LANE of ${influence.trim()} (capture that energy, tempo and production feel — never copy their melodies/lyrics and never name them in the song).`
         : '';
       const fusionLine = fusion.length ? ` This is a GENRE FUSION: ${genreLabel} — both identities must be clearly audible, something new, never mush.` : '';
-      const theme = `${songName.trim() ? (singName ? `SONG TITLE (CREATIVE ANCHOR): \"${songName.trim()}\" — the HOOK must SING this name (or a natural in-language variant) as its centerpiece; verses orbit its meaning; if the vibe conflicts with the name inside the hook, the NAME wins. The lyric title uses it exactly. ` : `SONG TITLE (LABEL ONLY): \"${songName.trim()}\" — use it as the title exactly, but do NOT force the phrase into the lyrics. `) : ''}${genreLabel} ${mood} song, ${bpm}bpm, ${langNames}${vibe ? `, ${vibe.trim()}` : ''}. Make it catchy and current.${fusionLine}${influenceLine}`;
+      const theme = `${songName.trim() ? (singName ? `SONG TITLE (CREATIVE ANCHOR): "${songName.trim()}" — the HOOK must SING this name (or a natural in-language variant) as its centerpiece; verses orbit its meaning; if the vibe conflicts with the name inside the hook, the NAME wins. The lyric title uses it exactly. ` : `SONG TITLE (LABEL ONLY): "${songName.trim()}" — use it as the title exactly, but do NOT force the phrase into the lyrics. `) : ''}${genreLabel} ${mood} song, ${bpm}bpm, ${langNames}${vibe ? `, ${vibe.trim()}` : ''}. Make it catchy and current.${fusionLine}${influenceLine}`;
       // Fire the Drop Machine — it replies 202 + a job id INSTANTLY and works in
       // the background (holding a 3-minute HTTP request open dies on real
       // networks). We poll the drop job for the hook/lyrics result…

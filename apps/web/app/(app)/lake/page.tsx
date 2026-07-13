@@ -69,7 +69,7 @@ function Utilization() {
     api.get<{ rows: UtilRow[]; note: string }>('/taste/utilization')
       .then((d) => { setRows(d.rows); setNote(d.note); })
       .catch((e) => setUErr((e as Error).message.slice(0, 140)));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+
   }, []);
 
   if (uErr) return <div className="mt-6 rounded-2xl glass p-4 text-xs text-red-300">Training utilization unavailable: {uErr}</div>;
@@ -185,7 +185,7 @@ export default function LakePage() {
     } catch (e) {
       setErr((e as Error).message.slice(0, 160));
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+
   }, []);
 
   useEffect(() => { void load(); }, [load]);

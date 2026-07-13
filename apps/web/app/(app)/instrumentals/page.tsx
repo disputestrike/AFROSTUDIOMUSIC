@@ -41,7 +41,7 @@ export default function InstrumentalsPage() {
   }
   useEffect(() => {
     void load();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+
   }, []);
 
   async function reuse(id: string) {

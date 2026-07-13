@@ -267,7 +267,7 @@ function AutonomyCard() {
       setErr(`couldn't load autonomy: ${m.slice(0, 120)}${/^40[13]\b/.test(m) ? ' — set the admin key above first' : ''}`);
     }
   }
-  useEffect(() => { void load(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, []);
+  useEffect(() => { void load();   }, []);
 
   async function toggle(job: string, enabled: boolean) {
     setBusy(job);
@@ -374,7 +374,7 @@ function RefileReview() {
       setRows(r.proposals);
     } catch { /* admin key missing/invalid — the page-level prompt handles it */ }
   }
-  useEffect(() => { void load(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { void load(); }, []);
 
   async function act(id: string, action: 'approve' | 'reject', lane?: string) {
     setBusy(id);
@@ -456,7 +456,7 @@ function RefileReview() {
 function EngineStatus() {
   const api = useApi();
   const [d, setD] = useState<Record<string, unknown> | null>(null);
-  useEffect(() => { api.get<Record<string, unknown>>('/admin/engines').then(setD).catch(() => {}); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { api.get<Record<string, unknown>>('/admin/engines').then(setD).catch(() => {}); }, []);
   if (!d) return null;
   const resolved = (d.resolved ?? {}) as Record<string, unknown>;
   const routing = (d.renderRouting ?? {}) as { adapters?: Record<string, string> };

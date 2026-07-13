@@ -8,7 +8,7 @@
  */
 import {
   buildLaneProfile, describeLaneProfile,
-  measured, inferred, unknownField, unknownAnalysis,
+  measured, inferred, unknownAnalysis,
   type MeasuredAnalysis,
 } from '@afrohit/shared';
 
@@ -60,7 +60,7 @@ assert(!p.features.logDrumLikelihood, 'inferred logDrumLikelihood is NOT profile
 assert(p.unprofiled.some((u) => u.startsWith('logDrumLikelihood')), 'logDrumLikelihood listed in unprofiled');
 
 // Now flip log-drum to MEASURED (as calibration would) and confirm it profiles.
-const calibrated = refs.map((_, i) => amapianoRef(112, 52, 0.41, 13, 'measured'));
+const calibrated = refs.map(() => amapianoRef(112, 52, 0.41, 13, 'measured'));
 const p2 = buildLaneProfile('amapiano', 'genre', calibrated, { minRefs: 3 });
 assert(!!p2.features.logDrumLikelihood?.numeric, 'measured logDrumLikelihood IS profiled after calibration');
 

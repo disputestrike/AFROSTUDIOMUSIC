@@ -1,5 +1,5 @@
 import type { FastifyInstance } from 'fastify';
-import { anthropicPing, openaiPing, tavilyKey, braveKey, tavilyPing, researchTrends, prompts, joinBriefs, claudeRaw, getLastStudioChatClaudeError, cerebrasHealth } from '@afrohit/ai';
+import { anthropicPing, openaiPing, tavilyKey, braveKey, tavilyPing, researchTrends, prompts, claudeRaw, getLastStudioChatClaudeError, cerebrasHealth } from '@afrohit/ai';
 import { recommendEngine } from '@afrohit/shared';
 import { laneDnaBrief } from '../lib/lane-pipeline';
 import { requireAuth } from '../middleware/auth';

@@ -36,7 +36,7 @@ export function TrainingSession({ projectId }: { projectId: string }) {
   const chunkNoRef = useRef(0);
   const tickRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  useEffect(() => () => stop(), []); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => () => stop(), []);
 
   function setChunk(n: number, patch: Partial<ChunkRow>) {
     setChunks((c) => c.map((x) => (x.n === n ? { ...x, ...patch } : x)));

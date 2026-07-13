@@ -126,7 +126,7 @@ function parseJsonLoose<T>(raw: string): T {
       let candidate = src.slice(0, lastGood + 1).replace(/,\s*$/, '');
       // Close whatever is still open, innermost-first.
       const open: string[] = [];
-      let s2 = false, e2 = false, d = 0;
+      let s2 = false, e2 = false;
       for (let i = 0; i < candidate.length; i++) {
         const c = candidate[i]!;
         if (s2) { if (e2) e2 = false; else if (c === '\\') e2 = true; else if (c === '"') s2 = false; continue; }
@@ -134,7 +134,6 @@ function parseJsonLoose<T>(raw: string): T {
         else if (c === '{') open.push('}');
         else if (c === '[') open.push(']');
         else if (c === '}' || c === ']') open.pop();
-        void d;
       }
       candidate += open.reverse().join('');
       return JSON.parse(candidate) as T;

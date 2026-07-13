@@ -203,7 +203,7 @@ export default async function zap(app: FastifyInstance) {
   /** RADAR NOW — run Zap on its own, on demand: pull the charts and learn the
    * craft of new trending songs into the lake. Same thing the daily cron does; this
    * lets the artist top up the lake instantly (capped). Keyless (Apple charts). */
-  app.post('/radar', async (req, reply) => {
+  app.post('/radar', async (req) => {
     const { workspaceId } = requireAuth(req);
     const GENRES = ['afrobeats', 'amapiano', 'afro_fusion', 'afro_pop', 'street_pop'];
     const MAX = 6;

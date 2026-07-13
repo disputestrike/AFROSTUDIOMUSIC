@@ -40,11 +40,11 @@ export default function LexiconPage() {
     } catch (e) {
       setErr((e as Error).message.slice(0, 160));
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+
   }, [q, lang, cat]);
 
   useEffect(() => { void load(); }, [load]);
-  useEffect(() => { api.get<Stats>('/lexicon/stats').then(setStats).catch(() => {}); /* eslint-disable-next-line */ }, []);
+  useEffect(() => { api.get<Stats>('/lexicon/stats').then(setStats).catch(() => {});   }, []);
 
   async function add() {
     if (draft.term.trim().length < 1 || adding) return;

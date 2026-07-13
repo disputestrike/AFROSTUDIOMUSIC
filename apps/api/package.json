@@ -16,7 +16,6 @@
     "@afrohit/shared": "workspace:*",
     "@fastify/cors": "^10.0.1",
     "@fastify/helmet": "^12.0.1",
-    "@fastify/jwt": "^9.0.1",
     "@fastify/rate-limit": "^10.1.1",
     "@fastify/sensible": "^6.0.1",
     "@fastify/swagger": "^9.4.0",

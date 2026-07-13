@@ -15,7 +15,7 @@ import { readFile, unlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { prisma } from '@afrohit/db';
-import { getGenreKit, synthKitFor, type GenreKit } from '@afrohit/shared';
+import { getGenreKit, synthKitFor } from '@afrohit/shared';
 import { uploadBytes } from '../lib/storage';
 
 const PYTHON = process.env.PYTHON_BIN || 'python3';
@@ -25,7 +25,7 @@ const SCRIPT = join(__dirname, '..', '..', 'py', 'synth_material.py');
 export interface SynthMaterialPayload { workspaceId: string; genre: string; bpm?: number; keySignature?: string; roles?: string[] }
 
 /** Fallback home key per genre family (only used when none is supplied). */
-function defaultKey(genre: string, kit?: GenreKit): string {
+function defaultKey(genre: string): string {
   if (/gospel|highlife|afro_pop|soukous|juju|country|reggae/.test(genre)) return 'C major';
   if (/house|afro_house|edm/.test(genre)) return 'A minor';
   return 'A minor';
@@ -45,7 +45,7 @@ function runSynth(role: string, bpm: number, out: string, genre: string, key: st
 export async function processSynthMaterial(p: SynthMaterialPayload): Promise<void> {
   const kit = getGenreKit(p.genre);
   const bpm = p.bpm ?? kit?.typicalBpm ?? 112;
-  const key = p.keySignature || defaultKey(p.genre, kit);
+  const key = p.keySignature || defaultKey(p.genre);
   const fourOnFloor = !!kit?.fourOnFloor;
   const roles = p.roles?.length ? p.roles : synthKitFor(p.genre);
   for (const role of roles) {

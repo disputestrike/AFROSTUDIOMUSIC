@@ -24,7 +24,7 @@ async function fetchWithRetry(url: string, init: RequestInit): Promise<Response>
   for (let attempt = 0; ; attempt++) {
     try {
       return await fetch(url, init);
-    } catch (err) {
+    } catch {
       if (attempt >= delays.length) {
         // Raw "Failed to fetch" reads like the APP is broken — say what actually
         // happened after ~30s of genuine retries.

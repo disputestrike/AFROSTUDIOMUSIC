@@ -13,7 +13,7 @@ export default async function rights(app: FastifyInstance) {
   app.post(
     '/check',
     { schema: { body: rightsCheckInputSchema } },
-    async (req, reply) => {
+    async (req) => {
       const { workspaceId } = requireAuth(req);
       const { projectId, songId } = rightsCheckInputSchema.parse(req.body);
 

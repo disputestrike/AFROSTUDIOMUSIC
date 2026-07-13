@@ -71,20 +71,13 @@ export const creditsPlugin = fp(async function (app) {
     // Internal single-owner mode: the operator pays provider costs directly via
     // their own API keys — no internal credit wall. WO-1 SAFETY RAIL: spend is
     // CAPPED BY DEFAULT (daily + monthly) so a runaway loop can never exceed it
-    // — the API is publicly reachable and best-of-N multiplies renders. Override
-    // via MAX_DAILY_GENERATIONS / MAX_MONTHLY_GENERATIONS (0 = explicit opt-out).
+    // — the API may be publicly reachable and best-of-N multiplies renders.
+    // Enforcement is ON by default; ENFORCE_GENERATION_CAP=0 is the explicit
+    // local-only opt-out.
     if (isInternalMode()) {
-      // TESTING PHASE (owner directive 2026-07-11): the daily/monthly generation
-      // cap is a runaway-loop safety rail for PUBLIC launch. During solo testing
-      // it only gets in the way — and a STALE Railway MAX_DAILY_GENERATIONS value
-      // would silently override any code default, which is why "didn't we fix
-      // this" kept coming back. So the cap is now OFF by default and only enforced
-      // when explicitly opted in with ENFORCE_GENERATION_CAP=1. No env value can
-      // block the owner unless the owner turns enforcement on. Re-enable (set the
-      // flag) before going public.
-      if (process.env.ENFORCE_GENERATION_CAP === '1') {
-        const daily = Number(process.env.MAX_DAILY_GENERATIONS ?? 1000);
-        const monthly = Number(process.env.MAX_MONTHLY_GENERATIONS ?? 20000);
+      if (process.env.ENFORCE_GENERATION_CAP !== '0') {
+        const daily = Number(process.env.MAX_DAILY_GENERATIONS ?? 100);
+        const monthly = Number(process.env.MAX_MONTHLY_GENERATIONS ?? 2000);
         if (daily > 0) {
           const since = new Date();
           since.setUTCHours(0, 0, 0, 0);

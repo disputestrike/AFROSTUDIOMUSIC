@@ -38,7 +38,7 @@ export function DropMachine({ projectId, initialTheme = '' }: { projectId: strin
     sectionRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
     void run(1);
     router.replace(`/projects/${projectId}`);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+
   }, []);
 
   async function run(overrideCount?: number) {

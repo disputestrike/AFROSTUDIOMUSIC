@@ -270,7 +270,6 @@ export function ReferenceListen({ projectId }: { projectId: string }) {
       );
       let item: { jobId?: string; error?: string } | undefined;
       let dropErr: string | undefined;
-      let lastStatus = 'RUNNING';
       let netFails = 0;
       // The writer now drafts + runs a full critic-polish pass + arranges vocals
       // BEFORE the render is queued — a real record takes minutes. Wait up to ~11
@@ -281,7 +280,6 @@ export function ReferenceListen({ projectId }: { projectId: string }) {
         let j: { status: string; outputJson?: { drop?: Array<typeof item>; error?: string } };
         try { j = await api.get(`/jobs/${started.jobId}`); netFails = 0; }
         catch { if (++netFails >= 24) break; continue; }
-        lastStatus = j.status;
         // Read the TOP-LEVEL reason too: when no take rendered, the drop carries
         // WHY (brain down, no hooks) there — not on a per-take item.
         if (j.status === 'SUCCEEDED') { item = j.outputJson?.drop?.[0]; dropErr = j.outputJson?.error; break; }

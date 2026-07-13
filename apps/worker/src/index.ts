@@ -186,7 +186,11 @@ async function registerCron() {
   log.info('cron registered: zap-radar 03:00 UTC, morning-drop 05:00 UTC, release-radar Mon 07:00 UTC');
 }
 
-registerCron().catch((err) => log.error({ err }, 'cron registration failed'));
+if (process.env.ENABLE_AUTONOMY_CRON === '1') {
+  registerCron().catch((err) => log.error({ err }, 'cron registration failed'));
+} else {
+  log.warn('autonomy cron disabled; set ENABLE_AUTONOMY_CRON=1 and enable each admin autonomy flag to schedule background work');
+}
 
 /**
  * Graceful shutdown with a bounded drain. close() waits for active jobs, but

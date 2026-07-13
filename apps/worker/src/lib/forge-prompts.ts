@@ -85,7 +85,7 @@ const DESCRIPTORS: Partial<Record<MaterialRole, (g: string, b: number, k?: strin
   // --- fx / transitions ---
   riser: (g, b) => `solo riser FX, ${b} bpm — tension-building white-noise and pitch riser sweeping up into a drop; FX only, one riser, ${ISO}`,
   downlifter: (g, b) => `solo downlifter FX, ${b} bpm — falling sweep releasing tension after a drop; FX only, ${ISO}`,
-  impact: (g, b) => `solo impact hit FX — deep cinematic boom impact with short tail; one hit, ${ISO}`,
+  impact: () => `solo impact hit FX — deep cinematic boom impact with short tail; one hit, ${ISO}`,
   reverse_cymbal: (g, b) => `solo reverse cymbal swell, ${b} bpm — rising reversed crash into a downbeat; one swell, ${ISO}`,
   sweep: (g, b) => `solo noise sweep FX, ${b} bpm — smooth filtered noise sweep; FX only, ${ISO}`,
 };

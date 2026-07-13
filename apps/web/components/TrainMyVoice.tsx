@@ -83,7 +83,7 @@ export function TrainMyVoice() {
     } catch {
       /* best-effort */
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+
   }, []);
 
   useEffect(() => {
@@ -100,7 +100,7 @@ export function TrainMyVoice() {
       }
       void loadVoices();
     })();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+
   }, []);
 
   function onFiles(list: FileList | null) {

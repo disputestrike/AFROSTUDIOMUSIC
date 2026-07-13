@@ -64,7 +64,11 @@ export async function separateStemsLocal(opts: { audioUrl: string; mode?: 'instr
       p.on('error', reject);
       // CPU separation of a 3-min track ≈ 2-6 min on a modest box — cap at 20.
       const timer = setTimeout(() => { p.kill('SIGKILL'); reject(new Error('local demucs timed out (20 min)')); }, 20 * 60_000);
-      p.on('exit', (code) => { clearTimeout(timer); code === 0 ? resolve() : reject(new Error(`demucs exit ${code}: ${err.slice(-300)}`)); });
+      p.on('exit', (code) => {
+        clearTimeout(timer);
+        if (code === 0) resolve();
+        else reject(new Error(`demucs exit ${code}: ${err.slice(-300)}`));
+      });
     });
     // Output lands in <dir>/htdemucs/<stem>.wav (per --filename).
     const outDir = join(dir, 'htdemucs');

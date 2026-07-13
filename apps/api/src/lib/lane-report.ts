@@ -31,10 +31,6 @@ const genreMatches = (a?: string | null, b?: string | null) => {
   return !!x && !!y && (x === y || x.includes(y) || y.includes(x));
 };
 
-async function fetchGenreMeasured(workspaceId: string, genre: string): Promise<MeasuredAnalysis[]> {
-  return (await fetchGenreMeasuredDetailed(workspaceId, genre)).map((m) => m.analysis);
-}
-
 /** Same fetch, but keep PROVENANCE: recipe.source==='generated' marks the machine's
  *  own output. Self refs may steer/repair; only AUTHENTIC refs certify (anti-mirror). */
 async function fetchGenreMeasuredDetailed(workspaceId: string, genre: string): Promise<Array<{ analysis: MeasuredAnalysis; authentic: boolean }>> {

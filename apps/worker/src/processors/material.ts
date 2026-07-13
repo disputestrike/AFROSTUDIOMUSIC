@@ -1,10 +1,10 @@
 import { prisma } from '@afrohit/db';
 import { musicAdapter } from '@afrohit/ai';
 import { markFailed, markRunning, markSucceeded } from '../lib/jobs';
-import { downloadToBuffer, uploadBytes, ingestRemoteFile } from '../lib/storage';
+import { downloadToBuffer, uploadBytes } from '../lib/storage';
 import { trimToLoop, assembleBeat, measureAudioQuality, type AssemblyLayer, type AssemblySection } from '../lib/ffmpeg';
 import { overlayFills } from '../lib/fills';
-import { genreSignature, planFills, isMaterialRole, jobOf, type MaterialRole } from '@afrohit/shared';
+import { genreSignature, planFills, isMaterialRole, jobOf } from '@afrohit/shared';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';

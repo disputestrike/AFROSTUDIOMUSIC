@@ -1,5 +1,14 @@
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const monorepoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
+
 /** @type {import('next').NextConfig} */
 const nextConfig = {
+  outputFileTracingRoot: monorepoRoot,
+  // Root CI runs ESLint before this build. Avoid Next's legacy config detector
+  // re-running lint and warning about the monorepo flat configuration.
+  eslint: { ignoreDuringBuilds: true },
   transpilePackages: ['@afrohit/shared'],
   images: { remotePatterns: [{ protocol: 'https', hostname: '**' }] },
   async rewrites() {

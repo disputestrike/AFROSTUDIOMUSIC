@@ -11,9 +11,11 @@
   "scripts": {
     "build": "turbo run build",
     "dev": "turbo run dev --parallel",
-    "lint": "turbo run lint",
+    "lint": "eslint . --max-warnings 0",
     "typecheck": "turbo run typecheck",
     "test": "turbo run test",
+    "security:audit": "pnpm audit --prod --audit-level high",
+    "ci": "pnpm run lint && pnpm run verify && pnpm run build && pnpm run security:audit",
     "db:generate": "pnpm --filter @afrohit/db generate",
     "db:migrate": "pnpm --filter @afrohit/db migrate",
     "db:push": "pnpm --filter @afrohit/db push",
@@ -28,9 +30,20 @@
     "verify": "pnpm --filter @afrohit/shared build && pnpm --filter @afrohit/ai build && pnpm --filter @afrohit/web typecheck && pnpm --filter @afrohit/api typecheck:shim && pnpm --filter @afrohit/worker typecheck:shim && pnpm --filter @afrohit/worker test"
   },
   "devDependencies": {
+    "@eslint/js": "^9.39.4",
+    "@next/eslint-plugin-next": "^15.5.18",
     "turbo": "^2.3.0",
     "typescript": "^5.6.3",
+    "typescript-eslint": "^8.63.0",
+    "eslint": "^9.39.4",
+    "eslint-plugin-react-hooks": "^7.1.1",
+    "globals": "^16.4.0",
     "prettier": "^3.3.3",
     "@types/node": "^22.9.0"
+  },
+  "pnpm": {
+    "overrides": {
+      "form-data@>=4.0.0 <4.0.6": "4.0.6"
+    }
   }
 }

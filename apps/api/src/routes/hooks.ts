@@ -2,7 +2,7 @@ import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { prisma } from '@afrohit/db';
 import { generateHooksInputSchema, langSchema, pickLawfulTitle } from '@afrohit/shared';
-import { joinBriefs, prompts, generateJson, directorRefineHooks, researchTrends, anthropicEnabled } from '@afrohit/ai';
+import { prompts, generateJson, directorRefineHooks, researchTrends, anthropicEnabled } from '@afrohit/ai';
 import { laneDnaBrief } from '../lib/lane-pipeline';
 import { requireAuth } from '../middleware/auth';
 import { memoryContext, recordFeedback } from '../services/artist-memory';

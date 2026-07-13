@@ -81,7 +81,7 @@ export default function StudioChat({ projectId }: { projectId?: string }) {
     // back never restarts the conversation — the context stays safe.
     const saved = typeof window !== 'undefined' ? localStorage.getItem(ACTIVE_THREAD_KEY) : null;
     if (saved) void openThread(saved);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+
   }, []);
 
   // Remember the active thread so navigation away/back continues it.

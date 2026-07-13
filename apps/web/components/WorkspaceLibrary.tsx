@@ -53,7 +53,7 @@ export default function WorkspaceLibrary({ onPlay, refreshKey, playingUrl }: { o
         {songs.map((s) => (
           <div key={s.id} className="group flex items-center gap-3 rounded-xl border border-transparent p-2 hover:border-slate-700 hover:bg-slate-900/60">
             <div className="h-10 w-10 shrink-0 overflow-hidden rounded-lg bg-slate-800">
-              {/* eslint-disable-next-line @next/next/no-img-element */}
+              { }
               {s.coverUrl ? <img src={s.coverUrl} alt="" className="h-full w-full object-cover" /> : <div className="flex h-full w-full items-center justify-center text-slate-600">♪</div>}
             </div>
             <div className="min-w-0 flex-1">

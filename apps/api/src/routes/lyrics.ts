@@ -2,7 +2,7 @@ import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { prisma } from '@afrohit/db';
 import { generateLyricsInputSchema, GENRES, pickLawfulTitle, lyricQaCheck, normalizeLyricBody } from '@afrohit/shared';
-import { joinBriefs, prompts, generateJson } from '@afrohit/ai';
+import { prompts, generateJson } from '@afrohit/ai';
 import { laneDnaBrief } from '../lib/lane-pipeline';
 import { requireAuth } from '../middleware/auth';
 import { learnLyricCraft, findLearnedLyric } from '../lib/lyric-learn';

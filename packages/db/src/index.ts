@@ -1,7 +1,6 @@
 import { PrismaClient, Prisma } from '@prisma/client';
 
 declare global {
-  // eslint-disable-next-line no-var
   var __afrohit_prisma: PrismaClient | undefined;
 }
 
@@ -23,9 +22,9 @@ export * from '@prisma/client';
 
 /**
  * AUTONOMY FLAGS — live operator on/off for the money-spending background jobs,
- * toggled from /admin (no redeploy). Default ON so existing behaviour is
- * unchanged; a row with value 'off' disables that job at run time. Cached 30s so
- * a cron loop doesn't hammer the DB.
+ * toggled from /admin (no redeploy). Jobs are OFF until explicitly enabled.
+ * Database failures also fail closed so an outage cannot trigger unbudgeted
+ * provider calls. Cached 30s so a cron loop doesn't hammer the DB.
  */
 export type AutonomyJob = 'morning_drop' | 'zap_radar' | 'nightly_compound' | 'will_it_blow';
 const _flagCache = new Map<string, { on: boolean; at: number }>();
@@ -34,11 +33,11 @@ export async function isAutonomyEnabled(job: AutonomyJob): Promise<boolean> {
   const cached = _flagCache.get(key);
   const now = Date.now();
   if (cached && now - cached.at < 30_000) return cached.on;
-  let on = true;
+  let on = false;
   try {
     const row = await prisma.systemSetting.findUnique({ where: { key } });
-    on = row ? row.value !== 'off' : true;
-  } catch { on = true; }
+    on = row?.value === 'on';
+  } catch { on = false; }
   _flagCache.set(key, { on, at: now });
   return on;
 }
@@ -55,5 +54,5 @@ export async function allAutonomyFlags(): Promise<Record<AutonomyJob, boolean>> 
   const jobs: AutonomyJob[] = ['morning_drop', 'zap_radar', 'nightly_compound', 'will_it_blow'];
   const rows = await prisma.systemSetting.findMany({ where: { key: { in: jobs.map((j) => `autonomy.${j}`) } } });
   const byKey = new Map(rows.map((r) => [r.key, r.value]));
-  return Object.fromEntries(jobs.map((j) => [j, byKey.get(`autonomy.${j}`) !== 'off'])) as Record<AutonomyJob, boolean>;
+  return Object.fromEntries(jobs.map((j) => [j, byKey.get(`autonomy.${j}`) === 'on'])) as Record<AutonomyJob, boolean>;
 }

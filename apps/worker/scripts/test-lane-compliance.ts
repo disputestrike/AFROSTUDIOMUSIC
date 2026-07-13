@@ -62,7 +62,7 @@ assert(ps.skipped.some((s) => s.startsWith('tempoBpm')), 'unknown track tempo is
 assert(ps.scored === good.scored - 1, 'skipped dimension drops out of scoring (coverage honest)');
 
 // 4) HONESTY: an INFERRED (uncalibrated) log-drum lane doesn't profile it -> not scored.
-const uncal = buildLaneProfile('amapiano', 'genre', refs.map((_, i) => amapiano(112, true, 53, 0.41, 0.65, 'inferred')), { minRefs: 3 });
+const uncal = buildLaneProfile('amapiano', 'genre', refs.map(() => amapiano(112, true, 53, 0.41, 0.65, 'inferred')), { minRefs: 3 });
 assert(!uncal.features.logDrumLikelihood, 'uncalibrated lane does NOT profile log-drum');
 const us = scoreLaneCompliance(amapiano(112, true, 53, 0.41, 0.65, 'measured'), uncal);
 assert(!us.dimensions.some((d) => d.key === 'logDrumLikelihood'), 'log-drum not scored when lane cannot profile it');

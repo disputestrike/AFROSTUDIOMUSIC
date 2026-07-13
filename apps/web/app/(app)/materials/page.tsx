@@ -87,7 +87,7 @@ export default function MaterialsPage() {
       setLoadErr((e as Error).message.slice(0, 160));
       return null;
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+
   }, []);
 
   useEffect(() => {
@@ -110,7 +110,7 @@ export default function MaterialsPage() {
       setProjects(p);
       if (p[0]) setProjectId(p[0].id);
     }).catch(() => {});
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+
   }, []);
 
   function jobError(errorJson: unknown): string {

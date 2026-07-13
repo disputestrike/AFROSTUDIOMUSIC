@@ -8,7 +8,7 @@ import { enqueueHarvest, enqueueLearn } from '../lib/harvest';
 import { ownShelfRoles } from '../lib/material-plan';
 import { laneDna } from '../lib/lane-pipeline';
 import { requireAuth } from '../middleware/auth';
-import { enqueue, QUEUES } from '../lib/queue';
+import { enqueue } from '../lib/queue';
 import { publicUrlFor, assertOwnedKey } from '../lib/storage';
 import { voiceVocalTag, languageVocalTag } from '../services/chat-tools';
 
