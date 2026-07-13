@@ -298,8 +298,20 @@ export async function produceVocal(opts: {
   // Brain (reuse, not reinvention): hook recurrence, chorus reduction, melisma,
   // repeat cell, section contrast.
   if (sungLineCount > 0) {
-    const sungBody = sungWords.sections.map((s) => `[${s.name || 'Section'}]\n${s.lines.join('\n')}`).join('\n\n');
-    const score = scoreSungLyric({ sungLyric: sungBody, hookCell: opts.hookCell });
+    const buildBody = () => sungWords.sections.map((s) => `[${s.name || 'Section'}]\n${s.lines.join('\n')}`).join('\n\n');
+    let score = scoreSungLyric({ sungLyric: buildBody(), hookCell: opts.hookCell });
+    // VOCAL PRODUCER AUTHORITY (owner feedback 2026-07-13): a missing melisma is
+    // FIXED, not rejected — holding a vowel is literally the vocal producer's
+    // job. Add a held-vowel ad-lib to the hook/outro and re-score ONCE; only
+    // then does a remaining failure become a rejection.
+    if (!score.pass && score.failures.some((f) => f.startsWith('melismaEvents'))) {
+      const target = sungWords.sections.find((s) => /hook|chorus|refrain|outro/i.test(s.name)) ?? sungWords.sections[sungWords.sections.length - 1];
+      if (target && target.lines.length) {
+        const i = target.lines.length - 1;
+        if (!/\(o+h?\)|\(a+h?\)|([aeiouy])-\1|([aeiouy])\2{2,}/i.test(target.lines[i]!)) target.lines[i] = `${target.lines[i]} (oooh)`;
+      }
+      score = scoreSungLyric({ sungLyric: buildBody(), hookCell: opts.hookCell });
+    }
     if (!score.pass) for (const f of score.failures) reasons.push(`sung-form broken: ${f}`);
   }
 

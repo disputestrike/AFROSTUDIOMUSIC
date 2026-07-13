@@ -99,6 +99,20 @@ function hookScore(genre: string, bpm: number, key: string, seed: number): Melod
   return composeMelody({ genre, bpm, key, seed, sections: [{ name: 'Hook', kind: 'hook', lines: [scat(6), scat(6)], contour: 'arch', density: 'sparse' }] });
 }
 
+const HOOKCELL_SYSTEM = `You are an Afrobeats hook-cell writer. From the brief, output ONE HOOK CELL: a 1-3 word CHANTABLE phrase that owns the whole record (the canon: Essence, Calm Down, Water, Soso, Dami Duro, Kpokpokpo, Unavailable). It must be FUN TO SAY at tempo, survive with any setting/place/food word removed, and work as the song's TITLE. Pidgin/Yoruba welcome. It is NOT a sentence, NOT a description, and contains NO place/food/transport noun. Return STRICT JSON: {"hookCell":"1-3 words"}.`;
+
+/** A real chantable hook cell (bulk/Cerebras) — replaces the old "first 3 words
+ *  of the premise" hack that leaked weak titles like "Man Keeps". */
+async function makeHookCell(brief: CreativeBrief): Promise<string> {
+  const r = await generateJson<{ hookCell?: string }>({
+    tier: 'bulk', task: 'hook-cell', system: HOOKCELL_SYSTEM,
+    user: JSON.stringify({ emotion: brief.primaryEmotion, premise: brief.corePremise, mode: brief.lyricMode, genre: brief.genre, listenerMoment: brief.listenerMoment }),
+    maxTokens: 120,
+  }).catch(() => ({} as { hookCell?: string }));
+  const c = (r.hookCell ?? '').trim().replace(/^["']|["']$/g, '');
+  return c && c.split(/\s+/).length <= 4 && c.length <= 28 ? c : brief.corePremise.split(/\s+/).slice(0, 3).join(' ');
+}
+
 const FIT_SYSTEM = `${prompts.LYRIC_SYSTEM}
 
 MELODY-FIRST MODE: a melody already exists and has been rendered to audio. Do NOT make the melody serve your paragraph — make the WORDS serve the melody. You are given the hook cell (the melody's spine), the syllable budget, held-vowel slots, and breaths. Write the FEWEST words that sing this melody. The hook is the cell repeated. Do NOT open on a location, do NOT stuff a place/food/transport noun into most lines, no confession bridge, no explaining outro. Obey THE RECORD LAW above.`;
@@ -144,11 +158,11 @@ export async function processProduce(p: ProducePayload): Promise<void> {
     } catch (e) {
       state = advanceState(state, { toplineProof: proof }, { stage: 'topline', by: 'topline-composer', why: `topline render failed: ${(e as Error).message.slice(0, 120)}` });
     }
-    const hookCell = brief.corePremise.split(/\s+/).slice(0, 3).join(' ');
+    const hookCell = await makeHookCell(brief);
     state = advanceState(state, {
       toplineProof: proof,
-      selectedTopline: { candidateId: 'topline-1', hookCell, melodyRhythmMap: mrm, reason: 'Melody Brain composed; hook melody rendered to audio guides.' },
-    }, { stage: 'topline', by: 'topline-composer', changed: `${proof.hookRenderUrls.length} hook renders + ${proof.beatSketchUrl ? 'sketch' : 'no sketch'}`, why: 'melody-first, proven audibly (synthesized guide, not a sung hum)' });
+      selectedTopline: { candidateId: 'topline-1', hookCell, melodyRhythmMap: mrm, reason: `Melody Brain composed; hook cell "${hookCell}" rendered to audio guides.` },
+    }, { stage: 'topline', by: 'topline-composer', changed: `cell="${hookCell}", ${proof.hookRenderUrls.length} hook renders + ${proof.beatSketchUrl ? 'sketch' : 'no sketch'}`, why: 'melody-first, proven audibly (synthesized guide, not a sung hum)' });
 
     // TOPLINE GATE — block the songwriter unless the topline is audibly proven.
     if (!toplineProven(proof)) {
