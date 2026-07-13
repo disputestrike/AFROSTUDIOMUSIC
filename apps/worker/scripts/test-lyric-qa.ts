@@ -175,4 +175,40 @@ Strip the whole thing, nothing dey within`;
 const sc = lyricQaCheck({ title: 'Watch The Scene', body: scenery, hookCell: 'watch the scene', languageMix: { pcm: 0.9, en: 0.1 } });
 assert(!sc.ok && (sc.contamination?.patterns.some((p) => p.code === 'scenery_dependent') ?? false), 'scenery-narration record blocked by the object-removal test (scenery_dependent)');
 
+// FALSE-POSITIVE GUARD (red-team round 2): a real defiance anthem with a common
+// Pidgin interjection ("omo") and one quoted shout must PASS — "omo" is Pidgin,
+// not decorative Yoruba, and a lone quote is not a screenplay.
+const anthem = `[Hook]
+I no go bow, I no go bow
+You fit bend my back but you no fit bend my will
+I no go bow, come rain, come sun
+[Verse]
+Omo, morning break, my eye don red, sleep na luxury
+Danfo dey shout "Oshodi!" but na my future I dey hurry
+Dem don write my name for the list of people wey no go make am
+Every door wey slam my face, I turn am to my reason
+Faith na my last change and I no dey spend am careless
+If I fall today, tomorrow go still meet me standing
+[Hook]
+I no go bow, I no go bow
+You fit bend my back but you no fit bend my will`;
+const an = lyricQaCheck({ title: 'I No Go Bow', body: anthem, hookCell: 'i no go bow', languageMix: { pcm: 0.9, en: 0.1 } });
+assert(an.ok, `emotion-first anthem (Pidgin "omo" + one quote) passes (blocks: ${an.blocks.join('; ')})`);
+
+// A cityscape "place-tour" with no person/want/loss — scenery wearing a ballad's
+// costume — must block on the object-removal test.
+const tour = `[Hook]
+Third Mainland at midnight
+Me, the bridge, and the city lights
+Cruising slow while the whole Lagos sleep
+[Verse]
+Windows down, the lagoon dey shine
+Streetlight dey blink, the marina glitter fine
+Danfo don park, na only my headlight
+The skyline pose like a photograph tonight
+From Oworonshoki, the whole coast dey glow
+Harmattan for the lane, the tollgate clear`;
+const tr = lyricQaCheck({ title: 'Third Mainland', body: tour, hookCell: 'third mainland' });
+assert(!tr.ok && (tr.contamination?.patterns.some((p) => p.code === 'scenery_dependent') ?? false), 'cityscape place-tour blocked (scenery_dependent)');
+
 console.log(process.exitCode ? '\n❌ Lyric QA test FAILED' : '\n✅ Lyric QA test PASSED');

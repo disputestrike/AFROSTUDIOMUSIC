@@ -50,7 +50,11 @@ const CLOCK = /\b(\d{1,2}\s*(?:am|pm|o'?clock)|one|two|three|four|five|six|seven
 const APPOINTMENT = /\b(come back|show my face|keep your word|see you again|meet me|i go dey there|link up|pull up)\b/i;
 const TRANSACTION = /\b(pay|money|price|charge|cash|order|owe|fee|balance|change)\b/i;
 const YORUBA_DIACRITIC = /[àáèéìíòóùúẹọṣǹńẹ́ọ́]/i;
-const YORUBA_PHRASE = /\b(je ka jo|jare|o wa|mo gbo|se ni|ba mi|fun mi|omo|jor|abeg no)\b/i;
+// Genuine Yoruba/Igbo phrases that would be DECORATION in a Pidgin/English song.
+// NOTE: common Pidgin interjections ("omo", "jare", "abeg") are NOT here — they
+// are everyday Pidgin, not decorative heritage-language (they false-blocked a
+// real defiance anthem in the owner red-team).
+const YORUBA_PHRASE = /\b(je ka jo|jɛ ka jo|o wa|mo gbo|se ni|ba mi|fun mi|mo feran|jowo|pele o|e ku)\b/i;
 
 export interface ContaminationPattern {
   code: string;
@@ -147,12 +151,18 @@ export function detectCatalogueContamination(input: {
     }
   }
 
-  // 6. Yoruba/Igbo inserted decoratively (not essential to meaning) in a mostly non-native song.
+  // 6. Yoruba/Igbo inserted decoratively (not essential to meaning) in a mostly
+  //    non-native song. Guard against flagging a GENUINELY Yoruba record: count
+  //    DISTINCT diacritic-bearing words — a real Yoruba song has many, a
+  //    decorative sprinkle (one repeated tag like "jẹ́ ká jó") has few. When
+  //    languageMix is absent this is the only signal, so it must be robust.
   const yo = input.languageMix?.yo ?? 0;
   const ig = input.languageMix?.ig ?? 0;
   const nativeShare = yo + ig;
+  const diacriticWords = new Set((bodyLow.match(/\b[a-zàáèéìíòóùúẹọṣǹń']*[àáèéìíòóùúẹọṣǹń][a-zàáèéìíòóùúẹọṣǹń']*\b/gi) ?? []));
+  const yorubaHeavy = diacriticWords.size >= 5 || nativeShare >= 0.5;
   const hasYoruba = YORUBA_DIACRITIC.test(body) || YORUBA_PHRASE.test(bodyLow);
-  if (hasYoruba && nativeShare < 0.5) {
+  if (hasYoruba && !yorubaHeavy) {
     // decorative when it is a small, repeated sprinkle rather than the song's language
     const phrase = (YORUBA_PHRASE.exec(bodyLow)?.[0]) || (body.split(/\r?\n/).find((l) => YORUBA_DIACRITIC.test(l))?.trim() ?? 'native-language phrase');
     p.push({ code: 'decorative_local_language', label: 'Yoruba/Igbo used as decoration, not essential meaning', evidence: phrase });
@@ -175,8 +185,10 @@ export function detectCatalogueContamination(input: {
     p.push({ code: 'transactional_dialogue', label: 'dialogue carrying a schedule / appointment / price', evidence: apptLine ?? 'day + time appointment in the lyric' });
   }
 
-  // 9. A screenplay: heavy quoted dialogue telling a chronological scene.
-  const quotedLines = lines.filter((l) => /["“][^"”]{2,}["”]/.test(l) || /\b(she|he|i)\s+(say|said|ask|asked|smile|laugh|reply)\b/i.test(l));
+  // 9. A screenplay: heavy QUOTED dialogue telling a chronological scene. Require
+  //    actual quotation marks — a bare "I say / she say" is normal Pidgin
+  //    declarative, not screenplay (it false-blocked a real anthem in the red-team).
+  const quotedLines = lines.filter((l) => /["“”][^"“”]{2,}["“”]/.test(l));
   if (quotedLines.length >= 3) {
     p.push({ code: 'screenplay_scene', label: `${quotedLines.length} dialogue/narration lines — a screenplay, not a record`, evidence: quotedLines[0]! });
   }
@@ -226,6 +238,10 @@ export function detectCatalogueContamination(input: {
     // prone words (fire, light, star, road, sun) to protect emotional records.
     'tin', 'drum', 'bulb', 'wire', 'umbrella', 'basin', 'kettle', 'awning', 'tarpaulin', 'bucket', 'cart',
     'wheel', 'thread', 'receipt', 'tarred', 'traffic', 'gutter', 'plank', 'tent', 'coalpot',
+    // Cityscape-tour markers (owner red-team round 2 — the "place-tour vibe
+    // ballad" evasion). Unambiguous geography/scene words, NOT metaphor-prone
+    // ones (island/bridge/coast/road/moon/star are excluded on purpose).
+    'lagoon', 'marina', 'skyline', 'mainland', 'oworonshoki', 'cms', 'harmattan', 'flyover', 'expressway', 'tollgate',
     ...SCENERY_OBJECTS,
   ]);
   const sceneryLineCount = lines.filter((l) => tokens(l).some((w) => SCENERY.has(w) || FOOD.has(w))).length;
