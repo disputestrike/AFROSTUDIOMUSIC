@@ -7,6 +7,8 @@ import pino from 'pino';
 import * as Sentry from '@sentry/node';
 
 import { runWithBrainContext } from '@afrohit/ai';
+import { assertSecretConfiguration, migratePlaintextWorkspaceSecrets } from '@afrohit/db';
+import { redactSensitiveText } from '@afrohit/shared';
 import { processMusic } from './processors/music';
 import { processForgeMaterial, processAssembleBeat } from './processors/material';
 import { processAnalyze } from './processors/analyze';
@@ -16,6 +18,7 @@ import { processVoice } from './processors/voice';
 import { processVoiceProfile } from './processors/voice-profile';
 import { processVoiceDataset } from './processors/voice-dataset';
 import { processSingConvert } from './processors/voice-sing';
+import { processVoiceCleanup } from './processors/voice-cleanup';
 import { processVoiceRehost } from './processors/voice-rehost';
 import { processImage } from './processors/image';
 import { processVideo } from './processors/video';
@@ -30,9 +33,25 @@ import { processProduce } from './processors/produce';
 import { processSongEdit } from './processors/song-edit';
 import { processSynthMaterial } from './processors/synth-material';
 import { enqueueJob } from './lib/enqueue';
+import { assertStorageConfiguration } from './lib/storage';
 import { processNightlyCompound, processMeasureBackfill, processLearnBackfill, processListenBack, processRefileReferences, processMineLexicon, processLexiconResearch, processWiktionaryHarvest, processGlossPass, processVerifyLexicon } from './processors/compound';
 
-const log = pino({ level: process.env.LOG_LEVEL ?? 'info' });
+const safeError = (error: unknown) => {
+  const serialized = pino.stdSerializers.err(error as Error);
+  return {
+    ...serialized,
+    message: redactSensitiveText(serialized.message, 1_000),
+    ...(serialized.stack ? { stack: redactSensitiveText(serialized.stack, 4_000) } : {}),
+  };
+};
+const log = pino({ level: process.env.LOG_LEVEL ?? 'info', serializers: { err: safeError, error: safeError } });
+assertSecretConfiguration();
+assertStorageConfiguration();
+const secretsReady = process.env.ENCRYPTION_KEY
+  ? migratePlaintextWorkspaceSecrets().then((migrated) => {
+      if (migrated) log.info({ migrated }, 'encrypted legacy workspace provider credentials');
+    })
+  : Promise.resolve();
 
 // Job names that belong to the background LAKE lane (never the render lane).
 const LAKE_JOBS = new Set(['deep-measure', 'nightly-compound', 'measure-backfill', 'learn-backfill', 'listen-back', 'refile-references', 'mine-lexicon', 'lexicon-research', 'wiktionary-harvest', 'wiktionary-burst', 'lexicon-gloss', 'lexicon-verify']);
@@ -42,6 +61,14 @@ if (process.env.SENTRY_DSN) {
     dsn: process.env.SENTRY_DSN,
     environment: process.env.NODE_ENV ?? 'development',
     initialScope: { tags: { service: 'worker' } },
+    sendDefaultPii: false,
+    beforeSend(event) {
+      if (event.message) event.message = redactSensitiveText(event.message, 1_000);
+      for (const value of event.exception?.values ?? []) {
+        if (value.value) value.value = redactSensitiveText(value.value, 1_000);
+      }
+      return event;
+    },
   });
 }
 
@@ -53,7 +80,11 @@ const connection = new IORedis(process.env.REDIS_URL ?? 'redis://localhost:6379'
 const NOTIFY_QUEUES = new Set(['music', 'voice', 'video', 'export']);
 
 function makeWorker(queue: string, handler: (job: never) => Promise<void>) {
-  const w = new Worker(queue, handler as never, {
+  const guarded = async (job: never) => {
+    await secretsReady;
+    await handler(job);
+  };
+  const w = new Worker(queue, guarded as never, {
     connection,
     concurrency: Number(process.env.WORKER_CONCURRENCY ?? 4),
   });
@@ -90,6 +121,7 @@ const workers = [
   // local Demucs/librosa are CPU-heavy on this shared container; one at a time
   // keeps renders fast. Nothing user-facing ever waits on this queue.
   new Worker('lake', (async (job: { data: never; name: string }) => {
+    await secretsReady;
     // OWNER LAW: EVERYTHING on the lake queue is background text/analysis work
     // — Cerebras-first for every LLM call, whether the nightly cron fired it or
     // the owner clicked a Data-lake button in Admin. Claude never bills for
@@ -118,6 +150,7 @@ const workers = [
     if (job.name === 'setup-voice-profile') await processVoiceProfile(job.data as never);
     else if (job.name === 'sing-convert') await processSingConvert(job.data as never);
     else if (job.name === 'rehost-voice-model') await processVoiceRehost(job.data as never);
+    else if (job.name === 'voice-cleanup') await processVoiceCleanup(job.data as never);
     else await processVoice(job.data as never);
   }),
   makeWorker('image', async (job: { data: never }) => {

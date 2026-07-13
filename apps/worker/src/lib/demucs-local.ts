@@ -20,7 +20,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { prisma } from '@afrohit/db';
 import { separateStems, type StemSeparationResult } from '@afrohit/ai';
-import { downloadToBuffer, uploadBytes } from './storage';
+import { downloadToBuffer, resolveAssetForProvider, uploadBytes } from './storage';
 
 const PYTHON = process.env.PYTHON_BIN ?? 'python3';
 // Replicate demucs ≈ $0.10/track (T4, ~1-2 min). Local = electricity.
@@ -125,7 +125,11 @@ export async function separateStemsRouted(opts: {
     console.warn('[stems] DEMUCS_MODE wants local but torch/demucs not importable in this image — paid path');
   }
   const paidStart = Date.now();
-  const res = await separateStems({ audioUrl: opts.audioUrl, apiKey: opts.apiKey, mode: opts.mode });
+  const res = await separateStems({
+    audioUrl: await resolveAssetForProvider(opts.audioUrl),
+    apiKey: opts.apiKey,
+    mode: opts.mode,
+  });
   await logStemsRun(opts.workspaceId, 'replicate', opts.purpose, Date.now() - paidStart, REPLICATE_STEM_COST, true);
   return { ...res, engine: 'replicate' };
 }

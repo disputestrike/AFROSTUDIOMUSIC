@@ -4,7 +4,7 @@ import { createMasterInputSchema, createMixInputSchema, attachSongUploadSchema }
 import { requireAuth } from '../middleware/auth';
 import { enqueue } from '../lib/queue';
 import { enqueueHarvest } from '../lib/harvest';
-import { publicUrlFor, assertOwnedKey } from '../lib/storage';
+import { publicUrlFor, verifyUploadedAudio } from '../lib/storage';
 import { arReadAfterRender } from '../lib/ar-read';
 
 export default async function mixes(app: FastifyInstance) {
@@ -135,6 +135,7 @@ export default async function mixes(app: FastifyInstance) {
     async (req, reply) => {
       const { workspaceId } = requireAuth(req);
       const input = attachSongUploadSchema.parse(req.body);
+      const uploaded = await verifyUploadedAudio(workspaceId, input.key);
       const project = await prisma.project.findFirstOrThrow({
         where: { id: req.params.projectId, workspaceId },
       });
@@ -165,7 +166,7 @@ export default async function mixes(app: FastifyInstance) {
           projectId: project.id,
           songId,
           preset: 'uploaded',
-          url: publicUrlFor(assertOwnedKey(workspaceId, input.key)),
+          url: publicUrlFor(uploaded.key),
           notes: `Uploaded finished song${input.title ? ` — ${input.title}` : ''} (artist master source)`,
         },
       });

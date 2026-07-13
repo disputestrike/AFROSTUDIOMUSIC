@@ -1,5 +1,5 @@
 import { prisma, JobStatus } from '@afrohit/db';
-import { costOf } from '@afrohit/shared';
+import { costOf, redactSensitiveText } from '@afrohit/shared';
 
 export async function markRunning(jobId: string) {
   await prisma.providerJob.update({
@@ -31,7 +31,7 @@ function wallSafe(message: string): string {
 }
 
 export async function markFailed(jobId: string, err: unknown) {
-  const real = String((err as Error)?.message ?? err ?? '').trim() || 'unknown failure (no message)';
+  const real = redactSensitiveText((err as Error)?.message ?? err ?? '', 800).trim() || 'unknown failure (no message)';
   console.warn(`[job ${jobId}] failed — internal reason: ${real.slice(0, 300)}`);
   const job = await prisma.providerJob.update({
     where: { id: jobId },

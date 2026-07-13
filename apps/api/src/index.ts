@@ -10,12 +10,16 @@ import sensible from '@fastify/sensible';
 import swagger from '@fastify/swagger';
 import swaggerUI from '@fastify/swagger-ui';
 import { serializerCompiler, validatorCompiler, jsonSchemaTransform } from 'fastify-type-provider-zod';
+import pino from 'pino';
 
-import { prisma } from '@afrohit/db';
+import { assertSecretConfiguration, migratePlaintextWorkspaceSecrets, prisma } from '@afrohit/db';
+import { redactSensitiveText } from '@afrohit/shared';
 import { authPlugin } from './middleware/auth';
+import { privateAssetsPlugin } from './middleware/private-assets';
 import { creditsPlugin } from './middleware/credits';
 import { queuePlugin } from './lib/queue';
 import { captureError, initObservability } from './lib/observability';
+import { assertStorageConfiguration } from './lib/storage';
 
 import projects from './routes/projects';
 import briefs from './routes/briefs';
@@ -61,14 +65,83 @@ import debug from './routes/debug';
 
 initObservability('api');
 
+function configuredWebOrigins(): string[] {
+  const origins = (process.env.WEB_URL ?? 'http://localhost:3000')
+    .split(',')
+    .map((entry) => entry.trim())
+    .filter(Boolean)
+    .map((entry) => {
+      const parsed = new URL(entry);
+      if (!['http:', 'https:'].includes(parsed.protocol) || parsed.username || parsed.password) {
+        throw new Error(`invalid WEB_URL origin: ${entry}`);
+      }
+      return parsed.origin;
+    });
+  if (!origins.length) throw new Error('WEB_URL must contain at least one valid origin');
+  return [...new Set(origins)];
+}
+
+function safeError(error: unknown) {
+  const serialized = pino.stdSerializers.err(error as Error);
+  return {
+    ...serialized,
+    message: redactSensitiveText(serialized.message, 1_000),
+    stack: redactSensitiveText(serialized.stack, 4_000),
+  };
+}
+
 const app = Fastify({
   logger: {
     level: process.env.LOG_LEVEL ?? 'info',
     transport: process.env.NODE_ENV === 'production' ? undefined : { target: 'pino-pretty' },
+    serializers: { err: safeError, error: safeError },
+    redact: {
+      paths: [
+        'req.headers.authorization',
+        'req.headers.cookie',
+        'req.headers["x-internal-secret"]',
+        'res.headers["set-cookie"]',
+      ],
+      censor: '[redacted]',
+    },
   },
   // Behind Railway's proxy every request shares the proxy IP — without this the
   // "per-IP" rate limit throttles all clients as one (and req.ip is useless in logs).
-  trustProxy: true,
+  trustProxy: process.env.NODE_ENV === 'production'
+    ? Math.max(1, Math.min(5, Number(process.env.TRUST_PROXY_HOPS ?? 1) || 1))
+    : false,
+});
+
+app.setErrorHandler((unknownError, req, reply) => {
+  if (reply.sent) return;
+  const error = unknownError as Error & {
+    code?: string;
+    statusCode?: number;
+    validation?: unknown;
+  };
+  const prismaCode = error.code;
+  const validation = Array.isArray(error.validation);
+  const inferred = prismaCode === 'P2025' ? 404 : prismaCode === 'P2002' ? 409 : undefined;
+  const status = Math.max(400, Math.min(599, inferred ?? error.statusCode ?? 500));
+  if (status >= 500) {
+    req.log.error({ err: error }, 'request failed');
+    return reply.code(status).send({ error: 'internal_error' });
+  }
+  const code = validation
+    ? 'invalid_request'
+    : status === 401
+      ? 'unauthorized'
+      : status === 403
+        ? 'forbidden'
+        : status === 404
+          ? 'not_found'
+          : status === 409
+            ? 'conflict'
+            : 'request_rejected';
+  return reply.code(status).send({
+    error: code,
+    ...(validation ? {} : { message: redactSensitiveText(error.message, 240) }),
+  });
 });
 
 // LAUNCH GUARDRAIL — dependency-free per-IP rate limit (token window). Real
@@ -79,14 +152,14 @@ const app = Fastify({
   const hits = new Map<string, { n: number; reset: number }>();
   app.addHook('onRequest', async (req, reply) => {
     const path = req.url.split('?')[0] ?? '';
-    if (path === '/health' || path.startsWith('/docs')) return;
+    if (path === '/health' || path === '/docs' || path.startsWith('/docs/')) return;
     const now = Date.now();
     const key = req.ip || 'unknown';
     const cur = hits.get(key);
     if (!cur || cur.reset < now) { hits.set(key, { n: 1, reset: now + WINDOW_MS }); return; }
     cur.n++;
     if (cur.n > LIMIT) {
-      reply.code(429).send({ error: 'rate_limited', retryInS: Math.ceil((cur.reset - now) / 1000) });
+      return reply.code(429).send({ error: 'rate_limited', retryInS: Math.ceil((cur.reset - now) / 1000) });
     }
   });
   setInterval(() => { const now = Date.now(); for (const [k, v] of hits) if (v.reset < now) hits.delete(k); }, WINDOW_MS).unref();
@@ -96,10 +169,18 @@ app.setValidatorCompiler(validatorCompiler);
 app.setSerializerCompiler(serializerCompiler);
 
 async function bootstrap() {
+  assertSecretConfiguration();
+  assertStorageConfiguration();
+  if (process.env.ENCRYPTION_KEY) {
+    const migrated = await migratePlaintextWorkspaceSecrets();
+    if (migrated) app.log.info({ migrated }, 'encrypted legacy workspace provider credentials');
+  } else {
+    app.log.warn('ENCRYPTION_KEY is not configured; integration credentials cannot be saved in this development environment');
+  }
   await app.register(sensible);
   await app.register(helmet, { contentSecurityPolicy: false });
   await app.register(cors, {
-    origin: (process.env.WEB_URL ?? 'http://localhost:3000').split(','),
+    origin: configuredWebOrigins(),
     credentials: true,
   });
   await app.register(rateLimit, { max: 240, timeWindow: '1 minute' });
@@ -123,6 +204,7 @@ async function bootstrap() {
 
   await app.register(queuePlugin);
   await app.register(authPlugin);
+  await app.register(privateAssetsPlugin);
   await app.register(creditsPlugin);
 
   app.get('/health', async () => ({ ok: true, service: 'api', ts: new Date().toISOString() }));

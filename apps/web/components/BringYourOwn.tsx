@@ -242,7 +242,7 @@ export function BringYourOwn({ onChorusText }: { onChorusText: (lyrics: string) 
         pid = p.id;
         setBProject(pid);
       }
-      const { key, publicUrl } = await api.uploadToStorage(file, 'beat', (f) => setBBeat({ kind: 'uploading', pct: Math.round(f * 100) }));
+      const { key, publicUrl, playbackUrl } = await api.uploadToStorage(file, 'beat', (f) => setBBeat({ kind: 'uploading', pct: Math.round(f * 100) }));
       await api.post(`/projects/${pid}/beats/upload`, {
         key,
         format: guessFormat(file.name),
@@ -250,7 +250,7 @@ export function BringYourOwn({ onChorusText }: { onChorusText: (lyrics: string) 
         ...(bBpm ? { bpm: clampAttachBpm(Number(bBpm)) } : {}),
         ...(bKey ? { keySignature: bKey } : {}),
       });
-      setBBeatUrl(publicUrl);
+      setBBeatUrl(playbackUrl);
       setBBeat({ kind: 'done', msg: 'Beat attached to your project — authentic, auto-approved. It stays yours whatever happens next.' });
       void analyzeB(pid, publicUrl);
     } catch (e) {

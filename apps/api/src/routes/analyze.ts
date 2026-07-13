@@ -4,6 +4,7 @@ import { analyzeAudioSchema } from '@afrohit/shared';
 import { requireAuth } from '../middleware/auth';
 import { enqueue } from '../lib/queue';
 import { assertSafeUrl } from '../lib/url-guard';
+import { assertWorkspaceAsset } from '../lib/storage';
 
 /**
  * "Play a song and it listens." Queues an audio-understanding job (reuses the
@@ -21,8 +22,10 @@ export default async function analyze(app: FastifyInstance) {
 
       // Same bright-line + SSRF guard as /import: no streaming-catalog hosts,
       // no private/metadata targets. The AI listens to rights-cleared audio only.
-      const chk = await assertSafeUrl(url);
-      if (!chk.ok) return reply.code(chk.code).send({ error: chk.error, message: chk.message });
+      if (!assertWorkspaceAsset(workspaceId, url)) {
+        const chk = await assertSafeUrl(url);
+        if (!chk.ok) return reply.code(chk.code).send({ error: chk.error, message: chk.message });
+      }
 
       const project = await prisma.project.findFirstOrThrow({
         where: { id: req.params.projectId, workspaceId },

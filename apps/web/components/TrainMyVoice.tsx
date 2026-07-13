@@ -22,7 +22,8 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useApi } from '@/lib/api';
-import { Loader2, Check, X, UploadCloud, Mic2, ShieldCheck, Music4 } from 'lucide-react';
+import { VOICE_CONSENT_TEXT, VOICE_CONSENT_VERSION } from '@afrohit/shared';
+import { Loader2, Check, X, UploadCloud, Mic2, ShieldCheck, Music4, Trash2 } from 'lucide-react';
 
 interface Artist {
   id: string;
@@ -31,15 +32,12 @@ interface Artist {
 interface VoiceProfile {
   id: string;
   name: string;
-  status: 'PENDING' | 'TRAINING' | 'READY' | 'FAILED';
+  status: 'PENDING' | 'TRAINING' | 'READY' | 'FAILED' | 'REVOKED';
   artist?: { id: string; stageName: string } | null;
   createdAt?: string;
 }
 
 type Phase = 'idle' | 'consent' | 'uploading' | 'dataset' | 'training' | 'done' | 'error';
-
-const DEFAULT_CONSENT =
-  'I am the owner of this voice, or I have written permission from its owner. I consent to AfroHit Studio using these recordings to train a voice model that reproduces this voice. I understand I can revoke this consent at any time.';
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -63,7 +61,6 @@ export function TrainMyVoice() {
   const [name, setName] = useState('My Voice');
   const [legalName, setLegalName] = useState('');
   const [email, setEmail] = useState('');
-  const [consentText, setConsentText] = useState(DEFAULT_CONSENT);
   const [agreed, setAgreed] = useState(false);
   const [files, setFiles] = useState<File[]>([]);
 
@@ -73,6 +70,7 @@ export function TrainMyVoice() {
   const [upIdx, setUpIdx] = useState(0);
   const [upPct, setUpPct] = useState(0);
   const [dsInfo, setDsInfo] = useState<{ segments?: number; minutes?: number } | null>(null);
+  const [revokingId, setRevokingId] = useState<string | null>(null);
 
   const say = (m: string) => setLog((l) => [...l, m]);
   const busy = phase !== 'idle' && phase !== 'done' && phase !== 'error';
@@ -141,7 +139,6 @@ export function TrainMyVoice() {
     setDsInfo(null);
     if (!artistId) { setError('Create your artist first (Settings → Artist), then come back.'); return; }
     if (!legalName.trim() || !email.trim()) { setError('Add your legal name and email for the consent record.'); return; }
-    if (consentText.trim().length < 20) { setError('The consent statement is too short.'); return; }
     if (!agreed) { setError('Tick the box to confirm you own this voice.'); return; }
     if (files.length === 0) { setError('Add at least one clean, solo vocal take.'); return; }
 
@@ -149,9 +146,12 @@ export function TrainMyVoice() {
       setPhase('consent');
       say('Recording your consent…');
       const consent = await api.post<{ id: string }>('/voices/consents', {
+        artistId,
         legalName: legalName.trim(),
         email: email.trim(),
-        consentText: consentText.trim(),
+        consentText: VOICE_CONSENT_TEXT,
+        consentVersion: VOICE_CONSENT_VERSION,
+        accepted: true,
       });
 
       setPhase('uploading');
@@ -168,8 +168,8 @@ export function TrainMyVoice() {
       say('Building the training dataset (48k mono, split into clean segments)…');
       const ds = await api.post<{ jobId: string }>('/voices/dataset', { name: name.trim() || 'My Voice', sampleUrls: urls });
       const out = await pollJob(ds.jobId);
-      const datasetZipUrl = out.datasetZipUrl as string | undefined;
-      if (!datasetZipUrl) throw new Error('dataset built but returned no zip');
+      const datasetZipRef = out.datasetZipRef as string | undefined;
+      if (!datasetZipRef) throw new Error('dataset built but returned no private asset reference');
       const segments = Number(out.segments ?? 0);
       const minutes = Math.round(Number(out.totalSeconds ?? 0) / 60);
       setDsInfo({ segments, minutes });
@@ -181,7 +181,7 @@ export function TrainMyVoice() {
         artistId,
         consentId: consent.id,
         name: name.trim() || 'My Voice',
-        datasetZipUrl,
+        datasetZipUrl: datasetZipRef,
       });
       void loadVoices();
       await pollTraining(t.profile.id);
@@ -196,12 +196,27 @@ export function TrainMyVoice() {
     }
   }
 
+  async function revokeVoice(voice: VoiceProfile) {
+    if (!confirm(`Revoke "${voice.name}"? Its consent will be revoked and owned samples, dataset, and model files will be deleted. This cannot be undone.`)) return;
+    setRevokingId(voice.id);
+    setError(null);
+    try {
+      await api.del(`/voices/${voice.id}`);
+      await loadVoices();
+    } catch (cause) {
+      setError(prettyError((cause as Error).message));
+    } finally {
+      setRevokingId(null);
+    }
+  }
+
   const statusBadge = (s: VoiceProfile['status']) => {
     const map: Record<VoiceProfile['status'], string> = {
       READY: 'bg-emerald-500/15 text-emerald-300',
       TRAINING: 'bg-amber-500/15 text-amber-300',
       PENDING: 'bg-slate-500/15 text-slate-300',
       FAILED: 'bg-red-500/15 text-red-300',
+      REVOKED: 'bg-slate-700/40 text-slate-400',
     };
     return <span className={`rounded-full px-2 py-0.5 text-[11px] ${map[s]}`}>{s.toLowerCase()}</span>;
   };
@@ -229,6 +244,17 @@ export function TrainMyVoice() {
                 <span className="truncate text-slate-200">{v.name}</span>
                 {v.artist?.stageName && <span className="text-xs text-slate-500">· {v.artist.stageName}</span>}
                 <span className="ml-auto">{statusBadge(v.status)}</span>
+                {v.status !== 'REVOKED' && (
+                  <button
+                    type="button"
+                    onClick={() => void revokeVoice(v)}
+                    disabled={revokingId === v.id}
+                    title="Revoke consent and delete this voice model"
+                    className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-slate-500 hover:bg-red-500/10 hover:text-red-300 disabled:opacity-50"
+                  >
+                    {revokingId === v.id ? <Loader2 className="h-4 w-4 animate-spin" /> : <Trash2 className="h-4 w-4" />}
+                  </button>
+                )}
               </li>
             ))}
           </ul>
@@ -261,11 +287,11 @@ export function TrainMyVoice() {
           </label>
         </div>
         <label className="mt-3 block text-xs text-slate-400">Consent statement
-          <textarea className="input mt-1 h-24 w-full" value={consentText} onChange={(e) => setConsentText(e.target.value)} disabled={busy} />
+          <textarea className="input mt-1 h-32 w-full" value={VOICE_CONSENT_TEXT} readOnly aria-readonly="true" />
         </label>
         <label className="mt-3 flex items-start gap-2 text-sm text-slate-300">
           <input type="checkbox" className="mt-1" checked={agreed} onChange={(e) => setAgreed(e.target.checked)} disabled={busy} />
-          I confirm I own this voice (or have written permission) and consent to cloning it.
+          I have read and accept this voice-model consent statement.
         </label>
       </section>
 

@@ -13,6 +13,8 @@ import { PLAN_CREDIT_GRANT_CENTS } from '@afrohit/shared';
 import { verifyWebhookSignature, type WebhookHeaders } from '../lib/paypal';
 import { creditReceiptEmail, sendEmail } from '../lib/email';
 import { track } from '../lib/observability';
+import { constantTimeSecretEqual } from '../lib/session';
+import { validateCreditPackCapture } from '../lib/billing-catalog';
 
 export default async function webhooks(app: FastifyInstance) {
   // Override the default JSON parser within this plugin scope so we keep the
@@ -110,7 +112,7 @@ export default async function webhooks(app: FastifyInstance) {
   // ---------- Music provider (Eleven / Stable Audio etc) ----------
   app.post('/music', async (req, reply) => {
     const internal = req.headers['x-internal-secret'];
-    if (internal !== process.env.INTERNAL_API_SECRET) {
+    if (!constantTimeSecretEqual(internal, process.env.INTERNAL_API_SECRET)) {
       // For real providers, replace this with provider-specific signature checks.
       return reply.code(401).send({ error: 'unauthorized' });
     }
@@ -120,7 +122,7 @@ export default async function webhooks(app: FastifyInstance) {
   // ---------- Video provider ----------
   app.post('/video', async (req, reply) => {
     const internal = req.headers['x-internal-secret'];
-    if (internal !== process.env.INTERNAL_API_SECRET) {
+    if (!constantTimeSecretEqual(internal, process.env.INTERNAL_API_SECRET)) {
       return reply.code(401).send({ error: 'unauthorized' });
     }
     return reply.send({ ok: true });
@@ -221,14 +223,11 @@ async function downgradeSubscription(event: PaypalEvent) {
 }
 
 async function creditCapture(event: PaypalEvent) {
-  const r = event.resource as { id?: string; custom_id?: string; amount?: { value: string; currency_code: string } };
+  const r = event.resource as { id?: string; status?: string; custom_id?: string; amount?: { value: string; currency_code: string } };
   if (!r.id || !r.custom_id) return;
-  let meta: { workspaceId: string; pack: string; creditsCents: number };
-  try {
-    meta = JSON.parse(r.custom_id);
-  } catch {
-    return;
-  }
+  if (r.status !== 'COMPLETED') return;
+  const meta = validateCreditPackCapture(r.custom_id, r.amount);
+  if (!meta) return;
   // Idempotency — keyed by capture id (r.id), not the event id, so the
   // return-URL path and the webhook path collapse to the same row.
   const existing = await prisma.creditLedger.findUnique({ where: { paypalEventId: r.id } });

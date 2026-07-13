@@ -1,4 +1,4 @@
-import { prisma } from '@afrohit/db';
+import { openSecret, prisma } from '@afrohit/db';
 import { separateStemsRouted } from '../lib/demucs-local';
 import { markFailed, markRunning, markSucceeded } from '../lib/jobs';
 import { downloadToBuffer, ingestRemoteFile, uploadBytes } from '../lib/storage';
@@ -37,7 +37,11 @@ interface StemsPayload {
 export async function processStems(p: StemsPayload) {
   await markRunning(p.jobId);
   try {
-    const ws = await prisma.workspace.findUnique({ where: { id: p.workspaceId }, select: { musicApiKey: true } });
+    const ws = await prisma.workspace.findUnique({
+      where: { id: p.workspaceId },
+      select: { musicProvider: true, musicApiKey: true },
+    });
+    const replicateApiKey = ws?.musicProvider === 'replicate' ? openSecret(ws.musicApiKey) : undefined;
     // A FINISHED-SONG harvest (the mixes /upload bridge, /import kind=song) has
     // NO beat row — the record lives as a Mix. The split still runs off the
     // payload's sourceUrl; only the beat-attached Stem rows get skipped below.
@@ -50,7 +54,7 @@ export async function processStems(p: StemsPayload) {
       // Stem rows are beat-scoped — this path cannot run without one. Fail with
       // the real reason, never a silent no-op.
       if (!beat) throw new Error('instrumental/acapella needs a beat row to attach stems to — none found for this song');
-      await processTrueInstrumental(p, beat, ws?.musicApiKey ?? undefined, mode);
+      await processTrueInstrumental(p, beat, replicateApiKey, mode);
       return;
     }
 
@@ -60,7 +64,7 @@ export async function processStems(p: StemsPayload) {
     // A3-4: user-facing stems stay on the fast paid path by default; DEMUCS_MODE=local forces local.
     const sepSource = p.sourceUrl || beat?.url;
     if (!sepSource) throw new Error('nothing to separate — no sourceUrl in the payload and no beat on this song');
-    const result = await separateStemsRouted({ audioUrl: sepSource, apiKey: ws?.musicApiKey ?? undefined, mode: 'full', purpose: 'user', workspaceId: p.workspaceId });
+    const result = await separateStemsRouted({ audioUrl: sepSource, apiKey: replicateApiKey, mode: 'full', purpose: 'user', workspaceId: p.workspaceId });
     if (!result.stems.length) throw new Error('stem separation returned no audio');
 
     // Re-host to our bucket (parallel), then persist as Stem rows.

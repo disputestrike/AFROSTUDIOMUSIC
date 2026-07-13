@@ -44,19 +44,19 @@ export async function processExport(p: ExportPayload) {
       orderBy: { createdAt: 'desc' },
     });
     const vocal = await prisma.vocalRender.findFirst({
-      where: { songId: song.id },
+      where: { songId: song.id, approved: true },
       orderBy: { createdAt: 'desc' },
     });
     const cover = await prisma.imageAsset.findFirst({
-      where: { projectId: song.projectId, kind: 'cover' },
+      where: { projectId: song.projectId, kind: 'cover', approved: true },
       orderBy: { createdAt: 'desc' },
     });
     const video = await prisma.videoRender.findFirst({
-      where: { projectId: song.projectId },
+      where: { projectId: song.projectId, approved: true },
       orderBy: { createdAt: 'desc' },
     });
     const receipt = p.receiptId
-      ? await prisma.rightsReceipt.findUnique({ where: { id: p.receiptId } })
+      ? await prisma.rightsReceipt.findFirst({ where: { id: p.receiptId, songId: song.id } })
       : await prisma.rightsReceipt.findFirst({
           where: { songId: song.id },
           orderBy: { createdAt: 'desc' },
@@ -70,7 +70,7 @@ export async function processExport(p: ExportPayload) {
       return;
     }
     const rightsVerdict = (receipt?.prompts ?? {}) as { rightsCheck?: { okToExport?: boolean; overallRisk?: string } };
-    if (rightsVerdict.rightsCheck && (rightsVerdict.rightsCheck.okToExport === false || rightsVerdict.rightsCheck.overallRisk === 'high')) {
+    if (!receipt || rightsVerdict.rightsCheck?.okToExport !== true || rightsVerdict.rightsCheck.overallRisk === 'high') {
       await markFailed(p.jobId, 'export_blocked: rights review is not clear (okToExport=false / high risk). Resolve the flagged rights issues first.');
       return;
     }

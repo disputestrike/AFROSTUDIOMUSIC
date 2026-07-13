@@ -17,35 +17,35 @@ const { allAutonomyFlags, setAutonomyEnabled } = db as unknown as {
   setAutonomyEnabled(job: AutonomyJob, enabled: boolean): Promise<void>;
 };
 import { isInternalMode, requireAuth } from '../middleware/auth';
+import { validAdminGrant } from '../lib/session';
 import { isFirstPartyWorkspace, resolveEngineForWorkspace } from '@afrohit/shared';
 import { enqueue, QUEUES, type QueueName } from '../lib/queue';
 
-export async function requireAdmin(req: FastifyRequest): Promise<void> {
-  const { userId } = requireAuth(req);
+export async function hasAdminAccess(req: FastifyRequest): Promise<boolean> {
+  const { userId, workspaceId } = requireAuth(req);
   // WO-1 SAFETY RAIL: the API is publicly reachable, and in internal mode
   // requireAuth never rejects — so "the one resolved user IS the operator" made
   // every admin/trigger route (spend triggers included) open to the internet.
-  // Internal mode now requires the ADMIN_SECRET header. No secret configured =
-  // 401 for everyone (set ADMIN_SECRET on the API service; send x-admin-secret).
+  // Internal mode exchanges ADMIN_SECRET for a bounded HttpOnly grant. The raw
+  // operator secret is never persisted by browser JavaScript.
   if (isInternalMode()) {
-    const secret = process.env.ADMIN_SECRET ?? '';
-    const given = String(req.headers['x-admin-secret'] ?? '');
-    if (!secret) {
-      throw Object.assign(new Error('admin locked: set ADMIN_SECRET on the API service and send the x-admin-secret header'), { statusCode: 401 });
-    }
-    if (given !== secret) throw Object.assign(new Error('unauthorized'), { statusCode: 401 });
-    return;
+    return validAdminGrant(req, userId, workspaceId);
   }
   // Multi-user modes: gate by ADMIN_EMAILS allowlist.
   const allow = (process.env.ADMIN_EMAILS ?? '')
     .split(',')
     .map((s) => s.trim().toLowerCase())
     .filter(Boolean);
-  if (allow.length === 0) throw Object.assign(new Error('admin not configured'), { statusCode: 403 });
+  if (allow.length === 0) return false;
   const user = await prisma.user.findUnique({ where: { id: userId }, select: { email: true } });
-  if (!user || !allow.includes(user.email.toLowerCase())) {
-    throw Object.assign(new Error('forbidden'), { statusCode: 403 });
-  }
+  return !!user && allow.includes(user.email.toLowerCase());
+}
+
+export async function requireAdmin(req: FastifyRequest): Promise<void> {
+  if (await hasAdminAccess(req)) return;
+  const statusCode = isInternalMode() ? 401 : 403;
+  const message = isInternalMode() ? 'admin locked: unlock this browser session' : 'forbidden';
+  throw Object.assign(new Error(message), { statusCode });
 }
 
 const grantSchema = z.object({
@@ -54,6 +54,8 @@ const grantSchema = z.object({
 });
 
 export default async function admin(app: FastifyInstance) {
+  app.get('/status', async (req) => ({ admin: await hasAdminAccess(req) }));
+
   // One-tap compounding: run the lake jobs NOW instead of waiting for tonight.
   const runSchema = z.object({ task: z.enum(['nightly-compound', 'measure-backfill', 'learn-backfill', 'listen-back', 'refile-references', 'mine-lexicon', 'lexicon-research', 'wiktionary-harvest', 'wiktionary-burst', 'lexicon-gloss', 'lexicon-verify']) });
   app.post('/run', { schema: { body: runSchema } }, async (req, reply) => {

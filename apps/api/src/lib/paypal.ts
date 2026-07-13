@@ -37,8 +37,12 @@ async function getAccessToken(): Promise<string> {
       'content-type': 'application/x-www-form-urlencoded',
     },
     body: 'grant_type=client_credentials',
+    signal: AbortSignal.timeout(30_000),
   });
-  if (!res.ok) throw new Error(`paypal oauth ${res.status}: ${await res.text()}`);
+  if (!res.ok) {
+    await res.body?.cancel().catch(() => undefined);
+    throw new Error(`paypal oauth failed (${res.status}, debug ${res.headers.get('paypal-debug-id') ?? 'unavailable'})`);
+  }
   const data = (await res.json()) as { access_token: string; expires_in: number };
   _token = {
     accessToken: data.access_token,
@@ -64,10 +68,11 @@ async function paypal<T>(
       ...(extraHeaders ?? {}),
     },
     body: body == null ? undefined : JSON.stringify(body),
+    signal: AbortSignal.timeout(30_000),
   });
   if (!res.ok) {
-    const text = await res.text();
-    throw new Error(`paypal ${method} ${path} → ${res.status}: ${text}`);
+    await res.body?.cancel().catch(() => undefined);
+    throw new Error(`paypal ${method} ${path} failed (${res.status}, debug ${res.headers.get('paypal-debug-id') ?? 'unavailable'})`);
   }
   if (res.status === 204) return undefined as T;
   return (await res.json()) as T;
@@ -156,6 +161,7 @@ export async function captureOrder(orderId: string) {
     id: string;
     status: string;
     purchase_units: Array<{
+      custom_id?: string;
       payments?: {
         captures?: Array<{ id: string; status: string; amount: { value: string; currency_code: string }; custom_id?: string }>;
       };

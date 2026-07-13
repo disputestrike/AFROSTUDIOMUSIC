@@ -66,11 +66,16 @@ export default function AdminPage() {
     void load();
   }, []);
 
-  function saveKey() {
+  async function saveKey() {
     if (!keyInput.trim()) return;
-    localStorage.setItem('afrohit.adminKey', keyInput.trim());
-    setKeyInput('');
-    void load();
+    setActionErr('');
+    try {
+      await api.post('/auth/admin-unlock', { secret: keyInput.trim() });
+      setKeyInput('');
+      await load();
+    } catch (error) {
+      setActionErr(actionErrText('Unlock failed', error));
+    }
   }
 
   async function grant(id: string) {
@@ -112,21 +117,22 @@ export default function AdminPage() {
         <h1 className="font-display text-3xl">Admin key required</h1>
         <p className="mt-3 text-sm text-slate-400">
           Admin routes are locked (safety rail — the API is public). Enter the <code>ADMIN_SECRET</code> you set on the API
-          service; it is stored only in this browser.
+          service. The secret is exchanged for a two-hour HttpOnly browser grant and is not stored in web storage.
         </p>
         <div className="mt-5 flex gap-2">
           <input
             type="password"
             value={keyInput}
             onChange={(e) => setKeyInput(e.target.value)}
-            onKeyDown={(e) => e.key === 'Enter' && saveKey()}
+            onKeyDown={(e) => { if (e.key === 'Enter') void saveKey(); }}
             placeholder="ADMIN_SECRET"
             className="flex-1 rounded-xl border border-white/15 bg-white/5 px-3 py-2 text-sm"
           />
-          <button onClick={saveKey} className="rounded-xl bg-brand-gradient px-4 py-2 text-sm font-medium text-ink">
+          <button onClick={() => void saveKey()} className="rounded-xl bg-brand-gradient px-4 py-2 text-sm font-medium text-ink">
             Unlock
           </button>
         </div>
+        {actionErr && <p className="mt-3 text-xs text-red-300">{actionErr}</p>}
       </div>
     );
   }

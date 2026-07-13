@@ -1,4 +1,7 @@
 import { PrismaClient, Prisma } from '@prisma/client';
+import { isSealedSecret, sealSecret } from './secrets';
+
+export * from './secrets';
 
 declare global {
   var __afrohit_prisma: PrismaClient | undefined;
@@ -19,6 +22,24 @@ if (process.env.NODE_ENV !== 'production') {
 
 export { Prisma };
 export * from '@prisma/client';
+
+/** Encrypt legacy plaintext integration keys without overwriting concurrent edits. */
+export async function migratePlaintextWorkspaceSecrets(): Promise<number> {
+  const rows = await prisma.workspace.findMany({
+    where: { musicApiKey: { not: null } },
+    select: { id: true, musicApiKey: true },
+  });
+  let migrated = 0;
+  for (const row of rows) {
+    if (!row.musicApiKey || isSealedSecret(row.musicApiKey)) continue;
+    const result = await prisma.workspace.updateMany({
+      where: { id: row.id, musicApiKey: row.musicApiKey },
+      data: { musicApiKey: sealSecret(row.musicApiKey) },
+    });
+    migrated += result.count;
+  }
+  return migrated;
+}
 
 /**
  * AUTONOMY FLAGS — live operator on/off for the money-spending background jobs,

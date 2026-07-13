@@ -2,7 +2,7 @@ import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { prisma } from '@afrohit/db';
 import { costOf } from '@afrohit/shared';
-import { requireAuth } from '../middleware/auth';
+import { requireAuth, requireRole } from '../middleware/auth';
 import {
   approveUrlOf,
   cancelSubscription,
@@ -11,6 +11,7 @@ import {
   createSubscription,
   getSubscription,
 } from '../lib/paypal';
+import { CREDIT_PACK_KEYS, CREDIT_PACKS, validateCreditPackCapture } from '../lib/billing-catalog';
 
 /** PayPal Billing Plan IDs per tier — created once in the PayPal dashboard. */
 const PLAN_ID_FOR_TIER: Record<string, string | undefined> = {
@@ -20,22 +21,8 @@ const PLAN_ID_FOR_TIER: Record<string, string | undefined> = {
   STUDIO: process.env.PAYPAL_PLAN_STUDIO,
 };
 
-/** Credit pack USD amount → credits granted (in 1/100-cent units). */
-const PACK_USD: Record<string, number> = {
-  pack_10: 10,
-  pack_25: 25,
-  pack_50: 50,
-  pack_100: 100,
-};
-const PACK_CREDITS_CENTS: Record<string, number> = {
-  pack_10: 10 * 100 * 100, // $10 → 1,000,000 micro-cents
-  pack_25: 25 * 100 * 100,
-  pack_50: 50 * 100 * 100,
-  pack_100: 100 * 100 * 100,
-};
-
 function urls() {
-  const web = process.env.WEB_URL ?? 'http://localhost:3000';
+  const web = (process.env.WEB_URL ?? 'http://localhost:3000').split(',')[0]!.trim();
   const api = process.env.API_URL ?? 'http://localhost:4000';
   return {
     // After approval, PayPal redirects user to the API, which finalizes (capture/refresh) and forwards to the web success page.
@@ -49,7 +36,7 @@ function urls() {
 }
 
 const subscribeSchema = z.object({ plan: z.enum(['STARTER', 'CREATOR', 'PRO', 'STUDIO']) });
-const packSchema = z.object({ pack: z.enum(['pack_10', 'pack_25', 'pack_50', 'pack_100']) });
+const packSchema = z.object({ pack: z.enum(CREDIT_PACK_KEYS) });
 
 export default async function billing(app: FastifyInstance) {
   /**
@@ -92,7 +79,7 @@ export default async function billing(app: FastifyInstance) {
 
   /** Create a PayPal Subscription and return the approve URL the web app redirects to. */
   app.post('/checkout/subscribe', { schema: { body: subscribeSchema } }, async (req, reply) => {
-    const { workspaceId } = requireAuth(req);
+    const { workspaceId } = requireRole(req, ['OWNER', 'ADMIN']);
     const { plan } = subscribeSchema.parse(req.body);
     const planId = PLAN_ID_FOR_TIER[plan];
     if (!planId) return reply.code(400).send({ error: 'unknown_plan_or_unconfigured' });
@@ -120,11 +107,9 @@ export default async function billing(app: FastifyInstance) {
 
   /** Create a PayPal Order for a credit pack and return the approve URL. */
   app.post('/checkout/credits', { schema: { body: packSchema } }, async (req, reply) => {
-    const { workspaceId } = requireAuth(req);
+    const { workspaceId } = requireRole(req, ['OWNER', 'ADMIN']);
     const { pack } = packSchema.parse(req.body);
-    const amount = PACK_USD[pack];
-    const creditsCents = PACK_CREDITS_CENTS[pack];
-    if (!amount || !creditsCents) return reply.code(400).send({ error: 'unknown_pack' });
+    const { amountUsd: amount, creditsCents } = CREDIT_PACKS[pack];
 
     const u = urls();
     const order = await createOrder({
@@ -181,13 +166,16 @@ export default async function billing(app: FastifyInstance) {
       if (!orderId) return reply.redirect(`${u.webCancel}?reason=missing_order`, 302);
       try {
         const captured = await captureOrder(orderId);
-        const cap = captured.purchase_units?.[0]?.payments?.captures?.[0];
-        const customId = cap?.custom_id;
-        if (!cap || !customId) {
-          req.log.warn({ orderId, captured }, 'paypal capture missing custom_id');
+        const unit = captured.purchase_units?.[0];
+        const cap = unit?.payments?.captures?.[0];
+        const customId = cap?.custom_id ?? unit?.custom_id;
+        const meta = cap && customId && cap.status === 'COMPLETED' && captured.status === 'COMPLETED'
+          ? validateCreditPackCapture(customId, cap.amount)
+          : null;
+        if (!cap || !meta) {
+          req.log.warn({ orderId, status: captured.status, captureStatus: cap?.status }, 'paypal capture failed catalog validation');
           return reply.redirect(`${u.webSuccess}?type=order&status=${encodeURIComponent(captured.status)}`, 302);
         }
-        const meta = JSON.parse(customId) as { workspaceId: string; pack: string; creditsCents: number };
 
         // Idempotent credit application keyed by the *capture id*.
         const existing = await prisma.creditLedger.findUnique({ where: { paypalEventId: cap.id } });
@@ -211,6 +199,9 @@ export default async function billing(app: FastifyInstance) {
 
         return reply.redirect(`${u.webSuccess}?type=order&status=COMPLETED`, 302);
       } catch (err) {
+        if ((err as { code?: string }).code === 'P2002') {
+          return reply.redirect(`${u.webSuccess}?type=order&status=COMPLETED`, 302);
+        }
         req.log.error({ err, orderId }, 'paypal capture failed');
         return reply.redirect(`${u.webCancel}?reason=capture_failed`, 302);
       }
@@ -222,7 +213,7 @@ export default async function billing(app: FastifyInstance) {
    * BILLING.SUBSCRIPTION.CANCELLED, which downgrades the workspace plan.
    */
   app.post('/subscription/cancel', async (req, reply) => {
-    const { workspaceId } = requireAuth(req);
+    const { workspaceId } = requireRole(req, ['OWNER', 'ADMIN']);
     const ws = await prisma.workspace.findUniqueOrThrow({ where: { id: workspaceId } });
     if (!ws.paypalSubscriptionId) return reply.code(400).send({ error: 'no_active_subscription' });
     await cancelSubscription(ws.paypalSubscriptionId, 'user_request');

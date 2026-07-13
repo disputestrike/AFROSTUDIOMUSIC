@@ -1,11 +1,11 @@
-import { prisma } from '@afrohit/db';
+import { openSecret, prisma } from '@afrohit/db';
 import { analyzeAudio } from '@afrohit/ai';
 import { analysisCoverage, unknownAnalysis } from '@afrohit/shared';
 import { markFailed, markRunning, markSucceeded } from '../lib/jobs';
 import { measureAudio, dspAvailable } from '../lib/dsp';
 import { enqueueJob } from '../lib/enqueue';
 import { ffmpegAvailable, extractClip, measureAudioQuality } from '../lib/ffmpeg';
-import { downloadToBuffer, uploadBytes } from '../lib/storage';
+import { downloadToBuffer, resolveAssetForProvider, uploadBytes } from '../lib/storage';
 
 interface AnalyzePayload {
   jobId: string;
@@ -30,8 +30,9 @@ export async function processAnalyze(p: AnalyzePayload) {
   try {
     const ws = await prisma.workspace.findUnique({
       where: { id: p.workspaceId },
-      select: { musicApiKey: true },
+      select: { musicProvider: true, musicApiKey: true },
     });
+    const replicateApiKey = ws?.musicProvider === 'replicate' ? openSecret(ws.musicApiKey) : undefined;
     // Genre the uploader says this is — anchors the analysis (their own song).
     const project = await prisma.project.findUnique({ where: { id: p.projectId }, select: { artistId: true, genre: true } });
 
@@ -95,7 +96,7 @@ export async function processAnalyze(p: AnalyzePayload) {
       metrics = null;
     }
 
-    const profile = await analyzeAudio(analyzeUrl, ws?.musicApiKey ?? undefined, {
+    const profile = await analyzeAudio(await resolveAssetForProvider(analyzeUrl), replicateApiKey, {
       genreHint: project?.genre ?? null,
       metrics,
     });

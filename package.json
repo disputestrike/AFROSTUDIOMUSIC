@@ -27,7 +27,7 @@
     "infra:up": "docker compose -f docker-compose.dev.yml up -d",
     "infra:down": "docker compose -f docker-compose.dev.yml down",
     "format": "prettier --write \"**/*.{ts,tsx,md,json}\"",
-    "verify": "pnpm --filter @afrohit/shared build && pnpm --filter @afrohit/ai build && pnpm --filter @afrohit/web typecheck && pnpm --filter @afrohit/api typecheck:shim && pnpm --filter @afrohit/worker typecheck:shim && pnpm --filter @afrohit/worker test"
+    "verify": "pnpm --filter @afrohit/shared build && pnpm --filter @afrohit/db build && pnpm --filter @afrohit/ai build && pnpm --filter @afrohit/web typecheck && pnpm --filter @afrohit/api typecheck:shim && pnpm --filter @afrohit/worker typecheck:shim && pnpm --filter @afrohit/worker test"
   },
   "devDependencies": {
     "@eslint/js": "^9.39.4",
@@ -43,7 +43,8 @@
   },
   "pnpm": {
     "overrides": {
-      "form-data@>=4.0.0 <4.0.6": "4.0.6"
+      "form-data@>=4.0.0 <4.0.6": "4.0.6",
+      "postcss@<8.5.10": "8.5.10"
     }
   }
 }

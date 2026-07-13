@@ -26,6 +26,9 @@ interface VoiceDatasetPayload {
   sampleUrls: string[];
 }
 
+const MAX_SAMPLE_BYTES = 64 * 1024 * 1024;
+const MAX_TOTAL_SECONDS = 30 * 60;
+
 export async function processVoiceDataset(p: VoiceDatasetPayload) {
   await markRunning(p.jobId);
   const dir = await mkdtemp(join(tmpdir(), 'voiceds-'));
@@ -39,11 +42,16 @@ export async function processVoiceDataset(p: VoiceDatasetPayload) {
 
     // 1) download + convert + split each sample into ~10s 48k mono wav segments.
     const segmentPaths: string[] = [];
+    let sourceSeconds = 0;
     for (let i = 0; i < p.sampleUrls.length; i++) {
       const url = p.sampleUrls[i]!;
-      const raw = await downloadToBuffer(url);
+      const raw = await downloadToBuffer(url, { maxBytes: MAX_SAMPLE_BYTES });
       const inPath = join(dir, `in${i}`);
       await writeFile(inPath, raw);
+      const duration = await probeDurationS(inPath);
+      if (!Number.isFinite(duration) || duration <= 0) throw new Error('voice_dataset_invalid_audio_duration');
+      sourceSeconds += duration;
+      if (sourceSeconds > MAX_TOTAL_SECONDS) throw new Error('voice_dataset_exceeds_30_minutes');
       await runFfmpeg([
         '-i', inPath,
         '-ac', '1', '-ar', '48000', '-c:a', 'pcm_s16le',
@@ -79,8 +87,8 @@ export async function processVoiceDataset(p: VoiceDatasetPayload) {
       compressionOptions: { level: 6 },
     });
 
-    // 3) host it — the trainer downloads this URL directly.
-    const datasetZipUrl = await uploadBytes({
+    // 3) store it privately. The API signs it only when training begins.
+    const datasetZipRef = await uploadBytes({
       workspaceId: p.workspaceId,
       kind: 'voice',
       bytes: zipBytes,
@@ -89,13 +97,13 @@ export async function processVoiceDataset(p: VoiceDatasetPayload) {
     });
 
     await markSucceeded(p.jobId, {
-      datasetZipUrl,
+      datasetZipRef,
       segments,
       totalSeconds: Math.round(totalSeconds),
       note:
         totalSeconds < 600
-          ? `Dataset ready (${Math.round(totalSeconds / 60)} min). 10–20 minutes of clean solo vocals train the best voice — add more takes if you can, then POST /voices/train with datasetZipUrl.`
-          : 'Dataset ready — POST /voices/train with datasetZipUrl.',
+          ? `Dataset ready (${Math.round(totalSeconds / 60)} min). 10–20 minutes of clean solo vocals train the best voice — add more takes if you can, then start training.`
+          : 'Dataset ready — start training when ready.',
     });
   } catch (err) {
     await markFailed(p.jobId, err);

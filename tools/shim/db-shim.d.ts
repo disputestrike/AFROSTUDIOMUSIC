@@ -14,4 +14,10 @@ declare module '@afrohit/db' {
   export const isAutonomyEnabled: any;
   export const setAutonomyEnabled: any;
   export const allAutonomyFlags: any;
+  export const assertSecretConfiguration: () => void;
+  export const isSealedSecret: (value: string | null | undefined) => boolean;
+  export const sealSecret: (plaintext: string) => string;
+  export const openSecret: (stored: string | null | undefined) => string | undefined;
+  export const secretHint: (stored: string | null | undefined) => string | null;
+  export const migratePlaintextWorkspaceSecrets: () => Promise<number>;
 }

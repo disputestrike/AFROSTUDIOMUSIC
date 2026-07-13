@@ -7,7 +7,7 @@
  * the background and upgrades the stored reference in place. Same stem-grade
  * log-drum facts, nobody waiting on a stepper. Idempotent via recipe.deepMeasured.
  */
-import { prisma } from '@afrohit/db';
+import { openSecret, prisma } from '@afrohit/db';
 import { separateStemsRouted } from '../lib/demucs-local';
 import { measureAudio, dspAvailable, type StemInputs } from '../lib/dsp';
 
@@ -30,10 +30,14 @@ export async function processDeepMeasure(p: DeepMeasurePayload): Promise<void> {
     let sourceGone = false;
     if (process.env.DSP_STEMS !== '0') {
       try {
-        const ws = await prisma.workspace.findUnique({ where: { id: p.workspaceId }, select: { musicApiKey: true } });
+        const ws = await prisma.workspace.findUnique({
+          where: { id: p.workspaceId },
+          select: { musicProvider: true, musicApiKey: true },
+        });
+        const replicateApiKey = ws?.musicProvider === 'replicate' ? openSecret(ws.musicApiKey) : undefined;
         // A3-4: nightly/backfill separation runs LOCAL by default (≈$0) — the
         // paid path is the fallback, not the habit.
-        const sep = await separateStemsRouted({ audioUrl: p.url, mode: 'full', apiKey: ws?.musicApiKey ?? undefined, purpose: 'measure', workspaceId: p.workspaceId });
+        const sep = await separateStemsRouted({ audioUrl: p.url, mode: 'full', apiKey: replicateApiKey, purpose: 'measure', workspaceId: p.workspaceId });
         const byRole = (r: string) => sep.stems.find((s) => s.role === r)?.url;
         stems = { bass: byRole('bass'), drums: byRole('drums'), other: byRole('other'), vocals: byRole('vocals') };
       } catch (e) {

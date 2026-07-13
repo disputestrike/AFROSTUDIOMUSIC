@@ -28,58 +28,59 @@ datasource db {
 // ===========================================================================
 
 model Workspace {
-  id            String   @id @default(cuid())
-  name          String
-  slug          String   @unique
-  plan          Plan     @default(STARTER)
-  creditsCents  Int      @default(0) // credit balance in 1/100 cents (precision)
-  paypalSubscriptionId String? @unique // PayPal Subscription ID (BA-... / I-...) for the active plan
-  musicProvider String?  // "replicate" | "suno" | null → falls back to env/stub
-  musicApiKey   String?  // provider API key set in-app (internal tenant; keep DB private)
-  createdAt     DateTime @default(now()) @db.Timestamptz(6)
-  updatedAt     DateTime @updatedAt @db.Timestamptz(6)
-  deletedAt     DateTime?
-  suspendedAt   DateTime? // admin suspension — auth middleware rejects with 403
+  id                   String    @id @default(cuid())
+  name                 String
+  slug                 String    @unique
+  plan                 Plan      @default(STARTER)
+  creditsCents         Int       @default(0) // credit balance in 1/100 cents (precision)
+  paypalSubscriptionId String?   @unique // PayPal Subscription ID (BA-... / I-...) for the active plan
+  musicProvider        String? // "replicate" | "suno" | null → falls back to env/stub
+  musicApiKey          String? // provider API key set in-app (internal tenant; keep DB private)
+  createdAt            DateTime  @default(now()) @db.Timestamptz(6)
+  updatedAt            DateTime  @updatedAt @db.Timestamptz(6)
+  deletedAt            DateTime?
+  suspendedAt          DateTime? // admin suspension — auth middleware rejects with 403
 
-  members       WorkspaceMember[]
-  artists       Artist[]
-  projects      Project[]
-  voiceConsents VoiceConsent[]
-  voiceProfiles VoiceProfile[]
-  brandKits     BrandKit[]
-  songs         Song[]
-  jobs          ProviderJob[]
-  rightsReceipts RightsReceipt[]
-  shareLinks    ShareLink[]
-  shareEvents   ShareEvent[]
+  members            WorkspaceMember[]
+  artists            Artist[]
+  projects           Project[]
+  voiceConsents      VoiceConsent[]
+  voiceProfiles      VoiceProfile[]
+  brandKits          BrandKit[]
+  songs              Song[]
+  jobs               ProviderJob[]
+  rightsReceipts     RightsReceipt[]
+  shareLinks         ShareLink[]
+  shareEvents        ShareEvent[]
   artistMemoryChunks ArtistMemoryChunk[]
-  approvals     Approval[]
-  releases      Release[]
-  benchmarkRatings BenchmarkRating[]
-  chatThreads   ChatThread[]
-  ledgerEntries CreditLedger[]
-  analyticsEvents AnalyticsEvent[]
-  albums        Album[]
-  materials     MaterialAsset[]
+  approvals          Approval[]
+  releases           Release[]
+  benchmarkRatings   BenchmarkRating[]
+  chatThreads        ChatThread[]
+  ledgerEntries      CreditLedger[]
+  analyticsEvents    AnalyticsEvent[]
+  albums             Album[]
+  materials          MaterialAsset[]
 
   @@index([slug])
 }
 
 model User {
-  id            String   @id @default(cuid())
-  clerkId       String   @unique
-  email         String   @unique
-  fullName      String?
-  avatarUrl     String?
+  id           String   @id @default(cuid())
+  clerkId      String   @unique
+  email        String   @unique
+  fullName     String?
+  avatarUrl    String?
   /// scrypt hash "salt:hex" for email+password auth (AUTH_MODE=jwt). Null for
   /// identities created by other means (internal owner, future OAuth).
-  passwordHash  String?
-  createdAt     DateTime @default(now()) @db.Timestamptz(6)
-  updatedAt     DateTime @updatedAt @db.Timestamptz(6)
+  passwordHash String?
+  createdAt    DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt    DateTime @updatedAt @db.Timestamptz(6)
 
   memberships   WorkspaceMember[]
   chatThreads   ChatThread[]
   approvals     Approval[]
+  voiceConsents VoiceConsent[]
 }
 
 model WorkspaceMember {
@@ -89,8 +90,8 @@ model WorkspaceMember {
   role        Role     @default(OWNER)
   createdAt   DateTime @default(now()) @db.Timestamptz(6)
 
-  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@unique([workspaceId, userId])
   @@index([userId])
@@ -117,35 +118,36 @@ enum Plan {
 // ===========================================================================
 
 model Artist {
-  id            String   @id @default(cuid())
-  workspaceId   String
-  name          String
-  stageName     String
-  bio           String?
+  id              String   @id @default(cuid())
+  workspaceId     String
+  name            String
+  stageName       String
+  bio             String?
   // Vocal DNA
-  vocalRangeLow String?   // e.g. "G2"
-  vocalRangeHigh String?  // e.g. "C5"
-  vocalTone     String[]  @default([])  // "smooth", "raspy", "nasal", "airy"
-  defaultBpmMin Int?
-  defaultBpmMax Int?
+  vocalRangeLow   String? // e.g. "G2"
+  vocalRangeHigh  String? // e.g. "C5"
+  vocalTone       String[] @default([]) // "smooth", "raspy", "nasal", "airy"
+  defaultBpmMin   Int?
+  defaultBpmMax   Int?
   // Languages the artist can deliver naturally
-  languages     String[] @default([])  // ISO-ish: "yo","ig","ha","pcm","en"
+  languages       String[] @default([]) // ISO-ish: "yo","ig","ha","pcm","en"
   // Style lane (free-text + tags)
-  laneSummary   String?  @db.Text
-  references    Json?    // [{name:"Wizkid", lane:"smooth", note:"pocket reference only"}]
+  laneSummary     String?  @db.Text
+  references      Json? // [{name:"Wizkid", lane:"smooth", note:"pocket reference only"}]
   forbiddenStyles String[] @default([])
-  slang         Json?    // [{phrase:"omo", meaning:"man/exclam", language:"pcm"}]
+  slang           Json? // [{phrase:"omo", meaning:"man/exclam", language:"pcm"}]
   approvedPhrases Json?
-  cornyBanned   String[] @default([])
+  cornyBanned     String[] @default([])
   // Automation flags
-  morningDrop   Boolean  @default(false) // nightly cron: generate + score hooks, email top 10
-  autoPilot     Boolean  @default(false) // reserved: overnight hook→demo pipeline (not yet wired)
-  createdAt     DateTime @default(now()) @db.Timestamptz(6)
-  updatedAt     DateTime @updatedAt @db.Timestamptz(6)
+  morningDrop     Boolean  @default(false) // nightly cron: generate + score hooks, email top 10
+  autoPilot       Boolean  @default(false) // reserved: overnight hook→demo pipeline (not yet wired)
+  createdAt       DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt       DateTime @updatedAt @db.Timestamptz(6)
 
-  workspace     Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  workspace     Workspace           @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
   projects      Project[]
   voiceProfiles VoiceProfile[]
+  voiceConsents VoiceConsent[]
   brandKits     BrandKit[]
   releases      Release[]
   memoryChunks  ArtistMemoryChunk[]
@@ -158,48 +160,57 @@ model Artist {
 // ===========================================================================
 
 model VoiceConsent {
-  id              String   @id @default(cuid())
+  id              String    @id @default(cuid())
   workspaceId     String
+  artistId        String?
+  signerUserId    String?
   legalName       String
   email           String
-  consentText     String   @db.Text
-  consentAudioUrl String?  // recorded statement reading the disclosure
-  signatureUrl    String?  // signature image
-  ipAddress       String?
+  consentText     String    @db.Text
+  consentVersion  String    @default("legacy")
+  consentTextHash String?
+  consentAudioUrl String? // recorded statement reading the disclosure
+  signatureUrl    String? // signature image
+  ipAddress       String? // legacy only; purged by the versioned-consent migration
+  ipHash          String?
   userAgent       String?
-  signedAt        DateTime @default(now()) @db.Timestamptz(6)
+  signedAt        DateTime  @default(now()) @db.Timestamptz(6)
   revokedAt       DateTime?
 
-  workspace       Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  voiceProfiles   VoiceProfile[]
+  workspace     Workspace      @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  artist        Artist?        @relation(fields: [artistId], references: [id], onDelete: Cascade)
+  signer        User?          @relation(fields: [signerUserId], references: [id], onDelete: SetNull)
+  voiceProfiles VoiceProfile[]
 
   @@index([workspaceId])
+  @@index([artistId])
+  @@index([signerUserId])
 }
 
 model VoiceProfile {
-  id            String   @id @default(cuid())
-  workspaceId   String
-  artistId      String
-  consentId     String
-  name          String
-  provider      String   // "eleven" | "openai" | "stub"
-  providerVoiceId String? // external ID from the provider
-  status        VoiceProfileStatus @default(PENDING)
-  sampleUrls    String[] @default([])  // raw uploaded samples
-  language      String?  // primary language
-  meta          Json?
+  id               String             @id @default(cuid())
+  workspaceId      String
+  artistId         String
+  consentId        String
+  name             String
+  provider         String // "eleven" | "openai" | "stub"
+  providerVoiceId  String? // external ID from the provider
+  status           VoiceProfileStatus @default(PENDING)
+  sampleUrls       String[]           @default([]) // raw uploaded samples
+  language         String? // primary language
+  meta             Json?
   // OWN-VOICE TRAINING (Replicate trainings API): the artist trains a singing
   // model on HIS OWN recordings; weights land in HIS Replicate account.
   trainingId       String? // Replicate training id (polled via GET /voices/:id/training)
   destinationModel String? // "user/model" destination in the artist's Replicate account (keep private)
   trainedVersion   String? // version identifier once training succeeds
-  trainingMeta     Json?   // {datasetZipUrl, trainer, at, externalDataset?, output?, error?}
-  createdAt     DateTime @default(now()) @db.Timestamptz(6)
+  trainingMeta     Json? // {datasetZipUrl, trainer, at, externalDataset?, output?, error?}
+  createdAt        DateTime           @default(now()) @db.Timestamptz(6)
 
-  workspace     Workspace    @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  artist        Artist       @relation(fields: [artistId], references: [id], onDelete: Cascade)
-  consent       VoiceConsent @relation(fields: [consentId], references: [id])
-  vocalRenders  VocalRender[]
+  workspace    Workspace     @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  artist       Artist        @relation(fields: [artistId], references: [id], onDelete: Cascade)
+  consent      VoiceConsent  @relation(fields: [consentId], references: [id])
+  vocalRenders VocalRender[]
 
   @@index([workspaceId])
   @@index([artistId])
@@ -218,20 +229,20 @@ enum VoiceProfileStatus {
 // ===========================================================================
 
 model BrandKit {
-  id          String   @id @default(cuid())
+  id          String       @id @default(cuid())
   workspaceId String
   artistId    String?
   name        String
-  palette     Json?    // [{name:"primary", hex:"#0F172A"}]
-  fonts       Json?    // [{role:"display", family:"Anton"}]
-  voiceTone   String?  // "playful", "luxe"
+  palette     Json? // [{name:"primary", hex:"#0F172A"}]
+  fonts       Json? // [{role:"display", family:"Anton"}]
+  voiceTone   String? // "playful", "luxe"
   logoUrl     String?
-  styleNotes  String?  @db.Text
+  styleNotes  String?      @db.Text
   imageAssets ImageAsset[]
-  createdAt   DateTime @default(now()) @db.Timestamptz(6)
+  createdAt   DateTime     @default(now()) @db.Timestamptz(6)
 
-  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  artist      Artist?   @relation(fields: [artistId], references: [id])
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  artist    Artist?   @relation(fields: [artistId], references: [id])
 
   @@index([workspaceId])
 }
@@ -241,35 +252,35 @@ model BrandKit {
 // ===========================================================================
 
 model Project {
-  id           String   @id @default(cuid())
+  id           String        @id @default(cuid())
   workspaceId  String
   artistId     String
   title        String
-  genre        String   // "afrobeats","afro_fusion","amapiano","afro_dancehall","gospel","afro_rnb","street_pop","hip_hop"
+  genre        String // "afrobeats","afro_fusion","amapiano","afro_dancehall","gospel","afro_rnb","street_pop","hip_hop"
   bpm          Int?
   keySignature String?
   status       ProjectStatus @default(DRAFT)
-  createdAt    DateTime @default(now()) @db.Timestamptz(6)
-  updatedAt    DateTime @updatedAt @db.Timestamptz(6)
+  createdAt    DateTime      @default(now()) @db.Timestamptz(6)
+  updatedAt    DateTime      @updatedAt @db.Timestamptz(6)
 
-  workspace    Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  artist       Artist    @relation(fields: [artistId], references: [id], onDelete: Cascade)
-  briefs       SongBrief[]
-  songs        Song[]
-  hooks        HookCandidate[]
-  lyrics       LyricDraft[]
-  beats        BeatAsset[]
-  vocalRenders VocalRender[]
-  mixes        Mix[]
-  masters      Master[]
-  imageAssets  ImageAsset[]
-  videoConcepts VideoConcept[]
-  videoRenders VideoRender[]
-  approvals    Approval[]
+  workspace      Workspace       @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  artist         Artist          @relation(fields: [artistId], references: [id], onDelete: Cascade)
+  briefs         SongBrief[]
+  songs          Song[]
+  hooks          HookCandidate[]
+  lyrics         LyricDraft[]
+  beats          BeatAsset[]
+  vocalRenders   VocalRender[]
+  mixes          Mix[]
+  masters        Master[]
+  imageAssets    ImageAsset[]
+  videoConcepts  VideoConcept[]
+  videoRenders   VideoRender[]
+  approvals      Approval[]
   rightsReceipts RightsReceipt[]
-  exports      Export[]
-  jobs         ProviderJob[]
-  chatThreads  ChatThread[]
+  exports        Export[]
+  jobs           ProviderJob[]
+  chatThreads    ChatThread[]
 
   @@index([workspaceId])
   @@index([artistId])
@@ -285,19 +296,19 @@ enum ProjectStatus {
 }
 
 model SongBrief {
-  id          String   @id @default(cuid())
-  projectId   String
-  mood        String?
-  topic       String?  @db.Text
-  language    String[] @default([])  // ["pcm","yo"]
-  audience    String?  // "club","romantic","streets","gospel"
-  bpm         Int?
-  references  Json?    // optional vibe refs (lane references, NOT clones)
-  notes       String?  @db.Text
-  approved    Boolean  @default(false)
-  createdAt   DateTime @default(now()) @db.Timestamptz(6)
+  id         String   @id @default(cuid())
+  projectId  String
+  mood       String?
+  topic      String?  @db.Text
+  language   String[] @default([]) // ["pcm","yo"]
+  audience   String? // "club","romantic","streets","gospel"
+  bpm        Int?
+  references Json? // optional vibe refs (lane references, NOT clones)
+  notes      String?  @db.Text
+  approved   Boolean  @default(false)
+  createdAt  DateTime @default(now()) @db.Timestamptz(6)
 
-  project     Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
 
   @@index([projectId])
 }
@@ -313,19 +324,19 @@ model SongBrief {
 model MaterialAsset {
   id           String   @id @default(cuid())
   workspaceId  String
-  kind         String   // 'loop' | 'stem'
-  role         String   // 'drums' | 'log_drum' | 'bass' | 'percussion' | 'chords' | 'melody' | 'other'
+  kind         String // 'loop' | 'stem'
+  role         String // 'drums' | 'log_drum' | 'bass' | 'percussion' | 'chords' | 'melody' | 'other'
   genre        String?
   bpm          Int?
   keySignature String?
   bars         Int?
   durationS    Float?
   url          String
-  source       String   // 'forged' (studio-generated isolated loop) | 'artist_stem'
-  meta         Json?    // qc, forge prompt, origin beat/song ids
+  source       String // 'forged' (studio-generated isolated loop) | 'artist_stem'
+  meta         Json? // qc, forge prompt, origin beat/song ids
   createdAt    DateTime @default(now()) @db.Timestamptz(6)
 
-  workspace    Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
 
   @@index([workspaceId, genre, role])
 }
@@ -343,67 +354,67 @@ model Album {
   meta         Json?
   createdAt    DateTime @default(now()) @db.Timestamptz(6)
 
-  workspace    Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  songs        Song[]
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  songs     Song[]
 
   @@index([workspaceId])
 }
 
 model Song {
-  id          String   @id @default(cuid())
-  workspaceId String
-  projectId   String
-  title       String
-  versionLabel String?  // "demo-1", "club-mix"
-  albumId     String?   // album this song belongs to (style-anchored)
-  status      SongStatus @default(SKETCH)
-  storyboard  Json?     // arrangement timeline (intro/hook/verse/bridge/outro)
+  id               String     @id @default(cuid())
+  workspaceId      String
+  projectId        String
+  title            String
+  versionLabel     String? // "demo-1", "club-mix"
+  albumId          String? // album this song belongs to (style-anchored)
+  status           SongStatus @default(SKETCH)
+  storyboard       Json? // arrangement timeline (intro/hook/verse/bridge/outro)
   // Rights spine — what makes a release bankable + payable.
-  isrc        String?   // recording code (CC-RRR-YY-DDDDD); placeholder until a real registrant prefix is set
-  upc         String?   // release barcode; distributors assign the real one free
-  splitSheet  Json?     // [{name, role, share}] writer/producer splits summing to 100
-  nativeReviewOk Boolean @default(false) // a native speaker signed off on Yoruba/Igbo/Hausa delivery
-  releaseReady Boolean  @default(false) // green-lit for distribution
+  isrc             String? // recording code (CC-RRR-YY-DDDDD); placeholder until a real registrant prefix is set
+  upc              String? // release barcode; distributors assign the real one free
+  splitSheet       Json? // [{name, role, share}] writer/producer splits summing to 100
+  nativeReviewOk   Boolean    @default(false) // a native speaker signed off on Yoruba/Igbo/Hausa delivery
+  releaseReady     Boolean    @default(false) // green-lit for distribution
   // QA quarantine (owner audit 2026-07-12): a song the Catalogue QA gate blocked
   // (empty/duplicate/contaminated) OR an operator pulled — hidden from the
   // catalogue, release, and public surfaces. Reversible; never hard-deleted so
   // the audit evidence survives. Reason kept for the Truth report.
-  quarantined     Boolean @default(false)
+  quarantined      Boolean    @default(false)
   quarantineReason String?
   // A&R read — every produced song gets scored BEFORE it's considered done.
-  hitScore    Int?      // 0-100 from the Will-it-hit engine
-  viralScore  Int?      // 0-100
-  hitRead     Json?     // full prediction: strengths/risks/toMakeItBigger/tiktokMoment
+  hitScore         Int? // 0-100 from the Will-it-hit engine
+  viralScore       Int? // 0-100
+  hitRead          Json? // full prediction: strengths/risks/toMakeItBigger/tiktokMoment
   // WO-4 LISTEN-BACK — the studio LISTENS to every song it makes (measured, not
   // vibes; §1.6: compliance ≠ taste, so these live beside hitScore, never merged).
-  laneScore        Int?   // 0-100 measured lane compliance of the current audio
-  measuredAnalysis Json?  // MeasuredAnalysis of the current audio (provenance-tagged)
-  laneGaps         Json?  // { coverage, failedCritical[], topGaps[], drift, measuredAt }
-  proofPack        Json?  // per-song evidence bundle, persisted at green-light (lib/proof-pack.ts)
+  laneScore        Int? // 0-100 measured lane compliance of the current audio
+  measuredAnalysis Json? // MeasuredAnalysis of the current audio (provenance-tagged)
+  laneGaps         Json? // { coverage, failedCritical[], topGaps[], drift, measuredAt }
+  proofPack        Json? // per-song evidence bundle, persisted at green-light (lib/proof-pack.ts)
   // TRUE INSTRUMENTAL — the FINISHED song minus the voice (never the raw
   // pre-vocal beat): separated from the freshest master/mix, loudness-matched
   // back to it. Cleared whenever a new master is promoted — a changed song
   // must never serve yesterday's instrumental.
   instrumentalUrl  String? // 320k mp3 for the player/library (the WAV lives on the Stem row)
   acapellaUrl      String? // the isolated voice, same treatment
-  instrumentalMeta Json?   // { sourceUrl, sourceLufs, matchedLufs, engine, format, at }
-  createdAt   DateTime @default(now()) @db.Timestamptz(6)
+  instrumentalMeta Json? // { sourceUrl, sourceLufs, matchedLufs, engine, format, at }
+  createdAt        DateTime   @default(now()) @db.Timestamptz(6)
 
-  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  project     Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  hooks       HookCandidate[]
-  lyric       LyricDraft? @relation("SongPrimaryLyric")
-  lyricId     String? @unique
-  beats       BeatAsset[]
+  workspace    Workspace       @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  project      Project         @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  hooks        HookCandidate[]
+  lyric        LyricDraft?     @relation("SongPrimaryLyric")
+  lyricId      String?         @unique
+  beats        BeatAsset[]
   vocalRenders VocalRender[]
-  mixes       Mix[]
-  masters     Master[]
-  exports     Export[]
-  rights      RightsReceipt[]
-  taste       TasteScore[]
-  shareLinks  ShareLink[]
-  release     Release?  @relation("ReleaseSong")
-  album       Album?    @relation(fields: [albumId], references: [id], onDelete: SetNull)
+  mixes        Mix[]
+  masters      Master[]
+  exports      Export[]
+  rights       RightsReceipt[]
+  taste        TasteScore[]
+  shareLinks   ShareLink[]
+  release      Release?        @relation("ReleaseSong")
+  album        Album?          @relation(fields: [albumId], references: [id], onDelete: SetNull)
 
   @@index([projectId])
   @@index([albumId])
@@ -434,19 +445,19 @@ enum SongStatus {
 // ===========================================================================
 
 model HookCandidate {
-  id          String   @id @default(cuid())
-  projectId   String
-  songId      String?
-  text        String   @db.Text
-  language    String[] @default([])
-  bpm         Int?
-  meta        Json?    // {melody_notes, syllable_pattern}
-  score       Float?
-  approved    Boolean  @default(false)
-  createdAt   DateTime @default(now()) @db.Timestamptz(6)
+  id        String   @id @default(cuid())
+  projectId String
+  songId    String?
+  text      String   @db.Text
+  language  String[] @default([])
+  bpm       Int?
+  meta      Json? // {melody_notes, syllable_pattern}
+  score     Float?
+  approved  Boolean  @default(false)
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
 
-  project     Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  song        Song?   @relation(fields: [songId], references: [id], onDelete: SetNull)
+  project     Project      @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  song        Song?        @relation(fields: [songId], references: [id], onDelete: SetNull)
   tasteScores TasteScore[]
 
   @@index([projectId])
@@ -454,36 +465,36 @@ model HookCandidate {
 }
 
 model LyricDraft {
-  id            String   @id @default(cuid())
-  projectId     String
-  songId        String?  @unique
-  title         String?
-  body          String   @db.Text       // full structured lyric markdown
-  structure     Json?    // {sections:[{name:"verse1", lines:[...]}]}
-  cleanVersion  String?  @db.Text
-  explicit      Boolean  @default(false)
+  id             String   @id @default(cuid())
+  projectId      String
+  songId         String?  @unique
+  title          String?
+  body           String   @db.Text // full structured lyric markdown
+  structure      Json? // {sections:[{name:"verse1", lines:[...]}]}
+  cleanVersion   String?  @db.Text
+  explicit       Boolean  @default(false)
   // THE ARTIST'S OWN WORDS ARE LAW: from-lyrics/mumble-picked drafts set this;
   // the will-it-blow gate and make-it-bigger NEVER rewrite an artist-authored
   // lyric — they score it and stop ("doesn't follow my lyrics" root cause).
-  artistAuthored Boolean @default(false)
-  languageMix   Json?    // {pcm:0.6, yo:0.3, en:0.1}
-  melody        Json?    // melody spec per section: contour, syllable timing (drives sung vocals)
-  translation   Json?
+  artistAuthored Boolean  @default(false)
+  languageMix    Json? // {pcm:0.6, yo:0.3, en:0.1}
+  melody         Json? // melody spec per section: contour, syllable timing (drives sung vocals)
+  translation    Json?
   // WRITING BRAIN craft object for the downstream Singing Brain:
   // {premise, hookCell, anchors: string[], sectionPurposes} — the semantic
   // skeleton (hookCell = the repeatable fragment inside the approved hook;
   // anchors = the emotional keywords that must survive any compression).
-  craftJson     Json?
+  craftJson      Json?
   // VERSION HISTORY — every prior take, newest-first: [{body,title,cleanVersion,at,label}].
   // Snapshotted BEFORE any rewrite (make-it-bigger / will-it-blow gate / manual edit)
   // so the ORIGINAL is never lost and the artist can revert to it or any prior take.
-  versions      Json?
-  approved      Boolean  @default(false)
-  approvalNotes String?
-  createdAt     DateTime @default(now()) @db.Timestamptz(6)
+  versions       Json?
+  approved       Boolean  @default(false)
+  approvalNotes  String?
+  createdAt      DateTime @default(now()) @db.Timestamptz(6)
 
-  project       Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  song          Song?   @relation("SongPrimaryLyric", fields: [songId], references: [id], onDelete: Cascade)
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  song    Song?   @relation("SongPrimaryLyric", fields: [songId], references: [id], onDelete: Cascade)
 
   @@index([projectId])
 }
@@ -493,22 +504,22 @@ model LyricDraft {
 // ===========================================================================
 
 model BeatAsset {
-  id          String   @id @default(cuid())
-  projectId   String
-  songId      String?
-  url         String
-  format      String   @default("wav")  // wav | mp3 | flac
-  bpm         Int?
+  id           String   @id @default(cuid())
+  projectId    String
+  songId       String?
+  url          String
+  format       String   @default("wav") // wav | mp3 | flac
+  bpm          Int?
   keySignature String?
-  duration    Float?
-  provider    String
-  meta        Json?
-  approved    Boolean  @default(false)
-  createdAt   DateTime @default(now()) @db.Timestamptz(6)
+  duration     Float?
+  provider     String
+  meta         Json?
+  approved     Boolean  @default(false)
+  createdAt    DateTime @default(now()) @db.Timestamptz(6)
 
-  project     Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  song        Song?   @relation(fields: [songId], references: [id], onDelete: Cascade)
-  stems       Stem[]
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  song    Song?   @relation(fields: [songId], references: [id], onDelete: Cascade)
+  stems   Stem[]
 
   @@index([projectId])
 }
@@ -516,13 +527,13 @@ model BeatAsset {
 model Stem {
   id        String   @id @default(cuid())
   beatId    String
-  role      String   // "drums","perc","bass","keys","guitar","pad","logdrum","fx","vocal","backing","adlib"
+  role      String // "drums","perc","bass","keys","guitar","pad","logdrum","fx","vocal","backing","adlib"
   url       String
   format    String   @default("wav")
   duration  Float?
   createdAt DateTime @default(now()) @db.Timestamptz(6)
 
-  beat      BeatAsset @relation(fields: [beatId], references: [id], onDelete: Cascade)
+  beat BeatAsset @relation(fields: [beatId], references: [id], onDelete: Cascade)
 
   @@index([beatId])
 }
@@ -532,58 +543,58 @@ model VocalRender {
   projectId       String
   songId          String?
   voiceProfileId  String?
-  role            String   // "lead","double","ad-lib","harmony"
+  role            String // "lead","double","ad-lib","harmony"
   url             String
   duration        Float?
-  pitchCorrection Json?    // {strength:0.8, retune:0.2}
-  effects         Json?    // {reverb, delay, doubler, compressor presets}
+  pitchCorrection Json? // {strength:0.8, retune:0.2}
+  effects         Json? // {reverb, delay, doubler, compressor presets}
   language        String?
   meta            Json?
   approved        Boolean  @default(false)
   createdAt       DateTime @default(now()) @db.Timestamptz(6)
 
-  project         Project       @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  song            Song?         @relation(fields: [songId], references: [id], onDelete: Cascade)
-  voiceProfile    VoiceProfile? @relation(fields: [voiceProfileId], references: [id])
+  project      Project       @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  song         Song?         @relation(fields: [songId], references: [id], onDelete: Cascade)
+  voiceProfile VoiceProfile? @relation(fields: [voiceProfileId], references: [id])
 
   @@index([projectId])
 }
 
 model Mix {
-  id          String   @id @default(cuid())
-  projectId   String
-  songId      String?
-  preset      String   // "radio","club","tiktok","youtube","console"
-  url         String
-  notes       String?
-  settings    Json?    // per-track mixer console state (faders/eq/comp/reverb)
-  approved    Boolean  @default(false)
-  createdAt   DateTime @default(now()) @db.Timestamptz(6)
+  id        String   @id @default(cuid())
+  projectId String
+  songId    String?
+  preset    String // "radio","club","tiktok","youtube","console"
+  url       String
+  notes     String?
+  settings  Json? // per-track mixer console state (faders/eq/comp/reverb)
+  approved  Boolean  @default(false)
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
 
-  project     Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  song        Song?   @relation(fields: [songId], references: [id], onDelete: Cascade)
-  masters     Master[]
+  project Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  song    Song?    @relation(fields: [songId], references: [id], onDelete: Cascade)
+  masters Master[]
 
   @@index([projectId])
 }
 
 model Master {
-  id          String   @id @default(cuid())
-  projectId   String
-  songId      String?
-  mixId       String?
-  preset      String   // "streaming_lufs_-14","club_-9","reels_-16"
-  url         String
-  loudness    Float?
-  approved    Boolean  @default(false)
+  id        String   @id @default(cuid())
+  projectId String
+  songId    String?
+  mixId     String?
+  preset    String // "streaming_lufs_-14","club_-9","reels_-16"
+  url       String
+  loudness  Float?
+  approved  Boolean  @default(false)
   // WO-6(a): measured QC of the MASTERED artifact — the release gate judges
   // this, never the pre-master take (what ships is what gets certified).
-  meta        Json?
-  createdAt   DateTime @default(now()) @db.Timestamptz(6)
+  meta      Json?
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
 
-  project     Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  song        Song?   @relation(fields: [songId], references: [id], onDelete: Cascade)
-  mix         Mix?    @relation(fields: [mixId], references: [id])
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  song    Song?   @relation(fields: [songId], references: [id], onDelete: Cascade)
+  mix     Mix?    @relation(fields: [mixId], references: [id])
 
   @@index([projectId])
 }
@@ -603,7 +614,7 @@ model SoundReference {
   genre       String?
   sourceUrl   String
   title       String?
-  recipe      Json     // structured deep-analysis profile
+  recipe      Json // structured deep-analysis profile
   summary     String?  @db.Text // one text block ready for prompt injection
   createdAt   DateTime @default(now()) @db.Timestamptz(6)
 
@@ -620,11 +631,11 @@ model SoundReference {
 // workspaceId is a private/custom addition. Facts/vocabulary, never lyrics.
 model LexiconEntry {
   id          String   @id @default(cuid())
-  workspaceId String?  // null = shared global library; set = private addition
+  workspaceId String? // null = shared global library; set = private addition
   term        String
-  language    String   // pcm | yo | ig | ha | twi | sw | en | mixed | motif
-  category    String   // love | street | party | faith | proverb | dance | drums | places | slang | music | adlib | ...
-  register    String?  // casual | chant | poetic | vulgar | sacred | flex
+  language    String // pcm | yo | ig | ha | twi | sw | en | mixed | motif
+  category    String // love | street | party | faith | proverb | dance | drums | places | slang | music | adlib | ...
+  register    String? // casual | chant | poetic | vulgar | sacred | flex
   meaning     String?  @db.Text // plain-English gloss (so the writer uses it correctly)
   example     String?  @db.Text // one short original usage line (never a real lyric)
   tags        String[] // freeform: moods/genres it fits
@@ -641,54 +652,54 @@ model LexiconEntry {
 // ===========================================================================
 
 model ImageAsset {
-  id          String   @id @default(cuid())
-  projectId   String?
-  brandKitId  String?
-  kind        String   // "cover","social","lyric_card","logo","promo"
-  prompt      String?  @db.Text
-  url         String
-  width       Int?
-  height      Int?
-  provider    String
-  approved    Boolean  @default(false)
-  createdAt   DateTime @default(now()) @db.Timestamptz(6)
+  id         String   @id @default(cuid())
+  projectId  String?
+  brandKitId String?
+  kind       String // "cover","social","lyric_card","logo","promo"
+  prompt     String?  @db.Text
+  url        String
+  width      Int?
+  height     Int?
+  provider   String
+  approved   Boolean  @default(false)
+  createdAt  DateTime @default(now()) @db.Timestamptz(6)
 
-  project     Project?  @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  brandKit    BrandKit? @relation(fields: [brandKitId], references: [id])
+  project  Project?  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  brandKit BrandKit? @relation(fields: [brandKitId], references: [id])
 
   @@index([projectId])
 }
 
 model VideoConcept {
-  id          String   @id @default(cuid())
-  projectId   String
-  title       String
-  storyboard  Json     // [{shot:1, prompt:"...", duration_s:3, motion:"slow push-in"}]
-  durationS   Int      @default(15)
-  format      String   @default("vertical") // vertical | square | landscape
-  notes       String?  @db.Text
-  approved    Boolean  @default(false)
-  createdAt   DateTime @default(now()) @db.Timestamptz(6)
+  id         String   @id @default(cuid())
+  projectId  String
+  title      String
+  storyboard Json // [{shot:1, prompt:"...", duration_s:3, motion:"slow push-in"}]
+  durationS  Int      @default(15)
+  format     String   @default("vertical") // vertical | square | landscape
+  notes      String?  @db.Text
+  approved   Boolean  @default(false)
+  createdAt  DateTime @default(now()) @db.Timestamptz(6)
 
-  project     Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  renders     VideoRender[]
+  project Project       @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  renders VideoRender[]
 
   @@index([projectId])
 }
 
 model VideoRender {
-  id          String   @id @default(cuid())
-  projectId   String
-  conceptId   String?
-  url         String
-  durationS   Float?
-  provider    String
-  meta        Json?
-  approved    Boolean  @default(false)
-  createdAt   DateTime @default(now()) @db.Timestamptz(6)
+  id        String   @id @default(cuid())
+  projectId String
+  conceptId String?
+  url       String
+  durationS Float?
+  provider  String
+  meta      Json?
+  approved  Boolean  @default(false)
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
 
-  project     Project       @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  concept     VideoConcept? @relation(fields: [conceptId], references: [id])
+  project Project       @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  concept VideoConcept? @relation(fields: [conceptId], references: [id])
 
   @@index([projectId])
 }
@@ -698,19 +709,19 @@ model VideoRender {
 // ===========================================================================
 
 model TasteScore {
-  id              String   @id @default(cuid())
-  songId          String?
-  hookId          String?
-  dimensions      Json     // map of {hookMemorability:8.3, danceability:7.9, ...}
-  overall         Float
-  notes           String?  @db.Text
-  similarityRisk  Float?   // 0-1
-  tooAiRisk       Float?   // 0-1
-  createdAt       DateTime @default(now()) @db.Timestamptz(6)
+  id             String   @id @default(cuid())
+  songId         String?
+  hookId         String?
+  dimensions     Json // map of {hookMemorability:8.3, danceability:7.9, ...}
+  overall        Float
+  notes          String?  @db.Text
+  similarityRisk Float? // 0-1
+  tooAiRisk      Float? // 0-1
+  createdAt      DateTime @default(now()) @db.Timestamptz(6)
 
   // Cascade: taste rows are meaningless without their subject — no orphans.
-  song            Song?         @relation(fields: [songId], references: [id], onDelete: Cascade)
-  hook            HookCandidate? @relation(fields: [hookId], references: [id], onDelete: Cascade)
+  song Song?          @relation(fields: [songId], references: [id], onDelete: Cascade)
+  hook HookCandidate? @relation(fields: [hookId], references: [id], onDelete: Cascade)
 }
 
 model Approval {
@@ -718,14 +729,14 @@ model Approval {
   workspaceId String
   projectId   String
   userId      String
-  gate        String   // brief|hook|lyrics|beat|voice|mix|rights|release
-  decision    String   // approved | rejected | changes_requested
+  gate        String // brief|hook|lyrics|beat|voice|mix|rights|release
+  decision    String // approved | rejected | changes_requested
   notes       String?  @db.Text
   createdAt   DateTime @default(now()) @db.Timestamptz(6)
 
-  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  project     Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  user        User      @relation(fields: [userId], references: [id])
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  project   Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  user      User      @relation(fields: [userId], references: [id])
 
   @@index([projectId])
 }
@@ -733,40 +744,40 @@ model Approval {
 // Native-language / quality review queue. Created automatically when the
 // lyric generator flags uncertain Yoruba/Igbo/Hausa/Pidgin lines.
 model ReviewTask {
-  id          String   @id @default(cuid())
+  id          String    @id @default(cuid())
   workspaceId String
   projectId   String?
   lyricId     String?
-  kind        String   // "native_language" | "quality" | "rights"
-  language    String?  // primary language needing review
-  status      String   @default("open") // open | approved | rejected
-  items       Json     // [{ref:"yo:line 4 of verse 2", text?, reason?}]
-  notes       String?  @db.Text
-  resolvedBy  String?  // userId
-  createdAt   DateTime @default(now()) @db.Timestamptz(6)
+  kind        String // "native_language" | "quality" | "rights"
+  language    String? // primary language needing review
+  status      String    @default("open") // open | approved | rejected
+  items       Json // [{ref:"yo:line 4 of verse 2", text?, reason?}]
+  notes       String?   @db.Text
+  resolvedBy  String? // userId
+  createdAt   DateTime  @default(now()) @db.Timestamptz(6)
   resolvedAt  DateTime? @db.Timestamptz(6)
 
   @@index([workspaceId, status])
 }
 
 model RightsReceipt {
-  id            String   @id @default(cuid())
-  workspaceId   String
-  projectId     String
-  songId        String
-  voiceConsentId String?
-  providers     Json     // [{kind:"music", provider:"eleven", model:"music-v1", commercial_terms_url:"..."}]
-  prompts       Json     // captured prompts/inputs
-  samples       Json?    // [{source:"upload://...", licensed:true}]
-  approvals     Json     // snapshot of approval IDs at receipt creation
-  humanContribution String? @db.Text // describing what the human did
-  aiDisclosure  Json?    // {distro: "DistroKid disclosure: yes", credits:{lyrics:"AI-assisted, human-edited"}}
-  hash          String   // sha256 over canonical JSON of the receipt
-  createdAt     DateTime @default(now()) @db.Timestamptz(6)
+  id                String   @id @default(cuid())
+  workspaceId       String
+  projectId         String
+  songId            String
+  voiceConsentId    String?
+  providers         Json // [{kind:"music", provider:"eleven", model:"music-v1", commercial_terms_url:"..."}]
+  prompts           Json // captured prompts/inputs
+  samples           Json? // [{source:"upload://...", licensed:true}]
+  approvals         Json // snapshot of approval IDs at receipt creation
+  humanContribution String?  @db.Text // describing what the human did
+  aiDisclosure      Json? // {distro: "DistroKid disclosure: yes", credits:{lyrics:"AI-assisted, human-edited"}}
+  hash              String // sha256 over canonical JSON of the receipt
+  createdAt         DateTime @default(now()) @db.Timestamptz(6)
 
-  workspace     Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  project       Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  song          Song      @relation(fields: [songId], references: [id], onDelete: Cascade)
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  project   Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  song      Song      @relation(fields: [songId], references: [id], onDelete: Cascade)
 
   @@index([projectId])
 }
@@ -776,35 +787,35 @@ model RightsReceipt {
 // ===========================================================================
 
 model Export {
-  id          String   @id @default(cuid())
-  projectId   String
-  songId      String
-  bundle      Json     // {mp3:"url",wav:"url",stems:["..."],coverArt:"url",lyrics:"url",video:"url"}
-  receiptId   String?
-  createdAt   DateTime @default(now()) @db.Timestamptz(6)
+  id        String   @id @default(cuid())
+  projectId String
+  songId    String
+  bundle    Json // {mp3:"url",wav:"url",stems:["..."],coverArt:"url",lyrics:"url",video:"url"}
+  receiptId String?
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
 
-  project     Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  song        Song    @relation(fields: [songId], references: [id], onDelete: Cascade)
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  song    Song    @relation(fields: [songId], references: [id], onDelete: Cascade)
 
   @@index([projectId])
 }
 
 model Release {
-  id          String   @id @default(cuid())
+  id          String    @id @default(cuid())
   workspaceId String
   artistId    String
-  songId      String   @unique
-  isrc        String?  @unique
+  songId      String    @unique
+  isrc        String?   @unique
   upc         String?
   releaseDate DateTime? @db.Timestamptz(6)
   distributor String?
-  status      String   @default("draft")
-  channels    Json?    // {spotify:"link", apple:"link", youtube:"link"}
-  createdAt   DateTime @default(now()) @db.Timestamptz(6)
+  status      String    @default("draft")
+  channels    Json? // {spotify:"link", apple:"link", youtube:"link"}
+  createdAt   DateTime  @default(now()) @db.Timestamptz(6)
 
-  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  artist      Artist    @relation(fields: [artistId], references: [id], onDelete: Cascade)
-  song        Song      @relation("ReleaseSong", fields: [songId], references: [id], onDelete: Cascade)
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  artist    Artist    @relation(fields: [artistId], references: [id], onDelete: Cascade)
+  song      Song      @relation("ReleaseSong", fields: [songId], references: [id], onDelete: Cascade)
 }
 
 /// LISTENING BENCHMARK — the ear-vs-machine ground truth. Each row is a rendered
@@ -819,14 +830,14 @@ model BenchmarkRating {
   source      String   @default("afrohit") // afrohit | reference | suno
   songId      String?
   audioUrl    String
-  engine      String?  // which engine rendered it (minimax/own/suno...)
-  laneScore   Int?     // the machine's measured lane compliance at render time
-  humanRating Int      // 1..5 the ear
-  blindLabel  String?  // 'A'/'B' when captured via a blind A/B
+  engine      String? // which engine rendered it (minimax/own/suno...)
+  laneScore   Int? // the machine's measured lane compliance at render time
+  humanRating Int // 1..5 the ear
+  blindLabel  String? // 'A'/'B' when captured via a blind A/B
   notes       String?  @db.Text
   createdAt   DateTime @default(now()) @db.Timestamptz(6)
 
-  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
 
   @@index([workspaceId, genre])
 }
@@ -839,38 +850,38 @@ model ShareLink {
   id          String   @id @default(cuid())
   workspaceId String
   songId      String
-  code        String   @unique  // short slug for URL: afro.hi/<code>
-  targetUrl   String   // canonical landing (or distributor link)
+  code        String   @unique // short slug for URL: afro.hi/<code>
+  targetUrl   String // canonical landing (or distributor link)
   active      Boolean  @default(true)
   createdAt   DateTime @default(now()) @db.Timestamptz(6)
 
-  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  song        Song      @relation(fields: [songId], references: [id], onDelete: Cascade)
-  events      ShareEvent[]
+  workspace Workspace    @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  song      Song         @relation(fields: [songId], references: [id], onDelete: Cascade)
+  events    ShareEvent[]
 
   @@index([songId])
 }
 
 model ShareEvent {
-  id          String   @id @default(cuid())
-  workspaceId String
-  shareLinkId String
-  songId      String?
-  eventType   String   // "click","play","download","share","conversion"
+  id             String   @id @default(cuid())
+  workspaceId    String
+  shareLinkId    String
+  songId         String?
+  eventType      String // "click","play","download","share","conversion"
   sourcePlatform String? // "tiktok","instagram","whatsapp","x","direct"
-  city        String?
-  region      String?
-  country     String?
-  countryCode String?  @db.Char(2)
+  city           String?
+  region         String?
+  country        String?
+  countryCode    String?  @db.Char(2)
   // Plain coordinates (no PostGIS). Heatmap centroids come from AVG(lat/lng).
-  lat         Float?
-  lng         Float?
-  ipHash      String?  // hashed IP (never raw)
-  userAgent   String?
-  createdAt   DateTime @default(now()) @db.Timestamptz(6)
+  lat            Float?
+  lng            Float?
+  ipHash         String? // hashed IP (never raw)
+  userAgent      String?
+  createdAt      DateTime @default(now()) @db.Timestamptz(6)
 
-  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  shareLink   ShareLink @relation(fields: [shareLinkId], references: [id], onDelete: Cascade)
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  shareLink ShareLink @relation(fields: [shareLinkId], references: [id], onDelete: Cascade)
 
   @@index([shareLinkId])
   @@index([country, createdAt])
@@ -881,21 +892,21 @@ model ShareEvent {
 // ===========================================================================
 
 model ArtistMemoryChunk {
-  id           String   @id @default(cuid())
-  workspaceId  String
-  artistId     String
-  kind         String   // "slang","phrase","reference","note","rejected","approved","melody_idea"
-  content      String   @db.Text
-  language     String?
+  id          String   @id @default(cuid())
+  workspaceId String
+  artistId    String
+  kind        String // "slang","phrase","reference","note","rejected","approved","melody_idea"
+  content     String   @db.Text
+  language    String?
   // Embedding stored as JSON (number[]) for future semantic search. Retrieval
   // currently uses recency, so no pgvector extension is required.
-  embedding    Json?
-  sourceUrl    String?
-  meta         Json?
-  createdAt    DateTime @default(now()) @db.Timestamptz(6)
+  embedding   Json?
+  sourceUrl   String?
+  meta        Json?
+  createdAt   DateTime @default(now()) @db.Timestamptz(6)
 
-  workspace    Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  artist       Artist    @relation(fields: [artistId], references: [id], onDelete: Cascade)
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  artist    Artist    @relation(fields: [artistId], references: [id], onDelete: Cascade)
 
   @@index([artistId])
 }
@@ -905,24 +916,24 @@ model ArtistMemoryChunk {
 // ===========================================================================
 
 model ProviderJob {
-  id            String   @id @default(cuid())
-  workspaceId   String
-  projectId     String?
-  kind          String   // "music","voice","mix","master","image","video","export","embed","rights"
-  provider      String
-  externalId    String?
-  status        JobStatus @default(QUEUED)
-  inputJson     Json
-  outputJson    Json?
-  errorJson     Json?
-  cost          Decimal?  @db.Decimal(12, 6) // estimated cost in USD
-  creditsCents  Int       @default(0)
-  startedAt     DateTime? @db.Timestamptz(6)
-  finishedAt    DateTime? @db.Timestamptz(6)
-  createdAt     DateTime  @default(now()) @db.Timestamptz(6)
+  id           String    @id @default(cuid())
+  workspaceId  String
+  projectId    String?
+  kind         String // "music","voice","mix","master","image","video","export","embed","rights"
+  provider     String
+  externalId   String?
+  status       JobStatus @default(QUEUED)
+  inputJson    Json
+  outputJson   Json?
+  errorJson    Json?
+  cost         Decimal?  @db.Decimal(12, 6) // estimated cost in USD
+  creditsCents Int       @default(0)
+  startedAt    DateTime? @db.Timestamptz(6)
+  finishedAt   DateTime? @db.Timestamptz(6)
+  createdAt    DateTime  @default(now()) @db.Timestamptz(6)
 
-  workspace     Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  project       Project?  @relation(fields: [projectId], references: [id], onDelete: SetNull)
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  project   Project?  @relation(fields: [projectId], references: [id], onDelete: SetNull)
 
   @@index([workspaceId])
   @@index([status])
@@ -951,26 +962,26 @@ model ChatThread {
   createdAt   DateTime @default(now()) @db.Timestamptz(6)
   updatedAt   DateTime @updatedAt @db.Timestamptz(6)
 
-  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  user        User      @relation(fields: [userId], references: [id])
-  project     Project?  @relation(fields: [projectId], references: [id], onDelete: SetNull)
-  messages    ChatMessage[]
+  workspace Workspace     @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  user      User          @relation(fields: [userId], references: [id])
+  project   Project?      @relation(fields: [projectId], references: [id], onDelete: SetNull)
+  messages  ChatMessage[]
 
   @@index([workspaceId, userId])
 }
 
 model ChatMessage {
-  id          String   @id @default(cuid())
-  threadId    String
-  role        String   // "user","assistant","tool","system"
-  content     String   @db.Text
-  toolName    String?
-  toolInput   Json?
-  toolOutput  Json?
-  artifactRefs Json?   // [{kind:"hook", id:"..."}, ...]
-  createdAt   DateTime @default(now()) @db.Timestamptz(6)
+  id           String   @id @default(cuid())
+  threadId     String
+  role         String // "user","assistant","tool","system"
+  content      String   @db.Text
+  toolName     String?
+  toolInput    Json?
+  toolOutput   Json?
+  artifactRefs Json? // [{kind:"hook", id:"..."}, ...]
+  createdAt    DateTime @default(now()) @db.Timestamptz(6)
 
-  thread      ChatThread @relation(fields: [threadId], references: [id], onDelete: Cascade)
+  thread ChatThread @relation(fields: [threadId], references: [id], onDelete: Cascade)
 
   @@index([threadId])
   // Every chat load reads thread history in order — cover filter + sort.
@@ -984,15 +995,15 @@ model ChatMessage {
 model CreditLedger {
   id            String   @id @default(cuid())
   workspaceId   String
-  delta         Int      // +/- credits in 1/100 cents
-  reason        String   // "topup_paypal","job_music","job_voice","refund","grant"
-  refTable      String?  // e.g. "ProviderJob"
+  delta         Int // +/- credits in 1/100 cents
+  reason        String // "topup_paypal","job_music","job_voice","refund","grant"
+  refTable      String? // e.g. "ProviderJob"
   refId         String?
   paypalEventId String?  @unique // dedupe key from PayPal webhook event id
   meta          Json?
   createdAt     DateTime @default(now()) @db.Timestamptz(6)
 
-  workspace     Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
 
   @@index([workspaceId])
 }
@@ -1009,7 +1020,7 @@ model AnalyticsEvent {
   properties  Json?
   createdAt   DateTime @default(now()) @db.Timestamptz(6)
 
-  workspace   Workspace? @relation(fields: [workspaceId], references: [id])
+  workspace Workspace? @relation(fields: [workspaceId], references: [id])
 
   @@index([workspaceId])
   @@index([name])

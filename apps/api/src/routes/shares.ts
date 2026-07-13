@@ -1,5 +1,5 @@
 import type { FastifyInstance } from 'fastify';
-import { createHash, randomBytes } from 'node:crypto';
+import { createHmac, randomBytes } from 'node:crypto';
 import { prisma } from '@afrohit/db';
 import { createShareLinkSchema, logShareEventSchema } from '@afrohit/shared';
 import { requireAuth } from '../middleware/auth';
@@ -10,7 +10,8 @@ function newShortCode(): string {
 
 function hashIp(ip: string | undefined): string | null {
   if (!ip) return null;
-  return createHash('sha256').update(ip).digest('hex').slice(0, 32);
+  const secret = process.env.IP_HASH_SECRET || process.env.JWT_SECRET || process.env.INTERNAL_API_SECRET || 'local-development-only';
+  return createHmac('sha256', secret).update(ip).digest('hex').slice(0, 32);
 }
 
 export default async function shares(app: FastifyInstance) {
@@ -86,6 +87,8 @@ export default async function shares(app: FastifyInstance) {
   app.get<{ Params: { code: string } }>('/redirect/:code', async (req, reply) => {
     const link = await prisma.shareLink.findUnique({ where: { code: req.params.code } });
     if (!link || !link.active) return reply.code(404).send({ error: 'not_found' });
+    const parsed = createShareLinkSchema.shape.targetUrl.safeParse(link.targetUrl);
+    if (!parsed.success) return reply.code(410).send({ error: 'invalid_legacy_target' });
     // fire-and-forget event log
     await prisma.shareEvent.create({
       data: {
@@ -97,7 +100,8 @@ export default async function shares(app: FastifyInstance) {
         userAgent: req.headers['user-agent']?.slice(0, 240) ?? null,
       },
     });
-    return reply.redirect(link.targetUrl, 302);
+    reply.header('cache-control', 'no-store').header('referrer-policy', 'no-referrer');
+    return reply.redirect(parsed.data, 302);
   });
 
   /**

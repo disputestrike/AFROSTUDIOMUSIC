@@ -7,7 +7,12 @@ import { spawn } from 'node:child_process';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { grooveOffsetMs } from '@afrohit/shared';
+import { grooveOffsetMs, parseStorageUri } from '@afrohit/shared';
+import { resolveAssetForProvider } from './storage';
+
+async function resolveFfmpegInput(input: string): Promise<string> {
+  return parseStorageUri(input) ? resolveAssetForProvider(input) : input;
+}
 
 export async function ffmpegAvailable(): Promise<boolean> {
   return new Promise((resolve) => {
@@ -36,12 +41,13 @@ export function runFfmpeg(args: string[]): Promise<void> {
  * failure — callers treat 0 as "unknown", never crash on it.
  */
 export async function probeDurationS(input: string): Promise<number> {
+  const resolvedInput = await resolveFfmpegInput(input);
   return new Promise((resolve) => {
     const p = spawn('ffprobe', [
       '-v', 'error',
       '-show_entries', 'format=duration',
       '-of', 'default=noprint_wrappers=1:nokey=1',
-      input,
+      resolvedInput,
     ]);
     let out = '';
     p.stdout.on('data', (d) => (out += d.toString()));
@@ -117,7 +123,8 @@ const numAfter = (s: string, re: RegExp): number | null => {
  * Falls back to a duration-only verdict if ffmpeg/parse is unavailable.
  */
 export async function measureAudioQuality(input: string): Promise<AudioQuality> {
-  const durationS = await probeDurationS(input);
+  const resolvedInput = await resolveFfmpegInput(input);
+  const durationS = await probeDurationS(resolvedInput);
   const fallback = (): AudioQuality => ({
     durationS,
     integratedLufs: null, loudnessRangeLra: null, truePeakDb: null, crestFactorDb: null, flatFactor: null,
@@ -127,7 +134,7 @@ export async function measureAudioQuality(input: string): Promise<AudioQuality> 
     if (!(await ffmpegAvailable())) return fallback();
     // ebur128 → loudness/LRA/true-peak summary; astats → crest/flat factor. One pass.
     const out = await ffmpegCapture([
-      '-i', input,
+      '-i', resolvedInput,
       '-af', 'ebur128=peak=true,astats=metadata=0',
       '-f', 'null', '-',
     ]);
@@ -366,8 +373,9 @@ export async function measureLoudnorm(
   target: { lufs: number; tp: number },
   preChain?: string
 ): Promise<LoudnormStats | null> {
+  const resolvedInput = await resolveFfmpegInput(input);
   const af = `${preChain ? `${preChain},` : ''}loudnorm=I=${target.lufs}:TP=${target.tp}:LRA=11:print_format=json`;
-  const err = await ffmpegCapture(['-i', input, '-af', af, '-f', 'null', '-']);
+  const err = await ffmpegCapture(['-i', resolvedInput, '-af', af, '-f', 'null', '-']);
   // loudnorm's JSON is FLAT (no nested braces) and prints last — take the
   // trailing {...} so per-frame chatter above it can't poison the parse.
   const open = err.lastIndexOf('{');
@@ -542,7 +550,7 @@ export async function loudnessMatchToSource(
   const dir = await mkdtemp(join(tmpdir(), 'lmatch-'));
   try {
     let src: string;
-    if (typeof input === 'string') src = input;
+    if (typeof input === 'string') src = await resolveFfmpegInput(input);
     else {
       src = join(dir, 'in.bin');
       await writeFile(src, input);

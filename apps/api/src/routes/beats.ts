@@ -9,7 +9,7 @@ import { ownShelfRoles } from '../lib/material-plan';
 import { laneDna } from '../lib/lane-pipeline';
 import { requireAuth } from '../middleware/auth';
 import { enqueue } from '../lib/queue';
-import { publicUrlFor, assertOwnedKey } from '../lib/storage';
+import { publicUrlFor, verifyUploadedAudio } from '../lib/storage';
 import { voiceVocalTag, languageVocalTag } from '../services/chat-tools';
 
 export default async function beats(app: FastifyInstance) {
@@ -268,6 +268,7 @@ export default async function beats(app: FastifyInstance) {
     async (req, reply) => {
       const { workspaceId } = requireAuth(req);
       const input = attachBeatUploadSchema.parse(req.body);
+      const uploaded = await verifyUploadedAudio(workspaceId, input.key, input.format);
       const project = await prisma.project.findFirstOrThrow({
         where: { id: req.params.projectId, workspaceId },
       });
@@ -311,7 +312,7 @@ export default async function beats(app: FastifyInstance) {
         data: {
           projectId: project.id,
           songId,
-          url: publicUrlFor(assertOwnedKey(workspaceId, input.key)),
+          url: publicUrlFor(uploaded.key),
           format: input.format,
           bpm: input.bpm ?? null,
           keySignature: input.keySignature ?? null,

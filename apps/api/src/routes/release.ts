@@ -1,7 +1,8 @@
 import type { FastifyInstance } from 'fastify';
 import { prisma } from '@afrohit/db';
 import { rightsInputSchema, laneReleaseGate } from '@afrohit/shared';
-import { requireAuth } from '../middleware/auth';
+import { requireAuth, requireRole } from '../middleware/auth';
+import { presignAssetRef } from '../lib/storage';
 import { unseededForLane, authenticRefCount } from '../lib/lane-report';
 import { distributeRelease } from '../lib/distribution';
 import { BLOW_TARGET } from '../lib/will-it-blow';
@@ -182,7 +183,7 @@ export default async function release(app: FastifyInstance) {
 
   // Distribute a green-lit release (needs a distributor account/keys — see lib).
   app.post<{ Params: { projectId: string; songId: string } }>('/:songId/distribute', async (req, reply) => {
-    const { workspaceId } = requireAuth(req);
+    const { workspaceId } = requireRole(req, ['OWNER', 'ADMIN']);
     const song = await prisma.song.findFirstOrThrow({
       where: { id: req.params.songId, projectId: req.params.projectId, workspaceId },
       include: { project: { include: { artist: true } } },
@@ -191,9 +192,9 @@ export default async function release(app: FastifyInstance) {
       return reply.code(400).send({ error: 'not_green_lit', message: 'Green-light the song first (fill the checklist).' });
     }
     const [master, mix, cover, beat] = await Promise.all([
-      prisma.master.findFirst({ where: { songId: song.id }, orderBy: { createdAt: 'desc' } }),
-      prisma.mix.findFirst({ where: { songId: song.id }, orderBy: { createdAt: 'desc' } }),
-      prisma.imageAsset.findFirst({ where: { projectId: song.projectId, kind: 'cover' }, orderBy: { createdAt: 'desc' } }),
+      prisma.master.findFirst({ where: { songId: song.id, approved: true }, orderBy: { createdAt: 'desc' } }),
+      prisma.mix.findFirst({ where: { songId: song.id, approved: true }, orderBy: { createdAt: 'desc' } }),
+      prisma.imageAsset.findFirst({ where: { projectId: song.projectId, kind: 'cover', approved: true }, orderBy: { createdAt: 'desc' } }),
       prisma.beatAsset.findFirst({ where: { songId: song.id }, orderBy: { createdAt: 'desc' }, select: { meta: true } }),
     ]);
     // PHASE 6 — do not push OBJECTIVELY BROKEN audio to the world (QC fail: clipping /
@@ -211,7 +212,7 @@ export default async function release(app: FastifyInstance) {
     // Rights must be CLEAR before distribution (fail-closed, consistent with export).
     const receipt = await prisma.rightsReceipt.findFirst({ where: { songId: song.id }, orderBy: { createdAt: 'desc' } });
     const verdict = (receipt?.prompts ?? {}) as { rightsCheck?: { okToExport?: boolean; overallRisk?: string } };
-    if (verdict.rightsCheck && (verdict.rightsCheck.okToExport === false || verdict.rightsCheck.overallRisk === 'high')) {
+    if (!receipt || verdict.rightsCheck?.okToExport !== true || verdict.rightsCheck.overallRisk === 'high') {
       return reply.code(409).send({ error: 'rights_not_clear', message: 'The rights review flagged this song — resolve it before distributing.' });
     }
 
@@ -221,8 +222,8 @@ export default async function release(app: FastifyInstance) {
       genre: song.project.genre,
       isrc: song.isrc,
       upc: song.upc,
-      audioUrl: master?.url ?? mix?.url ?? null,
-      coverUrl: cover?.url ?? null,
+      audioUrl: master?.url || mix?.url ? await presignAssetRef(master?.url ?? mix!.url, 3600) : null,
+      coverUrl: cover?.url ? await presignAssetRef(cover.url, 3600) : null,
     });
 
     // RELEASED means a REAL distributor submission — ONLY on status 'submitted'.
@@ -254,7 +255,7 @@ export default async function release(app: FastifyInstance) {
     '/:songId',
     { schema: { body: rightsInputSchema } },
     async (req) => {
-      const { workspaceId } = requireAuth(req);
+      const { workspaceId } = requireRole(req, ['OWNER', 'ADMIN']);
       const input = rightsInputSchema.parse(req.body);
       const song = await prisma.song.findFirstOrThrow({ where: { id: req.params.songId, projectId: req.params.projectId, workspaceId } });
 

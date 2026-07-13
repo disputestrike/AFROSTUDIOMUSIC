@@ -26,3 +26,7 @@ export * from './lyric-qa';
 export * from './contamination';
 export * from './song-state';
 export * from './concept-exemplars';
+export * from './storage-uri';
+export * from './redact';
+export * from './html';
+export * from './voice-consent';

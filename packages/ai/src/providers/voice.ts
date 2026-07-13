@@ -16,6 +16,7 @@ import type {
   VoiceRenderInput,
   VoiceRenderOutput,
 } from './types';
+import { safeFetch } from '@afrohit/shared/server-url-safety';
 import { elevenKey } from './music';
 
 function provider(): string {
@@ -37,9 +38,18 @@ class ElevenVoiceAdapter implements VoiceProviderAdapter {
     form.append('name', input.name);
     if (input.language) form.append('labels', JSON.stringify({ language: input.language }));
     for (const url of input.sampleUrls) {
-      const r = await fetch(url);
-      if (!r.ok) return { status: 'failed', error: `failed to fetch sample ${url}` };
+      const r = await safeFetch(url, { signal: AbortSignal.timeout(60_000) });
+      if (!r.ok) {
+        await r.body?.cancel().catch(() => undefined);
+        return { status: 'failed', error: `failed to fetch voice sample (${r.status})` };
+      }
+      const declared = Number(r.headers.get('content-length') ?? 0);
+      if (declared > 50 * 1024 * 1024) {
+        await r.body?.cancel().catch(() => undefined);
+        return { status: 'failed', error: 'voice sample exceeds 50 MB' };
+      }
       const blob = await r.blob();
+      if (blob.size > 50 * 1024 * 1024) return { status: 'failed', error: 'voice sample exceeds 50 MB' };
       form.append('files', blob, `sample-${Math.random().toString(36).slice(2, 8)}.mp3`);
     }
     const res = await fetch('https://api.elevenlabs.io/v1/voices/add', {
@@ -48,7 +58,8 @@ class ElevenVoiceAdapter implements VoiceProviderAdapter {
       body: form,
     });
     if (!res.ok) {
-      return { status: 'failed', error: `eleven voice add ${res.status}: ${await res.text()}` };
+      await res.body?.cancel().catch(() => undefined);
+      return { status: 'failed', error: `eleven voice add failed (${res.status})` };
     }
     const data = (await res.json()) as { voice_id: string };
     return {

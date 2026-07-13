@@ -14,10 +14,10 @@
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { prisma } from '@afrohit/db';
+import { openSecret, prisma } from '@afrohit/db';
 import { singWithVoice, type SingPitchChange, type SingTuning } from '@afrohit/ai';
 import { markFailed, markRunning, markSucceeded } from '../lib/jobs';
-import { downloadToBuffer, uploadBytes } from '../lib/storage';
+import { downloadToBuffer, resolveAssetForProvider, uploadBytes } from '../lib/storage';
 import { probeDurationS } from '../lib/ffmpeg';
 
 interface SingConvertPayload {
@@ -42,14 +42,15 @@ export async function processSingConvert(p: SingConvertPayload) {
     // same lookup pattern as the music/stems processors.
     const ws = await prisma.workspace.findUnique({
       where: { id: p.workspaceId },
-      select: { musicApiKey: true },
+      select: { musicProvider: true, musicApiKey: true },
     });
+    const replicateApiKey = ws?.musicProvider === 'replicate' ? openSecret(ws.musicApiKey) : undefined;
     const { url, predictionId } = await singWithVoice({
-      songInputUrl: p.songInputUrl,
-      modelUrl: p.modelUrl,
+      songInputUrl: await resolveAssetForProvider(p.songInputUrl),
+      modelUrl: await resolveAssetForProvider(p.modelUrl),
       pitchChange: p.pitchChange,
       tuning: p.tuning,
-      apiKey: ws?.musicApiKey ?? undefined,
+      apiKey: replicateApiKey,
     });
 
     // Re-host — Replicate output URLs expire; ours don't.

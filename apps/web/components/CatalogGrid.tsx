@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { useApi } from '@/lib/api';
 import { Trash2, Download, Wand2, FileText, Copy, Recycle, Pencil, Sliders, X, Loader2, Music2, Layers, TrendingUp, RefreshCw, Mic, Disc3, Sparkles, GitCompare, ShieldCheck } from 'lucide-react';
@@ -87,9 +87,13 @@ export default function CatalogGrid({ initial }: { initial: SongRow[] }) {
   const [downloads, setDownloads] = useState<{ id: string; files: DownloadFile[] } | null>(null);
   const [hit, setHit] = useState<{ title: string; p: HitPrediction } | null>(null);
   const [bridge, setBridge] = useState<{ songId: string; projectId: string } | null>(null);
-  // §1.11 first-party unlock: the admin key (set once on /admin) reveals the
-  // internal bridge tooling; without it the wall keeps vendor tools hidden.
-  const firstParty = typeof localStorage !== 'undefined' && !!localStorage.getItem('afrohit.adminKey');
+  // Server-authorized operator sessions reveal the internal bridge tooling.
+  const [firstParty, setFirstParty] = useState(false);
+  useEffect(() => {
+    void api.get<{ admin: boolean }>('/admin/status')
+      .then((result) => setFirstParty(result.admin))
+      .catch(() => setFirstParty(false));
+  }, [api]);
   const [compare, setCompare] = useState<{ title: string; loading: boolean; data?: VersionsResp } | null>(null);
   // NOTHING IS LOST: the default list hides old lyric-only shells (failed /
   // never-ran renders). This toggle fetches EVERYTHING (?all=1) so "lost

@@ -14,7 +14,7 @@ import { enqueue } from '../lib/queue';
 import { laneBpm } from '../lib/lane-pipeline';
 import { GENRES } from '@afrohit/shared';
 import { requireAuth } from '../middleware/auth';
-import { publicUrlFor, assertOwnedKey } from '../lib/storage';
+import { presignAssetRef, publicUrlFor, verifyUploadedAudio } from '../lib/storage';
 
 const identifySchema = z.object({ key: z.string().min(4) });
 const learnSchema = z.object({
@@ -58,9 +58,10 @@ export default async function zap(app: FastifyInstance) {
   app.post('/identify', { schema: { body: identifySchema } }, async (req, reply) => {
     const { workspaceId } = requireAuth(req);
     const { key } = identifySchema.parse(req.body);
+    const uploaded = await verifyUploadedAudio(workspaceId, key);
     const charge = await app.chargeCredits({ workspaceId, key: 'analyze_audio' });
     if (!charge.ok) return reply.code(402).send({ error: 'insufficient_credits', ...charge });
-    const url = publicUrlFor(assertOwnedKey(workspaceId, key));
+    const url = await presignAssetRef(publicUrlFor(uploaded.key), 900);
     const out = await recognizeSong({ url });
     if (!out.ok) {
       return reply.code(out.error === 'recognition_not_configured' ? 501 : 502).send(out);

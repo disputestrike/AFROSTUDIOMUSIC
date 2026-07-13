@@ -3,6 +3,7 @@
  * Used by Fastify for validation and by the web app for typed clients.
  */
 import { z } from 'zod';
+import { VOICE_CONSENT_TEXT, VOICE_CONSENT_VERSION } from './voice-consent';
 import {
   GENRES,
   LANGUAGES,
@@ -154,20 +155,23 @@ export const generateBeatInputSchema = z.object({
 // ---------- Voice -----------------------------------------------------------
 
 export const voiceConsentInputSchema = z.object({
-  legalName: z.string().min(2),
-  email: z.string().email(),
-  consentText: z.string().min(20),
+  artistId: z.string().cuid(),
+  legalName: z.string().trim().min(2).max(120),
+  email: z.string().trim().email().max(200),
+  consentText: z.literal(VOICE_CONSENT_TEXT),
+  consentVersion: z.literal(VOICE_CONSENT_VERSION),
+  accepted: z.literal(true),
   signatureUrl: z.string().url().optional(),
   consentAudioUrl: z.string().url().optional(),
-});
+}).strict();
 
 export const voiceProfileInputSchema = z.object({
   artistId: z.string().cuid(),
   consentId: z.string().cuid(),
   name: z.string().min(1).max(80),
-  sampleUrls: z.array(z.string().url()).min(1),
+  sampleUrls: z.array(z.string().url()).min(1).max(20),
   language: langSchema.optional(),
-});
+}).strict();
 
 /** OWN-VOICE TRAINING kickoff: consent-gated, dataset is ONE zip of the
  *  artist's own recordings, destination is a "user/model" path in the ARTIST's
@@ -181,7 +185,7 @@ export const voiceTrainInputSchema = z.object({
     .string()
     .regex(/^[a-z0-9][a-z0-9-]*\/[a-zA-Z0-9][a-zA-Z0-9._-]*$/, 'destination must be "user/model"')
     .optional(),
-});
+}).strict();
 
 /** DATASET BUILDER: raw recordings → a trainer-ready zip (layout
  *  `dataset/<name>/split_<i>.wav`, 48k mono, ~10s segments) — exactly what the
@@ -189,8 +193,8 @@ export const voiceTrainInputSchema = z.object({
  *  solo vocals make the best voice. */
 export const voiceDatasetInputSchema = z.object({
   name: z.string().min(1).max(60),
-  sampleUrls: z.array(z.string().url()).min(1).max(50),
-});
+  sampleUrls: z.array(z.string().url()).min(1).max(20),
+}).strict();
 
 /** SING WITH MY VOICE: the trained voice performs an existing track. HONEST:
  *  RVC converts the performance in the input (full song or bare vocal) — the
@@ -291,7 +295,14 @@ export const rightsCheckInputSchema = z.object({
 
 export const createShareLinkSchema = z.object({
   songId: z.string().cuid(),
-  targetUrl: z.string().url(),
+  targetUrl: z.string().url().max(2048).refine((value) => {
+    try {
+      const parsed = new URL(value);
+      return ['http:', 'https:'].includes(parsed.protocol) && !parsed.username && !parsed.password;
+    } catch {
+      return false;
+    }
+  }, 'targetUrl must be an http(s) URL without embedded credentials'),
 });
 
 export const logShareEventSchema = z.object({
@@ -311,14 +322,14 @@ export const logShareEventSchema = z.object({
 // The artist uploads their OWN authentic audio. We never invent or replace it.
 
 export const UPLOAD_KINDS = ['beat', 'instrumental', 'vocal', 'reference', 'stem'] as const;
+const AUDIO_FORMATS = ['wav', 'mp3', 'flac', 'aiff', 'm4a', 'ogg', 'webm'] as const;
 
 export const presignUploadSchema = z.object({
   kind: z.enum(UPLOAD_KINDS),
-  contentType: z.string().min(3).max(120),
-  ext: z.string().min(1).max(8),
+  contentType: z.string().regex(/^audio\/[a-z0-9.+-]+$/i).max(120),
+  ext: z.enum(AUDIO_FORMATS),
+  sizeBytes: z.number().int().min(1_000).max(250 * 1024 * 1024),
 });
-
-const AUDIO_FORMATS = ['wav', 'mp3', 'flac', 'aiff', 'm4a', 'ogg', 'webm'] as const;
 
 export const attachBeatUploadSchema = z.object({
   key: z.string().min(4), // R2 object key returned by /uploads/presign
@@ -477,10 +488,10 @@ export const dropBatchSchema = z.object({
 // ---------- Proxied audio upload (browser → API → R2, no R2 CORS) ----------
 
 export const audioUploadSchema = z.object({
-  kind: z.string().max(20).default('reference'),
-  contentType: z.string().max(60).default('audio/webm'),
-  ext: z.string().max(8).default('webm'),
-  dataBase64: z.string().min(16), // raw base64 or a data: URL
+  kind: z.enum(UPLOAD_KINDS).default('reference'),
+  contentType: z.string().regex(/^audio\/[a-z0-9.+-]+$/i).max(60).default('audio/webm'),
+  ext: z.enum(AUDIO_FORMATS).default('webm'),
+  dataBase64: z.string().min(16).max(42 * 1024 * 1024), // ~30 MB decoded
 });
 
 // ---------- Snippet (vertical shareable clip) ------------------------------

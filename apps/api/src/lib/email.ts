@@ -3,6 +3,7 @@
  * No-ops with a log line when RESEND_API_KEY is absent, so dev/test
  * environments never fail on missing email config.
  */
+import { escapeHtml, safeHttpUrl } from '@afrohit/shared';
 
 const FROM = () => process.env.EMAIL_FROM ?? 'AfroHit Studio <noreply@afrohit.studio>';
 
@@ -13,16 +14,18 @@ export async function sendEmail(opts: {
 }): Promise<{ ok: boolean; id?: string; skipped?: boolean }> {
   const key = process.env.RESEND_API_KEY;
   if (!key) {
-    console.log(`[email skipped — no RESEND_API_KEY] to=${opts.to} subject="${opts.subject}"`);
+    console.log('[email skipped: RESEND_API_KEY is not configured]');
     return { ok: true, skipped: true };
   }
   const res = await fetch('https://api.resend.com/emails', {
     method: 'POST',
     headers: { authorization: `Bearer ${key}`, 'content-type': 'application/json' },
     body: JSON.stringify({ from: FROM(), to: [opts.to], subject: opts.subject, html: opts.html }),
+    signal: AbortSignal.timeout(30_000),
   });
   if (!res.ok) {
-    console.error(`[email failed] ${res.status}: ${await res.text()}`);
+    await res.body?.cancel().catch(() => undefined);
+    console.error(`[email failed] provider status ${res.status}`);
     return { ok: false };
   }
   const data = (await res.json()) as { id?: string };
@@ -42,7 +45,7 @@ export function welcomeEmail(name: string | null) {
   return {
     subject: 'Welcome to AfroHit Studio 🎧',
     html: wrap(`
-      <p>Hey ${name ?? 'there'},</p>
+      <p>Hey ${escapeHtml(name ?? 'there')},</p>
       <p>Your studio is live. You've got <b>$5 in onboarding credits</b> to play with.</p>
       <p>First move: open <b>Settings</b> and fill in your Artist DNA — your languages, your lane,
       your banned clichés. The more specific you are, the less generic the music.</p>
@@ -58,11 +61,12 @@ export function jobDoneEmail(kind: string, projectTitle: string | null, url: str
     video: 'Your video render is ready',
     export: 'Your release kit is ready',
   };
+  const link = safeHttpUrl(url);
   return {
     subject: `${kindLabel[kind] ?? 'Your render is ready'} — ${projectTitle ?? 'AfroHit Studio'}`,
     html: wrap(`
-      <p>${kindLabel[kind] ?? 'A render finished'} on <b>${projectTitle ?? 'your project'}</b>.</p>
-      ${url ? `<p><a href="${url}" style="color:#EA580C">Listen / view it here</a></p>` : ''}
+      <p>${escapeHtml(kindLabel[kind] ?? 'A render finished')} on <b>${escapeHtml(projectTitle ?? 'your project')}</b>.</p>
+      ${link ? `<p><a href="${escapeHtml(link)}" style="color:#EA580C">Listen / view it here</a></p>` : ''}
       <p>Open the project in the studio to approve it or iterate.</p>
     `),
   };
@@ -82,7 +86,7 @@ export function morningDropEmail(stageName: string, hooks: Array<{ text: string;
   const rows = hooks
     .map(
       (h, i) =>
-        `<tr><td style="padding:6px 10px;color:#EA580C;font-weight:700">${(h.score ?? 0).toFixed(1)}</td><td style="padding:6px 10px;white-space:pre-wrap">${i + 1}. ${h.text}</td></tr>`
+        `<tr><td style="padding:6px 10px;color:#EA580C;font-weight:700">${(h.score ?? 0).toFixed(1)}</td><td style="padding:6px 10px;white-space:pre-wrap">${i + 1}. ${escapeHtml(h.text)}</td></tr>`
     )
     .join('');
   return {
@@ -98,7 +102,7 @@ export function morningDropEmail(stageName: string, hooks: Array<{ text: string;
 export function releaseRadarEmail(rows: Array<{ country: string | null; events: number }>) {
   const list = rows
     .slice(0, 10)
-    .map((r) => `<li><b>${r.country ?? 'Unknown'}</b> — ${r.events} plays/clicks</li>`)
+    .map((r) => `<li><b>${escapeHtml(r.country ?? 'Unknown')}</b> — ${Number(r.events)} plays/clicks</li>`)
     .join('');
   return {
     subject: '📡 Release Radar — your week in listeners',

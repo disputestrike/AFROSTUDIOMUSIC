@@ -4,7 +4,7 @@ import { renderVocalInputSchema, attachVocalUploadSchema } from '@afrohit/shared
 import { prompts, responsesJson } from '@afrohit/ai';
 import { requireAuth } from '../middleware/auth';
 import { enqueue } from '../lib/queue';
-import { publicUrlFor, assertOwnedKey } from '../lib/storage';
+import { publicUrlFor, verifyUploadedAudio } from '../lib/storage';
 
 export default async function vocals(app: FastifyInstance) {
   app.post<{ Params: { projectId: string } }>(
@@ -98,6 +98,7 @@ export default async function vocals(app: FastifyInstance) {
     async (req, reply) => {
       const { workspaceId } = requireAuth(req);
       const input = attachVocalUploadSchema.parse(req.body);
+      const uploaded = await verifyUploadedAudio(workspaceId, input.key);
       const project = await prisma.project.findFirstOrThrow({
         where: { id: req.params.projectId, workspaceId },
       });
@@ -130,7 +131,7 @@ export default async function vocals(app: FastifyInstance) {
           projectId: project.id,
           songId,
           role: input.role,
-          url: publicUrlFor(assertOwnedKey(workspaceId, input.key)),
+          url: publicUrlFor(uploaded.key),
           duration: input.durationS ?? null,
           language: input.language ?? null,
           approved: true, // the artist's own performance is authentic — auto-approved

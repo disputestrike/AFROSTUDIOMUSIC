@@ -3,7 +3,7 @@ import { prisma } from '@afrohit/db';
 import { presignUploadSchema, importUrlSchema, audioUploadSchema } from '@afrohit/shared';
 import { nanoid } from 'nanoid';
 import { requireAuth } from '../middleware/auth';
-import { presignUpload, putBytes } from '../lib/storage';
+import { presignAssetRef, presignUpload, putBytes, sniffAudioFormat } from '../lib/storage';
 import { assertSafeUrl, safeFetch } from '../lib/url-guard';
 import { enqueueHarvest, enqueueLearn } from '../lib/harvest';
 
@@ -22,6 +22,24 @@ import { enqueueHarvest, enqueueLearn } from '../lib/harvest';
 const MAX_IMPORT_BYTES = 80 * 1024 * 1024; // 80 MB
 const IMPORT_TIMEOUT_MS = 30_000;
 
+async function readWithLimit(response: Response, maxBytes: number): Promise<Buffer> {
+  if (!response.body) throw new Error('source returned no body');
+  const reader = response.body.getReader();
+  const chunks: Buffer[] = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > maxBytes) {
+      await reader.cancel('file_too_large');
+      throw Object.assign(new Error('file_too_large'), { statusCode: 413 });
+    }
+    chunks.push(Buffer.from(value));
+  }
+  return Buffer.concat(chunks, total);
+}
+
 function extFromContentType(ct: string, url: string): string {
   const map: Record<string, string> = {
     'audio/wav': 'wav', 'audio/x-wav': 'wav', 'audio/wave': 'wav',
@@ -33,6 +51,19 @@ function extFromContentType(ct: string, url: string): string {
   if (map[ct.split(';')[0]!.trim()]) return map[ct.split(';')[0]!.trim()]!;
   const urlExt = url.split('?')[0]!.split('.').pop()?.toLowerCase();
   return ['wav', 'mp3', 'flac', 'm4a', 'ogg', 'webm', 'aiff'].includes(urlExt ?? '') ? urlExt! : 'mp3';
+}
+
+function provenanceUrl(raw: string): string {
+  try {
+    const parsed = new URL(raw);
+    parsed.username = '';
+    parsed.password = '';
+    parsed.search = '';
+    parsed.hash = '';
+    return parsed.toString();
+  } catch {
+    return 'invalid-source-url';
+  }
 }
 
 async function ensureSong(workspaceId: string, projectId: string, title: string): Promise<string> {
@@ -52,8 +83,8 @@ async function ensureSong(workspaceId: string, projectId: string, title: string)
 export default async function uploads(app: FastifyInstance) {
   app.post('/presign', { schema: { body: presignUploadSchema } }, async (req) => {
     const { workspaceId } = requireAuth(req);
-    const { kind, contentType, ext } = presignUploadSchema.parse(req.body);
-    return presignUpload({ workspaceId, kind: `uploads/${kind}`, contentType, ext });
+    const { kind, contentType, ext, sizeBytes } = presignUploadSchema.parse(req.body);
+    return presignUpload({ workspaceId, kind: `uploads/${kind}`, contentType, ext, sizeBytes });
   });
 
   // Proxied upload: browser → our API → R2 (server-side S3 creds). Avoids the
@@ -61,7 +92,7 @@ export default async function uploads(app: FastifyInstance) {
   // has no CORS policy. Used for small audio like the Shazam mic capture.
   app.post(
     '/audio',
-    { bodyLimit: 30 * 1024 * 1024, schema: { body: audioUploadSchema } },
+    { bodyLimit: 43 * 1024 * 1024, schema: { body: audioUploadSchema } },
     async (req, reply) => {
       const { workspaceId } = requireAuth(req);
       const { kind, contentType, ext, dataBase64 } = audioUploadSchema.parse(req.body);
@@ -69,11 +100,17 @@ export default async function uploads(app: FastifyInstance) {
       const bytes = Buffer.from(b64, 'base64');
       if (bytes.length < 1000) return reply.code(400).send({ error: 'audio_too_small' });
       if (bytes.length > 30 * 1024 * 1024) return reply.code(413).send({ error: 'audio_too_large' });
+      const detected = sniffAudioFormat(bytes.subarray(0, 64));
+      if (!detected) return reply.code(415).send({ error: 'unsupported_or_invalid_audio' });
+      const declaredFormat = ext;
+      if (declaredFormat !== detected) {
+        return reply.code(415).send({ error: 'audio_type_mismatch', declared: declaredFormat, detected });
+      }
       const safeKind = /^[a-z0-9_-]{1,20}$/.test(kind) ? kind : 'reference';
       const safeExt = /^[a-z0-9]{1,8}$/.test(ext) ? ext : 'webm';
       const key = `${workspaceId}/uploads/${safeKind}/${nanoid()}.${safeExt}`;
       const url = await putBytes(key, bytes, contentType || 'audio/webm');
-      return { key, publicUrl: url };
+      return { key, assetRef: url, publicUrl: url, playbackUrl: await presignAssetRef(url, 900) };
     }
   );
 
@@ -97,18 +134,21 @@ export default async function uploads(app: FastifyInstance) {
     let contentType: string;
     try {
       const res = await safeFetch(input.url, { signal: controller.signal });
-      if (!res.ok) return reply.code(502).send({ error: `source responded ${res.status}` });
+      if (!res.ok) {
+        await res.body?.cancel().catch(() => undefined);
+        return reply.code(502).send({ error: `source responded ${res.status}` });
+      }
       contentType = res.headers.get('content-type') ?? 'application/octet-stream';
       const declared = Number(res.headers.get('content-length') ?? '0');
       if (declared && declared > MAX_IMPORT_BYTES) {
+        await res.body?.cancel().catch(() => undefined);
         return reply.code(413).send({ error: 'file too large (max 80MB)' });
       }
-      const ab = await res.arrayBuffer();
-      if (ab.byteLength > MAX_IMPORT_BYTES) {
-        return reply.code(413).send({ error: 'file too large (max 80MB)' });
-      }
-      bytes = Buffer.from(ab);
+      bytes = await readWithLimit(res, MAX_IMPORT_BYTES);
     } catch (err) {
+      if ((err as { statusCode?: number }).statusCode === 413) {
+        return reply.code(413).send({ error: 'file too large (max 80MB)' });
+      }
       // A redirect that pointed at a blocked/private host is rejected mid-fetch.
       const uc = (err as { urlCheck?: { code: number; error: string; message?: string } }).urlCheck;
       if (uc) return reply.code(uc.code).send({ error: uc.error, message: uc.message });
@@ -132,6 +172,11 @@ export default async function uploads(app: FastifyInstance) {
     }
 
     const ext = extFromContentType(contentType, input.url);
+    const detected = sniffAudioFormat(bytes.subarray(0, 64));
+    if (!detected) return reply.code(415).send({ error: 'unsupported_or_invalid_audio' });
+    if ((ext === 'm4a' ? 'm4a' : ext) !== detected) {
+      return reply.code(415).send({ error: 'audio_type_mismatch', declared: ext, detected });
+    }
     const key = `${workspaceId}/uploads/import-${input.kind}/${nanoid()}.${ext}`;
     const url = await putBytes(key, bytes, contentType);
 
@@ -141,7 +186,7 @@ export default async function uploads(app: FastifyInstance) {
       const vocal = await prisma.vocalRender.create({
         data: {
           projectId: project.id, songId, role: input.role ?? 'lead', url,
-          approved: true, meta: { imported: true, sourceUrl: input.url },
+          approved: true, meta: { imported: true, sourceUrl: provenanceUrl(input.url) },
         },
       });
       reply.code(201);
@@ -163,7 +208,7 @@ export default async function uploads(app: FastifyInstance) {
       const mix = await prisma.mix.create({
         data: {
           projectId: project.id, songId, preset: 'imported', url,
-          notes: `Imported song — ${input.url}`,
+          notes: `Imported song — ${provenanceUrl(input.url)}`,
         },
       });
       // Same law as the finished-upload bridge (mixes.ts /upload): an OWNED
@@ -198,7 +243,7 @@ export default async function uploads(app: FastifyInstance) {
         bpm: input.bpm ?? null, keySignature: input.keySignature ?? null,
         provider: 'import', approved: true,
         meta: {
-          imported: true, sourceUrl: input.url,
+          imported: true, sourceUrl: provenanceUrl(input.url),
           instrumental: input.kind === 'instrumental',
           title: input.title ?? null,
         },

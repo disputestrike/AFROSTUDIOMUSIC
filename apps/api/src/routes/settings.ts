@@ -1,7 +1,7 @@
 import type { FastifyInstance } from 'fastify';
-import { prisma } from '@afrohit/db';
+import { openSecret, prisma, sealSecret, secretHint } from '@afrohit/db';
 import { integrationsInputSchema } from '@afrohit/shared';
-import { requireAuth } from '../middleware/auth';
+import { requireAuth, requireRole } from '../middleware/auth';
 
 /**
  * In-app integrations — the music engine key lives here, not in Railway env.
@@ -9,6 +9,9 @@ import { requireAuth } from '../middleware/auth';
  * raw key is never returned to the client (only a masked hint + connected flag).
  */
 export default async function settings(app: FastifyInstance) {
+  app.addHook('preHandler', async (req) => {
+    requireRole(req, ['OWNER', 'ADMIN']);
+  });
   app.get('/integrations', async (req) => {
     const { workspaceId } = requireAuth(req);
     const ws = await prisma.workspace.findUniqueOrThrow({
@@ -18,7 +21,7 @@ export default async function settings(app: FastifyInstance) {
     return {
       musicProvider: ws.musicProvider ?? null,
       musicConnected: !!ws.musicApiKey,
-      keyHint: ws.musicApiKey ? `••••${ws.musicApiKey.slice(-4)}` : null,
+      keyHint: secretHint(ws.musicApiKey),
     };
   });
 
@@ -30,7 +33,7 @@ export default async function settings(app: FastifyInstance) {
     // '' = leave existing key; null = disconnect; string = set.
     if (input.musicApiKey === null) data.musicApiKey = null;
     else if (typeof input.musicApiKey === 'string' && input.musicApiKey.trim()) {
-      data.musicApiKey = input.musicApiKey.trim();
+      data.musicApiKey = sealSecret(input.musicApiKey.trim());
     }
     const ws = await prisma.workspace.update({
       where: { id: workspaceId },
@@ -40,7 +43,7 @@ export default async function settings(app: FastifyInstance) {
     return {
       musicProvider: ws.musicProvider ?? null,
       musicConnected: !!ws.musicApiKey,
-      keyHint: ws.musicApiKey ? `••••${ws.musicApiKey.slice(-4)}` : null,
+      keyHint: secretHint(ws.musicApiKey),
     };
   });
 
@@ -54,10 +57,11 @@ export default async function settings(app: FastifyInstance) {
     if (!ws.musicApiKey || !ws.musicProvider) {
       return reply.code(400).send({ ok: false, error: 'No music engine connected yet.' });
     }
+    const apiKey = openSecret(ws.musicApiKey)!;
     try {
       if (ws.musicProvider === 'replicate') {
         const r = await fetch('https://api.replicate.com/v1/account', {
-          headers: { authorization: `Bearer ${ws.musicApiKey}` },
+          headers: { authorization: `Bearer ${apiKey}` },
         });
         return r.ok
           ? { ok: true, provider: 'replicate', message: 'Replicate key works ✅' }
@@ -66,7 +70,7 @@ export default async function settings(app: FastifyInstance) {
       if (ws.musicProvider === 'suno') {
         const base = (process.env.SUNO_API_BASE ?? 'https://api.sunoapi.org').replace(/\/+$/, '');
         const r = await fetch(`${base}/api/v1/generate/credit`, {
-          headers: { authorization: `Bearer ${ws.musicApiKey}` },
+          headers: { authorization: `Bearer ${apiKey}` },
         });
         return r.ok
           ? { ok: true, provider: 'suno', message: 'Suno key works ✅' }

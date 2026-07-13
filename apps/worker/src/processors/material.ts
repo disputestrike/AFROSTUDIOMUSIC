@@ -1,4 +1,4 @@
-import { prisma } from '@afrohit/db';
+import { openSecret, prisma } from '@afrohit/db';
 import { musicAdapter } from '@afrohit/ai';
 import { markFailed, markRunning, markSucceeded } from '../lib/jobs';
 import { downloadToBuffer, uploadBytes } from '../lib/storage';
@@ -49,7 +49,7 @@ export async function processForgeMaterial(p: ForgePayload) {
     const bars = p.bars ?? 8;
     const loopDur = Math.ceil((60 / p.bpm) * 4 * bars) + 3; // headroom for trim
     const ws = await prisma.workspace.findUnique({ where: { id: p.workspaceId }, select: { musicProvider: true, musicApiKey: true } });
-    const adapter = musicAdapter(ws?.musicProvider ?? undefined, ws?.musicApiKey ?? undefined);
+    const adapter = musicAdapter(ws?.musicProvider ?? undefined, openSecret(ws?.musicApiKey));
     // STUB GUARD (audit HIGH): if the forge provider resolves to the stub, EVERY
     // forged loop would be the SAME SoundHelix mp3 chopped to a "loop" — it passes
     // loop-QC and gets registered as a real MaterialAsset, so the whole "owned,

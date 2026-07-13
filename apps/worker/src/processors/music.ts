@@ -1,4 +1,4 @@
-import { prisma, Prisma } from '@afrohit/db';
+import { openSecret, prisma, Prisma } from '@afrohit/db';
 import { musicAdapter, sunoKey, defaultInstrumentalEngine } from '@afrohit/ai';
 import type { MusicGenerationInput } from '@afrohit/ai';
 import { markFailed, markRunning, markSucceeded } from '../lib/jobs';
@@ -106,14 +106,16 @@ export async function processMusic(p: MusicPayload) {
     let engine = resolved.engine as 'suno' | 'minimax' | 'ace_step';
     if (engine === 'suno' && !sunoKey()) engine = 'minimax';
     // Suno uses its OWN key (SUNO_API_KEY), never the workspace's Replicate key.
-    const engineKey = engine === 'suno' ? undefined : ws?.musicApiKey ?? undefined;
+    const workspaceApiKey = openSecret(ws?.musicApiKey);
+    const replicateApiKey = ws?.musicProvider === 'replicate' ? workspaceApiKey : undefined;
+    const engineKey = engine === 'suno' ? undefined : replicateApiKey;
     let adapter = wantsVocals
       ? musicAdapter(engine, engineKey)
       // INSTRUMENTAL: route to a REAL engine on the key that exists. A
       // Replicate-only operator (no Suno) got the stub here because the
       // instrumental path ignored their Replicate key — now it falls to
       // Replicate MusicGen instead of a dead stub.
-      : musicAdapter(ws?.musicProvider ?? defaultInstrumentalEngine(), ws?.musicApiKey ?? undefined);
+      : musicAdapter(ws?.musicProvider ?? defaultInstrumentalEngine(), workspaceApiKey);
     // A3-2 — REFERENCE-AUDIO ADJUST: when the job carries the song's own audio,
     // condition the render on it (audio in, repaired audio out) instead of
     // re-rolling from tags. The reference id is logged so every Adjust run is

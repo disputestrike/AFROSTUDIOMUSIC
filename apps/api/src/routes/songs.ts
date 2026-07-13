@@ -14,6 +14,8 @@ import { snapshotLyricVersion, readVersions } from '../lib/lyric-versions';
 import { recordFeedback } from '../services/artist-memory';
 import { languageVocalTag } from '../services/chat-tools';
 import { requireAdmin } from './admin';
+import { presignAssetRef } from '../lib/storage';
+import { safeFetch } from '../lib/url-guard';
 
 /** Freshest playable audio for a song: the most RECENT of master/mix/beat by
  *  createdAt — so a re-sing (new beat) or a re-master (new master) both become
@@ -484,7 +486,7 @@ export default async function songs(app: FastifyInstance) {
     else if (beat) { url = beat.url; ext = beat.format ?? 'mp3'; }
     if (!url) return reply.code(404).send({ error: 'no_such_asset' });
 
-    const res = await fetch(url);
+    const res = await safeFetch(await presignAssetRef(url, 900), { blockMediaHosts: false });
     if (!res.ok || !res.body) return reply.code(502).send({ error: 'source_unavailable' });
     // STREAM, never buffer — a WAV master can be 50MB+; buffering N concurrent
     // downloads OOMs the API. Cap at 250MB as a sanity ceiling.
