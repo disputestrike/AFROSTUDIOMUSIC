@@ -156,4 +156,23 @@ But my mind don set like stone`;
 const cl = lyricQaCheck({ title: 'No Permission', body: cleanRec, hookCell: 'no permission', languageMix: { pcm: 0.85, en: 0.15 } });
 assert(cl.ok, `emotion-first record passes the contamination gate (blocks: ${cl.blocks.join('; ')})`);
 
+// SCENERY-DEPENDENT via NARRATION — the red-team evasion (2026-07-13): a stall/
+// street scene told in first person, NO names/quotes/"gbam"/obvious food. The
+// object-removal test must still reject it (strip the props, nothing remains).
+const scenery = `[Hook]
+Meet me where you turn, by the corner, by the stall
+Watch the scene, watch the scene, na so e dey fall
+[Verse]
+Under the wire where the bulb dey sway
+Basin on the head, crate upon crate
+Two bench, one lamp, the kettle dey hum
+She fold the umbrella, na so morning come
+[Verse]
+Awning dey flap where the tarpaulin torn
+Bucket by the gutter since the day was born
+Same stall, same smoke, same coal, same tin
+Strip the whole thing, nothing dey within`;
+const sc = lyricQaCheck({ title: 'Watch The Scene', body: scenery, hookCell: 'watch the scene', languageMix: { pcm: 0.9, en: 0.1 } });
+assert(!sc.ok && (sc.contamination?.patterns.some((p) => p.code === 'scenery_dependent') ?? false), 'scenery-narration record blocked by the object-removal test (scenery_dependent)');
+
 console.log(process.exitCode ? '\n❌ Lyric QA test FAILED' : '\n✅ Lyric QA test PASSED');

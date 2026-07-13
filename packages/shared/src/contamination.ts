@@ -207,16 +207,56 @@ export function detectCatalogueContamination(input: {
     p.push({ code: 'rejected_skeleton', label: 'the same skeleton as previously-rejected songs, nouns swapped', evidence: 'scene-open -> transaction/flirtation -> dialogue -> appointment -> explained outro' });
   }
 
+  // 13. SCENERY-DEPENDENT CONCEPT — the object-removal test on the FINISHED lyric.
+  //     This catches the narration evasions that dodge every surface pattern above
+  //     (a roadside/market/garage/street SCENE that IS the whole song, told in
+  //     first person with no names, quotes or "gbam"). If a large share of the
+  //     lines exist only to paint a commercial/street setting — and especially if
+  //     the hook or title leans on that setting — the concept is scenery, not a
+  //     feeling. Time/weather words (morning, night, road) are deliberately NOT
+  //     scenery, and a single place reference in an emotional song stays under the
+  //     density floor.
+  const SCENERY = new Set([
+    'roadside', 'streetlight', 'corner', 'junction', 'garage', 'market', 'stall', 'stand', 'kiosk', 'buka',
+    'coalpot', 'coal', 'charcoal', 'embers', 'ember', 'lantern', 'lamp', 'stove', 'grill', 'skewer', 'tongs',
+    'apron', 'tray', 'basket', 'crate', 'bench', 'ladle', 'generator', 'nepa', 'flame', 'smoke',
+    'danfo', 'keke', 'okada', 'molue', 'conductor', 'traders', 'trader', 'oshodi', 'balogun', 'ojuelegba',
+    // Concrete street-stall props (owner red-team 2026-07-13 — the "camera-
+    // direction" evasions were built on these). Deliberately excludes metaphor-
+    // prone words (fire, light, star, road, sun) to protect emotional records.
+    'tin', 'drum', 'bulb', 'wire', 'umbrella', 'basin', 'kettle', 'awning', 'tarpaulin', 'bucket', 'cart',
+    'wheel', 'thread', 'receipt', 'tarred', 'traffic', 'gutter', 'plank', 'tent', 'coalpot',
+    ...SCENERY_OBJECTS,
+  ]);
+  const sceneryLineCount = lines.filter((l) => tokens(l).some((w) => SCENERY.has(w) || FOOD.has(w))).length;
+  const sceneryDensity = lines.length ? sceneryLineCount / lines.length : 0;
+  const hookLines = sectionLines(body, /hook|chorus|refrain/i);
+  const hookScenery = hookLines.some((l) => tokens(l).some((w) => SCENERY.has(w) || FOOD.has(w))) || titleTok.some((w) => SCENERY.has(w) || FOOD.has(w));
+  const sceneryDependent = sceneryDensity >= 0.4 || (hookScenery && sceneryDensity >= 0.28);
+  if (sceneryDependent) {
+    p.push({
+      code: 'scenery_dependent',
+      label: `the concept is a scene, not a feeling (~${Math.round(sceneryDensity * 100)}% of lines paint a setting)`,
+      evidence: `scenery/food in ${sceneryLineCount}/${lines.length} lines${hookScenery ? ' + the hook or title leans on the setting' : ''}`,
+    });
+  }
+
   const count = p.length;
-  const decision = count >= 2 ? 'CATALOGUE_CONTAMINATION_DETECTED' : null;
+  // >=2 patterns, OR a strongly scenery-dependent concept ON ITS OWN (the
+  // object-removal test: strip the props and the song is empty). A hook/title
+  // built on the setting plus a scenery-dense body is enough to reject alone.
+  const strongScenery = sceneryDensity >= 0.45 || (hookScenery && sceneryDensity >= 0.34);
+  const decision = count >= 2 || strongScenery ? 'CATALOGUE_CONTAMINATION_DETECTED' : null;
   const resembles =
     p.some((x) => x.code === 'food_seller_romance' || x.code === 'literal_object_title')
       ? 'Sip Am Bam / Mama Titi (food-vendor romance template)'
       : structural >= 2
         ? 'the catalogue screenplay template'
-        : count >= 2
-          ? 'a previously-rejected catalogue pattern'
-          : null;
+        : p.some((x) => x.code === 'scenery_dependent')
+          ? 'a scenery-dependent concept (fails the object-removal test — strip the props and the song is empty)'
+          : count >= 2
+            ? 'a previously-rejected catalogue pattern'
+            : null;
 
   const titleSalvageable = !!titleObject; // an object title can live IF re-based as a metaphor
   const titleNote = titleObject
