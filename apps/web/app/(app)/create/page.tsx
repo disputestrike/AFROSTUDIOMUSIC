@@ -191,10 +191,14 @@ export default function CreatePage() {
   // Explicit instrument picks — featured prominently in the render's style
   // prompt (steering on provider engines; exact on the own engine).
   const [instruments, setInstruments] = useState<string[]>([]);
-  // 'auto' = let the backend's defaultSongEngine() choose (Suno when a key
-  // exists, else the fallback). Hardcoding 'minimax' here used to OVERRIDE that
-  // — so full songs never upgraded to Suno even with a key. Auto is the default.
-  const [engine, setEngine] = useState<'auto' | 'suno' | 'ace_step' | 'minimax' | 'own'>('auto');
+  // 'auto' lets the backend choose from routes connected for this workspace.
+  const [engine, setEngine] = useState<'auto' | 'suno' | 'eleven' | 'ace_step' | 'minimax'>('auto');
+  const [musicRoutes, setMusicRoutes] = useState<{ flagship: boolean; advanced: boolean; standard: boolean } | null>(null);
+  useEffect(() => {
+    void api.get<{ flagship: boolean; advanced: boolean; standard: boolean }>('/settings/music-capabilities')
+      .then(setMusicRoutes)
+      .catch(() => setMusicRoutes({ flagship: false, advanced: false, standard: false }));
+  }, [api]);
 
   // Three ways in: describe it / bring your own lyrics / listen & recreate.
   const [path, setPath] = useState<'song' | 'lyrics' | 'mumble'>('song');
@@ -792,17 +796,20 @@ export default function CreatePage() {
           {([
             // §1.11 THE WALL: public surfaces speak in ENGINE CLASSES, never
             // vendor names. Values stay internal identifiers; labels are classes.
-            { value: 'auto', label: 'Auto', hint: 'Best engine available (recommended)' },
-            { value: 'suno', label: 'Flagship', hint: 'Best quality (first-party releases)' },
-            { value: 'minimax', label: 'Standard A', hint: 'High vocal realism' },
-            { value: 'ace_step', label: 'Standard B', hint: 'Fast draft' },
-            { value: 'own', label: 'Our Engine', hint: 'Instrumental built from YOUR + synth material (owned)' },
-          ] as const).map((e) => (
+            { value: 'auto', label: 'Auto', hint: 'Connected route', available: true },
+            { value: 'suno', label: 'Flagship', hint: 'First-party route', available: musicRoutes?.flagship === true },
+            { value: 'eleven', label: 'Advanced', hint: 'Section-controlled route', available: musicRoutes?.advanced === true },
+            { value: 'minimax', label: 'Standard A', hint: 'Full-song route', available: musicRoutes?.standard === true },
+            { value: 'ace_step', label: 'Standard B', hint: 'Alternate full-song route', available: musicRoutes?.standard === true },
+          ] as const).filter((e) => e.available).map((e) => (
             <button key={e.value} onClick={() => setEngine(e.value)} className={`rounded-full px-4 py-2 text-sm ${engine === e.value ? 'bg-brand-gradient text-ink shadow-glow' : 'border border-white/10 bg-white/5 text-slate-300 hover:bg-white/10'}`}>
               {e.label} <span className="opacity-60">· {e.hint}</span>
             </button>
           ))}
         </div>
+        {musicRoutes && !musicRoutes.flagship && !musicRoutes.advanced && !musicRoutes.standard && (
+          <p className="mt-2 text-sm text-amber-300">No vocal engine is connected. An owner must connect one in Settings before rendering.</p>
+        )}
       </div>
 
       <div className="mt-4"><div className="mb-2 text-sm text-slate-400">Takes <span className="text-xs text-slate-500">— more takes = more directions; the ear keeps the one most in your lane</span></div>

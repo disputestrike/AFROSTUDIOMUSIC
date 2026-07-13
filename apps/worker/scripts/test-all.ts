@@ -78,6 +78,8 @@ const TS: Array<[string, string]> = [
   ['Craft laws (writer/critic/hooks)', 'test-craft-laws.ts'],
   ['Genre identity (afro≠reggaeton)', 'test-genre-identity.ts'],
   ['Engine adapters (no silent stub)', 'test-engine-adapters.ts'],
+  ['Music provider contracts', 'test-music-provider-contracts.ts'],
+  ['Music route capabilities', 'test-music-capabilities.ts'],
   ['Genre kits (42 producer kits)', 'test-genre-kits.ts'],
   ['Material system (forge/layer/pan)', 'test-material-system.ts'],
   ['Training isolation (lane/pin/zap)', 'test-training-isolation.ts'],
@@ -110,10 +112,10 @@ async function main() {
     const api = process.env.API_URL || 'https://afrohitapi-production.up.railway.app/api/v1';
     try {
       const res = await fetch(`${api}/debug/ai`, { signal: AbortSignal.timeout(20000) });
-      const d = (await res.json()) as { brainOk?: boolean; brainStatus?: string; anthropic?: { ok?: boolean }; openai?: { ok?: boolean }; audd?: { configured?: boolean }; engineCeiling?: { engine?: string; ceiling?: string } };
+      const d = (await res.json()) as { brainOk?: boolean; brainStatus?: string; anthropic?: { ok?: boolean }; openai?: { ok?: boolean }; audd?: { configured?: boolean }; engineRoute?: { engine?: string; ceiling?: string } };
       results.push({ name: 'LIVE brain (Claude/OpenAI)', status: d.brainOk ? 'PASS' : 'FAIL', note: d.brainStatus || `claude=${d.anthropic?.ok} openai=${d.openai?.ok}`, required: false });
       results.push({ name: 'LIVE Zap (AudD configured)', status: d.audd?.configured ? 'PASS' : 'INFO', note: d.audd?.configured ? 'configured' : 'set AUDD_API_TOKEN', required: false });
-      results.push({ name: 'LIVE engine ceiling', status: 'INFO', note: `${d.engineCeiling?.engine} (${d.engineCeiling?.ceiling})`, required: false });
+      results.push({ name: 'LIVE engine route', status: 'INFO', note: `${d.engineRoute?.engine} (${d.engineRoute?.ceiling})`, required: false });
     } catch (e) {
       results.push({ name: 'LIVE API health', status: 'SKIP', note: `unreachable (${(e as Error).message})`, required: false });
     }

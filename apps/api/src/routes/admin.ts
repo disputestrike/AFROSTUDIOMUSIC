@@ -133,9 +133,24 @@ export default async function admin(app: FastifyInstance) {
   // glance, live. Admin-only (real vendor names live here — §1.11).
   app.get('/engines', async (req) => {
     await requireAdmin(req);
-    const sunoAvailable = !!process.env.SUNO_API_KEY;
-    const firstParty = isFirstPartyWorkspace('(internal)');
-    const vocal = resolveEngineForWorkspace(undefined, { firstParty, sunoAvailable });
+    const { workspaceId } = requireAuth(req);
+    const workspace = await prisma.workspace.findUnique({
+      where: { id: workspaceId },
+      select: { musicProvider: true, musicApiKey: true },
+    });
+    const workspaceKey = !!workspace?.musicApiKey;
+    const sunoAvailable = (workspace?.musicProvider === 'suno' && workspaceKey) || !!(process.env.SUNO_API_KEY || process.env.SUNOAPI_KEY);
+    const elevenAvailable = (workspace?.musicProvider === 'eleven' && workspaceKey) ||
+      !!(process.env.ELEVEN_API_KEY || process.env.ELEVENLABS_API_KEY || process.env.ELEVEN_LABS_API_KEY || process.env.XI_API_KEY);
+    const replicateAvailable = (workspace?.musicProvider === 'replicate' && workspaceKey) ||
+      !!(process.env.REPLICATE_API_TOKEN || process.env.REPLICATE_TOKEN);
+    const firstParty = isFirstPartyWorkspace(workspaceId);
+    const vocal = resolveEngineForWorkspace(undefined, {
+      firstParty,
+      sunoAvailable,
+      elevenAvailable: elevenAvailable && (firstParty || process.env.ELEVEN_MUSIC_CUSTOMER_ROUTE_APPROVED === '1'),
+      replicateAvailable,
+    });
     const since = new Date(Date.now() - 24 * 60 * 60 * 1000);
     const spend = await prisma.providerJob.groupBy({
       by: ['provider'],
@@ -162,7 +177,7 @@ export default async function admin(app: FastifyInstance) {
       resolved: {
         vocalDefault: vocal.engine,
         draftFallback: 'ace_step',
-        instrumental: process.env.MUSIC_PROVIDER ?? 'stub',
+        instrumental: process.env.MUSIC_PROVIDER ?? 'unavailable',
         stemsMode: (process.env.DEMUCS_MODE ?? '').toLowerCase() || 'default (measure=local, user=replicate)',
         firstParty,
         bridgeAvailable: sunoAvailable && firstParty,
@@ -173,6 +188,7 @@ export default async function admin(app: FastifyInstance) {
           minimax: 'minimax/music-2.6 via Replicate',
           ace_step: 'lucataco/ace-step via Replicate',
           musicgen: 'MusicGen via Replicate',
+          eleven: 'Eleven Music v2 when the approved route is enabled',
           suno: 'bridge/gateway when SUNO_API_KEY set (first-party only)',
         },
       },

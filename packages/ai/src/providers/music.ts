@@ -1,14 +1,11 @@
 /**
  * Music generation adapter. Selects backend from env MUSIC_PROVIDER.
  *
- * VALIDATED engines (wired + used in production):
- *  - replicate    — MusicGen (instrumental; the Replicate-only default)
- *  - suno / minimax / ace_step — full-song WITH vocals (via songEngine)
- * UNVERIFIED scaffolds (endpoints guessed — confirm against live docs before use):
- *  - eleven       — Eleven Labs Music API
- *  - stable_audio — Stability Stable Audio
- *  - mubert       — Mubert API
- *  - stub         — SoundHelix placeholder (dev only; blocked in prod unless ALLOW_STUB_AUDIO=1)
+ * Wired engines:
+ *  - minimax / ace_step / replicate via Replicate
+ *  - Eleven Music v2 via its synchronous compose endpoint
+ *  - Suno-compatible gateway for first-party releases only
+ * Unknown, removed, or unconfigured providers fail closed.
  *
  * Every adapter must implement MusicProviderAdapter and return a stable
  * ProviderJobResult so the worker can poll or finalize uniformly.
@@ -22,7 +19,7 @@ import type {
 import { getGenreKit } from '@afrohit/shared';
 
 function provider(): string {
-  return (process.env.MUSIC_PROVIDER ?? 'stub').toLowerCase();
+  return (process.env.MUSIC_PROVIDER ?? 'unavailable').toLowerCase();
 }
 
 /**
@@ -42,8 +39,9 @@ function provider(): string {
  * (/dancehall/, /rnb|r&b|soul/) also fired for the GLOBAL genres 'dancehall',
  * 'rnb' and 'soul' — forcing pure Jamaican dancehall and American R&B/Soul into
  * an Afro lane. That is the inverse of the amapiano bug. Returns null for every
- * non-Afro genre so it is left completely untouched. Highlife and gospel get
- * their OWN signatures (guitar-band / piano-organ-choir) — NOT a log drum.
+ * non-African genre so it is left completely untouched. African-American
+ * gospel, Jamaican reggae and US hip-hop are intentionally global here; their
+ * African counterparts have explicit lanes such as afro_gospel and praise.
  */
 function afroIdentity(genre: string): { anchor: string; signature: string } | null {
   switch (genre.toLowerCase()) {
@@ -56,7 +54,7 @@ function afroIdentity(genre: string): { anchor: string; signature: string } | nu
     case 'afro_house':
       return {
         anchor: 'South African afro house',
-        signature: 'signature sound: FOUR-ON-THE-FLOOR deep house kick, tribal African percussion (congas/shakers/log-drum accents), hypnotic synth stabs and warm bass, chant vocals — driving and danceable, NOT the swung amapiano bounce',
+        signature: 'signature sound: FOUR-ON-THE-FLOOR deep-house kick, rolling congas, shakers and shekere, marimba or kalimba motifs, hypnotic synth stabs, warm bass and African chant vocals — NOT a log-drum-led amapiano bounce',
       };
     case 'afro_dancehall': // NOT global 'dancehall'
       return {
@@ -64,10 +62,14 @@ function afroIdentity(genre: string): { anchor: string; signature: string } | nu
         signature: 'signature sound: Jamaican dancehall riddim bounce under African percussion, deep rolling bass, synth plucks and horn stabs',
       };
     case 'afro_rnb': // NOT global 'rnb'
+      return {
+        anchor: 'West African Afro-R&B',
+        signature: 'signature sound: lush Rhodes and warm pads, soft syncopated kick, swung 16th-note shaker and hand percussion, smooth bass and intimate layered R&B vocals — airy and chord-rich, NOT log-drum-led',
+      };
     case 'afro_soul': // NOT global 'soul'
       return {
-        anchor: 'Afro-R&B / Afrosoul',
-        signature: 'signature sound: lush Rhodes and warm pads, smooth sub-bass, soft Afro percussion under intimate R&B vocals',
+        anchor: 'Pan-African Afro-soul',
+        signature: 'signature sound: warm Rhodes, organic live backbeat drums, congas and shakers, fingered live bass, guitar chords and rich harmony vocals — emotive live-band soul with African percussion, NOT trap or house',
       };
     case 'highlife':
       return {
@@ -76,16 +78,98 @@ function afroIdentity(genre: string): { anchor: string; signature: string } | nu
       };
     case 'afro_gospel':
       return {
-        anchor: 'Afro-gospel',
-        signature: 'signature sound: rich gospel piano and Hammond/gospel organ, full choir and call-response vocals, praise-break drums over an Afro praise groove',
+        anchor: 'West African Afro-gospel',
+        signature: 'signature sound: rich gospel piano and Hammond organ, full choir and call-response vocals, talking drum, shekere and highlife guitar over a Nigerian or Ghanaian praise groove — NOT US-only 12/8 gospel',
       };
-    case 'afrobeats':
     case 'afro_fusion':
+      return {
+        anchor: 'West African Afro-fusion',
+        signature: 'signature sound: syncopated Afrobeats percussion with talking drum and shekere, melodic live bass, highlife guitar, organic brass and a deliberate blend of reggae, dancehall, R&B or soul — broader and more live than pop Afrobeats',
+      };
     case 'afro_pop':
+      return {
+        anchor: 'West African Afropop',
+        signature: 'signature sound: polished melody-first song structure, syncopated Afrobeats kick, shekere and shaker 16ths, offbeat open hat, bright highlife guitar, synth pluck and chant adlibs — radio-pop clarity without a log-drum-led groove',
+      };
     case 'street_pop':
       return {
+        anchor: 'Lagos Nigerian street-pop',
+        signature: 'signature sound: rowdy syncopated street-hop drums, log-drum bounce used as street flavor, swung shaker 16ths, gang chants, rough pidgin rap-singing and call-response adlibs — energetic Zanku street pocket, NOT lounge amapiano or US trap',
+      };
+    case 'afrobeats':
+      return {
         anchor: 'West African Afrobeats (Nigerian/Ghanaian)',
-        signature: 'signature sound: syncopated Afro kick+snare, shekere/shaker 16ths, talking drum and congas, melodic bass, interlocking highlife guitar and warm keys, vocal chants and adlibs — laid-back off-beat kick, NOT four-on-the-floor, NOT amapiano log-drum-led',
+        signature: 'signature sound: syncopated Afro kick and snare, shekere or shaker 16ths, talking drum and congas, melodic bass, interlocking highlife guitar and warm keys, vocal chants and adlibs — laid-back offbeat kick, NOT four-on-the-floor, NOT amapiano log-drum-led',
+      };
+    case 'alte':
+      return {
+        anchor: 'Nigerian alté',
+        signature: 'signature sound: dreamy lo-fi Afro-fusion with Rhodes, hazy guitar chords, live bass, vinyl texture and intimate layered alt-R&B vocals — Lagos alternative mood, restrained percussion, NOT a commercial Afrobeats banger',
+      };
+    case 'gqom':
+      return {
+        anchor: 'Durban South African gqom',
+        signature: 'signature sound: dark minimal straight-grid percussion, booming distorted BROKEN kick placement, rolling tribal toms, sparse sub-bass, sirens and Zulu chant energy — NOT four-on-the-floor house, NOT swung amapiano, NO log-drum melody',
+      };
+    case 'kwaito':
+      return {
+        anchor: 'Soweto South African kwaito',
+        signature: 'signature sound: slowed 1990s township-house FOUR-ON-THE-FLOOR groove, deep looping synth or organ bass, offbeat open hat, sparse chords and tsotsitaal spoken crowd chants — relaxed swagger, NO amapiano log drum',
+      };
+    case 'bongo_flava':
+      return {
+        anchor: 'Tanzanian Bongo Flava',
+        signature: 'signature sound: vocal-forward Swahili Afropop, melodic sung lead, swung shaker and conga pocket, bright synth pluck or marimba, coastal strings and warm bass — East African pop, NOT log-drum-led amapiano',
+      };
+    case 'azonto':
+      return {
+        anchor: 'Accra Ghanaian azonto',
+        signature: 'signature sound: bouncy kpanlogo-derived cowbell, agogo and conga syncopation, plucky synth bass, clipped electronic drums and playful call-response dance chants — Ghanaian hiplife pocket, NOT Nigerian Afrobeats or South African house',
+      };
+    case 'coupe_decale':
+      return {
+        anchor: 'Ivorian coupé-décalé',
+        signature: 'signature sound: fast relentless syncopated dance percussion, bright looping sebene guitar, cowbell and shaker drive, cascading tom rolls, beat stops and Nouchi animateur hype chants — NOT metronomic house',
+      };
+    case 'ndombolo':
+      return {
+        anchor: 'Congolese ndombolo',
+        signature: 'signature sound: fast sebene climax with multiple interlocking clean electric guitars, busy live fingered bass, rolling snare and cowbell pulse, atalaku dance calls and crowd chants — the guitars drive the groove, NEVER 808 or house',
+      };
+    case 'soukous':
+      return {
+        anchor: 'Congolese soukous',
+        signature: 'signature sound: bright fast sebene lead guitar, interlocking clean electric guitar lines, cavacha rolling-snare groove, melodic live bass and call-response vocals — dense circular guitar-band motion, NEVER synthetic 808 low end',
+      };
+    case 'fuji':
+      return {
+        anchor: 'Yoruba Nigerian fuji',
+        signature: 'signature sound: percussion-and-voice ensemble led by talking drum, sakara frame drum, shekere and agogo, dense accelerating polyrhythm, praise-singing and call-response — NO guitar-led harmony, NO electronic bass, NO drum-kit backbeat',
+      };
+    case 'juju':
+      return {
+        anchor: 'Yoruba Nigerian juju',
+        signature: 'signature sound: interlocking palm-wine electric guitars, talking drum lead, Hawaiian pedal steel, shekere and agogo with oríkì praise call-response — warm extended live-band owambe groove, NOT all-percussion fuji',
+      };
+    case 'apala':
+      return {
+        anchor: 'Yoruba Nigerian apala',
+        signature: 'signature sound: talking-drum-led vocal music with agidigbo thumb-piano bass, shekere and agogo, speech-rhythm praise and group response — hand and stick percussion only, NO drum kit, guitars, chordal keys or electronic bass',
+      };
+    case 'worship':
+      return {
+        anchor: 'Contemporary African gospel worship',
+        signature: 'signature sound: reverent slow build from flowing piano and warm pads into Hammond organ swells, live drums, choir and congregational call-response — spacious prayerful dynamics, NOT a club groove',
+      };
+    case 'praise':
+      return {
+        anchor: 'Nigerian and Ghanaian church praise',
+        signature: 'signature sound: fast joyful live praise groove with gospel-organ stabs, shekere 16ths, congas, handclaps, talking-drum fills and exuberant choir call-response — danceable church energy, NOT amapiano or trap',
+      };
+    case 'spiritual':
+      return {
+        anchor: 'Meditative African spiritual music',
+        signature: 'signature sound: hypnotic kalimba or mbira cycle, earthy udu clay-pot pulse, soft hand percussion, deep warm drone, humming and ancestral call-response chants — breathing healing space, NOT pop, trap or club music',
       };
     default:
       return null; // every non-Afro genre — untouched
@@ -110,11 +194,12 @@ export function composeStyleTags(
   // "tresillo". Correct on paper, but a text-to-music model with a weak
   // Afrobeats prior reads "clave + syncopated off-beat + mid-tempo" and renders
   // REGGAETON. Strip those Latin-signifier tokens from what reaches the audio
-  // engine (the LLM brief keeps the nuance; the engine gets West-African words).
+  // engine (the LLM brief keeps the nuance; the engine gets African terms that
+  // do not mislabel Southern, Eastern or Central African lanes as West African).
   const deLatin = (t: string): string =>
     isAfro
       ? t.replace(/\bwoodblock\s*\/\s*clave\b/gi, 'shekere')
-         .replace(/\b(3-2|2-3)[\s-]*clave\b/gi, 'off-beat West-African')
+         .replace(/\b(3-2|2-3)[\s-]*clave\b/gi, 'syncopated African off-beat')
          .replace(/\bclave\b/gi, 'off-beat')
          .replace(/\btresillo\b/gi, 'off-beat')
       : t;
@@ -163,17 +248,18 @@ export function composeStyleTags(
     afro ? afro.signature : null,
     instrumentation,
     ...fusionTokens,
-    // Anti-Latin exclusion applies to every Afro lane (none are reggaeton). The
-    // groove note (four-on-the-floor or not) is per-genre in the signature above.
-    isAfro ? 'NOT reggaeton, NOT dembow, NOT tresillo/dembow kick, NOT Latin, NOT Spanish, NOT perreo' : null,
+    // Every African lane rejects the specific reggaeton failure mode. Avoid a
+    // blanket "NOT Latin" direction: Congolese rumba/soukous has a real historical
+    // dialogue with Cuban music, while still being categorically not reggaeton.
+    isAfro ? 'NOT reggaeton, NOT dembow, NOT tresillo/dembow kick, NOT perreo' : null,
     ...(kit ? kit.engineTags.slice(0, 8).map(deLatin) : []),
     opts.genreSuffix ?? null,
     ...(input.dnaTags ?? []).map(deLatin),
     vibe || null,
     input.artistTone?.length ? `${opts.tonePrefix ?? ''}${input.artistTone.join(', ')}` : null,
-    // Afro production feel — the fills/rolls that make Afro records lift. Only
-    // for Afro-family genres; on pop/rock/EDM it just wastes prompt budget.
-    isAfro ? 'Afro drum rolls, tom fills and percussion buildups leading into every section — a fill announces each new verse, the bridge and every hook' : null,
+    // Keep transitions genre-authentic. A blanket tom-fill instruction is wrong
+    // for apala (no drum kit), spiritual music and several guitar-led traditions.
+    isAfro && kit ? `${genreLabel} transition fills at section changes, preserving its defining groove and instrumentation` : null,
     hasDna ? null : opts.fallbackLiteral,
   ].filter(Boolean) as string[];
   // Case-insensitive dedupe on token prefixes — kills "energetic"×3 repeats.
@@ -233,15 +319,7 @@ interface SunoRecordResp {
   };
 }
 
-/**
- * Suno — the catchiest full-production engine (via the sunoapi.org gateway;
- * point SUNO_API_BASE at the official API or another gateway with the same
- * contract if you prefer). We generate INSTRUMENTAL beats (the artist writes
- * the lyrics + brings their own vocal), so customMode + instrumental=true.
- *
- * Activate: MUSIC_PROVIDER=suno + SUNO_API_KEY (optional SUNO_MODEL, default V5).
- * ~$0.06–0.10/generation; stream ~30–40s, full audio ~2–3 min (we poll).
- */
+/** Suno-compatible gateway adapter for approved first-party release routes. */
 class SunoAdapter implements MusicProviderAdapter {
   readonly name = 'suno';
   private base = (process.env.SUNO_API_BASE ?? 'https://api.sunoapi.org').replace(/\/+$/, '');
@@ -252,20 +330,38 @@ class SunoAdapter implements MusicProviderAdapter {
   ): Promise<ProviderJobResult<MusicGenerationOutput>> {
     const key = this.apiKey || sunoKey();
     if (!key) return { status: 'failed', error: 'SUNO_API_KEY missing' };
-    // P0 FIX: this used to hardcode instrumental:true and NEVER send the words, so
-    // every Suno-routed SUNG take came back with zero vocals ("it doesn't sing").
-    // When we have lyrics, tell Suno to SING them: instrumental:false + prompt=the
-    // lyrics (sanitized the same way MiniMax needs — section tags + singable ad-libs
-    // kept, stage directions stripped so Suno doesn't sing "drum roll").
-    const wantsVocals = !!input.lyrics?.trim();
+    const callbackUrl = process.env.SUNO_CALLBACK_URL;
+    if (!callbackUrl || !/^https:\/\//i.test(callbackUrl)) {
+      return { status: 'failed', error: 'SUNO_CALLBACK_URL must be a public HTTPS callback' };
+    }
+    // `withVocals` is authoritative. Instrumental rerenders often still carry the
+    // song's lyrics as metadata; inferring from that field would make them sing.
+    const cleanedLyrics = input.lyrics ? cleanLyricsForMinimax(input.lyrics, 3_000) : '';
+    const wantsVocals = !!input.withVocals;
+    if (wantsVocals && !cleanedLyrics) {
+      return { status: 'failed', error: 'vocal generation requires singable lyrics' };
+    }
+    const vocalDirection = [...(input.dnaTags ?? []), ...(input.artistTone ?? [])].join(' ');
+    const ensembleVocal = /duet|group|choir/i.test(vocalDirection);
+    const vocalGender = /\bfemale\b/i.test(vocalDirection) && !ensembleVocal
+      ? 'f'
+      : /\bmale\b/i.test(vocalDirection) && !ensembleVocal
+        ? 'm'
+        : undefined;
+    const afro = afroIdentity(input.genre ?? '');
     const body = {
       customMode: true,
       instrumental: !wantsVocals,
-      ...(wantsVocals ? { prompt: cleanLyricsForMinimax(input.lyrics!).slice(0, 3000) } : {}),
-      model: process.env.SUNO_MODEL ?? 'V5',
+      ...(wantsVocals ? { prompt: cleanedLyrics } : {}),
+      model: process.env.SUNO_MODEL ?? 'V5_5',
       style: this.composeStyle(input).slice(0, 900),
       title: (input.vibePrompt?.slice(0, 60) || `${input.genre ?? 'Afro'} ${wantsVocals ? 'song' : 'beat'}`).slice(0, 80),
-      callBackUrl: process.env.SUNO_CALLBACK_URL ?? 'https://afrohitstudio.app/api/suno/callback',
+      callBackUrl: callbackUrl,
+      ...(afro ? { negativeTags: 'reggaeton, dembow, Latin pop, perreo' } : {}),
+      ...(vocalGender ? { vocalGender } : {}),
+      styleWeight: 0.8,
+      weirdnessConstraint: 0.35,
+      audioWeight: 0.7,
     };
     const res = await fetch(`${this.base}/api/v1/generate`, {
       method: 'POST',
@@ -290,12 +386,22 @@ class SunoAdapter implements MusicProviderAdapter {
     if (!res.ok) return { status: 'failed', error: `suno poll ${res.status}` };
     const data = (await res.json()) as SunoRecordResp;
     const st = data.data?.status ?? '';
-    const song = data.data?.response?.sunoData?.[0];
+    const songs = (data.data?.response?.sunoData ?? []).filter((candidate) => !!candidate.audioUrl);
+    const song = songs[0];
     if (st === 'SUCCESS' && song?.audioUrl) {
       return {
         externalId,
         status: 'succeeded',
-        output: { mainAudioUrl: song.audioUrl, format: 'mp3', durationS: song.duration ?? 0 },
+        output: {
+          mainAudioUrl: song.audioUrl,
+          format: 'mp3',
+          durationS: song.duration ?? 0,
+          alternates: songs.slice(1).map((candidate) => ({
+            mainAudioUrl: candidate.audioUrl!,
+            format: 'mp3' as const,
+            durationS: candidate.duration ?? 0,
+          })),
+        },
         estimatedCostUsd: 0.08,
       };
     }
@@ -325,11 +431,8 @@ interface ReplicatePrediction {
 }
 
 /**
- * Replicate — meta/musicgen. Real, original instrumental generation, pay-per-
- * compute (~$0.05–0.20/beat), no subscription. This is the recommended Phase-1
- * "make real sounds" engine: set MUSIC_PROVIDER=replicate + REPLICATE_API_TOKEN.
- * MusicGen reliably renders up to ~30s per call (great for beats/loops) and
- * does not emit separate stems.
+ * Replicate MusicGen adapter for explicitly requested short instrumental loops.
+ * Full-length songs and instrumentals use the MiniMax route on the same account.
  */
 class ReplicateMusicGenAdapter implements MusicProviderAdapter {
   readonly name = 'replicate';
@@ -426,168 +529,151 @@ class ReplicateMusicGenAdapter implements MusicProviderAdapter {
   }
 }
 
+interface ElevenCompositionChunk {
+  text: string;
+  duration_ms: number;
+  positive_styles: string[];
+  negative_styles: string[];
+  context_adherence: 'high';
+}
+
+function elevenPolicySafeInput(input: MusicGenerationInput): MusicGenerationInput {
+  const vibePrompt = input.vibePrompt
+    ?.split(/\n|\.\s+/)
+    .filter((part) => !/\b(?:in the vibe\/lane of|in the (?:style|vibe|lane) of|inspired by|sounds? like|similar to)\b/i.test(part))
+    .join('. ')
+    .trim();
+  return { ...input, vibePrompt: vibePrompt || undefined };
+}
+
+function elevenPositiveStyle(style: string): string {
+  return style
+    .replace(/(?:^|\s+)(?:—\s*)?(?:NOT|NO|NEVER)\b.*$/i, '')
+    .replace(/[\s,;:—-]+$/, '')
+    .trim();
+}
+
+function lyricSections(raw: string, durationMs: number): Array<{ text: string; durationMs: number }> {
+  const cleaned = cleanLyricsForMinimax(raw, 4_000);
+  const sections: string[] = [];
+  let current: string[] = [];
+  for (const line of cleaned.split('\n')) {
+    if (/^\[[^\]]+\]$/.test(line.trim()) && current.length) {
+      sections.push(current.join('\n').trim());
+      current = [];
+    }
+    if (line.trim() || current.length) current.push(line);
+  }
+  if (current.length) sections.push(current.join('\n').trim());
+  if (!sections.length) sections.push('[Song]\n' + cleaned);
+
+  const targetMs = Math.min(600_000, Math.max(3_000, durationMs));
+  const maxChunks = Math.min(30, Math.max(1, Math.floor(targetMs / 3_000)));
+  while (sections.length > maxChunks) {
+    const tail = sections.pop()!;
+    sections[sections.length - 1] = `${sections[sections.length - 1]}\n${tail}`;
+  }
+  const requiredChunks = Math.ceil(targetMs / 120_000);
+  while (sections.length < requiredChunks) sections.push('[Instrumental Break]');
+  const base = Math.floor(targetMs / sections.length);
+  let remainder = targetMs - base * sections.length;
+  return sections.map((text) => {
+    const extra = remainder > 0 ? 1 : 0;
+    remainder -= extra;
+    return { text, durationMs: Math.min(120_000, Math.max(3_000, base + extra)) };
+  });
+}
+
+/** Build the documented Eleven Music v2 chunk plan. Exported for contract tests. */
+export function elevenCompositionPlan(input: MusicGenerationInput): { chunks: ElevenCompositionChunk[] } {
+  const safeInput = elevenPolicySafeInput(input);
+  const baseStyles = composeStyleTags(safeInput, {
+    fallbackLiteral: 'memorable melody, expressive lead vocal, polished commercial production',
+  }).map(elevenPositiveStyle).filter(Boolean).slice(0, 14);
+  const afro = afroIdentity(input.genre ?? '');
+  const kit = getGenreKit(input.genre);
+  const negative = [
+    ...(afro ? ['reggaeton', 'dembow', 'perreo'] : []),
+    ...(kit?.forbiddenTraits.slice(0, 8) ?? []),
+    'muddy mix',
+    'unintelligible lead vocal',
+  ].slice(0, 12);
+  const chunks = lyricSections(input.lyrics ?? '', Math.round(input.durationS * 1_000)).map(
+    ({ text, durationMs }, index) => {
+      const section = text.match(/^\[([^\]]+)\]/)?.[1]?.toLowerCase() ?? '';
+      const performance = /chorus|hook|refrain/.test(section)
+        ? ['memorable hook melody', 'layered backing vocals', 'full arrangement']
+        : /bridge|break|interlude/.test(section)
+          ? ['clear arrangement contrast', 'musical transition']
+          : ['natural lead vocal phrasing', 'rhythmic pocket'];
+      return {
+        text,
+        duration_ms: durationMs,
+        positive_styles: [...(index === 0 ? baseStyles : baseStyles.slice(0, 8)), ...performance].slice(0, 50),
+        negative_styles: negative,
+        context_adherence: 'high' as const,
+      };
+    }
+  );
+  return { chunks };
+}
+
 class ElevenMusicAdapter implements MusicProviderAdapter {
   readonly name = 'eleven';
-  async generate(
-    input: MusicGenerationInput
-  ): Promise<ProviderJobResult<MusicGenerationOutput>> {
-    const key = elevenKey();
-    if (!key) {
-      return { status: 'failed', error: 'ELEVEN_API_KEY missing' };
+  constructor(private apiKey?: string) {}
+
+  async generate(input: MusicGenerationInput): Promise<ProviderJobResult<MusicGenerationOutput>> {
+    const key = this.apiKey || elevenKey();
+    if (!key) return { status: 'failed', error: 'ELEVEN_API_KEY missing' };
+    const cleanedLyrics = input.lyrics ? cleanLyricsForMinimax(input.lyrics, 4_000) : '';
+    const wantsVocals = !!input.withVocals;
+    if (wantsVocals && !cleanedLyrics) {
+      return { status: 'failed', error: 'vocal generation requires singable lyrics' };
     }
-    // ElevenLabs Music API — replace endpoint/payload with the exact contract from their docs.
-    const body = {
-      prompt: this.composePrompt(input),
-      duration_seconds: input.durationS,
-      with_stems: input.withStems,
-    };
-    const res = await fetch('https://api.elevenlabs.io/v1/music/generate', {
+    const durationMs = Math.min(600_000, Math.max(3_000, Math.round(input.durationS * 1_000)));
+    const body = wantsVocals
+      ? {
+          composition_plan: elevenCompositionPlan(input),
+          model_id: process.env.ELEVEN_MUSIC_MODEL ?? 'music_v2',
+          sign_with_c2pa: true,
+        }
+      : {
+          prompt: this.composeInstrumentalPrompt(input).slice(0, 4_100),
+          music_length_ms: durationMs,
+          model_id: process.env.ELEVEN_MUSIC_MODEL ?? 'music_v2',
+          force_instrumental: true,
+          sign_with_c2pa: true,
+        };
+    const res = await fetch('https://api.elevenlabs.io/v1/music?output_format=mp3_48000_192', {
       method: 'POST',
-      headers: {
-        'xi-api-key': key,
-        'content-type': 'application/json',
-      },
+      headers: { 'xi-api-key': key, 'content-type': 'application/json', accept: 'audio/mpeg' },
       body: JSON.stringify(body),
     });
     if (!res.ok) {
-      return { status: 'failed', error: `eleven music ${res.status}: ${await res.text()}` };
+      return { status: 'failed', error: `eleven music ${res.status}: ${(await res.text()).slice(0, 300)}` };
     }
-    const data = (await res.json()) as {
-      job_id?: string;
-      status?: string;
-      audio_url?: string;
-      stems?: Array<{ role: string; url: string }>;
-    };
-    if (data.audio_url) {
-      return {
-        externalId: data.job_id,
-        status: 'succeeded',
-        output: {
-          mainAudioUrl: data.audio_url,
-          stems: data.stems,
-          format: 'wav',
-          durationS: input.durationS,
-          bpm: input.bpm,
-          keySignature: input.keySignature,
-        },
-        estimatedCostUsd: Math.max(0.2, input.durationS * 0.012),
-      };
+    const audioBytes = Buffer.from(await res.arrayBuffer());
+    if (audioBytes.length < 1_024) {
+      return { status: 'failed', error: 'eleven music returned an empty audio file' };
     }
     return {
-      externalId: data.job_id,
-      status: 'running',
-      pollAfterMs: 8_000,
+      externalId: res.headers.get('song-id') ?? undefined,
+      status: 'succeeded',
+      output: {
+        audioBytes,
+        format: 'mp3',
+        durationS: input.durationS,
+        bpm: input.bpm,
+        keySignature: input.keySignature,
+      },
     };
   }
-  async poll(externalId: string): Promise<ProviderJobResult<MusicGenerationOutput>> {
-    const key = elevenKey()!;
-    const res = await fetch(`https://api.elevenlabs.io/v1/music/jobs/${externalId}`, {
-      headers: { 'xi-api-key': key },
-    });
-    if (!res.ok) return { status: 'failed', error: `poll ${res.status}` };
-    const data = (await res.json()) as {
-      status: string;
-      audio_url?: string;
-      stems?: Array<{ role: string; url: string }>;
-      duration_s?: number;
-    };
-    if (data.status === 'succeeded' && data.audio_url) {
-      return {
-        externalId,
-        status: 'succeeded',
-        output: {
-          mainAudioUrl: data.audio_url,
-          stems: data.stems,
-          format: 'wav',
-          durationS: data.duration_s ?? 0,
-        },
-      };
-    }
-    if (data.status === 'failed') return { externalId, status: 'failed', error: 'provider failed' };
-    return { externalId, status: 'running', pollAfterMs: 6_000 };
-  }
-  private composePrompt(input: MusicGenerationInput): string {
-    // Route through composeStyleTags so this engine ALSO gets the correct
-    // per-genre identity anchor + the anti-reggaeton scrub (it used to build a
-    // raw `${genre} instrumental` prompt, bypassing all of it).
-    return [
-      ...composeStyleTags(input, { genreLabel: `${input.genre ?? 'afrobeats'} instrumental beat`, fallbackLiteral: 'melodic, warm, radio-ready' }),
-      'no vocals, leave space for lead vocal',
-      input.withStems ? 'export stems' : '',
-    ]
-      .filter(Boolean)
-      .join(', ');
-  }
-}
 
-class StableAudioAdapter implements MusicProviderAdapter {
-  readonly name = 'stable_audio';
-  async generate(
-    input: MusicGenerationInput
-  ): Promise<ProviderJobResult<MusicGenerationOutput>> {
-    const key = process.env.STABILITY_API_KEY;
-    if (!key) return { status: 'failed', error: 'STABILITY_API_KEY missing' };
-    // Replace with current Stability Stable Audio endpoint.
-    const res = await fetch('https://api.stability.ai/v2beta/stable-audio/generate', {
-      method: 'POST',
-      headers: { authorization: `Bearer ${key}`, 'content-type': 'application/json' },
-      body: JSON.stringify({
-        prompt: composeStyleTags(input, { fallbackLiteral: 'instrumental, melodic, radio-ready' }).join(', ') + ', no vocals',
-        duration: input.durationS,
-        output_format: 'wav',
-      }),
-    });
-    if (!res.ok) return { status: 'failed', error: `stable_audio ${res.status}` };
-    const data = (await res.json()) as { audio_url?: string; id?: string };
-    if (data.audio_url) {
-      return {
-        externalId: data.id,
-        status: 'succeeded',
-        output: {
-          mainAudioUrl: data.audio_url,
-          format: 'wav',
-          durationS: input.durationS,
-        },
-        estimatedCostUsd: 0.04 * input.durationS,
-      };
-    }
-    return { externalId: data.id, status: 'running', pollAfterMs: 8_000 };
-  }
-}
-
-class MubertAdapter implements MusicProviderAdapter {
-  readonly name = 'mubert';
-  async generate(
-    input: MusicGenerationInput
-  ): Promise<ProviderJobResult<MusicGenerationOutput>> {
-    const key = process.env.MUBERT_API_KEY;
-    if (!key) return { status: 'failed', error: 'MUBERT_API_KEY missing' };
-    // See https://mubert.com/api for current contract.
-    const res = await fetch('https://api-b2b.mubert.com/v2/RecordTrackTTM', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        method: 'RecordTrackTTM',
-        params: {
-          pat: key,
-          duration: input.durationS,
-          mode: 'track',
-          intensity: 'high',
-          prompt: composeStyleTags(input, { fallbackLiteral: 'instrumental, melodic, radio-ready' }).join(', '),
-        },
-      }),
-    });
-    if (!res.ok) return { status: 'failed', error: `mubert ${res.status}` };
-    const data = (await res.json()) as { data?: { tasks?: Array<{ download_link?: string }> } };
-    const url = data.data?.tasks?.[0]?.download_link;
-    if (url) {
-      return {
-        status: 'succeeded',
-        output: { mainAudioUrl: url, format: 'mp3', durationS: input.durationS },
-        estimatedCostUsd: 0.03 * input.durationS,
-      };
-    }
-    return { status: 'running', pollAfterMs: 8_000 };
+  private composeInstrumentalPrompt(input: MusicGenerationInput): string {
+    return composeStyleTags(elevenPolicySafeInput(input), {
+      genreLabel: `${input.genre ?? 'afrobeats'} instrumental`,
+      fallbackLiteral: 'memorable melody, polished commercial production',
+    }).concat('instrumental only, no vocals, no spoken words').join(', ');
   }
 }
 
@@ -633,7 +719,7 @@ class AceStepSongAdapter implements MusicProviderAdapter {
         // Clean the lyrics the SAME way MiniMax does — ACE-Step got the RAW
         // enriched performance script and SANG the stage directions ("enter late",
         // "soft hazy", "Pre-Hook") as words. Strip them; keep singable ad-libs.
-        input: { tags, lyrics: input.lyrics ? cleanLyricsForMinimax(input.lyrics) : '', duration },
+        input: { tags, lyrics: input.withVocals && input.lyrics ? cleanLyricsForMinimax(input.lyrics) : '', duration },
       }),
     });
     if (!res.ok) return { status: 'failed', error: `ace_step ${res.status}: ${(await res.text()).slice(0, 200)}` };
@@ -785,8 +871,8 @@ export function cleanLyricsForMinimax(raw: string, maxChars = 3400): string {
 
 /**
  * MiniMax Music (via Replicate) — full song WITH vocals from lyrics, no
- * reference track needed. Higher vocal realism than ACE-Step for many styles.
- * Selectable per request (songEngine: 'minimax'); same Replicate key.
+ * reference track needed. Selectable per request (songEngine: 'minimax') on the
+ * configured Replicate account.
  */
 class MiniMaxSongAdapter implements MusicProviderAdapter {
   readonly name = 'minimax';
@@ -813,11 +899,14 @@ class MiniMaxSongAdapter implements MusicProviderAdapter {
     // music-2.6 contract: `prompt` = style/mood description (required),
     // `lyrics` = the words (required for vocals unless lyrics_optimizer),
     // `is_instrumental`/`lyrics_optimizer` default false. Unknown fields 422, so
-    // send only valid keys. We sing our lyrics; if none, let the model write them.
-    const hasLyrics = !!input.lyrics?.trim();
+    // send only valid keys. `withVocals` controls the mode even when a beat request
+    // still carries lyrics from its parent song.
+    const wantsVocals = !!input.withVocals;
+    const cleanedLyrics = input.lyrics ? cleanLyricsForMinimax(input.lyrics) : '';
     const modelInput: Record<string, unknown> = { prompt: style };
-    if (hasLyrics) modelInput.lyrics = cleanLyricsForMinimax(input.lyrics!);
-    else modelInput.lyrics_optimizer = true;
+    if (!wantsVocals) modelInput.is_instrumental = true;
+    else if (cleanedLyrics) modelInput.lyrics = cleanedLyrics;
+    else return { status: 'failed', error: 'vocal generation requires singable lyrics' };
 
     const res = await fetch('https://api.replicate.com/v1/predictions', {
       method: 'POST',
@@ -851,69 +940,43 @@ class MiniMaxSongAdapter implements MusicProviderAdapter {
   }
 }
 
-class StubMusicAdapter implements MusicProviderAdapter {
-  readonly name = 'stub';
-  async generate(
-    input: MusicGenerationInput
-  ): Promise<ProviderJobResult<MusicGenerationOutput>> {
-    // Dev placeholder — returns a public CC0 example audio for development.
+/** One source of truth for the configured vocal-song route. */
+export function defaultSongEngine(): string {
+  if (process.env.SONG_ENGINE) {
+    const configured = process.env.SONG_ENGINE.toLowerCase();
+    return configured === 'replicate' ? 'minimax' : configured;
+  }
+  if (sunoKey()) return 'suno';
+  if (elevenKey()) return 'eleven';
+  if (replicateToken()) return 'minimax';
+  return 'unavailable';
+}
+
+/** One source of truth for a full-length instrumental route. */
+export function defaultInstrumentalEngine(): string {
+  const configured = process.env.INSTRUMENTAL_ENGINE ?? process.env.MUSIC_PROVIDER;
+  if (configured) {
+    const normalized = configured.toLowerCase();
+    return normalized === 'replicate' ? 'minimax' : normalized;
+  }
+  if (elevenKey()) return 'eleven';
+  if (replicateToken()) return 'minimax';
+  if (sunoKey()) return 'suno';
+  return 'unavailable';
+}
+
+class UnavailableMusicAdapter implements MusicProviderAdapter {
+  readonly name = 'unavailable';
+  constructor(private requested?: string) {}
+
+  async generate(): Promise<ProviderJobResult<MusicGenerationOutput>> {
     return {
-      status: 'succeeded',
-      output: {
-        mainAudioUrl: 'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3',
-        stems: input.withStems
-          ? [
-              { role: 'drums', url: 'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3' },
-              { role: 'bass', url: 'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3' },
-              { role: 'keys', url: 'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3' },
-            ]
-          : undefined,
-        format: 'mp3',
-        durationS: input.durationS,
-        bpm: input.bpm,
-        keySignature: input.keySignature,
-      },
-      estimatedCostUsd: 0,
+      status: 'failed',
+      error: this.requested
+        ? `music provider '${this.requested}' is unsupported or not configured`
+        : 'no music provider is configured',
     };
   }
-}
-
-
-
-/**
- * THE default engine for a VOCAL song — one source of truth for every path.
- *
- * This is the single biggest lever on how the studio SOUNDS. Suno V5 is the only
- * engine here that renders like a real record; ACE-Step and MiniMax are
- * open-source Replicate models — useful sketches, but they cannot match Suno on
- * full sung songs. The create page, studio chat, and regenerate paths were each
- * defaulting to a DIFFERENT engine (ace_step / minimax / suno), so the sound was
- * inconsistent and usually the weak one. Now they all call this:
- *   - SONG_ENGINE set → honor it (explicit override, any engine).
- *   - else a SUNO_API_KEY exists → 'suno' automatically (the quality path).
- *   - else 'minimax' (best Afro vocals on the Replicate key; NOT ACE-Step).
- * Set SUNO_API_KEY + (optionally) MUSIC_PROVIDER=suno and every path upgrades at
- * once — no code change, no per-route drift.
- */
-export function defaultSongEngine(): string {
-  // No Suno → MiniMax (music-2.6), NOT ACE-Step: MiniMax sings Afro vocals far
-  // better (ACE-Step was the "whack singing"). Matches the worker's own vocal
-  // fallback so the job label and the actual render agree. Both run on Replicate.
-  return process.env.SONG_ENGINE || (sunoKey() ? 'suno' : 'minimax');
-}
-
-/**
- * THE default engine for an INSTRUMENTAL beat (no vocals). This was the gap that
- * broke "just the beat" for a Replicate-only operator: the instrumental path used
- * MUSIC_PROVIDER (eleven/stub), never the Replicate key the user actually has —
- * so it fell to the stub (now a hard failure). Route it to a real engine on the
- * key that exists:
- *   - MUSIC_PROVIDER set → honor it.
- *   - else a Replicate token exists → 'replicate' (MusicGen — real audio, no Suno needed).
- *   - else 'stub' (dev; the render processors then fail loudly).
- */
-export function defaultInstrumentalEngine(): string {
-  return process.env.MUSIC_PROVIDER || (replicateToken() ? 'replicate' : 'stub');
 }
 
 export function musicAdapter(override?: string, apiKey?: string): MusicProviderAdapter {
@@ -921,7 +984,8 @@ export function musicAdapter(override?: string, apiKey?: string): MusicProviderA
   // on the exact provider configuration the owner's ear approved. If a cheaper
   // route is ever reconsidered, it re-enters ONLY through a measured bake-off
   // (git history has the deleted adapter).
-  switch (override ?? provider()) {
+  const requested = (override ?? provider()).toLowerCase();
+  switch (requested) {
     // Reference-conditioned renders (Adjust): no conditioning engine is
     // configured — renders run UNCONDITIONED on the standard engine (the
     // worker logs this honestly; steering still rides the brief).
@@ -936,12 +1000,12 @@ export function musicAdapter(override?: string, apiKey?: string): MusicProviderA
     case 'replicate':
       return new ReplicateMusicGenAdapter(apiKey);
     case 'eleven':
-      return new ElevenMusicAdapter();
-    case 'stable_audio':
-      return new StableAudioAdapter();
-    case 'mubert':
-      return new MubertAdapter();
+      return new ElevenMusicAdapter(apiKey);
+    case 'stub':
+      return new UnavailableMusicAdapter('stub');
+    case 'unavailable':
+      return new UnavailableMusicAdapter();
     default:
-      return new StubMusicAdapter();
+      return new UnavailableMusicAdapter(requested);
   }
 }

@@ -1,7 +1,7 @@
 import type { FastifyInstance } from 'fastify';
 import { prisma } from '@afrohit/db';
 import { generateBeatInputSchema, attachBeatUploadSchema, genreSignature } from '@afrohit/shared';
-import { enrichLyricsForVocals, defaultSongEngine, defaultInstrumentalEngine } from '@afrohit/ai';
+import { enrichLyricsForVocals } from '@afrohit/ai';
 import { learnedReferenceBrief, learnedStyleTags, learnedMeasuredTags, learnedUsage } from '../lib/learned';
 import { applySingingBrain, craftOf, type DraftCraft } from '../lib/singing-pipeline';
 import { enqueueHarvest, enqueueLearn } from '../lib/harvest';
@@ -11,6 +11,7 @@ import { requireAuth } from '../middleware/auth';
 import { createQueuedProviderJob, scopedRequestKey } from '../lib/queued-job';
 import { publicUrlFor, verifyUploadedAudio } from '../lib/storage';
 import { voiceVocalTag, languageVocalTag } from '../services/chat-tools';
+import { musicRouteCapabilities, validateMusicRoute } from '../lib/music-capabilities';
 
 export default async function beats(app: FastifyInstance) {
   app.get<{ Params: { projectId: string } }>(
@@ -32,6 +33,12 @@ export default async function beats(app: FastifyInstance) {
     async (req, reply) => {
       const { workspaceId } = requireAuth(req);
       const input = generateBeatInputSchema.omit({ projectId: true }).parse(req.body);
+      if (input.withVocals && input.songEngine === 'own') {
+        return reply.code(422).send({
+          error: 'own_vocal_pipeline_unavailable',
+          message: 'Our Engine currently produces instrumentals only. Choose a vocal-capable engine for a sung song.',
+        });
+      }
       const project = await prisma.project.findFirstOrThrow({
         where: { id: req.params.projectId, workspaceId },
         include: { artist: true },
@@ -123,6 +130,10 @@ export default async function beats(app: FastifyInstance) {
 
       const autoOwnRoles = !input.songEngine && !input.withVocals ? await ownShelfRoles(workspaceId, genre) : null;
       const useOwnEngine = input.songEngine === 'own' || !!autoOwnRoles;
+      if (!useOwnEngine) {
+        const route = validateMusicRoute(input.songEngine, await musicRouteCapabilities(workspaceId), input.withVocals);
+        if (!route.ok) return reply.code(route.statusCode).send({ error: route.error, message: route.message });
+      }
       const idempotencyKey = scopedRequestKey(req.headers as Record<string, unknown>, 'beat-generate');
       const charge = await app.chargeCredits({
         workspaceId,
@@ -225,7 +236,7 @@ export default async function beats(app: FastifyInstance) {
         workspaceId,
         projectId: project.id,
         kind: 'music',
-        provider: input.withVocals ? input.songEngine ?? defaultSongEngine() : defaultInstrumentalEngine(),
+        provider: input.songEngine ?? 'auto',
         inputJson: { ...input, genre, trainingUsage, dnaTags: finalDnaTags, ...(sungForm ? { sungForm } : {}) },
         charge,
         idempotencyKey,

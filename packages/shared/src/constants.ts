@@ -132,11 +132,9 @@ export const TASTE_DIMENSIONS = [
 ] as const;
 export type TasteDimension = (typeof TASTE_DIMENSIONS)[number];
 
-// Instrumental-beat providers. 'replicate' (MusicGen) is the VALIDATED default
-// for a Replicate-only operator; eleven/stable_audio/mubert are UNVERIFIED
-// scaffolds. 'beatoven' was removed (advertised with no adapter → silent stub).
-// Every string here MUST have a case in musicAdapter().
-export const MUSIC_PROVIDERS = ['replicate', 'eleven', 'stable_audio', 'mubert', 'stub'] as const;
+// User-connectable music providers. Every value must have a verified adapter
+// and a live credential test. Placeholders are deliberately excluded.
+export const MUSIC_PROVIDERS = ['replicate', 'eleven', 'suno'] as const;
 export const VOICE_PROVIDERS = ['eleven', 'openai', 'stub'] as const;
 export const VIDEO_PROVIDERS = ['veo', 'sora', 'stub'] as const;
 export const IMAGE_PROVIDERS = ['openai', 'stub'] as const;

@@ -23,6 +23,7 @@ import {
   type LaneComplianceScore,
   type RepairPlan,
 } from '@afrohit/shared';
+import { musicRouteCapabilities } from './music-capabilities';
 
 // ---------- lane reference fetch (same contract as routes/lanes.ts) ----------
 const norm = (g?: string | null) => (g ?? '').toLowerCase().trim().replace(/[\s/-]+/g, '_');
@@ -193,6 +194,13 @@ export async function buildLaneReport(workspaceId: string, songId: string): Prom
   }
 
   const { profile, refs, authenticRefs } = await loadProfileFor(workspaceId, targetLane);
+  const capabilities = await musicRouteCapabilities(workspaceId);
+  const recommendation = recommendEngine(targetLane, {
+    firstParty: capabilities.firstParty,
+    sunoAvailable: capabilities.flagship,
+    elevenAvailable: capabilities.advanced,
+    replicateAvailable: capabilities.standard,
+  });
   const [{ distribution, unprofiled }, freshScore] = await Promise.all([
     classifyAllLanes(workspaceId, meta.measured),
     Promise.resolve(profile ? scoreLaneCompliance(meta.measured, profile) : null),
@@ -235,7 +243,7 @@ export async function buildLaneReport(workspaceId: string, songId: string): Prom
       name: engineClass(beat.provider ?? 'stub'),
       adequate: adequacy.adequate,
       note: adequacy.note ?? meta.bestOf?.engineNote,
-      recommended: engineClass(recommendEngine(targetLane, { sunoAvailable: !!process.env.SUNO_API_KEY }).engine),
+      recommended: engineClass(recommendation.engine),
     },
     strongest,
     weakest,

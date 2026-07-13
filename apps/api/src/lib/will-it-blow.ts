@@ -30,7 +30,6 @@ import {
   enrichLyricsForVocals,
   predictHit,
   researchTrends,
-  defaultSongEngine,
   type HitPrediction,
 } from '@afrohit/ai';
 import { genreSignature, pickLawfulTitle } from '@afrohit/shared';
@@ -43,6 +42,7 @@ import { snapshotLyricVersion } from './lyric-versions';
 import { applySingingBrain, craftOf } from './singing-pipeline';
 import { languageVocalTag, voiceVocalTag } from '../services/chat-tools';
 import { runIdempotentOperation } from './idempotent-operation';
+import { musicRouteCapabilities, validateMusicRoute } from './music-capabilities';
 
 // Benjamin's call: the release bar is 90 ("it needs to be perfect"). NOTE: on the
 // current MiniMax engine, writing-driven scores top out ~65-70 (the A&R itself says
@@ -207,6 +207,15 @@ async function resing(
     select: { inputJson: true },
   });
   const orig = (origJob?.inputJson ?? {}) as { languages?: string[]; voice?: 'auto' | 'female' | 'male' | 'duet' | 'group'; mood?: string; fusionGenres?: string[]; songEngine?: string };
+  const prev = song.beats[0]?.provider ?? '';
+  const songEngine = ['suno', 'eleven', 'minimax', 'ace_step'].includes(prev)
+    ? (prev as 'suno' | 'eleven' | 'ace_step' | 'minimax')
+    : (['suno', 'eleven', 'minimax', 'ace_step'].includes(orig.songEngine ?? '') ? (orig.songEngine as 'suno' | 'eleven' | 'ace_step' | 'minimax') : undefined);
+  const route = validateMusicRoute(songEngine, await musicRouteCapabilities(workspaceId), true);
+  if (!route.ok) {
+    console.warn(`[resing] ${song.id}: ${route.error}`);
+    return null;
+  }
   const selLangs = orig.languages?.length ? orig.languages : song.project.artist.languages;
   const dna = laneDna(genre, { mood: orig.mood, fusionGenres: orig.fusionGenres });
   const learned = await learnedReferenceBrief(workspaceId, genre);
@@ -243,10 +252,6 @@ async function resing(
     languages: selLangs,
   });
   lyricsForSong = sung.lyrics;
-  const prev = song.beats[0]?.provider ?? '';
-  const songEngine = ['suno', 'minimax', 'ace_step'].includes(prev)
-    ? (prev as 'suno' | 'ace_step' | 'minimax')
-    : (['suno', 'minimax', 'ace_step'].includes(orig.songEngine ?? '') ? (orig.songEngine as 'suno' | 'ace_step' | 'minimax') : undefined);
   const idempotencyKey = opts?.operationKey ? `${opts.operationKey}:resing` : undefined;
   const charge = await app.chargeCredits({ workspaceId, key: 'full_song_demo', refTable: 'Song', refId: song.id, idempotencyKey });
   if (!charge.ok) return null;
@@ -276,7 +281,7 @@ async function resing(
       workspaceId,
       projectId: song.projectId,
       kind: 'music',
-      provider: songEngine ?? defaultSongEngine(),
+      provider: songEngine ?? 'auto',
       inputJson: { makeItBigger: true, songId: song.id, sungForm: sung.sungForm },
       charge,
       idempotencyKey,

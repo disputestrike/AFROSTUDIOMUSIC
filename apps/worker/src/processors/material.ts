@@ -50,12 +50,10 @@ export async function processForgeMaterial(p: ForgePayload) {
     const loopDur = Math.ceil((60 / p.bpm) * 4 * bars) + 3; // headroom for trim
     const ws = await prisma.workspace.findUnique({ where: { id: p.workspaceId }, select: { musicProvider: true, musicApiKey: true } });
     const adapter = musicAdapter(ws?.musicProvider ?? undefined, openSecret(ws?.musicApiKey));
-    // STUB GUARD (audit HIGH): if the forge provider resolves to the stub, EVERY
-    // forged loop would be the SAME SoundHelix mp3 chopped to a "loop" — it passes
-    // loop-QC and gets registered as a real MaterialAsset, so the whole "owned,
-    // rights-clean" engine ends up built from one placeholder rock track. Refuse.
-    if (adapter.name === 'stub' && process.env.ALLOW_STUB_AUDIO !== '1') {
-      throw new Error('forge blocked: no real music engine configured (stub) — set a workspace engine before forging owned material.');
+    // Forging must start from a connected real engine; unavailable routes never
+    // become registered material assets.
+    if (adapter.name === 'unavailable') {
+      throw new Error('forge blocked: no music engine is connected; set a workspace engine before forging owned material.');
     }
 
     // Generate with 429-aware retries — Replicate throttles prediction creation
@@ -86,7 +84,10 @@ export async function processForgeMaterial(p: ForgePayload) {
 
     // Trim to an exact loop + QC it. A forged loop that fails QC is discarded —
     // only good material enters the library.
-    const raw = await downloadToBuffer(result.output.mainAudioUrl);
+    const raw = result.output.audioBytes
+      ?? (result.output.mainAudioUrl
+        ? await downloadToBuffer(result.output.mainAudioUrl)
+        : (() => { throw new Error('forge provider returned no playable audio'); })());
     const loop = await trimToLoop(raw, p.bpm, bars);
     const url = await uploadBytes({ workspaceId: p.workspaceId, kind: 'material', bytes: loop, contentType: 'audio/wav', ext: 'wav' });
     const qc = await measureAudioQuality(url).catch(() => null);

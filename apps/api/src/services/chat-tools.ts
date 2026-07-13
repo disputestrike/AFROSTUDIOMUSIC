@@ -11,10 +11,11 @@
 import type { FastifyInstance } from 'fastify';
 import { createHash } from 'node:crypto';
 import { prisma } from '@afrohit/db';
-import { joinBriefs, prompts, generateJson, scoreItems, runRightsCheck, canonicalReceiptHash, directorRefineHooks, researchTrends, enrichLyricsForVocals, defaultSongEngine, defaultInstrumentalEngine} from '@afrohit/ai';
+import { joinBriefs, prompts, generateJson, scoreItems, runRightsCheck, canonicalReceiptHash, directorRefineHooks, researchTrends, enrichLyricsForVocals } from '@afrohit/ai';
 import { laneDna, laneDnaBrief } from '../lib/lane-pipeline';
 import { createQueuedProviderJob } from '../lib/queued-job';
 import { assertSafeUrl } from '../lib/url-guard';
+import { musicRouteCapabilities, validateMusicRoute } from '../lib/music-capabilities';
 import { learnedReferenceBrief, learnedStyleTags, learnedMeasuredTags, learnedUsage, learnedLyricCraftBrief, snapshotTrend, freshnessBrief } from '../lib/learned';
 import { blueprintForReference } from '../lib/blueprint';
 import { genreSignature, structureBrief, pickLawfulTitle, lyricQaCheck, normalizeLyricBody } from '@afrohit/shared';
@@ -715,8 +716,11 @@ async function generateLyrics(ctx: Ctx, hookId: string, cleanVersion: boolean, l
   }
 }
 
-async function createBeatJob(ctx: Ctx, a: { genre: string; fusionGenres?: string[]; mood?: string; pinnedReferenceId?: string; bpm: number; keySignature?: string; durationS?: number; vibePrompt?: string; withStems?: boolean; withVocals?: boolean; songEngine?: 'suno' | 'ace_step' | 'minimax' | 'own'; influence?: string; languages?: string[]; voice?: 'auto' | 'female' | 'male' | 'duet' | 'group'; candidates?: number; instruments?: string[] }) {
+async function createBeatJob(ctx: Ctx, a: { genre: string; fusionGenres?: string[]; mood?: string; pinnedReferenceId?: string; bpm: number; keySignature?: string; durationS?: number; vibePrompt?: string; withStems?: boolean; withVocals?: boolean; songEngine?: 'suno' | 'eleven' | 'ace_step' | 'minimax' | 'own'; influence?: string; languages?: string[]; voice?: 'auto' | 'female' | 'male' | 'duet' | 'group'; candidates?: number; instruments?: string[] }) {
   if (!ctx.projectId) return { error: 'no_project_in_thread' };
+  if (a.withVocals && a.songEngine === 'own') {
+    return { error: 'own_vocal_pipeline_unavailable', message: 'Our Engine currently produces instrumentals only. Choose a vocal-capable engine for a sung song.' };
+  }
 
   // Honor the requested genre for the whole session — the chat's scratch project
   // defaults to afro_fusion, so sync it to what was actually asked for.
@@ -765,6 +769,9 @@ async function createBeatJob(ctx: Ctx, a: { genre: string; fusionGenres?: string
         : 'Building the beat from your own + synthesized material (owned engine). Poll the job.',
     };
   }
+
+  const route = validateMusicRoute(a.songEngine, await musicRouteCapabilities(ctx.workspaceId), !!a.withVocals);
+  if (!route.ok) return { error: route.error, message: route.message, statusCode: route.statusCode };
 
   // Full song WITH AI vocals: grab the latest lyric so the model can sing it.
   let lyrics: string | undefined;
@@ -897,7 +904,7 @@ async function createBeatJob(ctx: Ctx, a: { genre: string; fusionGenres?: string
     workspaceId: ctx.workspaceId,
     projectId: ctx.projectId,
     kind: 'music',
-    provider: a.withVocals ? a.songEngine ?? defaultSongEngine() : defaultInstrumentalEngine(),
+    provider: a.songEngine ?? 'auto',
     inputJson: { ...a, songId, trainingUsage, dnaTags: finalDnaTags, ...(sungForm ? { sungForm } : {}) },
     charge,
     idempotencyKey,
@@ -1161,7 +1168,7 @@ async function analyzeAudioTool(ctx: Ctx, url: string) {
   return { jobId: job.jobId, replayed: job.replayed, status: 'queued', note: 'Listening — poll the job; outputJson.profile has BPM/key/genre/mood/instruments + a fresh-vibe prompt to create an original from.' };
 }
 
-async function runDropTool(ctx: Ctx, a: { theme: string; count?: number; genre?: string; bpm?: number; withVocals?: boolean; songEngine?: 'suno' | 'ace_step' | 'minimax'; languages?: string[]; mood?: string; fusionGenres?: string[]; influence?: string; durationS?: number; voice?: 'auto' | 'female' | 'male' | 'duet' | 'group'; songTitle?: string }) {
+async function runDropTool(ctx: Ctx, a: { theme: string; count?: number; genre?: string; bpm?: number; withVocals?: boolean; songEngine?: 'suno' | 'eleven' | 'ace_step' | 'minimax'; languages?: string[]; mood?: string; fusionGenres?: string[]; influence?: string; durationS?: number; voice?: 'auto' | 'female' | 'male' | 'duet' | 'group'; songTitle?: string }) {
   if (!ctx.projectId) return { error: 'no_project_in_thread' };
   const count = Math.min(Math.max(Number(a.count ?? 3), 1), 6);
   const genre = a.genre ?? 'afrobeats';

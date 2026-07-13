@@ -10,14 +10,15 @@
  * first-party releases under our own subscription rights. Customer renders run
  * exclusively on engines whose terms permit resale of output.
  */
-export type EngineClass = 'flagship' | 'standard' | 'certified-clean' | 'own';
+export type EngineClass = 'flagship' | 'standard' | 'certified-clean' | 'own' | 'unavailable';
 
 export function engineClass(provider: string): EngineClass {
   switch (provider) {
     case 'suno': return 'flagship'; // internal-only path; class still needed for first-party rows
-    case 'eleven': case 'stable_audio': return 'certified-clean';
+    case 'eleven': return 'standard';
     case 'own_engine': case 'afrohit-own': case 'lora': return 'own';
-    default: return 'standard'; // minimax, ace_step, musicgen (fal/replicate), mubert…
+    case 'minimax': case 'minimax_ref': case 'ace_step': case 'replicate': case 'musicgen': return 'standard';
+    default: return 'unavailable';
   }
 }
 
@@ -29,14 +30,39 @@ export function engineClass(provider: string): EngineClass {
  */
 export function resolveEngineForWorkspace(
   requested: string | undefined,
-  opts: { firstParty: boolean; sunoAvailable: boolean }
-): { engine: string; wallSubstituted: boolean } {
-  const wanted = requested ?? (opts.sunoAvailable && opts.firstParty ? 'suno' : 'minimax');
-  if (wanted === 'suno' && !opts.firstParty) {
-    // Best resellable full-song engine today: MiniMax (high vocal realism).
-    return { engine: 'minimax', wallSubstituted: true };
+  opts: {
+    firstParty: boolean;
+    sunoAvailable: boolean;
+    elevenAvailable?: boolean;
+    replicateAvailable?: boolean;
   }
-  if (wanted === 'suno' && !opts.sunoAvailable) return { engine: 'minimax', wallSubstituted: false };
+): { engine: string; wallSubstituted: boolean; unavailableReason?: string } {
+  const replicateAvailable = opts.replicateAvailable ?? false;
+  const bestResellable = opts.elevenAvailable
+    ? 'eleven'
+    : replicateAvailable
+      ? 'minimax'
+      : 'unavailable';
+  const normalizedRequested = requested === 'replicate' ? 'minimax' : requested;
+  const wanted = normalizedRequested && normalizedRequested !== 'auto'
+    ? normalizedRequested
+    : opts.sunoAvailable && opts.firstParty
+      ? 'suno'
+      : bestResellable;
+  if (wanted === 'suno' && !opts.firstParty) {
+    return bestResellable === 'unavailable'
+      ? { engine: 'unavailable', wallSubstituted: true, unavailableReason: 'no customer-safe music engine is configured' }
+      : { engine: bestResellable, wallSubstituted: true };
+  }
+  if (wanted === 'suno' && !opts.sunoAvailable) {
+    return { engine: 'unavailable', wallSubstituted: false, unavailableReason: 'the selected flagship engine is not connected' };
+  }
+  if (wanted === 'eleven' && !opts.elevenAvailable) {
+    return { engine: 'unavailable', wallSubstituted: false, unavailableReason: 'the selected standard engine is not connected' };
+  }
+  if (['minimax', 'ace_step', 'minimax_ref', 'replicate'].includes(wanted) && !replicateAvailable) {
+    return { engine: 'unavailable', wallSubstituted: false, unavailableReason: 'the selected standard engine is not connected' };
+  }
   return { engine: wanted, wallSubstituted: false };
 }
 

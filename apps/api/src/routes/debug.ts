@@ -1,6 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import { anthropicPing, openaiPing, tavilyKey, braveKey, tavilyPing, researchTrends, prompts, claudeRaw, getLastStudioChatClaudeError, cerebrasHealth } from '@afrohit/ai';
-import { recommendEngine } from '@afrohit/shared';
+import { isFirstPartyWorkspace, recommendEngine } from '@afrohit/shared';
 import { laneDnaBrief } from '../lib/lane-pipeline';
 import { requireAuth } from '../middleware/auth';
 import { requireAdmin } from './admin';
@@ -15,6 +15,7 @@ import { fuseSoundDna } from '../lib/fuse';
 export default async function debug(app: FastifyInstance) {
   app.get('/ai', async (req) => {
     await requireAdmin(req); // §1.11 THE WALL: vendor names + key status are INTERNAL
+    const { workspaceId } = requireAuth(req);
     const [anthropic, openai, tavily, trend, cerebras] = await Promise.all([
       anthropicPing(),
       openaiPing(),
@@ -46,9 +47,12 @@ export default async function debug(app: FastifyInstance) {
       braveConfigured: !!braveKey(),
       trends: trend ? { ok: true, source: trend.source, sample: trend.digest.slice(0, 120) } : { ok: false },
       musicProvider: process.env.MUSIC_PROVIDER ?? '(unset)',
-      // Phase 7 — the engine ceiling: which full-song engine renders will use, and
-      // (when not Suno) how to lift the quality ceiling.
-      engineCeiling: recommendEngine('afrobeats', { sunoAvailable: !!process.env.SUNO_API_KEY }),
+      engineRoute: recommendEngine('afrobeats', {
+        firstParty: isFirstPartyWorkspace(workspaceId),
+        sunoAvailable: !!(process.env.SUNO_API_KEY || process.env.SUNOAPI_KEY),
+        elevenAvailable: !!(process.env.ELEVEN_API_KEY || process.env.ELEVENLABS_API_KEY || process.env.ELEVEN_LABS_API_KEY || process.env.XI_API_KEY),
+        replicateAvailable: !!(process.env.REPLICATE_API_TOKEN || process.env.REPLICATE_TOKEN),
+      }),
     };
   });
 

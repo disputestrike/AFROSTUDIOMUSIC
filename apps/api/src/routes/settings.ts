@@ -2,6 +2,7 @@ import type { FastifyInstance } from 'fastify';
 import { openSecret, prisma, sealSecret, secretHint } from '@afrohit/db';
 import { integrationsInputSchema } from '@afrohit/shared';
 import { requireAuth, requireRole } from '../middleware/auth';
+import { musicRouteCapabilities, musicRoutePolicy } from '../lib/music-capabilities';
 
 /**
  * In-app integrations — the music engine key lives here, not in Railway env.
@@ -9,6 +10,21 @@ import { requireAuth, requireRole } from '../middleware/auth';
  * raw key is never returned to the client (only a masked hint + connected flag).
  */
 export default async function settings(app: FastifyInstance) {
+  const sunoRouteAllowed = (workspaceId: string) => musicRoutePolicy(workspaceId).sunoAllowed;
+  const elevenRouteAllowed = (workspaceId: string) => musicRoutePolicy(workspaceId).elevenAllowed;
+
+  // Any authenticated workspace member may discover class-level route
+  // capabilities. Keys and vendor identities remain owner-only below.
+  app.get('/music-capabilities', async (req) => {
+    const { workspaceId } = requireAuth(req);
+    const capabilities = await musicRouteCapabilities(workspaceId);
+    return {
+      flagship: capabilities.flagship,
+      advanced: capabilities.advanced,
+      standard: capabilities.standard,
+    };
+  });
+
   app.addHook('preHandler', async (req) => {
     requireRole(req, ['OWNER', 'ADMIN']);
   });
@@ -22,12 +38,26 @@ export default async function settings(app: FastifyInstance) {
       musicProvider: ws.musicProvider ?? null,
       musicConnected: !!ws.musicApiKey,
       keyHint: secretHint(ws.musicApiKey),
+      sunoRouteAllowed: sunoRouteAllowed(workspaceId),
+      elevenRouteAllowed: elevenRouteAllowed(workspaceId),
     };
   });
 
-  app.patch('/integrations', { schema: { body: integrationsInputSchema } }, async (req) => {
+  app.patch('/integrations', { schema: { body: integrationsInputSchema } }, async (req, reply) => {
     const { workspaceId } = requireAuth(req);
     const input = integrationsInputSchema.parse(req.body);
+    if (input.musicProvider === 'suno' && !sunoRouteAllowed(workspaceId)) {
+      return reply.code(403).send({
+        error: 'flagship_engine_first_party_only',
+        message: 'The flagship route is available only for approved first-party release workspaces.',
+      });
+    }
+    if (input.musicProvider === 'eleven' && !elevenRouteAllowed(workspaceId)) {
+      return reply.code(403).send({
+        error: 'advanced_engine_commercial_approval_required',
+        message: 'This route requires current commercial terms and co-branding approval before customer use.',
+      });
+    }
     const data: { musicProvider?: string | null; musicApiKey?: string | null } = {};
     if (input.musicProvider !== undefined) data.musicProvider = input.musicProvider;
     // '' = leave existing key; null = disconnect; string = set.
@@ -44,6 +74,8 @@ export default async function settings(app: FastifyInstance) {
       musicProvider: ws.musicProvider ?? null,
       musicConnected: !!ws.musicApiKey,
       keyHint: secretHint(ws.musicApiKey),
+      sunoRouteAllowed: sunoRouteAllowed(workspaceId),
+      elevenRouteAllowed: elevenRouteAllowed(workspaceId),
     };
   });
 
@@ -66,6 +98,14 @@ export default async function settings(app: FastifyInstance) {
         return r.ok
           ? { ok: true, provider: 'replicate', message: 'Replicate key works ✅' }
           : reply.code(400).send({ ok: false, error: `Replicate rejected the key (${r.status}).` });
+      }
+      if (ws.musicProvider === 'eleven') {
+        const r = await fetch('https://api.elevenlabs.io/v1/user', {
+          headers: { 'xi-api-key': apiKey },
+        });
+        return r.ok
+          ? { ok: true, provider: 'eleven', message: 'Advanced engine key works.' }
+          : reply.code(400).send({ ok: false, error: `The advanced engine rejected the key (${r.status}).` });
       }
       if (ws.musicProvider === 'suno') {
         const base = (process.env.SUNO_API_BASE ?? 'https://api.sunoapi.org').replace(/\/+$/, '');

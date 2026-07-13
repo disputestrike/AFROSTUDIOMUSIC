@@ -31,7 +31,7 @@ export interface MusicGenerationInput {
   // the instrumental beat model.
   lyrics?: string;
   withVocals?: boolean;
-  songEngine?: string; // 'suno' | 'ace_step' (default) | 'minimax'
+  songEngine?: string; // 'suno' | 'eleven' | 'minimax' | 'ace_step'
   /**
    * Best-of-N: render this many candidates in parallel, QC each, keep the best
    * (the take with the most life — dynamics/punch, no clipping). Default from
@@ -63,7 +63,14 @@ export interface MusicGenerationInput {
 }
 
 export interface MusicGenerationOutput {
-  mainAudioUrl: string;
+  /** Provider-hosted audio when the provider returns a URL. */
+  mainAudioUrl?: string;
+  /** Raw audio for synchronous providers. The worker uploads this privately
+   * before measuring or persisting the candidate. */
+  audioBytes?: Buffer;
+  /** Extra tracks returned by the same paid provider request. The worker ranks
+   * every one instead of discarding already-generated alternatives. */
+  alternates?: MusicGenerationOutput[];
   stems?: Array<{ role: string; url: string }>;
   format: 'wav' | 'mp3' | 'flac';
   durationS: number;

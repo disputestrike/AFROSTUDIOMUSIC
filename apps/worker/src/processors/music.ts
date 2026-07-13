@@ -1,12 +1,13 @@
 import { openSecret, prisma, Prisma } from '@afrohit/db';
-import { musicAdapter, sunoKey, defaultInstrumentalEngine } from '@afrohit/ai';
+import { musicAdapter, defaultInstrumentalEngine } from '@afrohit/ai';
 import type { MusicGenerationInput } from '@afrohit/ai';
 import { markFailed, markRunning, markSucceeded } from '../lib/jobs';
-import { ingestRemoteFile, downloadToBuffer, uploadBytes } from '../lib/storage';
+import { deleteObjectByUrl, ingestRemoteFile, downloadToBuffer, uploadBytes } from '../lib/storage';
 import { probeDurationS, measureAudioQuality, ffmpegAvailable, master as ffmpegMaster, MASTER_TARGETS, type AudioQuality } from '../lib/ffmpeg';
 import { assessLaneCompliance, loadLaneProfile, laneGrounding } from '../lib/lane-assess';
 import { overlayFills } from '../lib/fills';
 import { measureAudio, dspAvailable } from '../lib/dsp';
+import { credentialForEngine, elevenMusicRouteApproved, resolveMusicCredentials, workspaceProviderEngine } from '../lib/music-routing';
 import { genreSignature, planFills, scoreLaneCompliance, engineAdequacy, structureMatch, blueprintFromMeasured, isFirstPartyWorkspace, resolveEngineForWorkspace, promotionEligible, type LaneComplianceScore, type MeasuredAnalysis, type SongBlueprint } from '@afrohit/shared';
 
 /** Minimum measured coverage before a lane score is allowed to influence ranking. */
@@ -73,6 +74,7 @@ function qcScore(q: AudioQuality | null): number {
 
 export async function processMusic(p: MusicPayload) {
   await markRunning(p.jobId);
+  const temporaryCandidateUrls: string[] = [];
   try {
     // Provider + key are set IN-APP (Settings → Music engine), stored per
     // workspace. Falls back to env (MUSIC_PROVIDER / *_API_KEY) then stub.
@@ -92,40 +94,47 @@ export async function processMusic(p: MusicPayload) {
       await markFailed(p.jobId, 'music_generation_failed: the lyrics were not written (the writer may be unavailable) — try again.');
       return;
     }
-    // FULL-SONG ENGINE: prefer Suno V5 (the strongest full-production model) when a
-    // Engine ladder for SUNG songs: Suno (best, needs SUNO_API_KEY) → MiniMax
-    // (strong, on the workspace Replicate key) → ACE-Step (last resort). MiniMax
-    // is the default fallback because ACE-Step's vocals were the "whack singing"
-    // — MiniMax music-2.6 is markedly better for Afrobeats vocals.
+    // Resolve the sung-song route from the explicit request, workspace provider,
+    // legal route wall and connected credentials. Quality rankings belong to the
+    // measured bake-off rather than hardcoded vendor claims.
     // W-2 THE WALL: the bridge is not a customer render path — a non-first-party
-    // workspace requesting 'suno' is hard-substituted to the best resellable
+    // workspace requesting 'suno' is hard-substituted to an approved customer
     // engine, in CODE, so misconfiguration cannot leak bridge output.
     const firstParty = isFirstPartyWorkspace(p.workspaceId);
-    const resolved = resolveEngineForWorkspace(p.input.songEngine ?? (sunoKey() && firstParty ? 'suno' : 'minimax'), { firstParty, sunoAvailable: !!sunoKey() });
-    if (resolved.wallSubstituted) console.log(`[wall] bridge blocked for customer workspace ${p.workspaceId} — rendering on ${resolved.engine}`);
-    let engine = resolved.engine as 'suno' | 'minimax' | 'ace_step';
-    if (engine === 'suno' && !sunoKey()) engine = 'minimax';
-    // Suno uses its OWN key (SUNO_API_KEY), never the workspace's Replicate key.
     const workspaceApiKey = openSecret(ws?.musicApiKey);
-    const replicateApiKey = ws?.musicProvider === 'replicate' ? workspaceApiKey : undefined;
-    const engineKey = engine === 'suno' ? undefined : replicateApiKey;
-    let adapter = wantsVocals
-      ? musicAdapter(engine, engineKey)
-      // INSTRUMENTAL: route to a REAL engine on the key that exists. A
-      // Replicate-only operator (no Suno) got the stub here because the
-      // instrumental path ignored their Replicate key — now it falls to
-      // Replicate MusicGen instead of a dead stub.
-      : musicAdapter(ws?.musicProvider ?? defaultInstrumentalEngine(), workspaceApiKey);
-    // A3-2 — REFERENCE-AUDIO ADJUST: when the job carries the song's own audio,
-    // condition the render on it (audio in, repaired audio out) instead of
-    // re-rolling from tags. The reference id is logged so every Adjust run is
-    // traceable to its source sound (internal log — wall-safe).
+    const credentials = resolveMusicCredentials(ws?.musicProvider, workspaceApiKey);
+    const elevenRouteApproved = elevenMusicRouteApproved(firstParty);
+    const workspaceDefault = workspaceProviderEngine(ws?.musicProvider);
+    const songOverride = process.env.SONG_ENGINE?.toLowerCase();
+    const requestedEngine = p.input.songEngine
+      ?? workspaceDefault
+      ?? (wantsVocals
+        ? (songOverride === 'replicate' ? 'minimax' : songOverride)
+        : defaultInstrumentalEngine());
+    const resolved = resolveEngineForWorkspace(requestedEngine, {
+      firstParty,
+      sunoAvailable: !!credentials.suno,
+      elevenAvailable: !!credentials.eleven && elevenRouteApproved,
+      replicateAvailable: !!credentials.replicate,
+    });
+    if (resolved.wallSubstituted) {
+      console.log(`[wall] flagship route blocked for customer workspace ${p.workspaceId}; rendering on ${resolved.engine}`);
+    }
+    const engine = resolved.engine;
+    const engineKey = credentialForEngine(engine, credentials);
+    const adapter = musicAdapter(engine, engineKey);
+    await prisma.providerJob.updateMany({
+      where: { id: p.jobId, workspaceId: p.workspaceId },
+      data: { provider: adapter.name },
+    });
+    if (resolved.unavailableReason) {
+      console.warn(`[music] engine unavailable: ${resolved.unavailableReason}`);
+    }
+
+    // Reference audio currently steers the measured brief and repair prompt. Keep
+    // the selected engine intact until a verified audio-conditioned route exists.
     if (p.input.referenceAudioUrl && wantsVocals) {
-      adapter = musicAdapter('minimax_ref', engineKey);
-      // HONESTY: no conditioning engine is configured (fal removed by owner
-      // directive) — the render is UNCONDITIONED; the reference steers only
-      // through the brief/lane repair. Never claim conditioning that didn't run.
-      console.log(`[adjust] steered re-render (unconditioned — no conditioning engine) — reference-input=${String(p.input.referenceAudioUrl).slice(0, 80)}`);
+      console.log(`[adjust] steered re-render (unconditioned) - reference-input=${String(p.input.referenceAudioUrl).slice(0, 80)}`);
     }
     type GenResult = Awaited<ReturnType<typeof adapter.generate>>;
 
@@ -134,7 +143,7 @@ export async function processMusic(p: MusicPayload) {
     // finished engine light-touch (loudness + true-peak only) instead of running
     // the full EQ/glue-comp chain on top, and the self-training gate treats their
     // always-hot ("clipping") raw QC differently from a genuinely broken take.
-    const finished = adapter.name === 'minimax' || adapter.name === 'suno';
+    const finished = adapter.name === 'minimax' || adapter.name === 'suno' || adapter.name === 'eleven';
 
     // Run generate + poll-to-terminal for ONE candidate. Cap polling by ELAPSED
     // TIME, not a fixed attempt count: at minimax's 5s poll interval a "25 attempts"
@@ -207,26 +216,45 @@ export async function processMusic(p: MusicPayload) {
         })()
       )
     );
-    const ok = settled.filter((r) => r.status === 'succeeded' && r.output);
+    const expandedSettled: GenResult[] = settled.flatMap((result) => {
+      if (result.status !== 'succeeded' || !result.output?.alternates?.length) return [result];
+      const { alternates, ...primary } = result.output;
+      return [
+        { ...result, output: primary },
+        ...alternates.map((alternate) => ({ ...result, output: alternate } as GenResult)),
+      ];
+    });
+    const materialized = await Promise.all(
+      expandedSettled.map(async (r): Promise<GenResult> => {
+        if (r.status !== 'succeeded' || !r.output?.audioBytes) return r;
+        try {
+          const mainAudioUrl = await uploadBytes({
+            workspaceId: p.workspaceId,
+            kind: 'provider-candidates',
+            bytes: r.output.audioBytes,
+            contentType: r.output.format === 'mp3' ? 'audio/mpeg' : r.output.format === 'flac' ? 'audio/flac' : 'audio/wav',
+            ext: r.output.format,
+          });
+          temporaryCandidateUrls.push(mainAudioUrl);
+          return { ...r, output: { ...r.output, mainAudioUrl, audioBytes: undefined } };
+        } catch (error) {
+          return { status: 'failed', error: `candidate storage failed: ${(error as Error).message}` } as GenResult;
+        }
+      })
+    );
+    const ok = materialized.filter((r) => r.status === 'succeeded' && r.output?.mainAudioUrl);
 
-    // STUB GUARD (audit CRITICAL). The stub adapter SUCCEEDS with a SoundHelix
-    // placeholder mp3, so the all-fail guard below never caught it — it was
-    // stored as an APPROVED, genre-labelled "song" (this is the "embarrassing,
-    // non-Afro audio"). voice.ts/image.ts already guard this; the music path did
-    // not. Detect the stub by adapter name AND by the placeholder host in the
-    // winning URL, and FAIL LOUDLY in production (unless a dev opts in) instead
-    // of shipping a rock sample as an Afro beat.
-    const placeholder =
-      adapter.name === 'stub' ||
-      ok.some((r) => /soundhelix\.com/i.test((r.status === 'succeeded' && r.output?.mainAudioUrl) || ''));
+    // Defense in depth: a provider response may never smuggle the historical
+    // placeholder host into a successful song, even in local development.
+    const placeholder = ok.some((r) => /soundhelix\.com/i.test((r.status === 'succeeded' && r.output?.mainAudioUrl) || ''));
     const fallbackReason: string | undefined = undefined;
-    if (placeholder && process.env.ALLOW_STUB_AUDIO !== '1') {
-      console.warn(`[music] stub/placeholder audio blocked (adapter=${adapter.name}) — no real music engine configured`);
-      await markFailed(p.jobId, 'music_generation_failed: no music engine configured — set a real engine (MUSIC_PROVIDER / SUNO_API_KEY / a workspace engine in Settings), then retry.');
+    if (placeholder) {
+      console.warn(`[music] placeholder audio blocked (adapter=${adapter.name})`);
+      await markFailed(p.jobId, 'music_generation_failed: the engine returned disallowed placeholder audio; retry or switch engine in Settings.');
       return;
     }
     if (!ok.length) {
-      const reason = settled.find((r) => r.error)?.error ?? 'provider_failed';
+      const reason = materialized.find((r) => r.error)?.error ?? 'provider_failed';
       // §1.11 THE WALL: errorJson reaches the user's screen — vendor/route names
       // are INTERNAL. Log the real reason here; ship the class-level one.
       console.warn(`[music] all candidates failed — internal reason: ${reason}`);
@@ -266,6 +294,7 @@ export async function processMusic(p: MusicPayload) {
     const winner = scored[0]!;
     const result = winner.r;
     const out = result.output!;
+    if (!out.mainAudioUrl) throw new Error('provider succeeded without playable audio');
     let quality: AudioQuality | null = winner.qc;
     const winnerLane = winner.lane;
     const rankedBy = winner.bp != null
@@ -532,5 +561,7 @@ export async function processMusic(p: MusicPayload) {
     );
   } catch (err) {
     await markFailed(p.jobId, err);
+  } finally {
+    await Promise.allSettled(temporaryCandidateUrls.map((url) => deleteObjectByUrl(url)));
   }
 }

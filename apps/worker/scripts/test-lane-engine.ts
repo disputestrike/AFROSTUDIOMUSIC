@@ -8,12 +8,15 @@ function assert(cond: boolean, msg: string) {
   if (!cond) { console.error('FAIL:', msg); process.exitCode = 1; } else console.log('  ok:', msg);
 }
 
-const withSuno = recommendEngine('amapiano', { sunoAvailable: true });
-assert(withSuno.engine === 'suno' && withSuno.ceiling === 'best', 'Suno key -> Suno at the best ceiling');
-assert(!withSuno.lift, 'at best ceiling, no lift suggested');
+const withSuno = recommendEngine('amapiano', { sunoAvailable: true, replicateAvailable: true, firstParty: true });
+assert(withSuno.engine === 'suno' && withSuno.ceiling === 'evaluation', 'approved first-party key -> flagship evaluation route');
+assert(!withSuno.lift, 'connected flagship route needs no connection hint');
 
-const noSuno = recommendEngine('amapiano', { sunoAvailable: false });
-assert(noSuno.engine === 'minimax' && noSuno.ceiling === 'good', 'no Suno key -> MiniMax at good ceiling');
-assert(!!noSuno.lift && /SUNO_API_KEY/.test(noSuno.lift), 'suggests setting SUNO_API_KEY to lift the ceiling');
+const noSuno = recommendEngine('amapiano', { sunoAvailable: false, replicateAvailable: true, firstParty: true });
+assert(noSuno.engine === 'minimax' && noSuno.ceiling === 'standard', 'no flagship key -> connected standard route');
+assert(!!noSuno.lift && /benchmark/i.test(noSuno.lift), 'offers the first-party benchmark route without a quality claim');
+
+const none = recommendEngine('amapiano', { sunoAvailable: false, replicateAvailable: false, firstParty: false });
+assert(none.engine === 'unavailable' && none.ceiling === 'unavailable', 'no credential -> unavailable, never an invented standard route');
 
 console.log(process.exitCode ? '\n❌ LaneEngine test FAILED' : '\n✅ LaneEngine test PASSED');

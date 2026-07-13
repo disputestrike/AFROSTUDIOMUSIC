@@ -143,7 +143,7 @@ export const generateBeatInputSchema = z.object({
   // call-and-response — before generation. On by default for vocal songs.
   richVocals: z.boolean().default(true),
   // Which vocal/song model: 'ace_step' (default) or 'minimax' (higher realism).
-  songEngine: z.enum(['suno', 'ace_step', 'minimax', 'own']).optional(),
+  songEngine: z.enum(['suno', 'eleven', 'ace_step', 'minimax', 'own']).optional(),
   /** Artist LANE to vibe toward (energy/tempo/production feel) — never a copy,
    *  never named in the song. Same semantics as dropBatchSchema.influence. */
   influence: z.string().max(120).optional(),
@@ -477,7 +477,7 @@ export const dropBatchSchema = z.object({
   pinnedReferenceId: z.string().cuid().optional(),
   bpm: z.number().int().min(60).max(180).default(103),
   withVocals: z.boolean().default(true),
-  songEngine: z.enum(['suno', 'ace_step', 'minimax', 'own']).optional(),
+  songEngine: z.enum(['suno', 'eleven', 'ace_step', 'minimax', 'own']).optional(),
   // Artist LANE to steer the vibe toward (e.g. "Davido, Wizkid"). Captures the
   // energy/production feel — never copies songs, never named in the output.
   influence: z.string().max(200).optional(),
@@ -504,7 +504,7 @@ export const snippetInputSchema = z.object({
 // ---------- Integrations (in-app music engine key) -------------------------
 
 export const integrationsInputSchema = z.object({
-  musicProvider: z.enum(['replicate', 'suno', 'stub']).nullable().optional(),
+  musicProvider: z.enum(['replicate', 'eleven', 'suno']).nullable().optional(),
   musicApiKey: z.string().max(400).nullable().optional(), // '' = keep existing
 });
 

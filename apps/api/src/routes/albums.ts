@@ -123,7 +123,7 @@ export default async function albums(app: FastifyInstance) {
       : null;
     if (!anchor) return reply.code(400).send({ error: 'no_anchor', message: 'This album has no anchor song to take its style from.' });
 
-    const engine = (['suno', 'ace_step', 'minimax'] as const).find((e) => e === anchor.beats[0]?.provider);
+    const engine = (['suno', 'eleven', 'ace_step', 'minimax'] as const).find((e) => e === anchor.beats[0]?.provider);
     const input = dropBatchSchema.parse({
       // Defensive slice: styleBrief is bounded, but never let a long one 500 the job.
       theme: `${(album.styleBrief ?? '').slice(0, 1500)}\n\nNEXT ALBUM TRACK: ${(theme?.trim() || 'a fresh song in exactly this sound — same voice, same flow, new story.').slice(0, 300)}`,

@@ -13,7 +13,7 @@ const check = (name: string, ok: boolean) => {
 };
 
 // W-2: a customer workspace forcing suno is hard-substituted to a resellable engine
-const customer = resolveEngineForWorkspace('suno', { firstParty: false, sunoAvailable: true });
+const customer = resolveEngineForWorkspace('suno', { firstParty: false, sunoAvailable: true, replicateAvailable: true });
 check('customer + suno forced → resellable engine', customer.engine === 'minimax');
 check('customer + suno forced → substitution logged flag', customer.wallSubstituted === true);
 
@@ -23,22 +23,27 @@ check('first-party + suno → bridge allowed', fp.engine === 'suno' && !fp.wallS
 
 // W-2: no suno key → graceful fallback, not a wall event
 const nokey = resolveEngineForWorkspace('suno', { firstParty: true, sunoAvailable: false });
-check('first-party + suno, no key → fallback without wall flag', nokey.engine === 'minimax' && !nokey.wallSubstituted);
+check('first-party + suno, no key → unavailable without wall flag', nokey.engine === 'unavailable' && !nokey.wallSubstituted);
+
+const approved = resolveEngineForWorkspace(undefined, { firstParty: false, sunoAvailable: false, elevenAvailable: true, replicateAvailable: false });
+check('customer auto route prefers connected approved engine', approved.engine === 'eleven');
+const none = resolveEngineForWorkspace(undefined, { firstParty: false, sunoAvailable: false, elevenAvailable: false, replicateAvailable: false });
+check('no connected customer-safe engine → unavailable', none.engine === 'unavailable');
 
 // W-2: default engine for a customer never lands on the bridge
-const cdef = resolveEngineForWorkspace(undefined, { firstParty: false, sunoAvailable: true });
+const cdef = resolveEngineForWorkspace(undefined, { firstParty: false, sunoAvailable: true, replicateAvailable: true });
 check('customer default never bridge', cdef.engine !== 'suno');
 
 // W-2: recommendEngine never returns suno for non-first-party
-check('recommendEngine customer → not suno', recommendEngine('amapiano', { sunoAvailable: true, firstParty: false }).engine !== 'suno');
-check('recommendEngine first-party → suno when available', recommendEngine('amapiano', { sunoAvailable: true, firstParty: true }).engine === 'suno');
+check('recommendEngine customer → not suno', recommendEngine('amapiano', { sunoAvailable: true, replicateAvailable: true, firstParty: false }).engine !== 'suno');
+check('recommendEngine first-party → suno when available', recommendEngine('amapiano', { sunoAvailable: true, replicateAvailable: true, firstParty: true }).engine === 'suno');
 
 // W-1: class mapping is the single public vocabulary
 check('engineClass suno=flagship', engineClass('suno') === 'flagship');
-check('engineClass eleven=certified-clean', engineClass('eleven') === 'certified-clean');
-check('engineClass stable_audio=certified-clean', engineClass('stable_audio') === 'certified-clean');
+check('engineClass eleven=standard until commercial certification', engineClass('eleven') === 'standard');
 check('engineClass afrohit-own=own', engineClass('afrohit-own') === 'own');
 check('engineClass minimax/ace/replicate=standard', engineClass('minimax') === 'standard' && engineClass('ace_step') === 'standard' && engineClass('replicate') === 'standard');
+check('engineClass unknown/stub/unavailable fail closed', engineClass('unknown') === 'unavailable' && engineClass('stub') === 'unavailable' && engineClass('unavailable') === 'unavailable');
 
 // W-2: first-party resolution — internal mode is first-party; multi-tenant needs the list
 check('internal mode = first-party', isFirstPartyWorkspace('anyws', { AUTH_MODE: 'internal' }));
@@ -103,6 +108,7 @@ check('W-3: certified-clean is certifiable', certOk.ok === true);
 check('W-3: certificate carries NO vendor name', certOk.ok && !/suno|eleven|minimax|ace[_-]?step|replicate|stable[_ ]?audio/i.test(JSON.stringify(certOk.certificate)));
 check('W-3: bridge render never certifiable', buildLicenseCertificate({ songId: 's1', workspaceId: 'w1', engineClass: 'flagship', issuedAt: 'x', certificateId: 'c' }).ok === false);
 check('W-3: standard = pass-through terms, no certificate', buildLicenseCertificate({ songId: 's1', workspaceId: 'w1', engineClass: 'standard', issuedAt: 'x', certificateId: 'c' }).ok === false);
+check('W-3: unavailable = no certificate', buildLicenseCertificate({ songId: 's1', workspaceId: 'w1', engineClass: 'unavailable', issuedAt: 'x', certificateId: 'c' }).ok === false);
 
 // W-5: dataset provenance — third-party origins fail the build with reasons
 const manifest = validateDatasetManifest([

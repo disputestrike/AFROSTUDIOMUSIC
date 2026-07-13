@@ -177,6 +177,15 @@ interface Integration {
   musicProvider: string | null;
   musicConnected: boolean;
   keyHint: string | null;
+  sunoRouteAllowed: boolean;
+  elevenRouteAllowed: boolean;
+}
+
+function musicEngineLabel(provider: string | null): string {
+  if (provider === 'suno') return 'Flagship';
+  if (provider === 'eleven') return 'Advanced';
+  if (provider === 'replicate') return 'Standard';
+  return 'Unknown';
 }
 
 /**
@@ -188,7 +197,7 @@ function MusicEngine() {
   const api = useApi();
   const [provider, setProvider] = useState('replicate');
   const [apiKey, setApiKey] = useState('');
-  const [state, setState] = useState<Integration>({ musicProvider: null, musicConnected: false, keyHint: null });
+  const [state, setState] = useState<Integration>({ musicProvider: null, musicConnected: false, keyHint: null, sunoRouteAllowed: false, elevenRouteAllowed: false });
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
 
@@ -240,7 +249,7 @@ function MusicEngine() {
       <div className="flex items-center justify-between">
         <h2 className="font-display text-2xl">🎵 Music engine</h2>
         <span className={`rounded-full px-3 py-1 text-xs ${state.musicConnected ? 'bg-emerald-500/20 text-emerald-300' : 'bg-white/10 text-slate-400'}`}>
-          {state.musicConnected ? `Connected · ${state.musicProvider} ${state.keyHint ?? ''}` : 'Not connected — renders fail until a key is set (no placeholders)'}
+          {state.musicConnected ? `Connected · ${musicEngineLabel(state.musicProvider)} ${state.keyHint ?? ''}` : 'Not connected — renders fail until a key is set (no placeholders)'}
         </span>
       </div>
       <p className="mt-2 text-sm text-slate-400">
@@ -254,7 +263,12 @@ function MusicEngine() {
           className="rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm"
         >
           <option value="replicate">Standard engine</option>
-          <option value="suno">Flagship engine</option>
+          {(state.elevenRouteAllowed || provider === 'eleven') && (
+            <option value="eleven" disabled={!state.elevenRouteAllowed}>Advanced engine{state.elevenRouteAllowed ? '' : ' (commercial approval required)'}</option>
+          )}
+          {(state.sunoRouteAllowed || provider === 'suno') && (
+            <option value="suno" disabled={!state.sunoRouteAllowed}>Flagship engine{state.sunoRouteAllowed ? '' : ' (first-party only)'}</option>
+          )}
         </select>
         <input
           type="password"

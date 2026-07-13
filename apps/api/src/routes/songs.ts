@@ -2,10 +2,11 @@ import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import { z } from 'zod';
 import { blueprintFromMeasured, structureBrief, genreSignature, type MeasuredAnalysis, type SongBlueprint } from '@afrohit/shared';
 import { prisma, Prisma } from '@afrohit/db';
-import { predictHit, researchTrends, enrichLyricsForVocals, cleanLyricsForMinimax, defaultSongEngine } from '@afrohit/ai';
+import { predictHit, researchTrends, enrichLyricsForVocals, cleanLyricsForMinimax } from '@afrohit/ai';
 import { laneDna, laneDnaBrief } from '../lib/lane-pipeline';
 import { requireAuth } from '../middleware/auth';
 import { createQueuedProviderJob, scopedRequestKey } from '../lib/queued-job';
+import { musicRouteCapabilities, validateMusicRoute } from '../lib/music-capabilities';
 import { learnedReferenceBrief } from '../lib/learned';
 import { laneContext } from '../lib/lane-context';
 import { arReadAfterRender } from '../lib/ar-read';
@@ -734,7 +735,7 @@ export default async function songs(app: FastifyInstance) {
   // ---- Re-sing the song with the CURRENT (edited) lyrics — the surgical edit ----
   // Edit lyrics → save → re-sing: renders a fresh vocal over the same lane, and
   // because the new beat is the freshest audio it becomes the song's current take.
-  app.post<{ Params: { id: string }; Body: { songEngine?: 'suno' | 'ace_step' | 'minimax'; conditionOnCurrent?: boolean } }>('/:id/regenerate-beat', async (req, reply) => {
+  app.post<{ Params: { id: string }; Body: { songEngine?: 'suno' | 'eleven' | 'ace_step' | 'minimax'; conditionOnCurrent?: boolean } }>('/:id/regenerate-beat', async (req, reply) => {
     const { workspaceId } = requireAuth(req);
     const song = await prisma.song.findFirst({
       where: { id: req.params.id, workspaceId },
@@ -744,6 +745,15 @@ export default async function songs(app: FastifyInstance) {
     const lyric = song.lyric ?? (await prisma.lyricDraft.findFirst({ where: { projectId: song.projectId }, orderBy: { createdAt: 'desc' } }));
     const lyrics = lyric?.cleanVersion ?? lyric?.body ?? undefined;
     if (!lyrics) return reply.code(400).send({ error: 'no_lyrics', message: 'Write or edit lyrics first, then re-sing.' });
+
+    // Preserve an explicit or previous vocal route only when it remains legal
+    // and connected. Validate before lyric enrichment or credit reservation.
+    const prev = song.beats[0]?.provider ?? '';
+    const songEngine =
+      (req.body?.songEngine as 'suno' | 'eleven' | 'ace_step' | 'minimax' | undefined) ??
+      (['suno', 'eleven', 'minimax', 'ace_step'].includes(prev) ? (prev as 'suno' | 'eleven' | 'ace_step' | 'minimax') : undefined);
+    const route = validateMusicRoute(songEngine, await musicRouteCapabilities(workspaceId), true);
+    if (!route.ok) return reply.code(route.statusCode).send({ error: route.error, message: route.message });
 
     const genre = song.project.genre;
     const dna = laneDna(genre);
@@ -766,11 +776,7 @@ export default async function songs(app: FastifyInstance) {
     }
 
     // Keep the previous engine if it was a vocal engine; else let the worker
-    // auto-pick the best (Suno V5 when a Suno key is set, ACE-Step otherwise).
-    const prev = song.beats[0]?.provider ?? '';
-    const songEngine =
-      (req.body?.songEngine as 'suno' | 'ace_step' | 'minimax' | undefined) ??
-      (['suno', 'minimax', 'ace_step'].includes(prev) ? (prev as 'suno' | 'ace_step' | 'minimax') : undefined);
+    // Omit the override to use the workspace's connected automatic route.
     // PHASE 4 loop — this IS a regen, so inject the repair steering stored on the
     // song's last measured take (from laneContext) as concrete style directives, the
     // same as createBeatJob. This is where a drifted take gets pushed back in-lane.
@@ -790,7 +796,7 @@ export default async function songs(app: FastifyInstance) {
       workspaceId,
       projectId: song.projectId,
       kind: 'music',
-      provider: songEngine ?? defaultSongEngine(),
+      provider: songEngine ?? 'auto',
       inputJson: { regenerate: true, songId: song.id },
       charge,
       idempotencyKey,

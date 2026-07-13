@@ -158,7 +158,12 @@ export default async function webhooks(app: FastifyInstance) {
     return { received: true };
   });
 
-  // ---------- Music provider (Eleven / Stable Audio etc) ----------
+  // The Suno-compatible gateway requires a callback URL even though the worker
+  // uses authenticated polling as its source of truth. This endpoint has no
+  // state-changing behavior, so an unauthenticated callback cannot forge a job.
+  app.post('/suno', async (_req, reply) => reply.code(204).send());
+
+  // ---------- Music provider callbacks ----------
   app.post('/music', async (req, reply) => {
     const internal = req.headers['x-internal-secret'];
     if (!constantTimeSecretEqual(internal, process.env.INTERNAL_API_SECRET)) {
