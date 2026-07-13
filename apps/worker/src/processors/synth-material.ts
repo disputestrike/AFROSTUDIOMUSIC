@@ -17,8 +17,9 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { prisma } from '@afrohit/db';
 import { getGenreKit, synthKitFor } from '@afrohit/shared';
-import { uploadBytes } from '../lib/storage';
+import { deleteObjectByUrl, downloadToBuffer, uploadBytes } from '../lib/storage';
 import { markFailed, markRunning, markSucceeded } from '../lib/jobs';
+import { inspectMaterialAudio } from '../lib/material-inspection';
 
 const PYTHON = process.env.PYTHON_BIN || 'python3';
 // CJS worker (module: CommonJS) — resolve like lib/dsp.ts does: dist/processors -> ../../py
@@ -57,28 +58,104 @@ export async function processSynthMaterial(p: SynthMaterialPayload): Promise<voi
     for (const role of roles) {
       const digest = createHash('sha256').update(`${p.workspaceId}|${p.jobId ?? p.genre}|${role}`).digest('hex');
       const materialId = `synth_${digest.slice(0, 24)}`;
-      const existing = await prisma.materialAsset.findUnique({ where: { id: materialId }, select: { id: true } });
+      const existing = await prisma.materialAsset.findUnique({
+        where: { id: materialId },
+        select: { id: true, url: true, readiness: true, roleEvidence: true, meta: true },
+      });
       if (existing) {
-        completed.push(role);
+        const bytes = await downloadToBuffer(existing.url);
+        const inspection = await inspectMaterialAudio({
+          bytes, url: existing.url, role, roleEvidence: 'synth-code', deep: false,
+        });
+        const duplicate = await prisma.materialAsset.findFirst({
+          where: { workspaceId: p.workspaceId, contentHash: inspection.contentHash, id: { not: existing.id } },
+          select: { id: true, role: true, readiness: true },
+        });
+        if (duplicate) {
+          await prisma.materialAsset.update({
+            where: { id: existing.id },
+            data: {
+              readiness: 'rejected',
+              qualityState: 'duplicate',
+              roleEvidence: 'synth-code',
+              rightsBasis: 'code-generated',
+              contentHash: null,
+              verifiedAt: inspection.verifiedAt,
+              meta: { ...((existing.meta ?? {}) as Record<string, unknown>), duplicateOf: duplicate.id } as never,
+            },
+          });
+          if (duplicate.role === role && duplicate.readiness === 'ready') completed.push(role);
+          else failed.push(role);
+          continue;
+        }
+        await prisma.materialAsset.update({
+          where: { id: existing.id },
+          data: {
+            readiness: inspection.readiness,
+            qualityState: inspection.qualityState,
+            roleEvidence: 'synth-code',
+            rightsBasis: 'code-generated',
+            contentHash: inspection.contentHash,
+            verifiedAt: inspection.verifiedAt,
+            keySignature: key,
+          },
+        });
+        if (inspection.readiness === 'ready') completed.push(role);
+        else failed.push(role);
         continue;
       }
       const tmp = join(tmpdir(), `synth-${role}-${digest.slice(0, 10)}.wav`);
+      let uploadedUrl: string | null = null;
       try {
         await runSynth(role, bpm, tmp, p.genre, key, fourOnFloor, Number.parseInt(digest.slice(0, 6), 16) % 9973);
         const bytes = await readFile(tmp);
         const url = await uploadBytes({ workspaceId: p.workspaceId, kind: 'materials', bytes, contentType: 'audio/wav', ext: 'wav' });
+        uploadedUrl = url;
+        const inspection = await inspectMaterialAudio({ bytes, url, role, roleEvidence: 'synth-code', deep: false });
+        if (inspection.readiness !== 'ready') {
+          throw new Error(`synthesized material failed technical QC (${inspection.reasons.join(', ') || 'unmeasured'})`);
+        }
+        const duplicate = await prisma.materialAsset.findFirst({
+          where: { workspaceId: p.workspaceId, contentHash: inspection.contentHash },
+          select: { id: true, role: true },
+        });
+        if (duplicate) {
+          await deleteObjectByUrl(url).catch(() => {});
+          uploadedUrl = null;
+          if (duplicate.role !== role) throw new Error(`synth output duplicates ${duplicate.id} filed as ${duplicate.role}`);
+          completed.push(role);
+          continue;
+        }
         const durationS = (60 / bpm) * 8;
         await prisma.materialAsset.create({
           data: {
             id: materialId,
             workspaceId: p.workspaceId, kind: 'loop', role, genre: p.genre, bpm, bars: 2,
+            keySignature: key,
             durationS, url, source: 'forged',
-            meta: { synth: true, generator: 'signature-synth-v2', key, fourOnFloor, jobId: p.jobId, note: 'synthesized owned material — genre + key aware' } as never,
+            readiness: inspection.readiness,
+            qualityState: inspection.qualityState,
+            roleEvidence: 'synth-code',
+            rightsBasis: 'code-generated',
+            contentHash: inspection.contentHash,
+            verifiedAt: inspection.verifiedAt,
+            meta: {
+              synth: true,
+              generator: 'signature-synth-v2',
+              key,
+              fourOnFloor,
+              jobId: p.jobId,
+              qc: inspection.qc,
+              rightsBasis: 'code-generated',
+              note: 'synthesized material from studio code; genre and key aware',
+            } as never,
           },
         });
+        uploadedUrl = null;
         completed.push(role);
         console.log(`[synth-material] ${p.genre}/${role} @${bpm} key=${key} forged`);
       } catch (err) {
+        if (uploadedUrl) await deleteObjectByUrl(uploadedUrl).catch(() => {});
         failed.push(role);
         console.warn(`[synth-material] ${role} failed:`, (err as Error)?.message);
       } finally {

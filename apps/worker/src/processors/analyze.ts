@@ -1,6 +1,7 @@
 import { openSecret, prisma } from '@afrohit/db';
 import { analyzeAudio } from '@afrohit/ai';
-import { analysisCoverage, unknownAnalysis } from '@afrohit/shared';
+import { createHash } from 'node:crypto';
+import { analysisCoverage, unknownAnalysis, type MeasuredAnalysis } from '@afrohit/shared';
 import { markFailed, markRunning, markSucceeded } from '../lib/jobs';
 import { measureAudio, dspAvailable } from '../lib/dsp';
 import { enqueueJob } from '../lib/enqueue';
@@ -12,6 +13,8 @@ interface AnalyzePayload {
   workspaceId: string;
   projectId: string;
   url: string;  /** Training session: delete the uploaded audio after learning from it. */
+  source?: string;
+  rightsBasis?: 'user-attested' | 'facts-only';
   purgeAfter?: boolean;
   /** FACTS-ONLY reference (a record the artist owns but didn't make): measure the
    *  uncopyrightable NUMBERS (tempo/key/groove/log-drum/arrangement) into the lane
@@ -27,7 +30,12 @@ interface AnalyzePayload {
  */
 export async function processAnalyze(p: AnalyzePayload) {
   await markRunning(p.jobId);
+  let temporaryAnalyzeUrl: string | null = null;
+  let sourcePurgeDelegated = false;
   try {
+    if (!p.factsOnly && p.rightsBasis !== 'user-attested') {
+      throw new Error('full reference learning requires an explicit user-attested rights basis');
+    }
     const ws = await prisma.workspace.findUnique({
       where: { id: p.workspaceId },
       select: { musicProvider: true, musicApiKey: true },
@@ -44,28 +52,57 @@ export async function processAnalyze(p: AnalyzePayload) {
       try { if (await dspAvailable()) measured = await measureAudio(p.url); } catch (err) {
         console.warn('[analyze] facts-only DSP measure failed:', (err as Error)?.message);
       }
-      const coverage = analysisCoverage(measured);
-      const reference = await prisma.soundReference.create({
-        data: {
+      const sourceUrl = `facts:${p.url}`;
+      const existing = await prisma.soundReference.findFirst({
+        where: { workspaceId: p.workspaceId, sourceUrl },
+        select: { id: true, analysisState: true, recipe: true },
+      });
+      const prior = (existing?.recipe ?? {}) as { measured?: MeasuredAnalysis; metrics?: unknown };
+      const preserveMeasured = existing?.analysisState === 'measured' && prior.measured?.engineOk === true && !measured.engineOk;
+      const effectiveMeasured = preserveMeasured ? prior.measured! : measured;
+      const effectiveMetrics = preserveMeasured ? (prior.metrics ?? metrics) : metrics;
+      const coverage = analysisCoverage(effectiveMeasured);
+      const referenceId = existing?.id ?? `facts_${createHash('sha256').update(`${p.workspaceId}|${p.url}`).digest('hex').slice(0, 24)}`;
+      const reference = await prisma.soundReference.upsert({
+        where: { id: referenceId },
+        create: {
+          id: referenceId,
           workspaceId: p.workspaceId,
           artistId: project?.artistId ?? null,
           genre: project?.genre ?? null, // no LLM detection in facts mode — the teach-genre picker is the label
-          sourceUrl: `facts:${p.url}`,
+          sourceUrl,
           title: `reference facts · ${project?.genre ?? 'unknown'}`,
-          recipe: { factsOnly: true, measured, metrics } as never,
+          recipe: { source: 'facts', factsOnly: true, measured: effectiveMeasured, metrics: effectiveMetrics } as never,
           summary: null, // NOTHING for the prose briefs to quote — numbers only, by design
+          analysisState: effectiveMeasured.engineOk ? 'measured' : 'failed',
+          rightsBasis: 'facts-only',
+          active: true,
+        },
+        update: {
+          artistId: project?.artistId ?? null,
+          genre: project?.genre ?? null,
+          recipe: { source: 'facts', factsOnly: true, measured: effectiveMeasured, metrics: effectiveMetrics } as never,
+          summary: null,
+          analysisState: effectiveMeasured.engineOk ? 'measured' : 'failed',
+          rightsBasis: 'facts-only',
+          active: true,
         },
       }).catch((err: unknown) => { console.warn('[analyze] facts reference write failed:', (err as Error)?.message); return null; });
       // Deep pass (stems-grade log-drum) then PURGE the audio — the lake keeps
       // numbers, never a copy of a record the artist didn't make.
       if (reference?.id && measured.engineOk && process.env.DSP_STEMS !== '0') {
-        await enqueueJob('lake', 'deep-measure', { referenceId: reference.id, url: p.url, workspaceId: p.workspaceId, purgeAfter: true })
-          .catch(async () => { const { deleteObjectByUrl } = await import('../lib/storage'); await deleteObjectByUrl(p.url).catch(() => {}); });
+        try {
+          await enqueueJob('lake', 'deep-measure', { referenceId: reference.id, url: p.url, workspaceId: p.workspaceId, purgeAfter: true });
+          sourcePurgeDelegated = true;
+        } catch {
+          const { deleteObjectByUrl } = await import('../lib/storage');
+          await deleteObjectByUrl(p.url).catch(() => {});
+        }
       } else {
         const { deleteObjectByUrl } = await import('../lib/storage');
         await deleteObjectByUrl(p.url).catch(() => {});
       }
-      await markSucceeded(p.jobId, { factsOnly: true, referenceId: reference?.id ?? null, measured, coverage, profile: null });
+      await markSucceeded(p.jobId, { factsOnly: true, referenceId: reference?.id ?? null, measured: effectiveMeasured, coverage, profile: null });
       return;
     }
 
@@ -73,12 +110,15 @@ export async function processAnalyze(p: AnalyzePayload) {
     // the transcription fast/cheap and the optional audio model light. Falls back
     // to the full URL if trimming isn't possible.
     let analyzeUrl = p.url;
+    let sourceContentHash: string | null = null;
     try {
+      const full = await downloadToBuffer(p.url);
+      sourceContentHash = createHash('sha256').update(full).digest('hex');
       if (await ffmpegAvailable()) {
-        const full = await downloadToBuffer(p.url);
         const clip = await extractClip(full, 12, 60);
         if (clip.length > 2000) {
           analyzeUrl = await uploadBytes({ workspaceId: p.workspaceId, kind: 'reference', bytes: clip, contentType: 'audio/mpeg', ext: 'mp3' });
+          temporaryAnalyzeUrl = analyzeUrl;
         }
       }
     } catch {
@@ -150,20 +190,25 @@ export async function processAnalyze(p: AnalyzePayload) {
     // LEARN: store the deep production recipe as a reusable reference so future
     // songs in this genre/workspace can be built from what it heard. This is the
     // compounding "listen & learn" library — it grows with every reference.
-    const reference = await prisma.soundReference
-      .create({
-        data: {
-          workspaceId: p.workspaceId,
-          artistId: project?.artistId ?? null,
-          genre: learnedGenre,
-          sourceUrl: p.url,
-          title: profile.vibe?.slice(0, 120) ?? null,
-          // Store the measured DSP facts alongside the inferred recipe (additive key)
-          // so the lake / later Lane phases can read what was actually heard.
-          recipe: { ...(profile as unknown as Record<string, unknown>), measured } as never,
-          summary: profile.learnedRecipe || profile.suggestedVibePrompt || null,
-        },
-      })
+    const referenceData = {
+      artistId: project?.artistId ?? null,
+      genre: learnedGenre,
+      sourceUrl: p.url,
+      title: profile.vibe?.slice(0, 120) ?? null,
+      // Store the measured DSP facts alongside the inferred recipe (additive key)
+      // so the lake / later Lane phases can read what was actually heard.
+      recipe: { ...(profile as unknown as Record<string, unknown>), source: p.source ?? 'owned-upload', measured } as never,
+      summary: profile.learnedRecipe || profile.suggestedVibePrompt || null,
+      analysisState: measured.engineOk ? 'measured' : 'inferred',
+      rightsBasis: 'user-attested',
+    };
+    const reference = await (sourceContentHash
+      ? prisma.soundReference.upsert({
+          where: { workspaceId_contentHash: { workspaceId: p.workspaceId, contentHash: sourceContentHash } },
+          create: { workspaceId: p.workspaceId, contentHash: sourceContentHash, ...referenceData },
+          update: { ...referenceData, active: true },
+        })
+      : prisma.soundReference.create({ data: { workspaceId: p.workspaceId, ...referenceData } }))
       // A failed write here silently loses a LEARNED reference — log it.
       .catch((err: unknown) => {
         console.warn('[analyze] SoundReference write failed:', (err as Error)?.message);
@@ -173,8 +218,17 @@ export async function processAnalyze(p: AnalyzePayload) {
     // Deep pass (stems + refined DSP) runs in the BACKGROUND — the reference
     // upgrades itself in place a few minutes after the artist already has results.
     if (reference?.id && process.env.DSP_STEMS !== '0' && measured.engineOk) {
-      await enqueueJob('lake', 'deep-measure', { referenceId: reference.id, url: p.url, workspaceId: p.workspaceId })
-        .catch((e) => console.warn('[analyze] deep-measure enqueue failed:', (e as Error)?.message));
+      try {
+        await enqueueJob('lake', 'deep-measure', {
+          referenceId: reference.id,
+          url: p.url,
+          workspaceId: p.workspaceId,
+          purgeAfter: p.purgeAfter === true,
+        });
+        sourcePurgeDelegated = p.purgeAfter === true;
+      } catch (e) {
+        console.warn('[analyze] deep-measure enqueue failed:', (e as Error)?.message);
+      }
     }
 
     // Taste graph — what the artist chose to listen to / build from. Compounds.
@@ -190,13 +244,18 @@ export async function processAnalyze(p: AnalyzePayload) {
     // referenceId lets the UI PIN this exact reference for the remake — the song
     // made next must rebuild THIS record's sound, not a lucky-recent one.
     await markSucceeded(p.jobId, { profile, referenceId: reference?.id ?? null, measured, coverage });
-    // TRAINING-SESSION PURGE: the lake keeps the learned recipe, never the
-    // recording itself (doctrine: no stored copies of anyone's audio).
-    if (p.purgeAfter) {
+  } catch (err) {
+    await markFailed(p.jobId, err);
+  } finally {
+    // Training captures are always purged. A successfully queued deep pass owns
+    // deletion so it can still read the source; otherwise this worker deletes it.
+    if (p.purgeAfter && !sourcePurgeDelegated) {
       const { deleteObjectByUrl } = await import('../lib/storage');
       await deleteObjectByUrl(p.url).catch(() => {});
     }
-  } catch (err) {
-    await markFailed(p.jobId, err);
+    if (temporaryAnalyzeUrl) {
+      const { deleteObjectByUrl } = await import('../lib/storage');
+      await deleteObjectByUrl(temporaryAnalyzeUrl).catch(() => {});
+    }
   }
 }

@@ -71,7 +71,8 @@ if (legacy.map((r) => r.id).join(',') !== 'ama-own-0,ama-own-1,ama-own-2') fail(
 
 // ---- 5: Zap origin — chart lessons are FACTS, never the artist's audio -----
 if (referenceOrigin('zap:asake-lonely-at-the-top', { source: 'zap' }) !== 'facts-only') fail("zap rows must classify facts-only, not owned-upload");
-if (referenceOrigin('https://r2.example/own.wav', {}) !== 'owned-upload') fail('a real owned upload must stay owned-upload');
+if (referenceOrigin('https://r2.example/own.wav', {}, 'user-attested') !== 'owned-upload') fail('an attested owned upload must stay owned-upload');
+if (referenceOrigin('https://unknown.example/audio.wav', {}) !== 'unknown') fail('unknown provenance must not be promoted to owned-upload');
 if (referenceOrigin('facts:manual-entry', {}) !== 'facts-only') fail('facts: rows must stay facts-only');
 if (referenceOrigin('https://r2.example/render.wav', { source: 'generated' }) !== 'self-generated') fail('self rows must stay self-generated');
 // Grounding math: 2 zap-facts + 1 owned = grounded; 3 self alone never grounds.

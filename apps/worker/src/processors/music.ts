@@ -3,12 +3,12 @@ import { musicAdapter, defaultInstrumentalEngine } from '@afrohit/ai';
 import type { MusicGenerationInput } from '@afrohit/ai';
 import { markFailed, markRunning, markSucceeded } from '../lib/jobs';
 import { deleteObjectByUrl, ingestRemoteFile, downloadToBuffer, uploadBytes } from '../lib/storage';
-import { probeDurationS, measureAudioQuality, ffmpegAvailable, master as ffmpegMaster, MASTER_TARGETS, type AudioQuality } from '../lib/ffmpeg';
+import { probeDurationS, measureAudioQuality, ffmpegAvailable, master as ffmpegMaster, MASTER_TARGETS, transformAudio, type AudioQuality } from '../lib/ffmpeg';
 import { assessLaneCompliance, loadLaneProfile, laneGrounding } from '../lib/lane-assess';
 import { overlayFills } from '../lib/fills';
 import { measureAudio, dspAvailable } from '../lib/dsp';
 import { credentialForEngine, elevenMusicRouteApproved, resolveMusicCredentials, workspaceProviderEngine } from '../lib/music-routing';
-import { genreSignature, planFills, scoreLaneCompliance, engineAdequacy, structureMatch, blueprintFromMeasured, isFirstPartyWorkspace, resolveEngineForWorkspace, promotionEligible, type LaneComplianceScore, type MeasuredAnalysis, type SongBlueprint } from '@afrohit/shared';
+import { genreSignature, planFills, scoreLaneCompliance, engineAdequacy, structureMatch, blueprintFromMeasured, isFirstPartyWorkspace, resolveEngineForWorkspace, promotionEligible, selectMaterialRows, type LaneComplianceScore, type MeasuredAnalysis, type SongBlueprint } from '@afrohit/shared';
 
 /** Minimum measured coverage before a lane score is allowed to influence ranking. */
 const MIN_COVERAGE_FOR_RANKING = 0.5;
@@ -52,6 +52,13 @@ interface MusicPayload {
   input: MusicGenerationInput;
 }
 
+interface TrainingReferenceRow {
+  id: string;
+  title: string | null;
+  analysisState: string;
+  rightsBasis: string;
+}
+
 /**
  * Rank a rendered candidate by measured quality — higher = more "alive". Prefers
  * a passing verdict, rewards dynamic movement (loudness range) and punch (crest),
@@ -75,6 +82,8 @@ function qcScore(q: AudioQuality | null): number {
 export async function processMusic(p: MusicPayload) {
   await markRunning(p.jobId);
   const temporaryCandidateUrls: string[] = [];
+  let uncommittedBeatUrl: string | null = null;
+  let supersededBeatUrl: string | null = null;
   try {
     // Provider + key are set IN-APP (Settings → Music engine), stored per
     // workspace. Falls back to env (MUSIC_PROVIDER / *_API_KEY) then stub.
@@ -310,6 +319,7 @@ export async function processMusic(p: MusicPayload) {
       ext: out.format,
       contentType: out.format === 'mp3' ? 'audio/mpeg' : out.format === 'flac' ? 'audio/flac' : 'audio/wav',
     });
+    uncommittedBeatUrl = ingestedMain;
 
     // Winner QC measured the provider URL (same bytes). Re-probe duration if unknown;
     // if QC didn't run at all, measure the ingested file now. Never fatal.
@@ -327,22 +337,57 @@ export async function processMusic(p: MusicPayload) {
     // keeps missing). Gated FILL_OVERLAY=1 (quality-sensitive) and only when a fill
     // material for the genre exists. Best-effort: any failure keeps the clean render.
     const beatBpm = out.bpm ?? p.input.bpm ?? 0;
+    let appliedFill: {
+      materialId: string;
+      sourceBpm: number;
+      targetBpm: number;
+      stretchRatio: number;
+      placementsS: number[];
+    } | null = null;
     // FILLS ARE DECORATION: any failure here degrades to a fill-less take with a
     // logged reason — it must NEVER fail the song (first prod run of this path
     // happened when the kit-forge stocked fills; Benjamin's failed render).
     try {
       if (process.env.FILL_OVERLAY !== '0' && !placeholder && beatBpm > 0 && durationS > 12) {
         try {
-          const fillMat = await prisma.materialAsset.findFirst({
-            where: { workspaceId: p.workspaceId, role: 'fill', OR: [{ genre: p.input.genre ?? undefined }, { genre: null }] },
+          const fillRows = await prisma.materialAsset.findMany({
+            where: {
+              workspaceId: p.workspaceId,
+              role: 'fill',
+              OR: [{ genre: p.input.genre ?? undefined }, { genre: null }],
+            },
             orderBy: { createdAt: 'desc' },
+            take: 20,
           });
+          const fillMat = selectMaterialRows(fillRows, ['fill'], beatBpm)[0];
           const placements = fillMat ? planFills(beatBpm, durationS, null, genreSignature(p.input.genre).fillBars) : [];
           if (fillMat && placements.length) {
-            const [songBytes, fillBytes] = await Promise.all([downloadToBuffer(ingestedMain), downloadToBuffer(fillMat.url)]);
+            const [songBytes, rawFillBytes] = await Promise.all([downloadToBuffer(ingestedMain), downloadToBuffer(fillMat.url)]);
+            const stretchRatio = beatBpm / (fillMat.sourceBpm || beatBpm);
+            const fillBytes = Math.abs(stretchRatio - 1) > 0.001
+              ? await transformAudio(rawFillBytes, { tempo: stretchRatio })
+              : rawFillBytes;
             const mixed = await overlayFills(songBytes, fillBytes, placements.map((f) => f.atS));
-            ingestedMain = await uploadBytes({ workspaceId: p.workspaceId, kind: 'beats', bytes: mixed, contentType: 'audio/wav', ext: 'wav' });
-            console.log(`[fills] overlaid ${placements.length} fills @ ${placements.map((f) => Math.round(f.atS) + 's').join(',')}`);
+            const mixedUrl = await uploadBytes({ workspaceId: p.workspaceId, kind: 'beats', bytes: mixed, contentType: 'audio/wav', ext: 'wav' });
+            const mixedQc = await measureAudioQuality(mixedUrl).catch(() => null);
+            if (!mixedQc || mixedQc.verdict === 'fail') {
+              await deleteObjectByUrl(mixedUrl).catch(() => {});
+              console.warn(`[fills] mixed take rejected by QC (${(mixedQc?.flags ?? []).join(', ') || 'unmeasured'})`);
+            } else {
+              const cleanUrl = ingestedMain;
+              ingestedMain = mixedUrl;
+              quality = mixedQc;
+              appliedFill = {
+                materialId: fillMat.id,
+                sourceBpm: fillMat.sourceBpm,
+                targetBpm: beatBpm,
+                stretchRatio: +stretchRatio.toFixed(4),
+                placementsS: placements.map((placement) => placement.atS),
+              };
+              supersededBeatUrl = cleanUrl;
+              uncommittedBeatUrl = mixedUrl;
+              console.log(`[fills] overlaid ${placements.length} fills @ ${placements.map((f) => Math.round(f.atS) + 's').join(',')}`);
+            }
           }
         } catch (err) {
           console.warn('[fills] overlay failed (clean render kept):', (err as Error)?.message);
@@ -352,12 +397,22 @@ export async function processMusic(p: MusicPayload) {
       console.warn('[fills] overlay skipped (render continues):', (fillErr as Error)?.message);
     }
 
-    const beat = await prisma.beatAsset.create({
-      data: {
+    const trainingUsage = (p.input as {
+      trainingUsage?: {
+        referenceIds?: string[];
+        pinnedReferenceId?: string | null;
+        genre?: string;
+        measured?: number;
+        inferredOnly?: number;
+      };
+    }).trainingUsage;
+    const beat = await prisma.$transaction(async (tx) => {
+      const created = await tx.beatAsset.create({
+        data: {
         projectId: p.projectId,
         songId: p.songId,
         url: ingestedMain,
-        format: out.format,
+        format: appliedFill ? 'wav' : out.format,
         bpm: out.bpm ?? p.input.bpm,
         keySignature: out.keySignature ?? p.input.keySignature,
         duration: durationS,
@@ -391,12 +446,75 @@ export async function processMusic(p: MusicPayload) {
           // TRACEABILITY: which of the artist's trained references shaped this beat
           // (proves "my beats were used" — and measured/total flags backfill need).
           trainingUsage: (p.input as { trainingUsage?: unknown }).trainingUsage ?? undefined,
+          fillOverlay: appliedFill ?? undefined,
           qc: quality
             ? { ...quality, durationS: durationS || quality.durationS }
             : { durationS: durationS || null, verdict: durationS >= 12 ? 'pass' : 'fail', ok: durationS >= 12, flags: [] },
         } as never,
-      },
+        },
+      });
+      const referenceIds = [...new Set((trainingUsage?.referenceIds ?? []).filter(Boolean))];
+      if (referenceIds.length) {
+        const references: TrainingReferenceRow[] = await tx.soundReference.findMany({
+          where: {
+            workspaceId: p.workspaceId,
+            id: { in: referenceIds },
+            active: true,
+            analysisState: { not: 'failed' },
+            rightsBasis: { not: 'unknown' },
+          },
+          select: { id: true, title: true, analysisState: true, rightsBasis: true },
+        });
+        const byId = new Map(references.map((reference) => [reference.id, reference]));
+        await tx.referenceUsage.createMany({
+          data: referenceIds.flatMap((referenceId, position) => {
+            const reference = byId.get(referenceId);
+            if (!reference) return [];
+            return [{
+              workspaceId: p.workspaceId,
+              referenceId,
+              providerJobId: p.jobId,
+              beatId: created.id,
+              songId: p.songId ?? null,
+              genre: trainingUsage?.genre || p.input.genre || 'unknown',
+              position,
+              pinned: trainingUsage?.pinnedReferenceId === referenceId,
+              influence: {
+                path: 'production-brief+style-tags+measured-tags',
+                title: reference.title,
+                analysisState: reference.analysisState,
+                rightsBasis: reference.rightsBasis,
+              } as never,
+            }];
+          }),
+          skipDuplicates: true,
+        });
+      }
+      if (appliedFill) {
+        await tx.materialUsage.create({
+          data: {
+            workspaceId: p.workspaceId,
+            materialId: appliedFill.materialId,
+            providerJobId: p.jobId,
+            beatId: created.id,
+            songId: p.songId ?? null,
+            role: 'fill',
+            sourceBpm: appliedFill.sourceBpm,
+            targetBpm: appliedFill.targetBpm,
+            stretchRatio: appliedFill.stretchRatio,
+            gain: 0.5,
+            pan: 0,
+            sections: { placementsS: appliedFill.placementsS } as never,
+          },
+        });
+      }
+      return created;
     });
+    uncommittedBeatUrl = null;
+    if (supersededBeatUrl) {
+      await deleteObjectByUrl(supersededBeatUrl).catch(() => {});
+      supersededBeatUrl = null;
+    }
 
     // SELF-TRAINING (legal — our own output, zero third-party material): every
     // full sung song whose measured QC PASSES becomes a SoundReference, so the
@@ -441,7 +559,13 @@ export async function processMusic(p: MusicPayload) {
       // uploads at retrieval.
       const since = new Date(Date.now() - 24 * 60 * 60 * 1000);
       const recentGenerated = await prisma.soundReference.count({
-        where: { workspaceId: p.workspaceId, genre: p.input.genre ?? undefined, createdAt: { gte: since }, title: { startsWith: 'generated' } },
+        where: {
+          workspaceId: p.workspaceId,
+          genre: p.input.genre ?? undefined,
+          active: true,
+          createdAt: { gte: since },
+          title: { startsWith: 'generated' },
+        },
       });
       if (recentGenerated > 0) {
         // Already learned from today's renders in this genre — skip quietly.
@@ -467,6 +591,8 @@ export async function processMusic(p: MusicPayload) {
               measured: winner.measured ?? undefined,
             } as never,
             summary: `Generated ${p.input.genre ?? ''} record (${Math.round(quality?.loudnessRangeLra ?? 0)}LU range, crest ${quality?.crestFactorDb ?? '—'}dB) on ${adapter.name}: ${(p.input.dnaTags ?? []).slice(0, 6).join(', ')}`,
+            analysisState: winner.measured?.engineOk ? 'measured' : 'inferred',
+            rightsBasis: 'self-generated',
           },
         })
         .catch((err: unknown) => console.warn('[music] self-training reference write failed:', (err as Error)?.message));
@@ -560,6 +686,8 @@ export async function processMusic(p: MusicPayload) {
       result.estimatedCostUsd
     );
   } catch (err) {
+    if (uncommittedBeatUrl) await deleteObjectByUrl(uncommittedBeatUrl).catch(() => {});
+    if (supersededBeatUrl) await deleteObjectByUrl(supersededBeatUrl).catch(() => {});
     await markFailed(p.jobId, err);
   } finally {
     await Promise.allSettled(temporaryCandidateUrls.map((url) => deleteObjectByUrl(url)));

@@ -432,7 +432,9 @@ export const analyzeAudioSchema = z.object({
   /** Training session: delete the uploaded audio after learning from it. */
   purgeAfter: z.boolean().optional(),
   factsOnly: z.boolean().optional(),
-  url: z.string().url(), // an uploaded/imported track url the artist has rights to
+  /** Required for expression-level learning. Omit for the safe facts-only path. */
+  rightsConfirmed: z.boolean().optional(),
+  url: z.string().url(), // uploaded reference; full learning additionally requires rightsConfirmed
 });
 
 // ---------- Rights spine (split-sheet + ISRC/UPC + green-light) -------------

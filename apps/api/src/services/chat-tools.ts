@@ -25,7 +25,7 @@ import { lexiconPalette } from '../lib/lexicon';
 import { laneContext } from '../lib/lane-context';
 import { fuseSoundDna } from '../lib/fuse';
 import { presongIntelligence } from '../lib/presong';
-import { kitRolesFor, homeKeyFor, pickMaterial, claudeArrangement, ownShelfRoles } from '../lib/material-plan';
+import { kitRolesFor, homeKeyFor, pickMaterial, materialCoverage, claudeArrangement, ownShelfRoles } from '../lib/material-plan';
 import { autoMaterialBeat } from '../lib/material-auto';
 import { arReadSong } from '../lib/ar-read';
 import { applySingingBrain, craftOf } from '../lib/singing-pipeline';
@@ -1160,12 +1160,25 @@ async function analyzeAudioTool(ctx: Ctx, url: string) {
     projectId: ctx.projectId,
     kind: 'analyze',
     provider: 'replicate',
-    inputJson: { url },
+    inputJson: { url, factsOnly: true, source: 'chat-reference-facts', rightsBasis: 'facts-only' },
     charge,
     idempotencyKey,
-    payload: (jobId) => ({ jobId, workspaceId: ctx.workspaceId, projectId: ctx.projectId, url }),
+    payload: (jobId) => ({
+      jobId,
+      workspaceId: ctx.workspaceId,
+      projectId: ctx.projectId,
+      url,
+      factsOnly: true,
+      source: 'chat-reference-facts',
+      rightsBasis: 'facts-only',
+    }),
   });
-  return { jobId: job.jobId, replayed: job.replayed, status: 'queued', note: 'Listening — poll the job; outputJson.profile has BPM/key/genre/mood/instruments + a fresh-vibe prompt to create an original from.' };
+  return {
+    jobId: job.jobId,
+    replayed: job.replayed,
+    status: 'queued',
+    note: 'Measuring the reference as facts-only: tempo, key, groove, and arrangement can shape the lane; no expression or lyrics are learned.',
+  };
 }
 
 async function runDropTool(ctx: Ctx, a: { theme: string; count?: number; genre?: string; bpm?: number; withVocals?: boolean; songEngine?: 'suno' | 'eleven' | 'ace_step' | 'minimax'; languages?: string[]; mood?: string; fusionGenres?: string[]; influence?: string; durationS?: number; voice?: 'auto' | 'female' | 'male' | 'duet' | 'group'; songTitle?: string }) {
@@ -1359,7 +1372,7 @@ async function separateStemsTool(ctx: Ctx, songId: string | undefined, mode: 'in
 async function forgeMaterialsTool(ctx: Ctx, a: { genre: string; bpm?: number; keySignature?: string }) {
   const bpm = Number(a.bpm ?? 108);
   const keySignature = a.keySignature ?? homeKeyFor(a.genre);
-  const roles = kitRolesFor(a.genre);
+  const roles = kitRolesFor(a.genre, 14);
   const jobs: Array<{ role: string; jobId: string }> = [];
   for (const [index, role] of roles.entries()) {
     const idempotencyKey = toolKey(ctx, `forge-${role}`);
@@ -1389,8 +1402,16 @@ async function assembleBeatTool(ctx: Ctx, a: { genre: string; bpm?: number; keyS
   if (!ctx.projectId) return { error: 'no_project_in_thread' };
   const bpm = Number(a.bpm ?? 108);
   const rows = await prisma.materialAsset.findMany({ where: { workspaceId: ctx.workspaceId, genre: a.genre }, orderBy: { createdAt: 'desc' }, take: 100 });
-  const picks = pickMaterial(rows, a.genre, bpm, a.keySignature);
-  if (picks.length < 2) return { error: 'not_enough_material', have: picks.map((p) => p.role), note: `Forge ${a.genre} loops first (forge_materials), then assemble.` };
+  const picks = pickMaterial(rows, a.genre, bpm, a.keySignature, { roles: kitRolesFor(a.genre, 14) });
+  const coverage = materialCoverage(picks);
+  if (!coverage.ready) {
+    return {
+      error: 'material_bed_incomplete',
+      have: picks.map((p) => p.role),
+      coverage,
+      note: `Forge the missing ${a.genre} rhythm, low-end, and tonal roles before assembling.`,
+    };
+  }
   const sections = await claudeArrangement(a.genre, bpm, picks.map((p) => p.role), a.vibe);
   const idempotencyKey = toolKey(ctx, 'assemble-beat');
   const charge = await ctx.app.chargeCredits({ workspaceId: ctx.workspaceId, key: 'beat_idea_short_30s', refTable: 'Project', refId: ctx.projectId, idempotencyKey });

@@ -13,9 +13,18 @@ import { useCallback, useEffect, useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { useApi } from '@/lib/api';
-import { Database, Trash2, Loader2, Music2, BookOpenText, TrendingUp, Sparkles, Radar, Wand2 } from 'lucide-react';
+import { Database, Trash2, Loader2, Music2, BookOpenText, TrendingUp, Sparkles, Radar, Wand2, Ruler, ShieldQuestion, CircleX } from 'lucide-react';
 
-interface LakeRow { id: string; title: string | null; genre: string | null; kind: string; summary: string; at: string }
+interface LakeRow {
+  id: string;
+  title: string | null;
+  genre: string | null;
+  kind: string;
+  summary: string;
+  analysisState: string;
+  rightsBasis: string;
+  at: string;
+}
 interface Lake {
   soundReferences: {
     total: number;
@@ -41,8 +50,11 @@ interface UtilRow {
   id: string;
   title: string | null;
   genre: string | null;
-  origin: 'owned-upload' | 'facts-only' | 'self-generated' | 'zap';
+  origin: 'owned-upload' | 'facts-only' | 'self-generated' | 'zap' | 'unknown';
   measured: boolean;
+  analysisState: string;
+  rightsBasis: string;
+  active: boolean;
   deepMeasured: boolean;
   usedInRenders: number;
   lastUsedAt: string | null;
@@ -57,6 +69,7 @@ const ORIGIN_LABEL: Record<UtilRow['origin'], string> = {
   'facts-only': 'facts only',
   'self-generated': 'self-generated',
   zap: 'zap',
+  unknown: 'unknown',
 };
 
 function Utilization() {
@@ -64,13 +77,29 @@ function Utilization() {
   const [rows, setRows] = useState<UtilRow[] | null>(null);
   const [note, setNote] = useState('');
   const [uErr, setUErr] = useState('');
+  const [classifying, setClassifying] = useState('');
 
-  useEffect(() => {
+  const load = useCallback(() => {
+    setUErr('');
     api.get<{ rows: UtilRow[]; note: string }>('/taste/utilization')
       .then((d) => { setRows(d.rows); setNote(d.note); })
       .catch((e) => setUErr((e as Error).message.slice(0, 140)));
+  }, [api]);
 
-  }, []);
+  useEffect(() => { load(); }, [load]);
+
+  async function classify(id: string, rightsBasis: 'user-attested' | 'facts-only') {
+    if (classifying) return;
+    setClassifying(id);
+    try {
+      await api.patch(`/taste/references/${id}/classification`, { rightsBasis });
+      load();
+    } catch (error) {
+      setUErr((error as Error).message.slice(0, 140));
+    } finally {
+      setClassifying('');
+    }
+  }
 
   if (uErr) return <div className="mt-6 rounded-2xl glass p-4 text-xs text-red-300">Training utilization unavailable: {uErr}</div>;
   if (!rows) return null;
@@ -122,6 +151,30 @@ function Utilization() {
                   </td>
                   <td className="space-x-1">
                     {r.needsBackfill && <span className="rounded bg-amber-500/15 px-1.5 py-0.5 text-[10px] text-amber-300">⚠ needs backfill</span>}
+                    {!r.active && <span className="rounded bg-white/5 px-1.5 py-0.5 text-[10px] text-slate-500">inactive</span>}
+                    {r.rightsBasis === 'unknown' && <span className="rounded bg-red-500/15 px-1.5 py-0.5 text-[10px] text-red-300">rights unknown</span>}
+                    {r.rightsBasis === 'unknown' && r.active && (
+                      <>
+                        <button
+                          type="button"
+                          disabled={!!classifying}
+                          onClick={() => void classify(r.id, 'user-attested')}
+                          className="rounded border border-emerald-500/30 px-1.5 py-0.5 text-[10px] text-emerald-300 disabled:opacity-50"
+                          title="Confirm that you own or control this recording"
+                        >
+                          {classifying === r.id ? <Loader2 className="inline h-3 w-3 animate-spin" /> : 'Own/control'}
+                        </button>
+                        <button
+                          type="button"
+                          disabled={!!classifying}
+                          onClick={() => void classify(r.id, 'facts-only')}
+                          className="rounded border border-white/10 px-1.5 py-0.5 text-[10px] text-slate-300 disabled:opacity-50"
+                          title="Keep only measured musical facts and remove expression-level learning"
+                        >
+                          Facts only
+                        </button>
+                      </>
+                    )}
                     {r.genreMismatch && (
                       <span className="rounded bg-amber-500/15 px-1.5 py-0.5 text-[10px] text-amber-300" title="the recipe's detected genre disagrees with the filed lane">
                         filed {(r.genreMismatch.filed ?? '?').replace(/_/g, ' ')} · ear says {r.genreMismatch.detected.replace(/_/g, ' ')}
@@ -145,6 +198,9 @@ const KIND_META: Record<string, { label: string; icon: React.ReactNode; hint: st
   trendSnapshots: { label: 'Trend snapshots', icon: <TrendingUp className="h-4 w-4" />, hint: 'daily what-is-popping digests' },
   selfTraining: { label: 'Self-training', icon: <Sparkles className="h-4 w-4" />, hint: 'the studio learning from its own QC-passed renders' },
   zapped: { label: 'Zapped', icon: <Radar className="h-4 w-4" />, hint: 'songs you Zapped + the daily radar — the craft of what’s charting, as reference lanes' },
+  referenceFacts: { label: 'Measured facts', icon: <Ruler className="h-4 w-4" />, hint: 'tempo, key, groove and arrangement; no expression' },
+  unclassified: { label: 'Unclassified', icon: <ShieldQuestion className="h-4 w-4" />, hint: 'visible for review; blocked from generation' },
+  failed: { label: 'Failed', icon: <CircleX className="h-4 w-4" />, hint: 'analysis failed; visible for diagnosis and blocked from generation' },
 };
 
 export default function LakePage() {
@@ -211,8 +267,7 @@ export default function LakePage() {
         <Database className="h-7 w-7 text-afrobrand-400" /> The data <span className="text-gradient">lake</span>
       </h1>
       <p className="mt-2 max-w-2xl text-sm text-slate-400">
-        Everything the studio has learned, in one place — and every song it makes reads from here.
-        Add to it below; delete anything that shouldn&apos;t be teaching it.
+        Everything the studio has measured or learned, in one place. Active, rights-classified rows shape songs; unclassified rows stay blocked until you review them.
       </p>
 
       {err && <div className="mt-6 rounded-xl border border-red-500/30 bg-red-500/10 p-4 text-sm text-red-300">{err}</div>}
@@ -289,14 +344,16 @@ export default function LakePage() {
                     <div className="truncate text-sm text-slate-200">{r.title || '(untitled)'} {r.genre && <span className="text-xs text-slate-500">· {r.genre.replace(/_/g, ' ')}</span>}</div>
                     {r.summary && <div className="mt-0.5 line-clamp-2 text-xs text-slate-500">{r.summary}</div>}
                   </div>
-                  <button
-                    onClick={() => void makeInLane(r)}
-                    disabled={preparing === r.id}
-                    title="Make a fresh song in this lane — starts making immediately (never a copy)"
-                    className="inline-flex shrink-0 items-center gap-1 rounded-full border border-afrobrand-500/40 bg-afrobrand-500/10 px-2.5 py-1 text-xs text-afrobrand-300 hover:bg-afrobrand-500/20 disabled:opacity-60"
-                  >
-                    {preparing === r.id ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Wand2 className="h-3.5 w-3.5" />} Make in this lane
-                  </button>
+                  {!['unclassified', 'failed'].includes(r.kind) && (
+                    <button
+                      onClick={() => void makeInLane(r)}
+                      disabled={preparing === r.id}
+                      title="Make a fresh song in this lane — starts making immediately (never a copy)"
+                      className="inline-flex shrink-0 items-center gap-1 rounded-full border border-afrobrand-500/40 bg-afrobrand-500/10 px-2.5 py-1 text-xs text-afrobrand-300 hover:bg-afrobrand-500/20 disabled:opacity-60"
+                    >
+                      {preparing === r.id ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Wand2 className="h-3.5 w-3.5" />} Make in this lane
+                    </button>
+                  )}
                   <button
                     onClick={() => void remove(r.id)}
                     disabled={!!deleting}

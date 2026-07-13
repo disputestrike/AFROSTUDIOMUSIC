@@ -145,6 +145,8 @@ export default async function zap(app: FastifyInstance) {
         title: `Zap · ${(m.genre || genre || 'song')} lane — "${m.title}" (${m.artist ?? '—'})`,
         recipe: { source: 'zap', title: m.title, artist: m.artist, genre, album: m.album, releaseDate: m.releaseDate, craft: craft.craft, vibe: craft.vibe, bpm: craft.suggestedBpm, mood: craft.mood, languages: craft.languages } as never,
         summary: (craft.whatToLearn || craft.vibe || '').slice(0, 400),
+        analysisState: 'inferred',
+        rightsBasis: 'facts-only',
       },
     });
     // MEASURE THE LICENSED PREVIEW (facts, never expression): AudD's official
@@ -226,7 +228,15 @@ export default async function zap(app: FastifyInstance) {
   app.post('/lane-brief', async (req, reply) => {
     const { referenceId } = z.object({ referenceId: z.string().min(6) }).parse(req.body);
     const { workspaceId } = requireAuth(req);
-    const ref = await prisma.soundReference.findFirst({ where: { id: referenceId, workspaceId } });
+    const ref = await prisma.soundReference.findFirst({
+      where: {
+        id: referenceId,
+        workspaceId,
+        active: true,
+        analysisState: { not: 'failed' },
+        rightsBasis: { not: 'unknown' },
+      },
+    });
     if (!ref) return reply.code(404).send({ error: 'reference_not_found' });
     let rec = (ref.recipe ?? {}) as { title?: string; artist?: string; genre?: string; bpm?: number; mood?: string; languages?: string[]; vibe?: string; craft?: string[] };
     // PRECISION FIX (the rap-zap-made-an-afro-song bug): NEVER silently default the
@@ -313,6 +323,8 @@ export default async function zap(app: FastifyInstance) {
               title: `Zap radar · ${genre} lane — "${song.title}" (${song.artist ?? '—'})`,
               recipe: { source: 'zap', radar: true, title: song.title, artist: song.artist, genre, craft: craft.craft, vibe: craft.vibe, bpm: craft.suggestedBpm, mood: craft.mood, languages: craft.languages } as never,
               summary: (craft.whatToLearn || craft.vibe || '').slice(0, 400),
+              analysisState: 'inferred',
+              rightsBasis: 'facts-only',
             },
           });
         } catch {

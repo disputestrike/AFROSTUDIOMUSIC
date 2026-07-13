@@ -13,18 +13,31 @@ import { measureAudio, dspAvailable, type StemInputs } from '../lib/dsp';
 
 export interface DeepMeasurePayload {
   referenceId: string; url: string; workspaceId: string;
-  /** Facts-only references: delete the audio once the deep read lands (the lake
-   *  keeps NUMBERS, never a copy of a record the artist didn't make). */
+  /** Ephemeral training/reference capture: delete after this attempt, whether
+   * the deep read succeeds or not. The lake keeps lessons, not the recording. */
   purgeAfter?: boolean;
 }
 
 export async function processDeepMeasure(p: DeepMeasurePayload): Promise<void> {
   try {
-    if (!(await dspAvailable())) return;
     const ref = await prisma.soundReference.findUnique({ where: { id: p.referenceId }, select: { recipe: true } });
     if (!ref) return;
-    const recipe = (ref.recipe ?? {}) as Record<string, unknown> & { deepMeasured?: boolean };
-    if (recipe.deepMeasured) return;
+    const recipe = (ref.recipe ?? {}) as Record<string, unknown> & { deepMeasured?: boolean; deepMeasureExhausted?: boolean };
+    if (recipe.deepMeasured || recipe.deepMeasureExhausted) return;
+    if (!(await dspAvailable())) {
+      const attempts = ((recipe.deepMeasureAttempts as number) ?? 0) + 1;
+      await prisma.soundReference.update({
+        where: { id: p.referenceId },
+        data: {
+          recipe: {
+            ...recipe,
+            deepMeasureAttempts: attempts,
+            ...(attempts >= 3 ? { deepMeasureExhausted: true, deepMeasureError: 'DSP unavailable after 3 attempts' } : {}),
+          } as never,
+        },
+      }).catch(() => {});
+      return;
+    }
 
     let stems: StemInputs | undefined;
     let sourceGone = false;
@@ -55,7 +68,9 @@ export async function processDeepMeasure(p: DeepMeasurePayload): Promise<void> {
     if (sourceGone) {
       await prisma.soundReference.update({
         where: { id: p.referenceId },
-        data: { recipe: { ...recipe, deepMeasured: true, audioMissing: true, deepMeasureError: 'source audio 404 — no longer in storage', deepMeasuredAt: new Date().toISOString() } as never },
+        data: {
+          recipe: { ...recipe, audioMissing: true, deepMeasureError: 'source audio 404 — no longer in storage', deepMeasureClosedAt: new Date().toISOString() } as never,
+        },
       }).catch(() => {});
       console.warn(`[deep-measure] ref ${p.referenceId} tombstoned — source audio gone (404); will not retry`);
       return;
@@ -67,21 +82,49 @@ export async function processDeepMeasure(p: DeepMeasurePayload): Promise<void> {
       // 3 tries so a quietly-broken ref can't spin the backfill indefinitely.
       const attempts = ((recipe.deepMeasureAttempts as number) ?? 0) + 1;
       const patch: Record<string, unknown> = { ...recipe, deepMeasureAttempts: attempts };
-      if (attempts >= 3) { patch.deepMeasured = true; patch.audioMissing = true; patch.deepMeasureError = `measure failed ${attempts}× — giving up`; }
-      await prisma.soundReference.update({ where: { id: p.referenceId }, data: { recipe: patch as never } }).catch(() => {});
+      if (attempts >= 3) {
+        patch.deepMeasureExhausted = true;
+        patch.deepMeasureError = `measure failed ${attempts}× — giving up`;
+      }
+      await prisma.soundReference.update({
+        where: { id: p.referenceId },
+        data: { recipe: patch as never },
+      }).catch(() => {});
       return; // never overwrite a good read with an engine failure
     }
     await prisma.soundReference.update({
       where: { id: p.referenceId },
-      data: { recipe: { ...recipe, measured, deepMeasured: true, deepMeasuredAt: new Date().toISOString() } as never },
+      data: {
+        recipe: { ...recipe, measured, deepMeasured: true, deepMeasuredAt: new Date().toISOString() } as never,
+        analysisState: 'measured',
+      },
     });
     console.log(`[deep-measure] ref ${p.referenceId} upgraded (stems=${!!stems?.bass})`);
+  } catch (err) {
+    console.warn('[deep-measure] failed (non-fatal):', (err as Error)?.message);
+  } finally {
     if (p.purgeAfter) {
       const { deleteObjectByUrl } = await import('../lib/storage');
       await deleteObjectByUrl(p.url).catch(() => {});
-      console.log(`[deep-measure] purged facts-only audio for ref ${p.referenceId}`);
+      const latest = await prisma.soundReference.findUnique({
+        where: { id: p.referenceId },
+        select: { recipe: true },
+      }).catch(() => null);
+      const latestRecipe = (latest?.recipe ?? {}) as Record<string, unknown> & { deepMeasured?: boolean };
+      if (latest && !latestRecipe.deepMeasured) {
+        await prisma.soundReference.update({
+          where: { id: p.referenceId },
+          data: {
+            recipe: {
+              ...latestRecipe,
+              audioMissing: true,
+              deepMeasureClosed: 'ephemeral source purged after deep attempt',
+              deepMeasureClosedAt: new Date().toISOString(),
+            } as never,
+          },
+        }).catch(() => {});
+      }
+      console.log(`[deep-measure] purged ephemeral audio for ref ${p.referenceId}`);
     }
-  } catch (err) {
-    console.warn('[deep-measure] failed (non-fatal):', (err as Error)?.message);
   }
 }

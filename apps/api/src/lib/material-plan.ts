@@ -1,6 +1,6 @@
 import { prisma } from '@afrohit/db';
 import { getSoundDNA, generateJson } from '@afrohit/ai';
-import { MATERIAL_GAINS, forgeKitFor, materialGainFor, materialPanFor } from '@afrohit/shared';
+import { MATERIAL_GAINS, forgeKitFor, materialCoverage, selectMaterialRows, withCoarseMaterialRoles, type SelectableMaterial, type SelectedMaterial } from '@afrohit/shared';
 
 /**
  * MATERIAL PLANNING — one source of truth for the material layer's brain,
@@ -12,8 +12,7 @@ import { MATERIAL_GAINS, forgeKitFor, materialGainFor, materialPanFor } from '@a
 
 // Gain doctrine now lives in @afrohit/shared (the worker needs it too) — re-export
 // so existing importers keep working.
-export { MATERIAL_GAINS };
-export const MELODIC_ROLES = new Set(['chords', 'bass', 'log_drum']);
+export { MATERIAL_GAINS, materialCoverage };
 
 /**
  * The genre's REAL kit — delegates to the shared forgeKitFor (Executive-Summary
@@ -40,28 +39,21 @@ export function homeKeyFor(genre: string): string {
  */
 export async function ownShelfRoles(workspaceId: string, genre: string): Promise<number | null> {
   const min = Math.max(1, Number(process.env.OWN_ENGINE_MIN_ROLES) || 6);
-  const roles = await prisma.materialAsset.groupBy({ by: ['role'], where: { workspaceId, genre } });
+  const roles = await prisma.materialAsset.groupBy({
+    by: ['role'],
+    where: {
+      workspaceId,
+      genre,
+      readiness: { not: 'rejected' },
+      qualityState: { notIn: ['failed', 'duplicate'] },
+      rightsBasis: { not: 'unknown' },
+    },
+  });
   return roles.length >= min ? roles.length : null;
 }
 
-export interface MaterialRow {
-  id: string;
-  url: string;
-  role: string;
-  bpm: number | null;
-  keySignature: string | null;
-  source: string;
-}
-
-export interface MaterialPick {
-  id: string;
-  url: string;
-  sourceBpm: number;
-  role: string;
-  gain: number;
-  /** stereo placement -1..+1 (producer pan doctrine; 0 = center) */
-  pan?: number;
-}
+export type MaterialRow = SelectableMaterial;
+export type MaterialPick = SelectedMaterial;
 
 /**
  * Best loop per wanted role: bpm within ±15%, then key-compatible melodic
@@ -75,33 +67,20 @@ export interface MaterialPick {
  * (seed + roleIndex) % k — same seed = same beat (replayable), fresh seed =
  * fresh combination. No seed = the legacy byte-identical pick (tests depend on it).
  */
-export function pickMaterial(rows: MaterialRow[], genre: string, bpm: number, keySignature?: string | null, opts?: { varietySeed?: number }): MaterialPick[] {
-  const targetKey = (keySignature ?? homeKeyFor(genre)).toLowerCase();
-  const keyScore = (m: MaterialRow) => {
-    if (!MELODIC_ROLES.has(m.role) || !targetKey) return 0;
-    if (!m.keySignature) return 1;
-    return m.keySignature.toLowerCase() === targetKey ? 0 : 2;
-  };
-  const picks: MaterialPick[] = [];
-  const roles = kitRolesFor(genre);
-  for (let ri = 0; ri < roles.length; ri++) {
-    const role = roles[ri]!;
-    // In-tempo picks first; a harvested stem with NO measured bpm is a valid
-    // LAST-RESORT pick (audit: harvested loops inherit a possibly-null beat bpm,
-    // so a strict bpm filter silently orphaned the artist's own material).
-    const inTempo = rows.filter((m) => m.role === role && m.bpm && Math.abs(m.bpm - bpm) / bpm <= 0.15);
-    const nullBpm = rows.filter((m) => m.role === role && !m.bpm);
-    const ranked = [...inTempo, ...nullBpm].sort(
-      (a, b) =>
-        keyScore(a) - keyScore(b) ||
-        (a.source === 'artist_stem' ? -1 : 0) - (b.source === 'artist_stem' ? -1 : 0) ||
-        Math.abs((a.bpm ?? bpm) - bpm) - Math.abs((b.bpm ?? bpm) - bpm)
-    );
-    const k = Math.min(3, ranked.length);
-    const best = opts?.varietySeed != null && k > 1 ? ranked[(opts.varietySeed + ri) % k] : ranked[0];
-    if (best) picks.push({ id: best.id, url: best.url, sourceBpm: best.bpm ?? bpm, role, gain: materialGainFor(role), pan: materialPanFor(role) });
-  }
-  return picks;
+export function pickMaterial(
+  rows: MaterialRow[],
+  genre: string,
+  bpm: number,
+  keySignature?: string | null,
+  opts?: { varietySeed?: number; roles?: string[] },
+): MaterialPick[] {
+  return selectMaterialRows(
+    rows,
+    withCoarseMaterialRoles(opts?.roles ?? kitRolesFor(genre)),
+    bpm,
+    keySignature ?? homeKeyFor(genre),
+    opts,
+  );
 }
 
 export interface ArrangementSection {

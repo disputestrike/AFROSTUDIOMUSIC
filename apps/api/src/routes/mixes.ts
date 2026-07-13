@@ -212,10 +212,17 @@ export default async function mixes(app: FastifyInstance) {
             projectId: project.id,
             kind: 'analyze',
             provider: 'replicate',
-            inputJson: { url: mix.url, source: 'finished-upload' },
+            inputJson: { url: mix.url, source: 'finished-upload', rightsBasis: 'user-attested' },
             charge: learnCharge,
             idempotencyKey: learnIdempotencyKey,
-            payload: (jobId) => ({ jobId, workspaceId, projectId: project.id, url: mix.url }),
+            payload: (jobId) => ({
+              jobId,
+              workspaceId,
+              projectId: project.id,
+              url: mix.url,
+              source: 'finished-upload',
+              rightsBasis: 'user-attested',
+            }),
           });
         }
       } catch (err) {

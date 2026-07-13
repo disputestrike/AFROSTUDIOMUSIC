@@ -67,7 +67,8 @@ if (existsSync(calPath)) {
 // C-2: origin classification + grounding rule
 check('origin: generated recipe = self', referenceOrigin('https://r2/x.wav', { source: 'generated' }) === 'self-generated');
 check('origin: facts: prefix = facts-only', referenceOrigin('facts:https://r2/y.wav', {}) === 'facts-only');
-check('origin: plain upload = owned', referenceOrigin('https://r2/z.wav', {}) === 'owned-upload');
+check('origin: attested upload = owned', referenceOrigin('https://r2/z.wav', {}, 'user-attested') === 'owned-upload');
+check('origin: unclassified URL = unknown', referenceOrigin('https://outside/z.wav', {}) === 'unknown');
 const unground = groundingOf([{ origin: 'owned-upload' }, { origin: 'self-generated' }, { origin: 'self-generated' }, { origin: 'self-generated' }]);
 check('C-2: 1 external + 3 self = NOT grounded (self cannot bootstrap)', !unground.grounded);
 check('C-2: ungrounded line names the lock', describeGrounding(unground).includes('self-promotion locked'));

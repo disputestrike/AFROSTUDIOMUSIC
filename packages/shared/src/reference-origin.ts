@@ -7,16 +7,27 @@
  * Self-generated tracks join the profile only once the lane is grounded in
  * ≥3 non-self references (owned uploads or facts-only records).
  */
-export type ReferenceOrigin = 'self-generated' | 'owned-upload' | 'facts-only';
+export type ReferenceOrigin = 'self-generated' | 'owned-upload' | 'facts-only' | 'unknown';
 
-export function referenceOrigin(sourceUrl: string, recipe?: { source?: string } | null): ReferenceOrigin {
-  if (recipe?.source === 'generated') return 'self-generated';
+export function referenceOrigin(
+  sourceUrl: string,
+  recipe?: { source?: string } | null,
+  rightsBasis?: string | null,
+): ReferenceOrigin {
+  if (rightsBasis === 'self-generated' || recipe?.source === 'generated') return 'self-generated';
   if (sourceUrl.startsWith('facts:')) return 'facts-only';
   // Zap lessons are chart metadata + measured PREVIEW facts — never owned audio.
   // Without this they counted as owned-upload grounding, inflating a lane's
   // "external refs" with rows the artist never brought.
-  if (recipe?.source === 'zap' || sourceUrl.startsWith('zap:')) return 'facts-only';
-  return 'owned-upload';
+  if (
+    rightsBasis === 'facts-only' || recipe?.source === 'zap' ||
+    ['facts', 'trend', 'lyric'].includes(recipe?.source ?? '') ||
+    /^(zap|trend|lyric):/.test(sourceUrl)
+  ) return 'facts-only';
+  if (rightsBasis === 'user-attested' || rightsBasis === 'licensed') return 'owned-upload';
+  // Unknown provenance must not silently count as the artist's property and
+  // ground a lane. Historical rows remain blocked until explicitly classified.
+  return 'unknown';
 }
 
 export interface LaneGrounding {

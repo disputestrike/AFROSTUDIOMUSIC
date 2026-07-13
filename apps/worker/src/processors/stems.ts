@@ -1,8 +1,9 @@
 import { openSecret, prisma } from '@afrohit/db';
 import { separateStemsRouted } from '../lib/demucs-local';
 import { markFailed, markRunning, markSucceeded } from '../lib/jobs';
-import { downloadToBuffer, ingestRemoteFile, uploadBytes } from '../lib/storage';
+import { deleteObjectByUrl, downloadToBuffer, ingestRemoteFile, uploadBytes } from '../lib/storage';
 import { encodeMp3320, ffmpegAvailable, loudnessMatchToSource, measureAudioQuality, transformAudio } from '../lib/ffmpeg';
+import { inspectMaterialAudio } from '../lib/material-inspection';
 
 interface StemsPayload {
   jobId: string;
@@ -88,7 +89,7 @@ export async function processStems(p: StemsPayload) {
     const project = await prisma.project.findUnique({ where: { id: p.projectId }, select: { genre: true } });
     // A stripped full INSTRUMENTAL is filed under its own 'instrumental' role (was
     // 'other', which orphaned it) so the Instrumental Library can find + reuse it.
-    const ROLE_MAP: Record<string, string> = { drums: 'drums', bass: 'bass', other: 'chords', instrumental: 'instrumental' };
+    const ROLE_MAP: Record<string, string> = { drums: 'drums', bass: 'bass', instrumental: 'instrumental' };
     // TRUE PROVENANCE (audit DANGEROUS): only a beat the ARTIST uploaded/imported
     // yields rights-clean 'artist_stem' material. Stems split from a PROVIDER
     // render (Suno/MiniMax/etc.) are 'provider_stem' — never mislabel a
@@ -97,28 +98,80 @@ export async function processStems(p: StemsPayload) {
     const beatMetaP = (beat?.meta ?? {}) as { uploaded?: boolean; imported?: boolean };
     const isOwned = p.owned === true || beatMetaP.uploaded === true || beatMetaP.imported === true || beat?.provider === 'upload' || beat?.provider === 'import';
     const stemSource = isOwned ? 'artist_stem' : 'provider_stem';
-    await Promise.all(
-      ingested
-        .filter((s) => s.role !== 'vocals')
-        .map((s) =>
-          prisma.materialAsset
-            .create({
-              data: {
-                workspaceId: p.workspaceId,
-                kind: 'stem',
-                role: ROLE_MAP[s.role] ?? 'other',
-                genre: project?.genre ?? null,
-                bpm: beat?.bpm ?? null,
-                keySignature: beat?.keySignature ?? null,
-                durationS: beat?.duration ?? null,
-                url: s.url,
-                source: stemSource,
-                meta: { fromBeatId: beat?.id ?? null, fromSongId: p.songId, stemRole: s.role, provider: beat?.provider ?? null, owned: isOwned } as never,
-              },
-            })
-            .catch((err: unknown) => console.warn('[stems] material harvest failed:', (err as Error)?.message))
-        )
-    );
+    const retainedMaterialUrls = new Set<string>();
+    for (const stem of ingested.filter((item) => item.role !== 'vocals')) {
+      try {
+        const role = ROLE_MAP[stem.role];
+        if (!role) {
+          console.warn(`[stems] ${stem.role} is a mixed stem, not evidence of a specific instrument role; kept for remix only`);
+          continue;
+        }
+        const bytes = await downloadToBuffer(stem.url);
+        const inspection = await inspectMaterialAudio({
+          bytes,
+          url: stem.url,
+          role,
+          roleEvidence: 'stem-separated',
+          deep: beat?.bpm == null || beat?.keySignature == null,
+        });
+        if (inspection.readiness !== 'ready') {
+          console.warn(`[stems] ${role} kept as a stem but not admitted to material shelf: ${inspection.reasons.join(', ') || 'unmeasured'}`);
+          continue;
+        }
+        const duplicate = await prisma.materialAsset.findFirst({
+          where: { workspaceId: p.workspaceId, contentHash: inspection.contentHash },
+          select: { id: true, role: true },
+        });
+        if (duplicate) {
+          if (duplicate.role !== role) {
+            console.warn(`[stems] duplicate audio ${duplicate.id} already filed as ${duplicate.role}; refusing ${role} relabel`);
+          }
+          continue;
+        }
+        await prisma.materialAsset.create({
+          data: {
+            workspaceId: p.workspaceId,
+            kind: 'stem',
+            role,
+            genre: project?.genre ?? null,
+            bpm: beat?.bpm ?? inspection.detectedBpm ?? null,
+            keySignature: beat?.keySignature ?? inspection.detectedKey ?? null,
+            durationS: beat?.duration ?? inspection.qc?.durationS ?? null,
+            url: stem.url,
+            source: stemSource,
+            readiness: inspection.readiness,
+            qualityState: inspection.qualityState,
+            roleEvidence: 'stem-separated',
+            rightsBasis: isOwned ? 'user-attested' : 'provider-generated',
+            contentHash: inspection.contentHash,
+            verifiedAt: inspection.verifiedAt,
+            meta: {
+              fromBeatId: beat?.id ?? null,
+              fromSongId: p.songId,
+              fromSourceUrl: p.sourceUrl ?? beat?.url ?? null,
+              stemRole: stem.role,
+              provider: beat?.provider ?? null,
+              owned: isOwned,
+              qc: inspection.qc,
+              rightsBasis: isOwned ? 'user-attested' : 'provider-generated',
+            } as never,
+          },
+        });
+        retainedMaterialUrls.add(stem.url);
+      } catch (err) {
+        console.warn('[stems] material harvest failed:', (err as Error)?.message);
+      }
+    }
+
+    // Beat-less harvests have no Stem rows. Keep only objects admitted as
+    // materials; delete vocals, mixed-other, failed-QC, and duplicate uploads.
+    if (!beat) {
+      await Promise.all(
+        ingested
+          .filter((stem) => !retainedMaterialUrls.has(stem.url))
+          .map((stem) => deleteObjectByUrl(stem.url).catch(() => {})),
+      );
+    }
 
     await markSucceeded(p.jobId, {
       beatId: beat?.id ?? null,
@@ -218,22 +271,56 @@ async function processTrueInstrumental(p: StemsPayload, beat: BeatRow, apiKey: s
   const project = await prisma.project.findUnique({ where: { id: p.projectId }, select: { genre: true } });
   const beatMeta = (beat.meta ?? {}) as { uploaded?: boolean; imported?: boolean };
   const owned = beatMeta.uploaded === true || beatMeta.imported === true || beat.provider === 'upload' || beat.provider === 'import';
-  await prisma.materialAsset
-    .create({
-      data: {
-        workspaceId: p.workspaceId,
-        kind: 'stem',
-        role: 'instrumental',
-        genre: project?.genre ?? null,
-        bpm: beat.bpm,
-        keySignature: beat.keySignature,
-        durationS: beat.duration,
-        url: instrumental.wavUrl,
-        source: owned ? 'artist_stem' : 'provider_stem',
-        meta: { fromSongId: p.songId, fromSongTitle: song?.lyric?.title || song?.title, sourceUrl, matchedLufs } as never,
-      },
-    })
-    .catch((err: unknown) => console.warn('[stems] instrumental material filing failed:', (err as Error)?.message));
+  try {
+    const instrumentalBytes = await downloadToBuffer(instrumental.wavUrl);
+    const inspection = await inspectMaterialAudio({
+      bytes: instrumentalBytes,
+      url: instrumental.wavUrl,
+      role: 'instrumental',
+      roleEvidence: 'stem-separated',
+      deep: beat.bpm == null || beat.keySignature == null,
+    });
+    if (inspection.readiness === 'ready') {
+      const duplicate = await prisma.materialAsset.findFirst({
+        where: { workspaceId: p.workspaceId, contentHash: inspection.contentHash },
+        select: { id: true },
+      });
+      if (!duplicate) {
+        await prisma.materialAsset.create({
+          data: {
+            workspaceId: p.workspaceId,
+            kind: 'stem',
+            role: 'instrumental',
+            genre: project?.genre ?? null,
+            bpm: beat.bpm ?? inspection.detectedBpm ?? null,
+            keySignature: beat.keySignature ?? inspection.detectedKey ?? null,
+            durationS: beat.duration ?? inspection.qc?.durationS ?? null,
+            url: instrumental.wavUrl,
+            source: owned ? 'artist_stem' : 'provider_stem',
+            readiness: inspection.readiness,
+            qualityState: inspection.qualityState,
+            roleEvidence: 'stem-separated',
+            rightsBasis: owned ? 'user-attested' : 'provider-generated',
+            contentHash: inspection.contentHash,
+            verifiedAt: inspection.verifiedAt,
+            meta: {
+              fromSongId: p.songId,
+              fromSongTitle: song?.lyric?.title || song?.title,
+              fromSourceUrl: sourceUrl,
+              matchedLufs,
+              format: 'wav',
+              qc: inspection.qc,
+              rightsBasis: owned ? 'user-attested' : 'provider-generated',
+            } as never,
+          },
+        });
+      }
+    } else {
+      console.warn(`[stems] instrumental not admitted to reusable shelf: ${inspection.reasons.join(', ') || 'unmeasured'}`);
+    }
+  } catch (err) {
+    console.warn('[stems] instrumental material filing failed:', (err as Error)?.message);
+  }
 
   await markSucceeded(p.jobId, {
     beatId: beat.id,

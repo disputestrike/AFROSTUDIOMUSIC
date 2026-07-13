@@ -4,7 +4,7 @@ import { prisma } from '@afrohit/db';
 import { getSoundDNA } from '@afrohit/ai';
 import { laneMaterialNeeds } from '@afrohit/shared';
 import { createQueuedProviderJob } from './queued-job';
-import { kitRolesFor, homeKeyFor, pickMaterial, claudeArrangement, type MaterialRow, type MaterialPick } from './material-plan';
+import { kitRolesFor, homeKeyFor, pickMaterial, materialCoverage, claudeArrangement, type MaterialRow, type MaterialPick } from './material-plan';
 import { loadLaneProfileForGenre } from './lane-context';
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -18,7 +18,10 @@ function loadShelf(workspaceId: string, genre: string): Promise<MaterialRow[]> {
     where: { workspaceId, genre },
     orderBy: { createdAt: 'desc' },
     take: 200,
-    select: { id: true, url: true, role: true, bpm: true, keySignature: true, source: true },
+    select: {
+      id: true, url: true, role: true, bpm: true, keySignature: true, source: true,
+      readiness: true, qualityState: true, rightsBasis: true, roleEvidence: true,
+    },
   });
 }
 
@@ -76,7 +79,7 @@ export interface FinishAutoMaterialPayload {
   workspaceId: string;
   operationKey: string;
   childJobIds: string[];
-  options: Omit<AutoMaterialOpts, 'operationKey'> & { bpm: number; keySignature: string };
+  options: Omit<AutoMaterialOpts, 'operationKey'> & { bpm: number; keySignature: string; wantedRoles?: string[] };
 }
 
 /** Durable second half of an automatic material build. */
@@ -104,8 +107,12 @@ export async function finishAutoMaterialBeat(app: FastifyInstance, payload: Fini
   const shelf = await loadShelf(workspaceId, options.genre);
   const picks = pickMaterial(shelf, options.genre, options.bpm, options.keySignature, {
     varietySeed: stableSeed(payload.operationKey),
+    roles: options.wantedRoles,
   });
-  if (picks.length < 2) throw new Error(`auto material build has only ${picks.length} usable role after forging`);
+  const coverage = materialCoverage(picks);
+  if (!coverage.ready) {
+    throw new Error(`auto material build is incomplete after forging (beds=${coverage.beds}, rhythm=${coverage.rhythm}, low-end=${coverage.lowEnd}, tonal=${coverage.tonal})`);
+  }
 
   const assemblyJobId = await assembleFrom(
     app,
@@ -138,17 +145,20 @@ export async function autoMaterialBeat(app: FastifyInstance, workspaceId: string
   const bpm = opts.bpm ?? getSoundDNA(opts.genre)?.typicalBpm ?? 108;
   const keySignature = opts.keySignature ?? homeKeyFor(opts.genre);
   const profile = await loadLaneProfileForGenre(workspaceId, opts.genre);
-  const wanted = profile ? laneMaterialNeeds(profile).roles.map((role) => role.role) : kitRolesFor(opts.genre);
+  // Measured needs supplement the genre's real performance kit; they never
+  // replace it with the old generic drums/bass/chords vocabulary.
+  const measuredRoles = profile ? laneMaterialNeeds(profile).roles.map((role) => role.role) : [];
+  const wanted = [...new Set([...kitRolesFor(opts.genre, 14), ...measuredRoles])];
   const materialSource = profile
     ? `profile-driven (${Object.keys(profile.features).length} measured features)`
     : 'fallback-hardcoded (lane underprofiled: < 3 measured refs)';
 
   const shelf = await loadShelf(workspaceId, opts.genre);
-  const picks = pickMaterial(shelf, opts.genre, bpm, keySignature, { varietySeed: stableSeed(operationKey) });
+  const picks = pickMaterial(shelf, opts.genre, bpm, keySignature, { varietySeed: stableSeed(operationKey), roles: wanted });
   const have = new Set(picks.map((pick) => pick.role));
   const missing = wanted.filter((role) => !have.has(role));
 
-  if (!missing.length && picks.length >= 2) {
+  if (!missing.length && materialCoverage(picks).ready) {
     const jobId = await assembleFrom(app, workspaceId, opts.projectId, opts.genre, bpm, keySignature, opts.vibe, opts.songId, picks, operationKey);
     return { status: 'assembling' as const, jobId, roles: picks.map((pick) => pick.role), bpm, keySignature, materialSource };
   }
@@ -166,7 +176,7 @@ export async function autoMaterialBeat(app: FastifyInstance, workspaceId: string
       workspaceId,
       projectId: opts.projectId,
       kind: 'material',
-      provider: 'replicate',
+      provider: 'workspace-music',
       inputJson: { genre: opts.genre, role, bpm, keySignature },
       charge,
       idempotencyKey,
@@ -176,7 +186,7 @@ export async function autoMaterialBeat(app: FastifyInstance, workspaceId: string
     forging.push({ role, jobId: job.jobId });
   }
 
-  const options = { projectId: opts.projectId, genre: opts.genre, bpm, keySignature, vibe: opts.vibe, songId: opts.songId };
+  const options = { projectId: opts.projectId, genre: opts.genre, bpm, keySignature, vibe: opts.vibe, songId: opts.songId, wantedRoles: wanted };
   const orchestration = await createQueuedProviderJob({
     app,
     queue: app.queues.orchestration,

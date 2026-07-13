@@ -8,7 +8,7 @@
  * shakers at ~112 BPM", and the selector assembles owned material to match.
  *
  * LEGAL DOCTRINE: material is the artist's own stems ('artist_stem'), studio-forged
- * owned loops ('forged'), or licensed packs — NEVER ripped audio. Zap informs the
+ * generated loops ('forged'), or licensed packs — NEVER ripped audio. Zap informs the
  * RECIPE (which roles / arrangement), it is never a source of audio here.
  */
 import type { LaneProfile } from './lane-profile';

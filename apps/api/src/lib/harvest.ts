@@ -77,7 +77,14 @@ export async function enqueueLearn(
       inputJson: { url: p.url, source: p.source },
       charge,
       idempotencyKey,
-      payload: (jobId) => ({ jobId, workspaceId: p.workspaceId, projectId: p.projectId, url: p.url }),
+      payload: (jobId) => ({
+        jobId,
+        workspaceId: p.workspaceId,
+        projectId: p.projectId,
+        url: p.url,
+        source: p.source,
+        rightsBasis: 'user-attested',
+      }),
     });
     app.log.info({ workspaceId: p.workspaceId, source: p.source }, '[learn] owned upload → analyze-audio queued');
   } catch (e) {

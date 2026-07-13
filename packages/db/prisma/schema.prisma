@@ -61,6 +61,8 @@ model Workspace {
   analyticsEvents    AnalyticsEvent[]
   albums             Album[]
   materials          MaterialAsset[]
+  materialUsages     MaterialUsage[]
+  referenceUsages    ReferenceUsage[]
   jobOutbox          JobOutbox[]
   billingIntents     BillingIntent[]
   billingEvents      BillingEvent[]
@@ -322,10 +324,10 @@ model SongBrief {
 
 // THE MATERIAL LAYER — real, owned musical material the AI ARRANGES instead of
 // asking a text-to-audio model to hallucinate everything. Sources: the artist's
-// own separated stems + loops the studio forged itself (both fully owned).
+// workspace stems + generated/licensed loops, with origin and rights recorded.
 // This is the "exact beat" foundation.
 model MaterialAsset {
-  id           String   @id @default(cuid())
+  id           String    @id @default(cuid())
   workspaceId  String
   kind         String // 'loop' | 'stem'
   role         String // 'drums' | 'log_drum' | 'bass' | 'percussion' | 'chords' | 'melody' | 'other'
@@ -337,11 +339,23 @@ model MaterialAsset {
   url          String
   source       String // 'forged' (studio-generated isolated loop) | 'artist_stem'
   meta         Json? // qc, forge prompt, origin beat/song ids
-  createdAt    DateTime @default(now()) @db.Timestamptz(6)
+  // Material truth spine. "ready" means technically safe to assemble; the
+  // separate roleEvidence field says how strongly the claimed instrument was
+  // established (synth code / stem separation / provider prompt / unknown).
+  readiness    String    @default("pending") // pending | ready | rejected
+  qualityState String    @default("unmeasured") // unmeasured | passed | failed | duplicate
+  roleEvidence String    @default("unknown")
+  rightsBasis  String    @default("unknown") // user-attested | code-generated | provider-generated | licensed | unknown
+  contentHash  String?
+  verifiedAt   DateTime? @db.Timestamptz(6)
+  createdAt    DateTime  @default(now()) @db.Timestamptz(6)
 
-  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  workspace Workspace       @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  usages    MaterialUsage[]
 
+  @@unique([workspaceId, contentHash])
   @@index([workspaceId, genre, role])
+  @@index([workspaceId, readiness, qualityState])
 }
 
 // An album anchored to ONE song's sound: the anchor's voice/flow/production
@@ -403,21 +417,23 @@ model Song {
   instrumentalMeta Json? // { sourceUrl, sourceLufs, matchedLufs, engine, format, at }
   createdAt        DateTime   @default(now()) @db.Timestamptz(6)
 
-  workspace    Workspace       @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  project      Project         @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  hooks        HookCandidate[]
-  lyric        LyricDraft?     @relation("SongPrimaryLyric")
-  lyricId      String?         @unique
-  beats        BeatAsset[]
-  vocalRenders VocalRender[]
-  mixes        Mix[]
-  masters      Master[]
-  exports      Export[]
-  rights       RightsReceipt[]
-  taste        TasteScore[]
-  shareLinks   ShareLink[]
-  release      Release?        @relation("ReleaseSong")
-  album        Album?          @relation(fields: [albumId], references: [id], onDelete: SetNull)
+  workspace       Workspace        @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  project         Project          @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  hooks           HookCandidate[]
+  lyric           LyricDraft?      @relation("SongPrimaryLyric")
+  lyricId         String?          @unique
+  beats           BeatAsset[]
+  vocalRenders    VocalRender[]
+  mixes           Mix[]
+  masters         Master[]
+  exports         Export[]
+  rights          RightsReceipt[]
+  taste           TasteScore[]
+  materialUsages  MaterialUsage[]
+  referenceUsages ReferenceUsage[]
+  shareLinks      ShareLink[]
+  release         Release?         @relation("ReleaseSong")
+  album           Album?           @relation(fields: [albumId], references: [id], onDelete: SetNull)
 
   @@index([projectId])
   @@index([albumId])
@@ -496,8 +512,8 @@ model LyricDraft {
   approvalNotes  String?
   createdAt      DateTime @default(now()) @db.Timestamptz(6)
 
-  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  song    Song?   @relation("SongPrimaryLyric", fields: [songId], references: [id], onDelete: Cascade)
+  project     Project      @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  song        Song?        @relation("SongPrimaryLyric", fields: [songId], references: [id], onDelete: Cascade)
   tasteScores TasteScore[]
 
   @@index([projectId])
@@ -521,9 +537,11 @@ model BeatAsset {
   approved     Boolean  @default(false)
   createdAt    DateTime @default(now()) @db.Timestamptz(6)
 
-  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  song    Song?   @relation(fields: [songId], references: [id], onDelete: Cascade)
-  stems   Stem[]
+  project         Project          @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  song            Song?            @relation(fields: [songId], references: [id], onDelete: Cascade)
+  stems           Stem[]
+  materialUsages  MaterialUsage[]
+  referenceUsages ReferenceUsage[]
 
   @@index([projectId])
 }
@@ -612,18 +630,85 @@ model Master {
 // workspace/genre and is blended into generation so output learns the real
 // sound. Scalar-only (no FK) to keep it decoupled. Legal: own/licensed audio.
 model SoundReference {
-  id          String   @id @default(cuid())
-  workspaceId String
-  artistId    String?
-  genre       String?
-  sourceUrl   String
-  title       String?
-  recipe      Json // structured deep-analysis profile
-  summary     String?  @db.Text // one text block ready for prompt injection
-  createdAt   DateTime @default(now()) @db.Timestamptz(6)
+  id            String   @id @default(cuid())
+  workspaceId   String
+  artistId      String?
+  genre         String?
+  sourceUrl     String
+  title         String?
+  recipe        Json // structured deep-analysis profile
+  summary       String?  @db.Text // one text block ready for prompt injection
+  analysisState String   @default("pending") // pending | inferred | measured | failed
+  rightsBasis   String   @default("unknown") // user-attested | facts-only | self-generated | unknown
+  contentHash   String?
+  active        Boolean  @default(true) // false = curated out; usage evidence remains
+  createdAt     DateTime @default(now()) @db.Timestamptz(6)
 
+  usages ReferenceUsage[]
+
+  @@unique([workspaceId, contentHash])
   @@index([workspaceId, genre])
   @@index([artistId])
+  @@index([workspaceId, analysisState])
+}
+
+// Queryable proof that a real material file was present in a rendered beat.
+// Beat.meta keeps the human-readable receipt; this table is the auditable,
+// aggregateable source of truth for "where was my loop used?".
+model MaterialUsage {
+  id            String   @id @default(cuid())
+  workspaceId   String
+  materialId    String
+  providerJobId String
+  beatId        String
+  songId        String?
+  role          String
+  sourceBpm     Float?
+  targetBpm     Float?
+  stretchRatio  Float?
+  gain          Float?
+  pan           Float?
+  sections      Json?
+  createdAt     DateTime @default(now()) @db.Timestamptz(6)
+
+  workspace   Workspace     @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  material    MaterialAsset @relation(fields: [materialId], references: [id], onDelete: Restrict)
+  providerJob ProviderJob   @relation(fields: [providerJobId], references: [id], onDelete: Cascade)
+  beat        BeatAsset     @relation(fields: [beatId], references: [id], onDelete: Cascade)
+  song        Song?         @relation(fields: [songId], references: [id], onDelete: SetNull)
+
+  @@unique([providerJobId, materialId])
+  @@index([workspaceId, createdAt(sort: Desc)])
+  @@index([materialId, createdAt(sort: Desc)])
+  @@index([beatId])
+}
+
+// Queryable proof that a learned reference shaped a specific provider render.
+// The influence field records the selected position and measurement state; it
+// never stores source audio or copied musical expression.
+model ReferenceUsage {
+  id            String   @id @default(cuid())
+  workspaceId   String
+  referenceId   String
+  providerJobId String
+  beatId        String
+  songId        String?
+  genre         String
+  position      Int
+  pinned        Boolean  @default(false)
+  influence     Json?
+  createdAt     DateTime @default(now()) @db.Timestamptz(6)
+
+  workspace   Workspace      @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  reference   SoundReference @relation(fields: [referenceId], references: [id], onDelete: Restrict)
+  providerJob ProviderJob    @relation(fields: [providerJobId], references: [id], onDelete: Cascade)
+  beat        BeatAsset      @relation(fields: [beatId], references: [id], onDelete: Cascade)
+  song        Song?          @relation(fields: [songId], references: [id], onDelete: SetNull)
+
+  @@unique([providerJobId, referenceId])
+  @@index([workspaceId, createdAt(sort: Desc)])
+  @@index([referenceId, createdAt(sort: Desc)])
+  @@index([beatId])
 }
 
 // The WORD BANK — thousands of authentic African/diaspora terms (Pidgin,
@@ -725,9 +810,9 @@ model TasteScore {
   createdAt      DateTime @default(now()) @db.Timestamptz(6)
 
   // Cascade: taste rows are meaningless without their subject — no orphans.
-  song Song?          @relation(fields: [songId], references: [id], onDelete: Cascade)
-  hook HookCandidate? @relation(fields: [hookId], references: [id], onDelete: Cascade)
-  lyric LyricDraft?   @relation(fields: [lyricId], references: [id], onDelete: Cascade)
+  song  Song?          @relation(fields: [songId], references: [id], onDelete: Cascade)
+  hook  HookCandidate? @relation(fields: [hookId], references: [id], onDelete: Cascade)
+  lyric LyricDraft?    @relation(fields: [lyricId], references: [id], onDelete: Cascade)
 
   @@index([songId])
   @@index([hookId])
@@ -944,10 +1029,12 @@ model ProviderJob {
   finishedAt     DateTime? @db.Timestamptz(6)
   createdAt      DateTime  @default(now()) @db.Timestamptz(6)
 
-  workspace    Workspace     @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  project      Project?      @relation(fields: [projectId], references: [id], onDelete: SetNull)
-  chargeLedger CreditLedger? @relation("ProviderJobCharge", fields: [chargeLedgerId], references: [id], onDelete: SetNull)
-  outbox       JobOutbox?
+  workspace       Workspace        @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  project         Project?         @relation(fields: [projectId], references: [id], onDelete: SetNull)
+  chargeLedger    CreditLedger?    @relation("ProviderJobCharge", fields: [chargeLedgerId], references: [id], onDelete: SetNull)
+  outbox          JobOutbox?
+  materialUsages  MaterialUsage[]
+  referenceUsages ReferenceUsage[]
 
   @@unique([workspaceId, kind, idempotencyKey])
   @@index([workspaceId])

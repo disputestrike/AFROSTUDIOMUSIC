@@ -13,13 +13,18 @@
  *  L4 PROOF:            measured QC + lane compliance (existing lane-assess) +
  *                       blueprint skeleton verification. Receipts, not vibes.
  *
- * Rights-clean by construction: synth/forged/user material + open weights.
- * Nobody can fence this engine off.
+ * Rights-classified by construction: user, code-generated, licensed, or
+ * connected-provider material; unknown provenance is blocked.
  */
-import { prisma } from '@afrohit/db';
-import { blueprintFromMeasured, structureMatch, genreSignature, synthKitFor, parseLyricSections, laneFeel, seedFrom, MATERIAL_GAINS, type SongBlueprint, type MeasuredAnalysis, type MelodyScore } from '@afrohit/shared';
+import { openSecret, prisma } from '@afrohit/db';
+import {
+  blueprintFromMeasured, forgeKitFor, structureMatch, genreSignature, synthKitFor,
+  isMaterialRole, jobOf, parseLyricSections, laneFeel, seedFrom, selectMaterialRows,
+  materialCoverage, type SongBlueprint, type MeasuredAnalysis, type MelodyScore,
+  withCoarseMaterialRoles,
+} from '@afrohit/shared';
 import { melodyBrain, getSoundDNA } from '@afrohit/ai';
-import { downloadToBuffer, uploadBytes } from '../lib/storage';
+import { deleteObjectByUrl, downloadToBuffer, resolveAssetForProvider, uploadBytes } from '../lib/storage';
 import { measureAudioQuality, mixBuffers } from '../lib/ffmpeg';
 import { renderMelodyGuide } from '../lib/melody-guide';
 import { measureAudio, dspAvailable } from '../lib/dsp';
@@ -34,20 +39,22 @@ export interface OwnEnginePayload {
   blueprint?: SongBlueprint | null;
 }
 
-const BED_ROLES = ['log_drum', 'drums', 'percussion', 'bass', 'chords'] as const;
-
-async function pickKit(workspaceId: string, genre: string, bpm: number) {
-  const rows = await prisma.materialAsset.findMany({ where: { workspaceId, genre }, orderBy: { createdAt: 'desc' }, take: 120 });
-  // processAssembleBeat's contract is the MAPPED pick shape {id,url,sourceBpm,role,gain}
-  // — raw Prisma rows carry bpm (not sourceBpm) and no gain, which crashed the
-  // assembler (gain.toFixed) on every own-engine run.
-  const picks: Array<{ id: string; url: string; sourceBpm: number; role: string; gain: number }> = [];
-  for (const role of BED_ROLES) {
-    const ofRole = rows.filter((r: { role: string }) => r.role === role).sort((a: { bpm: number | null }, b: { bpm: number | null }) => Math.abs((a.bpm ?? bpm) - bpm) - Math.abs((b.bpm ?? bpm) - bpm));
-    const best = ofRole[0];
-    if (best) picks.push({ id: best.id, url: best.url, sourceBpm: best.bpm ?? bpm, role, gain: MATERIAL_GAINS[role] ?? 0.9 });
-  }
-  return picks;
+async function pickKit(workspaceId: string, genre: string, bpm: number, key: string, varietySeed: number) {
+  const rows = await prisma.materialAsset.findMany({
+    where: {
+      workspaceId,
+      genre,
+      readiness: { not: 'rejected' },
+      qualityState: { notIn: ['failed', 'duplicate'] },
+      rightsBasis: { not: 'unknown' },
+    },
+    orderBy: { createdAt: 'desc' },
+    take: 240,
+  });
+  // Rich signature roles lead; deterministic synth primitives remain the
+  // controllable foundation when a lane's collected shelf is still shallow.
+  const roles = withCoarseMaterialRoles([...forgeKitFor(genre, 12), ...synthKitFor(genre)]);
+  return selectMaterialRows(rows, roles, bpm, key, { varietySeed });
 }
 
 function sectionsFrom(blueprint: SongBlueprint | null | undefined, roles: string[]) {
@@ -56,9 +63,12 @@ function sectionsFrom(blueprint: SongBlueprint | null | undefined, roles: string
     return blueprint.sections.map((s, i) => ({ name: `S${i + 1}`, bars: Math.max(2, s.bars ?? 8), roles: bed }));
   }
   // CRAFT LAW at the grid level: textures EVOLVE — no section repeats unchanged.
-  const lite = bed.filter((r) => r !== 'log_drum');
-  const noBass = bed.filter((r) => r !== 'bass');
-  const strip = bed.filter((r) => r === 'bass' || r === 'chords');
+  const roleJob = (role: string) => isMaterialRole(role)
+    ? jobOf(role)
+    : ({ drums: 'rhythm', percussion: 'rhythm', bass: 'low_end', log_drum: 'low_end', chords: 'harmony' } as Record<string, string>)[role];
+  const lite = bed.filter((role) => roleJob(role) !== 'low_end');
+  const noBass = bed.filter((role) => roleJob(role) !== 'low_end');
+  const strip = bed.filter((role) => roleJob(role) === 'harmony' || roleJob(role) === 'melody');
   return [
     { name: 'intro', bars: 4, roles: lite.length ? lite : bed },
     { name: 'verse', bars: 16, roles: noBass.length >= 2 ? noBass : bed }, // bass held back
@@ -72,10 +82,11 @@ function sectionsFrom(blueprint: SongBlueprint | null | undefined, roles: string
 
 /** Minimal direct MusicGen call (Replicate, Prefer:wait) with OUR groove as the
  *  melody condition. Returns an audio URL or null (reason logged) — fail-open. */
-export async function melodyLayer(groove: string, prompt: string, durationS: number): Promise<{ url: string | null; note: string }> {
-  const token = process.env.REPLICATE_API_TOKEN;
+export async function melodyLayer(groove: string, prompt: string, durationS: number, workspaceToken?: string): Promise<{ url: string | null; note: string }> {
+  const token = workspaceToken || process.env.REPLICATE_API_TOKEN;
   if (!token) return { url: null, note: 'melody skipped: no REPLICATE_API_TOKEN' };
   try {
+    const providerGroove = await resolveAssetForProvider(groove);
     let version = process.env.REPLICATE_MUSIC_VERSION;
     if (!version) {
       const mres = await fetch('https://api.replicate.com/v1/models/meta/musicgen', { headers: { authorization: `Bearer ${token}` } });
@@ -89,7 +100,7 @@ export async function melodyLayer(groove: string, prompt: string, durationS: num
         version,
         input: {
           prompt, duration: Math.min(30, Math.max(8, Math.round(durationS))),
-          input_audio: groove, continuation: false,
+          input_audio: providerGroove, continuation: false,
           model_version: 'melody-large', output_format: 'wav',
         },
       }),
@@ -117,21 +128,24 @@ export async function processOwnEngine(p: OwnEnginePayload): Promise<void> {
   const notes: string[] = [];
   try {
     const bpm = p.bpm ?? genreSignature(p.genre).bpm ?? 112;
+    const homeKey = getSoundDNA(p.genre)?.commonKeys?.[0] ?? 'A minor';
+    const varietySeed = seedFrom(p.jobId, bpm);
 
-    // L1a — ensure the kit: synth-forge any missing signature role (owned, seconds).
-    let picks = await pickKit(p.workspaceId, p.genre, bpm);
+    // L1a — consume the rich collected shelf, then synthesize only missing
+    // controllable foundation roles. Signature uploads/loops remain preferred.
+    let picks = await pickKit(p.workspaceId, p.genre, bpm, homeKey, varietySeed);
     const haveRoles = new Set(picks.map((x) => x.role));
     // Genre-correct primitives (afrobeats gets drums, NOT amapiano's log_drum).
     const missing = synthKitFor(p.genre).filter((r) => !haveRoles.has(r));
     if (missing.length) {
       notes.push(`kit: synth-forged ${missing.join('+')}`);
-      await processSynthMaterial({ workspaceId: p.workspaceId, genre: p.genre, bpm, roles: missing });
-      picks = await pickKit(p.workspaceId, p.genre, bpm);
+      await processSynthMaterial({ workspaceId: p.workspaceId, genre: p.genre, bpm, keySignature: homeKey, roles: missing });
+      picks = await pickKit(p.workspaceId, p.genre, bpm, homeKey, varietySeed);
     }
-    // the fill rides ALONGSIDE the bed — the assembler overlays it at boundaries + 16-bar pulses
-    const fillPick = (await prisma.materialAsset.findFirst({ where: { workspaceId: p.workspaceId, genre: p.genre, role: 'fill' }, orderBy: { createdAt: 'desc' } }));
-    if (fillPick) picks.push({ id: fillPick.id, url: fillPick.url, sourceBpm: fillPick.bpm ?? bpm, role: 'fill', gain: 0.9 });
-    if (picks.length < 2) throw new Error('own-engine: could not build a kit (need >=2 bed roles)');
+    const coverage = materialCoverage(picks);
+    if (!coverage.ready) {
+      throw new Error(`own-engine: verified shelf is incomplete (beds=${coverage.beds}, rhythm=${coverage.rhythm}, low-end=${coverage.lowEnd}, tonal=${coverage.tonal})`);
+    }
 
     // L1b — assemble on the grid via the existing renderer (child job, called inline).
     const sections = sectionsFrom(p.blueprint, picks.map((x) => x.role));
@@ -153,6 +167,7 @@ export async function processOwnEngine(p: OwnEnginePayload): Promise<void> {
     // filed as audible evidence. ALL fail-open — a melody failure never breaks
     // the beat, it just leaves an honest note.
     let melodyScore: MelodyScore | null = null;
+    let melodyGuideUrl: string | null = null;
     if (p.songId) {
       try {
         const draft = await prisma.lyricDraft.findUnique({ where: { songId: p.songId } });
@@ -166,7 +181,6 @@ export async function processOwnEngine(p: OwnEnginePayload): Promise<void> {
           const anchors = Array.isArray(craft?.anchors)
             ? (craft!.anchors as unknown[]).filter((a): a is string => typeof a === 'string' && !!a.trim())
             : [];
-          const homeKey = getSoundDNA(p.genre)?.commonKeys?.[0] ?? 'A minor'; // the lane's measured home key
           const feel = laneFeel(p.genre);
           melodyScore = await melodyBrain({
             genre: p.genre, bpm, key: homeKey, seed: seedFrom(p.songId, bpm),
@@ -178,18 +192,12 @@ export async function processOwnEngine(p: OwnEnginePayload): Promise<void> {
           });
           const noteCount = melodyScore.sections.reduce((a, s) => a + s.notes.length, 0);
           notes.push(`melody score: composed ${noteCount} notes across ${melodyScore.sections.length} sections in ${homeKey}`);
-          // AUDIBLE EVIDENCE — the sine guide WAV, filed as owned material.
+          // AUDIBLE EVIDENCE — a score guide attached to this beat, never
+          // mislabeled as a reusable instrument material.
           try {
             const wav = await renderMelodyGuide(melodyScore);
-            const guideUrl = await uploadBytes({ workspaceId: p.workspaceId, kind: 'material', bytes: wav, contentType: 'audio/wav', ext: 'wav' });
-            await prisma.materialAsset.create({
-              data: {
-                workspaceId: p.workspaceId, kind: 'guide', role: 'melody_guide', genre: p.genre, bpm,
-                url: guideUrl, source: 'forged',
-                meta: { origin: 'melody-brain', songId: p.songId, license: 'owned-generation' } as never,
-              },
-            });
-            notes.push('melody guide: rendered + filed as melody_guide material');
+            melodyGuideUrl = await uploadBytes({ workspaceId: p.workspaceId, kind: 'melody-guides', bytes: wav, contentType: 'audio/wav', ext: 'wav' });
+            notes.push('melody guide: rendered and attached to the beat proof');
           } catch (err) {
             notes.push(`melody guide skipped: ${(err as Error)?.message?.slice(0, 100)}`);
           }
@@ -202,37 +210,53 @@ export async function processOwnEngine(p: OwnEnginePayload): Promise<void> {
 
     // L2 — melody, conditioned on OUR groove (optional, fail-open).
     let finalUrl = out.url;
-    let finalBeatId = out.beatId;
+    const finalBeatId = out.beatId;
     const totalS = p.blueprint?.totalDurationS ?? sections.reduce((a, s) => a + s.bars, 0) * (240 / bpm);
-    if (p.melody !== false) {
-      const mel = await melodyLayer(out.url, p.melodyPrompt ?? genreSignature(p.genre).melodyPrompt, totalS);
+    if (p.melody === true && totalS <= 30) {
+      const workspace = await prisma.workspace.findUnique({
+        where: { id: p.workspaceId },
+        select: { musicProvider: true, musicApiKey: true },
+      });
+      const workspaceReplicateKey = workspace?.musicProvider === 'replicate' ? openSecret(workspace.musicApiKey) : undefined;
+      const mel = await melodyLayer(out.url, p.melodyPrompt ?? genreSignature(p.genre).melodyPrompt, totalS, workspaceReplicateKey);
       notes.push(mel.note);
       if (mel.url) {
+        let mixedUrl: string | null = null;
         try {
           const [bed, lead] = await Promise.all([downloadToBuffer(out.url), downloadToBuffer(mel.url)]);
           const mixed = await mixBuffers(bed, lead, 0.85);
-          const mixedUrl = await uploadBytes({ workspaceId: p.workspaceId, kind: 'beats', bytes: mixed, contentType: 'audio/wav', ext: 'wav' });
+          mixedUrl = await uploadBytes({ workspaceId: p.workspaceId, kind: 'beats', bytes: mixed, contentType: 'audio/wav', ext: 'wav' });
           const qc = await measureAudioQuality(mixedUrl).catch(() => null);
           // WO-1 SAFETY RAIL: the melody-mixed take passes the same QC gate as
           // any render — a broken mix is rejected and the clean assembled bed
           // (which already passed its own gate) stays the shipped take.
-          if (qc?.verdict === 'fail') {
-            notes.push(`melody mix REJECTED by QC (${(qc.flags ?? []).join(', ') || 'broken audio'}) — kept the clean assembled bed`);
+          if (!qc || qc.verdict === 'fail') {
+            notes.push(`melody mix rejected by QC (${(qc?.flags ?? []).join(', ') || 'unmeasured/broken audio'}) — kept the clean assembled bed`);
+            await deleteObjectByUrl(mixedUrl).catch(() => {});
+            mixedUrl = null;
           } else {
             finalUrl = mixedUrl;
-            const beat = await prisma.beatAsset.create({
+            const assembled = await prisma.beatAsset.findUnique({ where: { id: finalBeatId }, select: { meta: true } });
+            await prisma.beatAsset.update({
+              where: { id: finalBeatId },
               data: {
-                projectId: p.projectId, songId: p.songId ?? null, url: finalUrl, format: 'wav', bpm,
-                provider: 'afrohit-own', approved: true,
-                meta: { ownEngine: { v: 1, layers: notes }, qc } as never,
+                url: finalUrl,
+                provider: 'afrohit-own',
+                meta: { ...((assembled?.meta ?? {}) as Record<string, unknown>), melodyLayer: { engine: 'musicgen', qc } } as never,
               },
             });
-            finalBeatId = beat.id;
+            await deleteObjectByUrl(out.url).catch(() => {});
+            mixedUrl = null;
           }
         } catch (err) {
+          if (mixedUrl) await deleteObjectByUrl(mixedUrl).catch(() => {});
           notes.push(`melody mix skipped: ${(err as Error)?.message?.slice(0, 100)}`);
         }
       }
+    } else if (p.melody === true) {
+      notes.push(`provider melody skipped: requested duration ${Math.round(totalS)}s exceeds the verified 30s conditioning window`);
+    } else {
+      notes.push('provider melody off: controlled material arrangement only');
     }
 
     // L4 — PROOF: lane compliance (persists measured/compliance/laneRepair on the
@@ -246,7 +270,14 @@ export async function processOwnEngine(p: OwnEnginePayload): Promise<void> {
     const beatRow = await prisma.beatAsset.findUnique({ where: { id: finalBeatId }, select: { meta: true } });
     await prisma.beatAsset.update({
       where: { id: finalBeatId },
-      data: { meta: { ...((beatRow?.meta ?? {}) as Record<string, unknown>), ...(melodyScore ? { melodyScore } : {}), ownEngine: { v: 1, layers: notes, blueprintMatch } } as never },
+      data: {
+        meta: {
+          ...((beatRow?.meta ?? {}) as Record<string, unknown>),
+          ...(melodyScore ? { melodyScore } : {}),
+          ...(melodyGuideUrl ? { melodyGuideUrl } : {}),
+          ownEngine: { v: 2, layers: notes, blueprintMatch },
+        } as never,
+      },
     });
 
     // OWN-VOICE seam: once a VoiceProfile trained via POST /voices/train is READY (trainedVersion set), the artist's trained voice sings the lead here — inference wiring lands in a later round.

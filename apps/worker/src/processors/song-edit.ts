@@ -8,7 +8,7 @@
  * those directly.
  */
 import { prisma, Prisma } from '@afrohit/db';
-import { MATERIAL_GAINS } from '@afrohit/shared';
+import { forgeKitFor, materialCoverage, seedFrom, selectMaterialRows, withCoarseMaterialRoles } from '@afrohit/shared';
 import { downloadToBuffer, uploadBytes } from '../lib/storage';
 import { mixBuffers, runFfmpeg } from '../lib/ffmpeg';
 import { markRunning, markSucceeded, markFailed } from '../lib/jobs';
@@ -163,7 +163,17 @@ export async function processSongEdit(p: SongEditPayload): Promise<void> {
       out = await cutRegion(src, fromS, toS);
       label = `cut ${fromS.toFixed(1)}–${toS.toFixed(1)}s`;
     } else if (p.op.kind === 'add_fill') {
-      const fill = await prisma.materialAsset.findFirst({ where: { workspaceId: p.workspaceId, genre: p.genre ?? undefined, role: 'fill' }, orderBy: { createdAt: 'desc' } });
+      const fill = await prisma.materialAsset.findFirst({
+        where: {
+          workspaceId: p.workspaceId,
+          genre: p.genre ?? undefined,
+          role: 'fill',
+          readiness: 'ready',
+          qualityState: 'passed',
+          rightsBasis: { not: 'unknown' },
+        },
+        orderBy: { createdAt: 'desc' },
+      });
       if (!fill) throw new Error('no fill on the shelf yet — the nightly kit forge stocks it, or run materials/synth');
       const hit = await downloadToBuffer(fill.url);
       out = await overlayAtTimes(src, hit, p.op.timesS);
@@ -212,18 +222,22 @@ export async function processSongEdit(p: SongEditPayload): Promise<void> {
       const vocalUrl = byRole.get('vocals') ?? byRole.get('vocal');
       const instrUrl = res.instrumentalUrl ?? byRole.get('instrumental');
       if (!vocalUrl || !instrUrl) throw new Error('separator returned no vocal/instrumental pair');
-      // fresh owned section
-      const rows = await prisma.materialAsset.findMany({ where: { workspaceId: p.workspaceId, genre: p.genre ?? undefined, role: { in: ['log_drum', 'drums', 'percussion', 'bass', 'chords'] } }, orderBy: { createdAt: 'desc' }, take: 40 });
-      // processAssembleBeat needs MAPPED picks {id,url,sourceBpm,role,gain} — raw
-      // Prisma rows (no gain) crashed the assembler (same bug as own-engine).
-      const picks: Array<{ id: string; url: string; sourceBpm: number; role: string; gain: number }> = [];
-      for (const role of ['log_drum', 'drums', 'percussion', 'bass', 'chords']) {
-        const r0 = rows.find((r: { role: string }) => r.role === role);
-        if (r0) picks.push({ id: r0.id, url: r0.url, sourceBpm: r0.bpm ?? bpm, role, gain: MATERIAL_GAINS[role] ?? 0.9 });
+      // Fresh owned section: the same validated rich-role selector used by the
+      // primary material engine, so rejected or rights-unknown rows never enter.
+      const genre = p.genre ?? 'afrobeats';
+      const wantedRoles = withCoarseMaterialRoles(forgeKitFor(genre, 14));
+      const rows = await prisma.materialAsset.findMany({
+        where: { workspaceId: p.workspaceId, genre, role: { in: wantedRoles } },
+        orderBy: { createdAt: 'desc' },
+        take: 120,
+      });
+      const picks = selectMaterialRows(rows, wantedRoles, bpm, null, { varietySeed: seedFrom(p.jobId, p.op.index) });
+      const coverage = materialCoverage(picks);
+      if (!coverage.ready) {
+        throw new Error(`kit too thin for a section re-play (beds=${coverage.beds}, rhythm=${coverage.rhythm}, low-end=${coverage.lowEnd}, tonal=${coverage.tonal})`);
       }
-      if (picks.length < 2) throw new Error('kit too thin for a section re-play — the nightly forge stocks it');
       const child = await prisma.providerJob.create({ data: { workspaceId: p.workspaceId, projectId: p.projectId, kind: 'music', provider: 'material', status: 'QUEUED', inputJson: { resingChild: p.jobId } as never } });
-      await processAssembleBeat({ jobId: child.id, workspaceId: p.workspaceId, projectId: p.projectId, songId: p.songId, bpm, genre: p.genre ?? 'afrobeats', picks, sections: [{ name: `S${p.op.index}`, bars, roles: picks.map((x) => x.role) }] } as never);
+      await processAssembleBeat({ jobId: child.id, workspaceId: p.workspaceId, projectId: p.projectId, songId: p.songId, bpm, genre, picks, sections: [{ name: `S${p.op.index}`, bars, roles: picks.map((x) => x.role) }] } as never);
       const done = await prisma.providerJob.findUnique({ where: { id: child.id }, select: { status: true, outputJson: true } });
       const newUrl = ((done?.outputJson ?? {}) as { url?: string }).url;
       if (done?.status !== 'SUCCEEDED' || !newUrl) throw new Error('section assembly failed (see child job)');

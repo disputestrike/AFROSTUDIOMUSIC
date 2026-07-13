@@ -82,6 +82,7 @@ const TS: Array<[string, string]> = [
   ['Music route capabilities', 'test-music-capabilities.ts'],
   ['Genre kits (42 producer kits)', 'test-genre-kits.ts'],
   ['Material system (forge/layer/pan)', 'test-material-system.ts'],
+  ['Material provenance + usage laws', 'test-material-provenance.ts'],
   ['Training isolation (lane/pin/zap)', 'test-training-isolation.ts'],
   ['Singing brain (sung-form laws)', 'test-singing-brain.ts'],
   ['Melody brain (composed, not guessed)', 'test-melody-brain.ts'],

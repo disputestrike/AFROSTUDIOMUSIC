@@ -27,7 +27,13 @@ export async function loadLaneProfileForGenre(workspaceId: string, genre?: strin
   if (!genre) return null;
   try {
     const rows = await prisma.soundReference.findMany({
-      where: { workspaceId, NOT: [{ sourceUrl: { startsWith: 'lyric:' } }, { sourceUrl: { startsWith: 'trend:' } }] },
+      where: {
+        workspaceId,
+        active: true,
+        analysisState: { not: 'failed' },
+        rightsBasis: { not: 'unknown' },
+        NOT: [{ sourceUrl: { startsWith: 'lyric:' } }, { sourceUrl: { startsWith: 'trend:' } }],
+      },
       orderBy: { createdAt: 'desc' }, take: 300, select: { genre: true, recipe: true },
     });
     const measured: MeasuredAnalysis[] = [];
@@ -53,7 +59,13 @@ export async function laneContext(
   try {
     if (genre) {
       const rows = await prisma.soundReference.findMany({
-        where: { workspaceId, NOT: [{ sourceUrl: { startsWith: 'lyric:' } }, { sourceUrl: { startsWith: 'trend:' } }] },
+        where: {
+          workspaceId,
+          active: true,
+          analysisState: { not: 'failed' },
+          rightsBasis: { not: 'unknown' },
+          NOT: [{ sourceUrl: { startsWith: 'lyric:' } }, { sourceUrl: { startsWith: 'trend:' } }],
+        },
         orderBy: { createdAt: 'desc' },
         take: 300,
         select: { genre: true, recipe: true },

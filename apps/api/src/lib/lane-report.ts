@@ -18,6 +18,7 @@ import {
   engineAdequacy,
   recommendEngine,
   engineClass,
+  referenceOrigin,
   laneReleaseGate,
   type MeasuredAnalysis,
   type LaneComplianceScore,
@@ -36,16 +37,25 @@ const genreMatches = (a?: string | null, b?: string | null) => {
  *  own output. Self refs may steer/repair; only AUTHENTIC refs certify (anti-mirror). */
 async function fetchGenreMeasuredDetailed(workspaceId: string, genre: string): Promise<Array<{ analysis: MeasuredAnalysis; authentic: boolean }>> {
   const rows = await prisma.soundReference.findMany({
-    where: { workspaceId, NOT: [{ sourceUrl: { startsWith: 'lyric:' } }, { sourceUrl: { startsWith: 'trend:' } }] },
+    where: {
+      workspaceId,
+      active: true,
+      analysisState: 'measured',
+      rightsBasis: { not: 'unknown' },
+      NOT: [{ sourceUrl: { startsWith: 'lyric:' } }, { sourceUrl: { startsWith: 'trend:' } }],
+    },
     orderBy: { createdAt: 'desc' },
     take: 300,
-    select: { genre: true, recipe: true },
+    select: { genre: true, sourceUrl: true, recipe: true, rightsBasis: true },
   });
   const out: Array<{ analysis: MeasuredAnalysis; authentic: boolean }> = [];
   for (const r of rows) {
     if (!genreMatches(r.genre, genre)) continue;
     const rec = (r.recipe ?? {}) as { measured?: MeasuredAnalysis; source?: string };
-    if (rec.measured && rec.measured.engineOk) out.push({ analysis: rec.measured, authentic: rec.source !== 'generated' });
+    if (!rec.measured?.engineOk) continue;
+    const origin = referenceOrigin(r.sourceUrl, rec, r.rightsBasis);
+    if (origin === 'unknown') continue;
+    out.push({ analysis: rec.measured, authentic: origin === 'owned-upload' || origin === 'facts-only' });
   }
   return out;
 }

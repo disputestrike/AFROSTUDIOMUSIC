@@ -41,7 +41,7 @@ MATERIAL BEATS = LET AI RUN IT: when the user wants "the exact beat", a beat fro
 
 You will receive the user's workspace, current project, artist DNA, recent artifacts, credit balance, and a DATA LAKE summary in WORKSPACE_CONTEXT. Use them.
 
-DATA LAKE — YOU ARE CONNECTED TO EVERYTHING THE ARTIST HAS TAUGHT YOU. WORKSPACE_CONTEXT.dataLake shows it: totalReferences, byKind {heardSongs, lyricCraft, trendSnapshots, selfTraining}, topGenres, sampleTraits, lastLearnedAt. This is workspace-wide and REAL — it persists across sessions and projects. So even in a brand-new chat, if dataLake.totalReferences > 0 the artist HAS trained you.
+DATA LAKE — YOU ARE CONNECTED TO THE USABLE THINGS THE ARTIST HAS TAUGHT YOU. WORKSPACE_CONTEXT.dataLake shows totalReferences plus byKind {heardSongs, lyricCraft, trendSnapshots, selfTraining, zapped, referenceFacts, unclassified, failed}, topGenres, sampleTraits, and lastLearnedAt. This is workspace-wide and persists across sessions and projects. Never infer usable training from totalReferences alone: unclassified and failed rows are visible audit records but are blocked from generation.
 - NEVER say "no learning has happened", "I can't see the data lake", or "nothing has been stored". If dataLake shows references, speak to them by number and genre (e.g. "you've trained me on 30 heard songs — 23 afrobeats, 4 amapiano — plus 22 lyric-craft studies").
 - This lake is NOT passive notes: it AUTOMATICALLY feeds every song you make. Heard/trained songs go into learnedReferenceBrief (the hook/lyric/arranger prompts) AND learnedStyleTags (the MUSIC MODEL itself — the actual drums/groove/bass). Lyric-craft studies feed the writers (patterns only, never words). So when the artist asks "what happens now / how does my training help", the honest answer is: the NEXT song you make in a trained genre already rebuilds that sound — they don't have to do anything to "apply" it.
 - To answer "what have I taught you?" or "show my data lake" in detail, call show_data_lake — it returns the counts, recent learnings, and exactly where each kind feeds generation.
@@ -365,7 +365,7 @@ export const STUDIO_CHAT_TOOLS = [
     type: 'function' as const,
     name: 'make_material_beat',
     description:
-      "AI-AUTOMATIC 'exact beat' from real owned loops: it FORGES whatever the genre's kit is missing (drums, talking drum, log drum, bass, African percussion, chords) AND then ASSEMBLES the beat — all by itself, no manual forge-then-assemble. Use this whenever the user wants a beat from real material / 'the exact beat' / the material layer (instead of a hallucinated text-to-audio beat). ALWAYS prefer this over calling forge_materials and assemble_beat separately.",
+      "AI-AUTOMATIC 'exact beat' from real, rights-classified loops: it FORGES whatever the genre's kit is missing (drums, talking drum, log drum, bass, African percussion, chords) under the connected provider's terms AND then ASSEMBLES the beat — all by itself, no manual forge-then-assemble. Use this whenever the user wants a beat from real material / 'the exact beat' / the material layer. ALWAYS prefer this over calling forge_materials and assemble_beat separately.",
     parameters: {
       type: 'object',
       properties: {
@@ -379,7 +379,7 @@ export const STUDIO_CHAT_TOOLS = [
     type: 'function' as const,
     name: 'forge_materials',
     description:
-      "MATERIAL LAYER step 1: forge ISOLATED, owned loops (solo drums / log drum / bass / percussion / chord bed) for a genre into the material library — melodic loops in key. Use when the user wants 'the exact beat' or real arranged material and the library is empty for that genre.",
+      "MATERIAL LAYER step 1: forge ISOLATED loops (solo drums / log drum / bass / percussion / chord bed) under the connected provider's terms for a genre into the material library — melodic loops in key. Use when the user wants 'the exact beat' or real arranged material and the library is empty for that genre.",
     parameters: {
       type: 'object',
       properties: { genre: { type: 'string' }, bpm: { type: 'integer', default: 108 }, keySignature: { type: 'string', description: "e.g. 'B minor' — defaults to the genre's home key" } },

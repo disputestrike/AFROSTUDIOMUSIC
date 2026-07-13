@@ -1,6 +1,9 @@
 import type { FastifyInstance } from 'fastify';
 import { prisma } from '@afrohit/db';
+import { z } from 'zod';
 import { requireAuth } from '../middleware/auth';
+
+const reuseInstrumentalSchema = z.object({ title: z.string().trim().min(1).max(100).optional() });
 
 /**
  * THE INSTRUMENTAL LIBRARY — a findable home for instrumentals.
@@ -16,7 +19,13 @@ export default async function instrumentals(app: FastifyInstance) {
   app.get('/', async (req) => {
     const { workspaceId } = requireAuth(req);
     const rows = await prisma.materialAsset.findMany({
-      where: { workspaceId, role: 'instrumental' },
+      where: {
+        workspaceId,
+        role: 'instrumental',
+        readiness: 'ready',
+        qualityState: 'passed',
+        rightsBasis: { not: 'unknown' },
+      },
       orderBy: { createdAt: 'desc' },
       take: 200,
     });
@@ -45,29 +54,85 @@ export default async function instrumentals(app: FastifyInstance) {
    * sing over an existing track, so reuse = a fresh song carrying this instrumental
    * as its audio, for the studio/mixer.)
    */
-  app.post<{ Params: { id: string }; Body: { title?: string } }>('/:id/reuse', async (req, reply) => {
+  app.post<{ Params: { id: string } }>('/:id/reuse', { schema: { body: reuseInstrumentalSchema } }, async (req, reply) => {
     const { workspaceId } = requireAuth(req);
-    const inst = await prisma.materialAsset.findFirst({ where: { id: req.params.id, workspaceId, role: 'instrumental' } });
+    const input = reuseInstrumentalSchema.parse(req.body ?? {});
+    const inst = await prisma.materialAsset.findFirst({
+      where: {
+        id: req.params.id,
+        workspaceId,
+        role: 'instrumental',
+        readiness: 'ready',
+        qualityState: 'passed',
+        rightsBasis: { not: 'unknown' },
+      },
+    });
     if (!inst) return reply.code(404).send({ error: 'instrumental_not_found' });
     const artist = await prisma.artist.findFirst({ where: { workspaceId }, orderBy: { createdAt: 'asc' } });
     if (!artist) return reply.code(400).send({ error: 'no_artist', message: 'No artist profile yet — create a song first.' });
 
-    const title = (req.body?.title as string)?.slice(0, 100) || 'New over instrumental';
-    const project = await prisma.project.create({
-      data: { workspaceId, artistId: artist.id, title, genre: inst.genre ?? 'afrobeats', bpm: inst.bpm ?? 103 },
-    });
-    const song = await prisma.song.create({
-      data: { workspaceId, projectId: project.id, title, status: 'SKETCH' },
-    });
-    const beat = await prisma.beatAsset.create({
-      data: {
-        projectId: project.id, songId: song.id, url: inst.url, format: 'mp3',
-        bpm: inst.bpm, keySignature: inst.keySignature, duration: inst.durationS ?? undefined,
-        provider: 'upload', approved: true,
-        meta: { reusedInstrumental: inst.id, instrumental: true } as never,
-      },
+    const title = input.title || 'New over instrumental';
+    const instMeta = (inst.meta ?? {}) as { format?: string };
+    const reused = await prisma.$transaction(async (tx) => {
+      const project = await tx.project.create({
+        data: { workspaceId, artistId: artist.id, title, genre: inst.genre ?? 'afrobeats', bpm: inst.bpm ?? 103 },
+      });
+      const song = await tx.song.create({
+        data: { workspaceId, projectId: project.id, title, status: 'SKETCH' },
+      });
+      const job = await tx.providerJob.create({
+        data: {
+          workspaceId,
+          projectId: project.id,
+          kind: 'music',
+          provider: 'instrumental-reuse',
+          status: 'RUNNING',
+          startedAt: new Date(),
+          inputJson: { materialId: inst.id, songId: song.id, operation: 'instrumental-reuse' } as never,
+        },
+      });
+      const created = await tx.beatAsset.create({
+        data: {
+          projectId: project.id,
+          songId: song.id,
+          url: inst.url,
+          format: instMeta.format ?? (inst.url.toLowerCase().includes('.wav') ? 'wav' : 'mp3'),
+          bpm: inst.bpm,
+          keySignature: inst.keySignature,
+          duration: inst.durationS ?? undefined,
+          provider: 'instrumental-reuse',
+          approved: true,
+          meta: { reusedInstrumental: inst.id, instrumental: true } as never,
+        },
+      });
+      await tx.materialUsage.create({
+        data: {
+          workspaceId,
+          materialId: inst.id,
+          providerJobId: job.id,
+          beatId: created.id,
+          songId: song.id,
+          role: 'instrumental',
+          sourceBpm: inst.bpm,
+          targetBpm: inst.bpm,
+          stretchRatio: 1,
+          gain: 1,
+          pan: 0,
+          sections: ['full-song'] as never,
+        },
+      });
+      await tx.providerJob.update({
+        where: { id: job.id },
+        data: { status: 'SUCCEEDED', finishedAt: new Date(), outputJson: { beatId: created.id, songId: song.id } as never },
+      });
+      return { project, song, beat: created };
     });
     reply.code(201);
-    return { songId: song.id, projectId: project.id, beatId: beat.id, message: 'Instrumental loaded into a new song — open the studio to record/upload a vocal or mix over it.' };
+    return {
+      songId: reused.song.id,
+      projectId: reused.project.id,
+      beatId: reused.beat.id,
+      message: 'Instrumental loaded into a new song — open the studio to record/upload a vocal or mix over it.',
+    };
   });
 }

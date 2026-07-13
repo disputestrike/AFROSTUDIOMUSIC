@@ -18,7 +18,15 @@ export default async function analyze(app: FastifyInstance) {
     { schema: { body: analyzeAudioSchema } },
     async (req, reply) => {
       const { workspaceId } = requireAuth(req);
-      const { url, purgeAfter, factsOnly } = analyzeAudioSchema.parse(req.body);
+      const { url, purgeAfter, factsOnly, rightsConfirmed } = analyzeAudioSchema.parse(req.body);
+      if (!factsOnly && rightsConfirmed !== true) {
+        return reply.code(400).send({
+          error: 'rights_confirmation_required',
+          message: 'Full learning is only available for audio you own or control. Use facts-only for other references.',
+        });
+      }
+      const rightsBasis = factsOnly ? 'facts-only' : 'user-attested';
+      const source = factsOnly ? 'external-reference-facts' : 'rights-confirmed-reference';
 
       // Same bright-line + SSRF guard as /import: no streaming-catalog hosts,
       // no private/metadata targets. The AI listens to rights-cleared audio only.
@@ -45,10 +53,19 @@ export default async function analyze(app: FastifyInstance) {
         projectId: project.id,
         kind: 'analyze',
         provider: 'replicate',
-        inputJson: { url, factsOnly },
+        inputJson: { url, factsOnly: !!factsOnly, source, rightsBasis },
         charge,
         idempotencyKey,
-        payload: (jobId) => ({ jobId, workspaceId, projectId: project.id, url, purgeAfter, factsOnly }),
+        payload: (jobId) => ({
+          jobId,
+          workspaceId,
+          projectId: project.id,
+          url,
+          purgeAfter,
+          factsOnly,
+          source,
+          rightsBasis,
+        }),
       });
 
       reply.code(202);
