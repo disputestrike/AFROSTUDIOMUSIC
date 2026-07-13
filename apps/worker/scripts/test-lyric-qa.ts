@@ -1,0 +1,77 @@
+/**
+ * CATALOGUE QA GATE test — pure, CI-able. The gate that would have blocked the
+ * garbage the owner audit found (osheyy, Sonmething, dupes, "same skeleton").
+ * Run: pnpm --filter @afrohit/worker exec tsx scripts/test-lyric-qa.ts
+ */
+import { lyricQaCheck } from '@afrohit/shared';
+
+function assert(cond: boolean, msg: string) {
+  if (!cond) { console.error('FAIL:', msg); process.exitCode = 1; } else console.log('  ok:', msg);
+}
+
+const GOOD = `[Hook]
+Dami duro (duro)
+Dami duro (duro)
+Money dey my hand, kpokpokpo
+Baby wine am make e no stop
+
+[Verse]
+Lagos boy wey sabi road
+Every corner know my name
+When I land, the whole place loud
+Na my turn, no be the same
+
+[Hook]
+Dami duro (duro)
+Dami duro (duro)
+Money dey my hand, kpokpokpo
+Baby wine am make e no stop`;
+
+// Clean, lean, hook-repeated record passes.
+const good = lyricQaCheck({ title: 'Dami Duro', body: GOOD, hookCell: 'dami duro', languageMix: { pcm: 0.8, en: 0.2 } });
+assert(good.ok, `clean lean record passes (band ${good.band}, ${good.wordCount} words)`);
+
+// Empty output ("osheyy") — the #87 failure.
+const empty = lyricQaCheck({ title: 'Waist Dey Speak', body: '[Hook]\nOsheyy\nOsheyy (osheyy)' });
+assert(!empty.ok && empty.blocks.some((b) => b.startsWith('empty')), 'osheyy blocked (empty_or_near_empty)');
+
+// Meta-note contamination — the #47/#48 failure.
+const meta = lyricQaCheck({ title: 'Crown', body: `${GOOD}\n\n(same skeleton, same flow as the reference)\n[Producer:] prod. by someone` });
+assert(!meta.ok && meta.blocks.some((b) => b.startsWith('meta_contamination')), '"same skeleton" meta-note blocked');
+
+// Scratchpad debris — the #41 failure.
+const todo = lyricQaCheck({ title: 'Necessary', body: `${GOOD}\n- [ ] finish verse 2\nTODO: pick a girl name` });
+assert(!todo.ok && todo.blocks.some((b) => b.startsWith('meta_contamination')), 'scratchpad TODO/checkbox blocked');
+
+// Production notes in the sung lyric.
+const prod = lyricQaCheck({ title: 'Beat Song', body: `${GOOD}\n[Drum Fill]\nLog drum dey knock, 128 BPM` });
+assert(!prod.ok && prod.blocks.some((b) => b.startsWith('production_notes_in_lyric')), 'production notes in lyric blocked');
+
+// Exact duplicate against the catalogue — the #39/#40 failure.
+const dup = lyricQaCheck({
+  title: 'Made Me Stronger', body: GOOD, hookCell: 'dami duro',
+  catalogue: [{ id: 'x1', title: 'Haters Made Me Stronger', bodyNorm: lyricQaCheck({ title: 'a', body: GOOD }).bodyNorm }],
+});
+assert(!dup.ok && dup.blocks.some((b) => b.startsWith('exact_duplicate')) && dup.duplicateOf === 'x1', 'exact duplicate blocked + points to the twin');
+
+// Over-length + template + english-heavy WARN (advisory, not blocked).
+const bloatBody = '[Intro]\n' + 'the whole city watch shine bright tonight victory yeah\n'.repeat(3) +
+  '[Verse]\n' + 'hustle every single morning fighting battle chasing bigger future harder\n'.repeat(20) +
+  '[Pre-Hook]\n' + 'everybody suddenly wanna know famous story becoming legend now\n'.repeat(3) +
+  '[Hook]\n' + 'shine grind harder road tonight winning bigger crown yeah\n'.repeat(4) +
+  '[Verse 2]\n' + 'ghetto struggle building empire never looking backward moving forward stronger\n'.repeat(20) +
+  '[Bridge]\n' + 'truth sometimes fear creeping quietly through lonely midnight thinking deeper\n'.repeat(3) +
+  '[Outro]\n' + 'remember grind only pathway reaching mountain summit glory forever\n'.repeat(3);
+const bloat = lyricQaCheck({ title: 'Shine Grind', body: bloatBody, hookCell: 'we dey shine', languageMix: { en: 0.75, pcm: 0.25 } });
+assert(bloat.ok, 'bloated english template PASSES blocks (warnings only, not fatal)');
+assert(bloat.warnings.some((w) => w.startsWith('over_length')), 'over-length warned');
+assert(bloat.warnings.some((w) => w.startsWith('template_structure')), 'template structure warned');
+assert(bloat.warnings.some((w) => w.startsWith('english_heavy')), 'english-heavy warned');
+
+// Artist-authored: integrity blocks still apply, but craft WARNINGS are skipped.
+const authored = lyricQaCheck({ title: 'Mine', body: bloatBody, artistAuthored: true, languageMix: { en: 0.9 } });
+assert(authored.ok && authored.warnings.length === 0, 'artist-authored skips craft warnings (never their words)');
+const authoredEmpty = lyricQaCheck({ title: 'Mine', body: 'osheyy', artistAuthored: true });
+assert(!authoredEmpty.ok, 'artist-authored STILL blocked on fatal integrity (empty)');
+
+console.log(process.exitCode ? '\n❌ Lyric QA test FAILED' : '\n✅ Lyric QA test PASSED');

@@ -364,6 +364,12 @@ model Song {
   splitSheet  Json?     // [{name, role, share}] writer/producer splits summing to 100
   nativeReviewOk Boolean @default(false) // a native speaker signed off on Yoruba/Igbo/Hausa delivery
   releaseReady Boolean  @default(false) // green-lit for distribution
+  // QA quarantine (owner audit 2026-07-12): a song the Catalogue QA gate blocked
+  // (empty/duplicate/contaminated) OR an operator pulled — hidden from the
+  // catalogue, release, and public surfaces. Reversible; never hard-deleted so
+  // the audit evidence survives. Reason kept for the Truth report.
+  quarantined     Boolean @default(false)
+  quarantineReason String?
   // A&R read — every produced song gets scored BEFORE it's considered done.
   hitScore    Int?      // 0-100 from the Will-it-hit engine
   viralScore  Int?      // 0-100

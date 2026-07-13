@@ -52,6 +52,18 @@ expect('packages/ai/src/prompts/lyrics.ts', lyrics, [
   'HOOK FINAL LINES',
   'DELETING an almost-good line',
 ], 'critic');
+// The Afro-record reframe (owner audit 2026-07-12): the writer stopped writing
+// short-films. These markers keep the RECORD LAW from regressing to the template.
+expect('packages/ai/src/prompts/lyrics.ts', lyrics, [
+  'THE RECORD LAW',
+  'THE VOICE IS AN INSTRUMENT',
+  'THE HOOK IS THE RECORD',
+  'WORD ECONOMY',
+  'STRUCTURE IS CHOSEN',
+  'PICK ONE LYRIC MODE',
+  'AUTHENTICITY LAW',
+  'THE BRIDGE IS OPTIONAL',
+], 'record-law');
 
 // --- The hook law ----------------------------------------------------------
 expect('packages/ai/src/prompts/hooks.ts', read('packages/ai/src/prompts/hooks.ts'), [

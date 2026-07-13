@@ -16,7 +16,7 @@ import { enqueue } from '../lib/queue';
 import { assertSafeUrl } from '../lib/url-guard';
 import { learnedReferenceBrief, learnedStyleTags, learnedMeasuredTags, learnedUsage, learnedLyricCraftBrief, snapshotTrend, freshnessBrief } from '../lib/learned';
 import { blueprintForReference } from '../lib/blueprint';
-import { genreSignature, structureBrief, pickLawfulTitle } from '@afrohit/shared';
+import { genreSignature, structureBrief, pickLawfulTitle, lyricQaCheck, normalizeLyricBody } from '@afrohit/shared';
 import { learnLyricCraft, findLearnedLyric } from '../lib/lyric-learn';
 import { dataLakeReport } from '../lib/data-lake';
 import { lexiconPalette } from '../lib/lexicon';
@@ -573,6 +573,29 @@ async function generateLyrics(ctx: Ctx, hookId: string, cleanVersion: boolean, l
     languageMix: (output.languageMix ?? undefined) as never,
     craftJson: craftJson as never,
   };
+  // CATALOGUE QA GATE (owner audit 2026-07-12): empty/duplicate/contaminated/
+  // production-note lyrics must NEVER advance to a render or the catalogue. Check
+  // against the workspace's existing lyrics (dup detection) and block fatally —
+  // the drop treats a returned error as a failed take (no wasted render credit).
+  const catRows = await prisma.song.findMany({
+    where: { workspaceId: ctx.workspaceId, quarantined: false, lyric: { isNot: null }, ...(hook.songId ? { NOT: { id: hook.songId } } : {}) },
+    select: { id: true, title: true, lyric: { select: { body: true } } },
+    take: 300,
+    orderBy: { createdAt: 'desc' },
+  });
+  const qa = lyricQaCheck({
+    title: lyricData.title,
+    body,
+    hookCell: craftJson.hookCell,
+    languageMix: output.languageMix as Record<string, number> | undefined,
+    artistAuthored: false,
+    catalogue: catRows.map((s: { id: string; title: string; lyric: { body: string } | null }) => ({ id: s.id, title: s.title, bodyNorm: normalizeLyricBody(s.lyric?.body ?? '') })),
+  });
+  if (!qa.ok) {
+    // Quarantine the shell song if one exists so nothing half-written lingers visible.
+    if (hook.songId) await prisma.song.update({ where: { id: hook.songId }, data: { quarantined: true, quarantineReason: qa.blocks.join('; ') } }).catch(() => {});
+    return { error: `lyric_qa_blocked: ${qa.blocks.join('; ')}`, qa: { blocks: qa.blocks, band: qa.band } };
+  }
   const lyric = hook.songId
     ? await prisma.lyricDraft.upsert({
         where: { songId: hook.songId },

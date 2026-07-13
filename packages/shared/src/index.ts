@@ -22,3 +22,4 @@ export * from './expert-priors';
 export * from './lyric-scorecard';
 export * from './melody-score';
 export * from './title-law';
+export * from './lyric-qa';

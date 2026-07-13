@@ -66,6 +66,9 @@ export default async function songs(app: FastifyInstance) {
     const rows = await prisma.song.findMany({
       where: {
         workspaceId,
+        // QA quarantine: blocked/pulled songs never appear in the catalogue
+        // (?all=1 still hides them — quarantine is stronger than the shell filter).
+        quarantined: false,
         ...(showAll
           ? {}
           : {
