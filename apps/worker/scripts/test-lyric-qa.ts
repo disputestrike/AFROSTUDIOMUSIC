@@ -55,13 +55,16 @@ const dup = lyricQaCheck({
 assert(!dup.ok && dup.blocks.some((b) => b.startsWith('exact_duplicate')) && dup.duplicateOf === 'x1', 'exact duplicate blocked + points to the twin');
 
 // Over-length + template + english-heavy WARN (advisory, not blocked).
-const bloatBody = '[Intro]\n' + 'the whole city watch shine bright tonight victory yeah\n'.repeat(3) +
-  '[Verse]\n' + 'hustle every single morning fighting battle chasing bigger future harder\n'.repeat(20) +
-  '[Pre-Hook]\n' + 'everybody suddenly wanna know famous story becoming legend now\n'.repeat(3) +
-  '[Hook]\n' + 'shine grind harder road tonight winning bigger crown yeah\n'.repeat(4) +
-  '[Verse 2]\n' + 'ghetto struggle building empire never looking backward moving forward stronger\n'.repeat(20) +
-  '[Bridge]\n' + 'truth sometimes fear creeping quietly through lonely midnight thinking deeper\n'.repeat(3) +
-  '[Outro]\n' + 'remember grind only pathway reaching mountain summit glory forever\n'.repeat(3);
+// Bloated + templated + English, but WITHOUT the fatal env-stuffing / confession
+// signature (no place-noun open, no "truth be say" bridge) — so it stays
+// warnings-only and proves the advisory band still works.
+const bloatBody = '[Intro]\n' + 'the whole crowd watch me winning bright tonight victory yeah\n'.repeat(3) +
+  '[Verse]\n' + 'working every single morning fighting battle chasing bigger future harder\n'.repeat(20) +
+  '[Pre-Hook]\n' + 'everybody suddenly wanna know famous becoming a legend now\n'.repeat(3) +
+  '[Hook]\n' + 'winning higher harder tonight beating bigger crown yeah\n'.repeat(4) +
+  '[Verse 2]\n' + 'growing building empire never looking backward moving forward stronger\n'.repeat(20) +
+  '[Bridge]\n' + 'quiet moments passing gently through lonely midnight thinking deeper\n'.repeat(3) +
+  '[Outro]\n' + 'winning higher harder tonight beating bigger crown yeah\n'.repeat(3);
 const bloat = lyricQaCheck({ title: 'Shine Grind', body: bloatBody, hookCell: 'we dey shine', languageMix: { en: 0.75, pcm: 0.25 } });
 assert(bloat.ok, 'bloated english template PASSES blocks (warnings only, not fatal)');
 assert(bloat.warnings.some((w) => w.startsWith('over_length')), 'over-length warned');
@@ -73,5 +76,51 @@ const authored = lyricQaCheck({ title: 'Mine', body: bloatBody, artistAuthored: 
 assert(authored.ok && authored.warnings.length === 0, 'artist-authored skips craft warnings (never their words)');
 const authoredEmpty = lyricQaCheck({ title: 'Mine', body: 'osheyy', artistAuthored: true });
 assert(!authoredEmpty.ok, 'artist-authored STILL blocked on fatal integrity (empty)');
+
+// ENVIRONMENT STUFFING — the "Sip Am Bam" failure (owner feedback 2026-07-13):
+// a setting/food/transport noun in the majority of lines = scenery, not a song.
+const SIP = `[Intro]
+Streetlight yellow, generator dey hum small small
+Danfo dey queue, but my leg no wan follow
+Mama Titi corner, steam dey climb like invitation
+Bus stop full, but na one pot get my attention
+[Hook]
+Mama Titi broth by the bus stop, steam dey rise, ooo
+We dey sip am bam, sip am bam
+[Verse]
+Danfo blow horn, conductor shout last bus dey go
+Broth don pass transport fare, market don close
+Pepper catch my tongue, the whole bus stop dey hum
+Suya smoke dey rise, na so pepper dey greet`;
+const sip = lyricQaCheck({ title: 'Sip Am Bam', body: SIP, hookCell: 'sip am bam', languageMix: { pcm: 0.9, en: 0.1 } });
+assert(!sip.ok && sip.blocks.some((b) => b.startsWith('environment_stuffing')), 'environment-stuffed lyric (Sip Am Bam) blocked');
+
+// HOOK IS A DESCRIPTION — a pure inventory of the surroundings; strip setting
+// words and nothing emotional survives. (Kept under 6 lines so the whole-lyric
+// environment_stuffing block can't fire — this isolates the hook gate.)
+const descHook = `[Hook]
+Streetlight, danfo, bus stop, pepper pot
+Market corner, gutter, generator, gate
+[Verse]
+i dey feel you for my body when you near`;
+const dh = lyricQaCheck({ title: 'Bus Stop', body: descHook, hookCell: 'bus stop' });
+assert(!dh.ok && dh.blocks.some((b) => b.startsWith('hook_is_description')), 'hook made only of setting words blocked');
+
+// CATALOGUE-TEMPLATE SIGNATURE — location-open + confession-bridge + explained-outro.
+const sig = `[Intro]
+For the market corner, danfo dey pass
+[Verse]
+i been dey wait for my time to shine bright
+[Hook]
+we dey move, we dey groove tonight
+[Bridge]
+truth be say sometimes the fear dey catch me for night
+[Outro]
+so remember say na hard work bring the light`;
+const sg = lyricQaCheck({ title: 'My Time', body: sig, hookCell: 'we dey move' });
+assert(!sg.ok && sg.blocks.some((b) => b.startsWith('catalogue_template_signature')), 'location-open + confession-bridge + explained-outro blocked');
+
+// The clean lean record STILL passes all the new gates (no false positive).
+assert(good.ok && !good.blocks.length, 'clean lean record still passes the new stuffing/hook/template gates');
 
 console.log(process.exitCode ? '\n❌ Lyric QA test FAILED' : '\n✅ Lyric QA test PASSED');

@@ -74,6 +74,43 @@ const PRODUCTION_IN_LYRIC: Array<[RegExp, string]> = [
   [/\(?\s*(cadence|delivery|vocal)\s*note\s*:/i, 'cadence/vocal note'],
 ];
 
+// Environment / setting / cultural-object nouns. The audit's #1 authenticity
+// failure: the writer stuffs these into every line to manufacture "Nigerian-ness"
+// instead of earning it. A record is not an inventory of its surroundings.
+const ENVIRONMENT_NOUNS = new Set([
+  'streetlight', 'generator', 'nepa', 'danfo', 'keke', 'okada', 'bus', 'busstop', 'stop', 'conductor', 'garage', 'motor',
+  'road', 'junction', 'park', 'town', 'city',
+  'market', 'corner', 'gutter', 'compound', 'gate', 'shop', 'stall', 'counter', 'kiosk', 'mama',
+  'pot', 'pepper', 'steam', 'broth', 'soup', 'suya', 'jollof', 'amala', 'eba', 'garri', 'zobo', 'malt', 'fanta',
+  'gbedu', 'log', 'drum', 'shekere', 'shaker', 'talking', 'speaker', 'dj',
+  'lagos', 'lekki', 'yaba', 'surulere', 'ajegunle', 'ladipo', 'oshodi', 'balogun',
+  'ankara', 'gele', 'agbada', 'danfo', 'molue', 'ladle', 'crate', 'bench',
+]);
+
+// Confession-bridge markers — the catalogue's detectable "Truth be say…" tell.
+const CONFESSION_MARKERS = /\b(truth be say|i no go lie|make i talk true|sometimes (the |i )?fear|the nights? (nobody|dem no|wey nobody)|deep down|behind the smile)\b/i;
+
+function bodyLines(body: string): string[] {
+  return body.split(/\r?\n/).filter((l) => l.trim() && !/^\s*\[[^\]]*\]\s*$/.test(l));
+}
+function sectionsOfKind(body: string, rx: RegExp): string[] {
+  const lines: string[] = [];
+  let inSec = false;
+  for (const raw of body.split(/\r?\n/)) {
+    const h = /^\s*\[([^\]]+)\]\s*$/.exec(raw);
+    if (h) { inSec = rx.test(h[1]!); continue; }
+    if (inSec && raw.trim()) lines.push(raw.trim());
+  }
+  return lines;
+}
+function envDensity(lines: string[]): number {
+  if (!lines.length) return 0;
+  const hit = lines.filter((l) =>
+    l.toLowerCase().replace(/[^a-z\s]/g, ' ').split(/\s+/).some((w) => ENVIRONMENT_NOUNS.has(w)),
+  ).length;
+  return hit / lines.length;
+}
+
 export type LyricBand = 'A' | 'B' | 'C' | 'F';
 
 export interface LyricQaInput {
@@ -156,6 +193,45 @@ export function lyricQaCheck(input: LyricQaInput): LyricQaResult {
     }
   }
 
+  // 5. ENVIRONMENT STUFFING (owner feedback 2026-07-13: "an inventory of the
+  //    surroundings, not a song"). A record is not a screenplay establishing
+  //    shot. Block when a setting/food/transport/place noun is in the majority of
+  //    lines; warn from ~40%. (Skipped for artist-authored words.)
+  const allLines = bodyLines(body);
+  if (!input.artistAuthored && allLines.length >= 6) {
+    const density = envDensity(allLines);
+    if (density > 0.6) blocks.push(`environment_stuffing: ${(density * 100).toFixed(0)}% of lines lean on a place/food/transport noun — this is scenery, not a song (REJECT_AND_RESTART_FROM_TOPLINE)`);
+  }
+
+  // 6. HOOK IS A DESCRIPTION (owner feedback: strip setting words from the hook —
+  //    if no emotional/attitude core survives, it is an advertisement, not a hook).
+  if (!input.artistAuthored) {
+    const hookLines = sectionsOfKind(body, /hook|chorus|refrain/i);
+    if (hookLines.length) {
+      const hookWords = hookLines.join(' ').toLowerCase().replace(/\([^)]*\)/g, ' ').replace(/[^a-z\s]/g, ' ').split(/\s+/).filter(Boolean);
+      const core = hookWords.filter((w) => w.length > 1 && !STOP.has(w) && !ENVIRONMENT_NOUNS.has(w));
+      if (hookWords.length >= 4 && core.length === 0) {
+        blocks.push('hook_is_description: the hook is only setting/food/place words — strip them and nothing emotional remains (not a hook)');
+      }
+    }
+  }
+
+  // 7. CATALOGUE-TEMPLATE SIGNATURE (owner feedback: the location-open ->
+  //    scene -> confession-bridge -> explained-outro architecture is the
+  //    catalogue disease — force a structural restart, never a line-edit).
+  if (!input.artistAuthored) {
+    const first2 = allLines.slice(0, 2);
+    const locationOpen = envDensity(first2) >= 0.5;
+    const bridge = sectionsOfKind(body, /bridge/i);
+    const confession = bridge.some((l) => CONFESSION_MARKERS.test(l));
+    const seq2 = sectionSequence(body);
+    const hasBridge = seq2.includes('bridge');
+    const hasOutro = seq2.includes('outro');
+    if (locationOpen && confession && hasBridge && hasOutro) {
+      blocks.push('catalogue_template_signature: location-open + confession-bridge + explained-outro — the catalogue template, restart from topline');
+    }
+  }
+
   // --- ADVISORY WARNINGS (craft — skipped for artist-authored) ---------------
   if (!input.artistAuthored) {
     // Over-length: the audit's median was 353 words; hook-led Afro should be leaner.
@@ -176,6 +252,12 @@ export function lyricQaCheck(input: LyricQaInput): LyricQaResult {
     // English drift on an Afro record.
     const en = input.languageMix?.en ?? 0;
     if (en > 0.6) warnings.push(`english_heavy: ${(en * 100).toFixed(0)}% English — Afro records live in Pidgin/vernacular; English-pop-with-seasoning reads inauthentic`);
+
+    // Environment density in the warn band (below the block threshold).
+    if (allLines.length >= 6) {
+      const density = envDensity(allLines);
+      if (density > 0.4 && density <= 0.6) warnings.push(`environment_density: ${(density * 100).toFixed(0)}% of lines carry a place/food/transport noun — keep only detail that changes the character's choice/emotion/hook`);
+    }
 
     // Title / hook cell should actually appear in the body (title-hook lock).
     const cell = normalizeLyricBody(input.hookCell || input.title || '');

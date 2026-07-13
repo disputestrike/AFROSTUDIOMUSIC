@@ -35,9 +35,28 @@ export const PRODUCER_STAGES: ProducerStage[] = [
 /** The ONLY verdicts an AI agent may reach — never "mastered"/"release-ready"/"10/10". */
 export type ProducerDecision =
   | 'IN_PROGRESS'
+  | 'TOPLINE_NOT_PROVEN' // the topline has no audio artifacts — the songwriter is BLOCKED
   | 'REJECT_AND_RESTART'
   | 'REVISE_FROM_STAGE_X'
   | 'CANDIDATE_FOR_HUMAN_AR';
+
+/** The audio artifacts a topline must have before the songwriter is allowed to
+ *  run (owner feedback 2026-07-13: "a written description of a melody does not
+ *  count"). HONESTY: the hook renders are SYNTHESIZED melody guides (the composed
+ *  notes rendered to a tone/vowel), NOT a voice singing a hum — no engine sings a
+ *  hum yet. The melody is proven audibly; the timbre is not. */
+export interface ToplineProof {
+  beatSketchUrl: string | null;
+  hookRenderUrls: string[]; // >= 3 required; synthesized melody guides
+  selectedContour: string | null;
+  syllableCap: number | null;
+  breathSlots: number[] | null;
+}
+
+/** True only when the topline is genuinely proven with audio artifacts. */
+export function toplineProven(p: ToplineProof | undefined | null): boolean {
+  return !!(p && p.beatSketchUrl && p.hookRenderUrls.length >= 3 && p.selectedContour && p.syllableCap && p.breathSlots);
+}
 
 /** Stage 1 — the Executive Producer's brief (creative identity). */
 export interface CreativeBrief {
@@ -175,6 +194,7 @@ export interface SongState {
   arrangementMap?: ArrangementSection[];
   hookCandidates?: ToplineCandidate[];
   selectedTopline?: SelectedTopline;
+  toplineProof?: ToplineProof;
   sungWords?: SungWords;
   adlibOptions?: AdlibOptions;
   leadPerformanceMap?: LeadPerformanceEntry[];

@@ -39,6 +39,8 @@ import {
   newSongState,
   advanceState,
   rejectToStage,
+  toplineProven,
+  type ToplineProof,
   type SongState,
   type CreativeBrief,
   type LyricMode,
@@ -60,6 +62,10 @@ export interface ProducerPipelineInput {
   mood?: string;
   languages?: string[];
   fusion?: string[];
+  /** Pre-rendered topline artifacts (from the async worker stage). When present
+   *  and complete, the songwriter is allowed to run; otherwise TOPLINE_NOT_PROVEN. */
+  beatSketchUrl?: string | null;
+  hookRenderUrls?: string[];
 }
 
 /** Stage 0 — the forbidden list, built from the workspace's real catalogue. */
@@ -177,10 +183,34 @@ export async function runProducerPipeline(input: ProducerPipelineInput): Promise
   });
   const mrm = melodyRhythmMap(score);
   const hookCell = brief.corePremise.split(/\s+/).slice(0, 3).join(' '); // provisional; the writer locks the real cell
+
+  // TOPLINE PROOF (owner feedback 2026-07-13: "a written description of a melody
+  // does not count — require actual audio artifacts"). The text artifacts
+  // (contour, syllable cap, breath slots) are real and computed here; the AUDIO
+  // artifacts (a rendered beat sketch + >=3 melody-guide renders) are produced by
+  // the WORKER, not this synchronous request. Until that async topline-render
+  // stage runs, the proof is INCOMPLETE and the songwriter is BLOCKED — honestly,
+  // not faked. opts allow an operator to attach already-rendered artifacts.
+  const proof: ToplineProof = {
+    beatSketchUrl: input.beatSketchUrl ?? null,
+    hookRenderUrls: input.hookRenderUrls ?? [],
+    selectedContour: 'arch',
+    syllableCap: mrm.syllableSlots,
+    breathSlots: mrm.breaths,
+  };
   state = advanceState(state, {
-    hookCandidates: [{ id: 'topline-1', contour: 'composed', noteRhythmMapId: String(score.seed), audioId: null, singbackScore: null }],
-    selectedTopline: { candidateId: 'topline-1', hookCell, melodyRhythmMap: mrm, reason: 'Melody Brain composed; audio sing-back pending a hosted singing engine.' },
-  }, { stage: 'topline', by: 'topline-composer', changed: `${mrm.syllableSlots} syllable slots`, why: 'melody-first; words fit the melody', testNext: 'audio sing-back when an engine is hosted' });
+    toplineProof: proof,
+    hookCandidates: [{ id: 'topline-1', contour: 'composed', noteRhythmMapId: String(score.seed), audioId: proof.hookRenderUrls[0] ?? null, singbackScore: null }],
+    selectedTopline: { candidateId: 'topline-1', hookCell, melodyRhythmMap: mrm, reason: 'Melody Brain composed the contour + syllable cap + breaths.' },
+  }, { stage: 'topline', by: 'topline-composer', changed: `${mrm.syllableSlots} syllable slots`, why: 'melody-first', testNext: 'render beat sketch + >=3 melody guides (async worker) to prove the topline' });
+
+  // TOPLINE GATE — block the songwriter unless the topline is audibly proven.
+  if (!toplineProven(proof)) {
+    return {
+      ...advanceState(state, { decision: 'TOPLINE_NOT_PROVEN' }, { stage: 'topline', by: 'executive-producer', why: 'no audio artifacts — the songwriter is blocked until a beat sketch + >=3 melody renders exist (honest: no hosted engine sings a hum yet; melody-guide renders are the proof, rendered async)' }),
+      decision: 'TOPLINE_NOT_PROVEN',
+    };
+  }
 
   // Stage 4 — lyric fitting (writer fits words to the melody), then QA gate.
   const fit = await generateJson<{ title?: string; body?: string; hookCell?: string; languageMix?: Record<string, number> }>({
