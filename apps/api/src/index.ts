@@ -52,6 +52,7 @@ import settings from './routes/settings';
 import analyze from './routes/analyze';
 import snippet from './routes/snippet';
 import drop from './routes/drop';
+import producer from './routes/producer';
 import release from './routes/release';
 import benchmark from './routes/benchmark';
 import authRoutes from './routes/auth';
@@ -140,6 +141,7 @@ async function bootstrap() {
       await api.register(analyze, { prefix: '/projects/:projectId/analyze' });
       await api.register(snippet, { prefix: '/projects/:projectId/snippet' });
       await api.register(drop, { prefix: '/projects/:projectId/drop' });
+      await api.register(producer, { prefix: '/projects' });
       await api.register(release, { prefix: '/projects/:projectId/release' });
       await api.register(images, { prefix: '/images' });
       await api.register(videos, { prefix: '/videos' });
