@@ -120,6 +120,22 @@ export function detectCatalogueContamination(input: {
     p.push({ code: 'food_seller_romance', label: 'romantic attraction to a food seller', evidence: vendorLine });
   }
 
+  // 1b. DISGUISED vendor-romance (owner red-team round 3, "Weigh My Morning"): the
+  //     beloved is someone you BUY FROM / are SERVED BY, with the goods hidden in
+  //     metaphor ("small suns", "green soldiers") so there is NO literal food word.
+  //     The tell is the SERVICE + TRANSACTION + ANONYMITY, not the product.
+  const SERVE_YOU = /\b(you|your hand|your palm)\b[^.]*\b(weigh|scale|count|fold|wrap|tie|arrange|pack|measure|serve|dish|fan|turn)\b|\b(weigh|scale|count|fold|wrap|tie|arrange|pack|measure|serve|dish|fan|turn)\b[^.]*\b(you|your hand|your palm|am for me)\b/i;
+  const RETURN_BIZ = /\b(come back tomorrow|only business|my business|fill my hand|count am for me|your change|the note done finish|next customer|the queue|the line for)\b/i;
+  const ANON_VENDOR = /\b((no|don'?t|never)\s+(even\s+)?know your name)\b/i;
+  const servesYou = lines.some((l) => SERVE_YOU.test(l));
+  if (servesYou && (RETURN_BIZ.test(bodyLow) || ANON_VENDOR.test(bodyLow)) && (romance || ANON_VENDOR.test(bodyLow))) {
+    p.push({
+      code: 'disguised_vendor_romance',
+      label: 'a food/goods-seller romance with the product hidden in metaphor (service + transaction + anonymity)',
+      evidence: lines.find((l) => SERVE_YOU.test(l)) ?? 'you are served, you transact, you never learn their name',
+    });
+  }
+
   // 2. A local object / food / transport prop as the CENTRAL idea (in the title).
   const titleObject = titleTok.find((w) => SCENERY_OBJECTS.has(w));
   if (titleObject) {
@@ -262,7 +278,10 @@ export function detectCatalogueContamination(input: {
   // object-removal test: strip the props and the song is empty). A hook/title
   // built on the setting plus a scenery-dense body is enough to reject alone.
   const strongScenery = sceneryDensity >= 0.45 || (hookScenery && sceneryDensity >= 0.34);
-  const decision = count >= 2 || strongScenery ? 'CATALOGUE_CONTAMINATION_DETECTED' : null;
+  // A disguised vendor-romance is unambiguous on its own (service applied to
+  // "you" + transaction/return + romance/anonymity) — reject even at count 1.
+  const disguisedVendor = p.some((x) => x.code === 'disguised_vendor_romance');
+  const decision = count >= 2 || strongScenery || disguisedVendor ? 'CATALOGUE_CONTAMINATION_DETECTED' : null;
   const resembles =
     p.some((x) => x.code === 'food_seller_romance' || x.code === 'literal_object_title')
       ? 'Sip Am Bam / Mama Titi (food-vendor romance template)'

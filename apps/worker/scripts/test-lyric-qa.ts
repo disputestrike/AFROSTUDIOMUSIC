@@ -211,4 +211,21 @@ Harmattan for the lane, the tollgate clear`;
 const tr = lyricQaCheck({ title: 'Third Mainland', body: tour, hookCell: 'third mainland' });
 assert(!tr.ok && (tr.contamination?.patterns.some((p) => p.code === 'scenery_dependent') ?? false), 'cityscape place-tour blocked (scenery_dependent)');
 
+// DISGUISED vendor-romance (red-team round 3, "Weigh My Morning"): a produce-
+// seller romance where the goods are PURE METAPHOR (no literal food word). The
+// tell is service + transaction + anonymity, not the product — block it alone.
+const disguised = `[Hook]
+I dey fall for the one wey weigh my morning
+Count am for me, count am slow, no give me warning
+Fill my hand, fill my hand till the note done finish
+I go come back tomorrow, you be my only business
+[Verse]
+You arrange the small suns for three-three
+Green soldiers standing where the cold ones dey
+Your hand na scale, e sabi my weight
+You fold my change like say na love letter
+I no even know your name, I just dey buy`;
+const dv = lyricQaCheck({ title: 'Weigh My Morning', body: disguised, hookCell: 'weigh my morning', languageMix: { pcm: 0.9, en: 0.1 } });
+assert(!dv.ok && (dv.contamination?.patterns.some((p) => p.code === 'disguised_vendor_romance') ?? false), 'disguised produce-seller romance (goods hidden in metaphor) blocked');
+
 console.log(process.exitCode ? '\n❌ Lyric QA test FAILED' : '\n✅ Lyric QA test PASSED');
