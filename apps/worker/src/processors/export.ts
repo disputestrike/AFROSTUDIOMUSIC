@@ -44,7 +44,14 @@ export async function processExport(p: ExportPayload) {
       orderBy: { createdAt: 'desc' },
     });
     const vocal = await prisma.vocalRender.findFirst({
-      where: { songId: song.id, approved: true },
+      where: {
+        songId: song.id,
+        approved: true,
+        assetKind: 'isolated_vocal',
+        qualityState: 'passed',
+        contentHash: { not: null },
+        verifiedAt: { not: null },
+      },
       orderBy: { createdAt: 'desc' },
     });
     const cover = await prisma.imageAsset.findFirst({

@@ -9,6 +9,7 @@ interface VoicePayload {
   projectId?: string;
   songId?: string;
   voiceProfileId: string;
+  provider?: string;
   providerVoiceId: string | null;
   lyricBody: string;
   melody?: Record<string, unknown>;
@@ -22,7 +23,7 @@ export async function processVoice(p: VoicePayload) {
   try {
     if (!p.providerVoiceId) throw new Error('voice not READY');
 
-    let adapter = voiceAdapter();
+    let adapter = voiceAdapter(p.provider);
     const renderInput = {
       providerVoiceId: p.providerVoiceId,
       lyricBody: p.lyricBody,
@@ -103,15 +104,19 @@ export async function processVoice(p: VoicePayload) {
           duration: result.output.durationS,
           pitchCorrection: p.pitchCorrection as never,
           effects: p.effects as never,
+          assetKind: 'spoken_guide',
+          performanceSource: 'tts_guide',
+          qualityState: 'unmeasured',
+          approved: false,
           // HONESTY: the ElevenLabs path is multilingual TTS (a SPOKEN guide
           // vocal), not a sung performance. Flag it so no surface presents it as
           // singing until a real singing-voice engine (SVC/RVC) is wired.
-          meta: { placeholder, fallbackReason, spokenGuideNotSung: adapter.name === 'eleven' } as never,
+          meta: { placeholder, fallbackReason, spokenGuideNotSung: true } as never,
         },
       });
     }
 
-    await markSucceeded(p.jobId, { url: storedUrl, placeholder, fallbackReason, spokenGuideNotSung: adapter.name === 'eleven' }, result.estimatedCostUsd);
+    await markSucceeded(p.jobId, { url: storedUrl, placeholder, fallbackReason, assetKind: 'spoken_guide' }, result.estimatedCostUsd);
   } catch (err) {
     await markFailed(p.jobId, err);
   }

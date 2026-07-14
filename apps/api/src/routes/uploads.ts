@@ -6,6 +6,8 @@ import { requireAuth } from '../middleware/auth';
 import { presignAssetRef, presignUpload, putBytes, sniffAudioFormat } from '../lib/storage';
 import { assertSafeUrl, safeFetch } from '../lib/url-guard';
 import { enqueueHarvest, enqueueLearn } from '../lib/harvest';
+import { registerVocalForInspection } from '../lib/vocal-ingest';
+import { registerBeatForInspection } from '../lib/beat-ingest';
 
 /**
  * Bring-your-own-audio uploads + legal URL import.
@@ -117,6 +119,12 @@ export default async function uploads(app: FastifyInstance) {
   app.post('/import', { schema: { body: importUrlSchema } }, async (req, reply) => {
     const { workspaceId } = requireAuth(req);
     const input = importUrlSchema.parse(req.body);
+    if (input.kind === 'vocal' && input.isolationConfirmed !== true) {
+      return reply.code(422).send({
+        error: 'isolated_vocal_confirmation_required',
+        message: 'Confirm this link is an isolated vocal, not a finished song or instrumental.',
+      });
+    }
 
     // SSRF + copyright guard: resolves DNS, blocks private/metadata targets and
     // streaming hosts, and re-validates every redirect hop (see lib/url-guard).
@@ -183,14 +191,18 @@ export default async function uploads(app: FastifyInstance) {
     // Register the imported asset just like an upload — authentic, approved.
     if (input.kind === 'vocal') {
       const songId = input.songId ?? (await ensureSong(workspaceId, project.id, `${project.title} — import`));
-      const vocal = await prisma.vocalRender.create({
-        data: {
-          projectId: project.id, songId, role: input.role ?? 'lead', url,
-          approved: true, meta: { imported: true, sourceUrl: provenanceUrl(input.url) },
-        },
+      const { vocal, job } = await registerVocalForInspection({
+        app,
+        workspaceId,
+        projectId: project.id,
+        songId,
+        role: input.role ?? 'lead',
+        url,
+        source: 'artist_import',
+        sourceMeta: { imported: true, sourceUrl: provenanceUrl(input.url) },
       });
-      reply.code(201);
-      return { kind: 'vocal', asset: vocal, songId };
+      reply.code(202);
+      return { kind: 'vocal', asset: vocal, songId, jobId: job.jobId, qualityState: 'pending' };
     }
 
     if (input.kind === 'song') {
@@ -237,16 +249,22 @@ export default async function uploads(app: FastifyInstance) {
         },
       });
     }
-    const beat = await prisma.beatAsset.create({
-      data: {
-        projectId: project.id, songId, url, format: ext,
-        bpm: input.bpm ?? null, keySignature: input.keySignature ?? null,
-        provider: 'import', approved: true,
-        meta: {
-          imported: true, sourceUrl: provenanceUrl(input.url),
-          instrumental: input.kind === 'instrumental',
-          title: input.title ?? null,
-        },
+    const { beat, job } = await registerBeatForInspection({
+      app,
+      workspaceId,
+      projectId: project.id,
+      songId,
+      url,
+      format: ext,
+      provider: 'import',
+      bpm: input.bpm ?? null,
+      keySignature: input.keySignature ?? null,
+      sourceMeta: {
+        imported: true,
+        sourceUrl: provenanceUrl(input.url),
+        instrumental: true,
+        title: input.title ?? null,
+        rightsBasis: 'user-attested',
       },
     });
     // Auto-harvest the owned import into reusable role loops (drums/bass/other).
@@ -254,7 +272,7 @@ export default async function uploads(app: FastifyInstance) {
     // AUTO-LEARN too (audit: harvested but never learned): the owned import
     // joins the learned lake as a SoundReference. Charged; best-effort.
     await enqueueLearn(app, { workspaceId, projectId: project.id, url, source: 'beat-import' });
-    reply.code(201);
-    return { kind: input.kind, asset: beat, songId };
+    reply.code(202);
+    return { kind: input.kind, asset: beat, songId, jobId: job.jobId, qualityState: 'pending' };
   });
 }

@@ -1,9 +1,8 @@
 /**
- * Voice profile + singing voice render adapter.
+ * Voice profile + spoken preview adapter.
  *
- * Important: spoken TTS != singing voice. For believable sung vocals we plug
- * a singing-voice provider (ElevenLabs voice + their stylized speech, or a
- * dedicated SVC service). The stub adapter is for dev/local without keys.
+ * Important: spoken TTS != singing voice. ElevenLabs TTS is used only for a
+ * speech preview. Sung performance conversion lives in voice-sing.ts.
  *
  * The consent recording flow lives in the API; this adapter only ingests
  * sample URLs into the provider.
@@ -73,8 +72,7 @@ class ElevenVoiceAdapter implements VoiceProviderAdapter {
     const key = elevenKey();
     if (!key) return { status: 'failed', error: 'ELEVEN_API_KEY missing' };
 
-    // For singing, we pass styled text. Eleven supports style + use_speaker_boost.
-    // For full sung performance you may want a dedicated singing-voice provider.
+    // This is deliberately a spoken preview. Never file it as a sung vocal.
     const res = await fetch(
       `https://api.elevenlabs.io/v1/text-to-speech/${encodeURIComponent(input.providerVoiceId)}`,
       {
@@ -137,11 +135,28 @@ class StubVoiceAdapter implements VoiceProviderAdapter {
   }
 }
 
+class UnavailableVoiceAdapter implements VoiceProviderAdapter {
+  readonly name = 'unavailable';
+  constructor(private readonly reason: string) {}
+  async createProfile(): Promise<ProviderJobResult<VoiceProfileSetupOutput>> {
+    return { status: 'failed', error: this.reason };
+  }
+  async render(): Promise<ProviderJobResult<VoiceRenderOutput>> {
+    return { status: 'failed', error: this.reason };
+  }
+}
+
 export function voiceAdapter(override?: string): VoiceProviderAdapter {
-  switch (override ?? provider()) {
+  const selected = (override ?? provider()).toLowerCase();
+  switch (selected) {
     case 'eleven':
       return new ElevenVoiceAdapter();
-    default:
+    case 'stub':
+      if (process.env.NODE_ENV === 'production' || process.env.ALLOW_STUB_AUDIO !== '1') {
+        return new UnavailableVoiceAdapter('stub voice audio is disabled');
+      }
       return new StubVoiceAdapter();
+    default:
+      return new UnavailableVoiceAdapter(`unsupported voice provider: ${selected || 'unconfigured'}`);
   }
 }

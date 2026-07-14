@@ -193,6 +193,52 @@ export async function measureAudioQuality(input: string): Promise<AudioQuality> 
   }
 }
 
+/** Measure how much of a file is above a conservative vocal-activity floor.
+ * This is not speech recognition and makes no lyric/alignment claim; it only
+ * catches empty, mostly silent, or undecodable uploads before they reach a mix
+ * or training dataset. Null means the measurement could not be completed. */
+export async function measureVocalActivity(input: string): Promise<{
+  durationS: number;
+  activeRatio: number;
+  silenceSeconds: number;
+} | null> {
+  const resolvedInput = await resolveFfmpegInput(input);
+  const durationS = await probeDurationS(resolvedInput);
+  if (durationS <= 0 || !(await ffmpegAvailable())) return null;
+  const output = await ffmpegCapture([
+    '-i', resolvedInput,
+    '-af', 'silencedetect=noise=-45dB:d=0.25',
+    '-f', 'null', '-',
+  ]);
+  if (!/silence_(?:start|end|duration)/.test(output)) {
+    // A valid, continuously active take has no silence events at all.
+    if (/audio:|video:0kB/i.test(output)) return { durationS, activeRatio: 1, silenceSeconds: 0 };
+    return null;
+  }
+  const durations = [...output.matchAll(/silence_duration:\s*(\d+(?:\.\d+)?)/g)]
+    .map((match) => Number.parseFloat(match[1]!))
+    .filter(Number.isFinite);
+  let silenceSeconds = durations.reduce((sum, value) => sum + value, 0);
+  const trailingStart = [...output.matchAll(/silence_start:\s*(\d+(?:\.\d+)?)/g)]
+    .map((match) => Number.parseFloat(match[1]!))
+    .filter(Number.isFinite)
+    .at(-1);
+  const lastEnd = [...output.matchAll(/silence_end:\s*(\d+(?:\.\d+)?)/g)]
+    .map((match) => Number.parseFloat(match[1]!))
+    .filter(Number.isFinite)
+    .at(-1);
+  if (trailingStart != null && (lastEnd == null || trailingStart > lastEnd)) {
+    silenceSeconds += Math.max(0, durationS - trailingStart);
+  }
+  silenceSeconds = Math.min(durationS, Math.max(0, silenceSeconds));
+  const activeRatio = Math.max(0, Math.min(1, (durationS - silenceSeconds) / durationS));
+  return {
+    durationS,
+    activeRatio: Math.round(activeRatio * 10_000) / 10_000,
+    silenceSeconds: Math.round(silenceSeconds * 100) / 100,
+  };
+}
+
 // ---------------------------------------------------------------------------
 // MATERIAL LAYER — the arranger's hands. Real loops in, a real beat out.
 // ---------------------------------------------------------------------------

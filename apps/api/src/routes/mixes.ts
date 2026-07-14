@@ -62,6 +62,41 @@ export default async function mixes(app: FastifyInstance) {
         };
       }
 
+      const [approvedBeat, verifiedLead] = await Promise.all([
+        prisma.beatAsset.findFirst({
+          where: {
+            songId: input.songId,
+            projectId: project.id,
+            approved: true,
+            assetKind: 'instrumental',
+            qualityState: 'passed',
+            contentHash: { not: null },
+            verifiedAt: { not: null },
+          },
+          select: { id: true },
+        }),
+        prisma.vocalRender.findFirst({
+          where: {
+            songId: input.songId,
+            projectId: project.id,
+            role: 'lead',
+            approved: true,
+            assetKind: 'isolated_vocal',
+            qualityState: 'passed',
+            contentHash: { not: null },
+            verifiedAt: { not: null },
+          },
+          select: { id: true },
+        }),
+      ]);
+      if (!approvedBeat) return reply.code(409).send({ error: 'approved_beat_required' });
+      if (!verifiedLead) {
+        return reply.code(409).send({
+          error: 'verified_isolated_lead_required',
+          note: 'Upload or record an isolated lead vocal and wait for its QC job to pass before mixing.',
+        });
+      }
+
       const idempotencyKey = scopedRequestKey(req.headers as Record<string, unknown>, `mix:${input.preset}`);
       const charge = await app.chargeCredits({
         workspaceId,

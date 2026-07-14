@@ -40,6 +40,24 @@ function trainedModelUrl(profile: { trainedVersion: string | null; trainingMeta:
   return null;
 }
 
+function collectOwnedVoiceRefs(value: unknown, refs = new Set<string>(), depth = 0): Set<string> {
+  if (depth > 4 || value == null) return refs;
+  if (typeof value === 'string') {
+    if (isStorageUri(value)) refs.add(value);
+    return refs;
+  }
+  if (Array.isArray(value)) {
+    for (const item of value) collectOwnedVoiceRefs(item, refs, depth + 1);
+    return refs;
+  }
+  if (typeof value === 'object') {
+    for (const item of Object.values(value as Record<string, unknown>)) {
+      collectOwnedVoiceRefs(item, refs, depth + 1);
+    }
+  }
+  return refs;
+}
+
 async function queueVoiceRehost(app: FastifyInstance, workspaceId: string, voiceProfileId: string, modelUrl: string) {
   const fingerprint = createHash('sha256').update(modelUrl).digest('hex').slice(0, 20);
   return createQueuedProviderJob({
@@ -132,7 +150,7 @@ export default async function voices(app: FastifyInstance) {
 
   app.get('/', async (req) => {
     const { workspaceId } = requireAuth(req);
-    return prisma.voiceProfile.findMany({
+    const profiles = await prisma.voiceProfile.findMany({
       where: { workspaceId },
       select: {
         id: true,
@@ -143,9 +161,34 @@ export default async function voices(app: FastifyInstance) {
         status: true,
         language: true,
         createdAt: true,
+        providerVoiceId: true,
+        trainedVersion: true,
+        trainingMeta: true,
         artist: { select: { id: true, stageName: true } },
       },
     });
+    type VoiceListRow = {
+      id: string;
+      artistId: string;
+      consentId: string;
+      name: string;
+      provider: string;
+      status: string;
+      language: string | null;
+      createdAt: Date;
+      providerVoiceId: string | null;
+      trainedVersion: string | null;
+      trainingMeta: unknown;
+      artist: { id: string; stageName: string };
+    };
+    return (profiles as VoiceListRow[]).map(({ providerVoiceId, trainedVersion, trainingMeta, ...profile }) => ({
+      ...profile,
+      capabilities: {
+        speechPreview: profile.provider === 'eleven' && !!providerVoiceId,
+        singingConversion: !!trainedModelUrl({ trainedVersion, trainingMeta }),
+        scoreSinging: false,
+      },
+    }));
   });
 
   app.post(
@@ -154,6 +197,17 @@ export default async function voices(app: FastifyInstance) {
     async (req, reply) => {
       const { workspaceId } = requireAuth(req);
       const input = voiceProfileInputSchema.parse(req.body);
+      const setupProvider = (process.env.VOICE_PROVIDER
+        ?? ((process.env.ELEVENLABS_API_KEY || process.env.ELEVEN_API_KEY) ? 'eleven' : '')).toLowerCase();
+      const developmentStub = setupProvider === 'stub'
+        && process.env.NODE_ENV !== 'production'
+        && process.env.ALLOW_STUB_AUDIO === '1';
+      if (setupProvider !== 'eleven' && !developmentStub) {
+        return reply.code(501).send({
+          error: 'speech_voice_provider_not_configured',
+          note: 'This endpoint creates a speech preview voice. Configure VOICE_PROVIDER=eleven and an ElevenLabs key, or use /voices/train for an RVC singing-conversion voice.',
+        });
+      }
 
       // Verify consent exists, is in workspace, not revoked.
       const consent = await prisma.voiceConsent.findFirstOrThrow({
@@ -196,7 +250,7 @@ export default async function voices(app: FastifyInstance) {
           artistId: input.artistId,
           consentId: consent.id,
           name: input.name,
-          provider: process.env.VOICE_PROVIDER ?? 'stub',
+          provider: setupProvider,
           status: 'PENDING',
           sampleUrls: input.sampleUrls,
           language: input.language,
@@ -277,16 +331,23 @@ export default async function voices(app: FastifyInstance) {
         workspaceId,
         kind: 'voice_dataset',
         provider: 'internal',
-        inputJson: { name: input.name, samples: input.sampleUrls.length },
+        inputJson: { name: input.name, samples: input.sampleUrls.length, isolationConfirmed: true, purgeSourceSamples: input.purgeSourceSamples },
         idempotencyKey,
-        payload: (jobId) => ({ jobId, workspaceId, name: input.name, sampleUrls: input.sampleUrls }),
+        payload: (jobId) => ({
+          jobId,
+          workspaceId,
+          name: input.name,
+          sampleUrls: input.sampleUrls,
+          isolationConfirmed: input.isolationConfirmed,
+          purgeSourceSamples: input.purgeSourceSamples,
+        }),
       });
 
       reply.code(202);
       return {
         jobId: job.jobId,
         replayed: job.replayed,
-        note: '10-20 minutes of clean solo vocals make the best voice; poll the job for datasetZipUrl, then POST /voices/train with it.',
+        note: 'At least 2 minutes of clean solo vocals are required; 10-20 minutes is ideal. Poll the job for datasetZipUrl, then POST /voices/train with it.',
       };
     }
   );
@@ -341,10 +402,21 @@ export default async function voices(app: FastifyInstance) {
           note: 'Upload the voice dataset through this workspace. External model-training URLs are disabled by default.',
         });
       }
+      let datasetReceipt: { id: string; contentHash: string; totalSeconds: number } | null = null;
       if (!externalDataset) {
         const dataset = parseStorageUri(input.datasetZipUrl);
         if (!dataset?.key.startsWith(`${workspaceId}/voice/`) || !dataset.key.endsWith('.zip')) {
           return reply.code(400).send({ error: 'trainer_dataset_zip_required' });
+        }
+        datasetReceipt = await prisma.voiceDataset.findFirst({
+          where: { workspaceId, url: input.datasetZipUrl, qualityState: 'passed' },
+          select: { id: true, contentHash: true, totalSeconds: true },
+        });
+        if (!datasetReceipt) {
+          return reply.code(409).send({
+            error: 'verified_voice_dataset_required',
+            note: 'Build the dataset through POST /voices/dataset and wait for its QC job to pass before training.',
+          });
         }
       }
 
@@ -401,9 +473,13 @@ export default async function voices(app: FastifyInstance) {
             provider: 'replicate',
             status: 'TRAINING',
             sampleUrls: [input.datasetZipUrl],
+            voiceDatasetId: datasetReceipt?.id ?? null,
             destinationModel: destination ?? null,
             trainingMeta: {
               datasetZipUrl: input.datasetZipUrl,
+              datasetId: datasetReceipt?.id ?? null,
+              datasetContentHash: datasetReceipt?.contentHash ?? null,
+              datasetSeconds: datasetReceipt?.totalSeconds ?? null,
               trainer: `${cfg.model}@${cfg.version}`,
               trainerKind: cfg.kind,
               kickoff: 'pending',
@@ -455,6 +531,9 @@ export default async function voices(app: FastifyInstance) {
           trainingId: training.id,
           trainingMeta: {
             datasetZipUrl: input.datasetZipUrl,
+            datasetId: datasetReceipt?.id ?? null,
+            datasetContentHash: datasetReceipt?.contentHash ?? null,
+            datasetSeconds: datasetReceipt?.totalSeconds ?? null,
             trainer: `${training.model}@${training.version}`,
             trainerKind: training.kind,
             kickoff: 'accepted',
@@ -604,16 +683,27 @@ export default async function voices(app: FastifyInstance) {
     const { workspaceId } = requireAuth(req);
     const profile = await prisma.voiceProfile.findFirst({
       where: { id: req.params.voiceId, workspaceId },
-      include: { consent: true },
+      include: { consent: true, voiceDataset: { select: { id: true, url: true } } },
     });
     if (!profile) return reply.code(404).send({ error: 'voice_not_found' });
 
-    const refs = new Set<string>(profile.sampleUrls.filter(isStorageUri));
-    if (profile.trainedVersion && isStorageUri(profile.trainedVersion)) refs.add(profile.trainedVersion);
     const trainingMeta = (profile.trainingMeta ?? {}) as Record<string, unknown>;
-    for (const candidate of [trainingMeta.datasetZipUrl, trainingMeta.output]) {
-      if (typeof candidate === 'string' && isStorageUri(candidate)) refs.add(candidate);
-    }
+    const candidateRefs = collectOwnedVoiceRefs({
+      sampleUrls: profile.sampleUrls,
+      trainedVersion: profile.trainedVersion,
+      trainingMeta,
+    });
+    const activeProfiles = await prisma.voiceProfile.findMany({
+      where: { workspaceId, id: { not: profile.id }, status: { not: 'REVOKED' } },
+      select: { sampleUrls: true, trainedVersion: true, trainingMeta: true, voiceDatasetId: true },
+    });
+    const activeRefs = new Set<string>();
+    for (const active of activeProfiles) collectOwnedVoiceRefs(active, activeRefs);
+    const refs = new Set([...candidateRefs].filter((ref) => !activeRefs.has(ref)));
+    const retainedSharedObjects = candidateRefs.size - refs.size;
+    const datasetShared = !!profile.voiceDatasetId
+      && activeProfiles.some((active: { voiceDatasetId: string | null }) => active.voiceDatasetId === profile.voiceDatasetId);
+    const datasetIds = profile.voiceDataset && !datasetShared ? [profile.voiceDataset.id] : [];
 
     const output = trainingMeta.output as Record<string, unknown> | string | null | undefined;
     const providerVersion =
@@ -630,6 +720,7 @@ export default async function voices(app: FastifyInstance) {
       trainerKind,
       destinationModel: profile.destinationModel,
       providerVersion: providerVersion ?? null,
+      datasetIds,
     };
 
     await prisma.$transaction([
@@ -641,6 +732,7 @@ export default async function voices(app: FastifyInstance) {
           trainedVersion: null,
           sampleUrls: [],
           destinationModel: null,
+          voiceDatasetId: null,
           trainingId: null,
           trainingMeta: { revokedAt: new Date().toISOString(), providerCleanup: { ...cleanup, status: 'pending' } } as never,
         },
@@ -676,9 +768,17 @@ export default async function voices(app: FastifyInstance) {
     const deleted = await Promise.allSettled(refList.map(deleteAssetRef));
     const deletionFailures = deleted.filter((result) => result.status === 'rejected').length;
     const failedStorageRefs = refList.filter((_ref, index) => deleted[index]?.status === 'rejected');
+    let datasetReceiptFailures = 0;
+    if (datasetIds.length && profile.voiceDataset && !failedStorageRefs.includes(profile.voiceDataset.url)) {
+      try {
+        await prisma.voiceDataset.deleteMany({ where: { id: { in: datasetIds }, workspaceId } });
+      } catch {
+        datasetReceiptFailures = datasetIds.length;
+      }
+    }
     const providerCleanupFailures = Number(!canceled) + Number(!versionDeleted) + Number(!providerVoiceDeleted);
     let cleanupJobId: string | null = null;
-    if (providerCleanupFailures || failedStorageRefs.length) {
+    if (providerCleanupFailures || failedStorageRefs.length || datasetReceiptFailures) {
       const cleanupFingerprint = createHash('sha256').update(JSON.stringify({ cleanup, failedStorageRefs })).digest('hex').slice(0, 20);
       const cleanupJob = await createQueuedProviderJob({
         app,
@@ -701,7 +801,7 @@ export default async function voices(app: FastifyInstance) {
           revokedAt: new Date().toISOString(),
           providerCleanup: {
             ...cleanup,
-            status: providerCleanupFailures || failedStorageRefs.length ? 'retry_required' : 'complete',
+            status: providerCleanupFailures || failedStorageRefs.length || datasetReceiptFailures ? 'retry_required' : 'complete',
             canceled,
             versionDeleted,
             providerVoiceDeleted,
@@ -717,6 +817,8 @@ export default async function voices(app: FastifyInstance) {
       deletedObjects: refs.size - deletionFailures,
       deletionFailures,
       providerCleanupFailures,
+      datasetReceiptFailures,
+      retainedSharedObjects,
       cleanupQueued: !!cleanupJobId,
     };
   });
@@ -766,6 +868,12 @@ export default async function voices(app: FastifyInstance) {
       // freshest playable audio (master → mix → beat by createdAt).
       let songInputUrl = input.songUrl ?? null;
       if (songInputUrl) {
+        if (input.rightsConfirmed !== true) {
+          return reply.code(422).send({
+            error: 'performance_rights_confirmation_required',
+            note: 'Confirm you own or are licensed to convert this external performance.',
+          });
+        }
         const owned = assertWorkspaceAsset(workspaceId, songInputUrl);
         if (!owned) {
           const check = await assertSafeUrl(songInputUrl);
@@ -849,6 +957,12 @@ export default async function voices(app: FastifyInstance) {
       const voice = await prisma.voiceProfile.findFirstOrThrow({
         where: { id: req.params.voiceId, workspaceId, status: 'READY' },
       });
+      if (voice.provider !== 'eleven' || !voice.providerVoiceId) {
+        return reply.code(409).send({
+          error: 'speech_preview_unavailable',
+          note: 'This is a singing-conversion voice, not a text-to-speech profile. Use POST /voices/:voiceId/sing with an existing sung performance.',
+        });
+      }
       const text = typeof req.body?.text === 'string' ? req.body.text.trim().slice(0, 1_000) : '';
       if (!text) return reply.code(400).send({ error: 'text_required' });
       const idempotencyKey = scopedRequestKey(req.headers as Record<string, unknown>, 'voice-test');
@@ -868,6 +982,7 @@ export default async function voices(app: FastifyInstance) {
           jobId,
           workspaceId,
           voiceProfileId: voice.id,
+          provider: voice.provider,
           providerVoiceId: voice.providerVoiceId,
           lyricBody: text,
           role: 'lead',

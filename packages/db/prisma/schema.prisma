@@ -46,6 +46,7 @@ model Workspace {
   projects           Project[]
   voiceConsents      VoiceConsent[]
   voiceProfiles      VoiceProfile[]
+  voiceDatasets      VoiceDataset[]
   brandKits          BrandKit[]
   songs              Song[]
   jobs               ProviderJob[]
@@ -198,7 +199,7 @@ model VoiceProfile {
   artistId         String
   consentId        String
   name             String
-  provider         String // "eleven" | "openai" | "stub"
+  provider         String // "eleven" (speech clone) | "replicate" (RVC conversion) | "stub" (local tests only)
   providerVoiceId  String? // external ID from the provider
   status           VoiceProfileStatus @default(PENDING)
   sampleUrls       String[]           @default([]) // raw uploaded samples
@@ -209,6 +210,7 @@ model VoiceProfile {
   trainingId       String? // Replicate training id (polled via GET /voices/:id/training)
   destinationModel String? // "user/model" destination in the artist's Replicate account (keep private)
   trainedVersion   String? // version identifier once training succeeds
+  voiceDatasetId   String?
   trainingMeta     Json? // {datasetZipUrl, trainer, at, externalDataset?, output?, error?}
   createdAt        DateTime           @default(now()) @db.Timestamptz(6)
 
@@ -216,9 +218,31 @@ model VoiceProfile {
   artist       Artist        @relation(fields: [artistId], references: [id], onDelete: Cascade)
   consent      VoiceConsent  @relation(fields: [consentId], references: [id])
   vocalRenders VocalRender[]
+  voiceDataset VoiceDataset? @relation(fields: [voiceDatasetId], references: [id], onDelete: SetNull)
 
   @@index([workspaceId])
   @@index([artistId])
+  @@index([voiceDatasetId])
+}
+
+model VoiceDataset {
+  id           String   @id @default(cuid())
+  workspaceId  String
+  name         String
+  url          String   @unique
+  contentHash  String
+  segments     Int
+  totalSeconds Int
+  qualityState String // "passed" | "failed"
+  verifiedAt   DateTime @db.Timestamptz(6)
+  meta         Json?
+  createdAt    DateTime @default(now()) @db.Timestamptz(6)
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  voiceProfiles VoiceProfile[]
+
+  @@unique([workspaceId, contentHash])
+  @@index([workspaceId, qualityState])
 }
 
 enum VoiceProfileStatus {
@@ -533,6 +557,10 @@ model BeatAsset {
   keySignature String?
   duration     Float?
   provider     String
+  assetKind    String   @default("instrumental") // instrumental | full_mix
+  qualityState String   @default("unmeasured") // passed | weak | failed | unmeasured
+  contentHash  String?
+  verifiedAt   DateTime? @db.Timestamptz(6)
   meta         Json?
   approved     Boolean  @default(false)
   createdAt    DateTime @default(now()) @db.Timestamptz(6)
@@ -544,6 +572,8 @@ model BeatAsset {
   referenceUsages ReferenceUsage[]
 
   @@index([projectId])
+  @@index([songId, assetKind, qualityState, approved])
+  @@index([projectId, contentHash])
 }
 
 model Stem {
@@ -571,6 +601,12 @@ model VocalRender {
   pitchCorrection Json? // {strength:0.8, retune:0.2}
   effects         Json? // {reverb, delay, doubler, compressor presets}
   language        String?
+  assetKind       String   @default("isolated_vocal") // isolated_vocal | spoken_guide | full_mix
+  performanceSource String @default("unknown") // artist_upload | artist_import | voice_conversion | score_synth | tts_guide | stem_separation | unknown
+  qualityState    String   @default("unmeasured") // pending | passed | failed | unmeasured
+  contentHash     String?
+  verifiedAt      DateTime? @db.Timestamptz(6)
+  alignment       Json? // measured lyric/phoneme alignment only; null means not measured
   meta            Json?
   approved        Boolean  @default(false)
   createdAt       DateTime @default(now()) @db.Timestamptz(6)
@@ -580,6 +616,8 @@ model VocalRender {
   voiceProfile VoiceProfile? @relation(fields: [voiceProfileId], references: [id])
 
   @@index([projectId])
+  @@index([songId, assetKind, qualityState, approved])
+  @@index([projectId, contentHash])
 }
 
 model Mix {
@@ -590,6 +628,10 @@ model Mix {
   url       String
   notes     String?
   settings  Json? // per-track mixer console state (faders/eq/comp/reverb)
+  qualityState String   @default("unmeasured") // passed | failed | unmeasured
+  contentHash  String?
+  verifiedAt   DateTime? @db.Timestamptz(6)
+  meta         Json?
   approved  Boolean  @default(false)
   createdAt DateTime @default(now()) @db.Timestamptz(6)
 
@@ -598,6 +640,7 @@ model Mix {
   masters Master[]
 
   @@index([projectId])
+  @@index([songId, qualityState, approved])
 }
 
 model Master {

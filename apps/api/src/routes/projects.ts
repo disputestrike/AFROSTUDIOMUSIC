@@ -68,7 +68,15 @@ export default async function projects(app: FastifyInstance) {
         lyrics: { orderBy: { createdAt: 'desc' }, take: 5 },
         songs: { orderBy: { createdAt: 'desc' } },
         beats: { take: 5, orderBy: { createdAt: 'desc' } },
-        vocalRenders: { take: 5, orderBy: { createdAt: 'desc' } },
+        vocalRenders: {
+          where: {
+            assetKind: 'isolated_vocal',
+            qualityState: 'passed',
+            approved: true,
+          },
+          take: 5,
+          orderBy: { createdAt: 'desc' },
+        },
         mixes: { take: 5, orderBy: { createdAt: 'desc' } },
         masters: { take: 5, orderBy: { createdAt: 'desc' } },
         imageAssets: { take: 10, orderBy: { createdAt: 'desc' } },

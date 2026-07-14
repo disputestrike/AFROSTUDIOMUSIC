@@ -3,8 +3,8 @@
 /**
  * Bring-your-own-audio panel for a project.
  *
- *  • Upload a beat / instrumental / full song / vocal — stored authentic,
- *    auto-approved, used verbatim through mix + master. Nothing is invented.
+ *  • Upload a beat / instrumental / full song / vocal — stored authentic and
+ *    measured before it can enter mix + master. Nothing is invented.
  *  • Record a vocal straight in the browser (MediaRecorder).
  *  • Import from a URL you have the RIGHTS to (own files, direct links,
  *    royalty-free / Creative-Commons). Streaming-platform rips are refused.
@@ -39,18 +39,30 @@ export function StudioUpload({ projectId }: { projectId: string }) {
   const [importUrl, setImportUrl] = useState('');
   const [importKind, setImportKind] = useState<'beat' | 'instrumental' | 'vocal' | 'song' | 'reference'>('beat');
 
+  async function waitForQc(jobId: string): Promise<void> {
+    for (let i = 0; i < 60; i += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 2_000));
+      const job = await api.get<{ status: string; errorJson?: { message?: string } }>(`/jobs/${jobId}`);
+      if (job.status === 'SUCCEEDED') return;
+      if (job.status === 'FAILED') throw new Error(job.errorJson?.message || 'Audio QC failed.');
+    }
+    throw new Error('Audio QC is still running. Refresh shortly.');
+  }
+
   // ---- beat / instrumental upload ----------------------------------------
   async function uploadBeatLike(file: File, kind: 'beat' | 'instrumental') {
     set(kind, { kind: 'uploading', pct: 0 });
     try {
       const { key } = await api.uploadToStorage(file, 'beat', (f) => set(kind, { kind: 'uploading', pct: Math.round(f * 100) }));
-      await api.post(`/projects/${projectId}/beats/upload`, {
+      const queued = await api.post<{ jobId: string }>(`/projects/${projectId}/beats/upload`, {
         key, format: guessFormat(file.name), title: baseName(file.name),
         instrumental: kind === 'instrumental',
         ...(bpm ? { bpm: Number(bpm) } : {}),
         ...(keySig ? { keySignature: keySig } : {}),
       });
-      set(kind, { kind: 'done', msg: `${cap(kind)} added — authentic & auto-approved. Finish the song around it in Studio Chat.` });
+      set(kind, { kind: 'uploading', msg: `Checking the ${kind} before it enters the mixer…` });
+      await waitForQc(queued.jobId);
+      set(kind, { kind: 'done', msg: `${cap(kind)} passed QC. Finish the song around it in Studio Chat.` });
       router.refresh();
     } catch (e) {
       set(kind, { kind: 'error', msg: (e as Error).message });
@@ -75,8 +87,12 @@ export function StudioUpload({ projectId }: { projectId: string }) {
     set('vocal', { kind: 'uploading', pct: 0 });
     try {
       const { key } = await api.uploadToStorage(file, 'vocal', (f) => set('vocal', { kind: 'uploading', pct: Math.round(f * 100) }));
-      await api.post(`/projects/${projectId}/vocals/upload`, { key, role: 'lead' });
-      set('vocal', { kind: 'done', msg: `${label} added as lead vocal — mixed verbatim.` });
+      await api.post(`/projects/${projectId}/vocals/upload`, {
+        key,
+        role: 'lead',
+        isolationConfirmed: true,
+      });
+      set('vocal', { kind: 'done', msg: `${label} uploaded. Vocal QC is running before it can enter a mix.` });
       router.refresh();
     } catch (e) {
       set('vocal', { kind: 'error', msg: (e as Error).message });
@@ -110,12 +126,24 @@ export function StudioUpload({ projectId }: { projectId: string }) {
     if (!importUrl.trim()) return;
     set('import', { kind: 'uploading' });
     try {
-      const r = await api.post<{ kind: string }>(`/uploads/import`, {
+      const r = await api.post<{ kind: string; jobId?: string }>(`/uploads/import`, {
         projectId, url: importUrl.trim(), kind: importKind,
+        ...(importKind === 'vocal' ? { isolationConfirmed: true } : {}),
         ...(bpm && (importKind === 'beat' || importKind === 'instrumental') ? { bpm: Number(bpm) } : {}),
         ...(keySig && (importKind === 'beat' || importKind === 'instrumental') ? { keySignature: keySig } : {}),
       });
-      set('import', { kind: 'done', msg: `Imported as ${r.kind}.` });
+      if ((r.kind === 'beat' || r.kind === 'instrumental') && r.jobId) {
+        set('import', { kind: 'uploading', msg: 'Import stored. Checking the audio before it enters the mixer…' });
+        await waitForQc(r.jobId);
+      }
+      set('import', {
+        kind: 'done',
+        msg: r.kind === 'vocal'
+          ? 'Vocal imported. QC is running before it can enter a mix.'
+          : (r.kind === 'beat' || r.kind === 'instrumental')
+            ? `Imported ${r.kind} passed QC.`
+            : `Imported as ${r.kind}.`,
+      });
       setImportUrl('');
       router.refresh();
     } catch (e) {

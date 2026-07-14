@@ -47,7 +47,11 @@ async function logStemsRun(workspaceId: string | undefined, mode: string, purpos
 }
 
 /** Run htdemucs locally; returns the SAME shape as the paid separateStems. */
-export async function separateStemsLocal(opts: { audioUrl: string; mode?: 'instrumental' | 'full' }): Promise<StemSeparationResult> {
+export async function separateStemsLocal(opts: {
+  audioUrl: string;
+  mode?: 'instrumental' | 'full';
+  workspaceId?: string;
+}): Promise<StemSeparationResult> {
   const dir = await mkdtemp(join(tmpdir(), 'demucs-'));
   try {
     const src = join(dir, 'input.wav');
@@ -81,7 +85,13 @@ export async function separateStemsLocal(opts: { audioUrl: string; mode?: 'instr
       // non-vocals stem IS the instrumental.
       const role = stemName === 'no_vocals' ? 'instrumental' : stemName;
       const bytes = await readFile(join(outDir, f));
-      const url = await uploadBytes({ workspaceId: 'local-stems', kind: 'stems', bytes, contentType: 'audio/wav', ext: 'wav' });
+      const url = await uploadBytes({
+        workspaceId: opts.workspaceId ?? 'system',
+        kind: 'stems',
+        bytes,
+        contentType: 'audio/wav',
+        ext: 'wav',
+      });
       stems.push({ role, url });
     }
     if (!stems.length) throw new Error('local demucs produced no stems');
@@ -115,7 +125,11 @@ export async function separateStemsRouted(opts: {
   const started = Date.now();
   if (wantLocal && (await localDemucsAvailable())) {
     try {
-      const res = await separateStemsLocal({ audioUrl: opts.audioUrl, mode: opts.mode });
+      const res = await separateStemsLocal({
+        audioUrl: opts.audioUrl,
+        mode: opts.mode,
+        workspaceId: opts.workspaceId,
+      });
       await logStemsRun(opts.workspaceId, 'local', opts.purpose, Date.now() - started, 0, true);
       return { ...res, engine: 'local' };
     } catch (err) {

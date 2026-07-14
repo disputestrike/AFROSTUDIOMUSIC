@@ -16,10 +16,12 @@ import { processSnippet } from './processors/snippet';
 import { processStems } from './processors/stems';
 import { processVoice } from './processors/voice';
 import { processVoiceProfile } from './processors/voice-profile';
-import { processVoiceDataset } from './processors/voice-dataset';
+import { processVoiceDataset, processVoiceDatasetPurgeBackfill } from './processors/voice-dataset';
 import { processSingConvert } from './processors/voice-sing';
 import { processVoiceCleanup } from './processors/voice-cleanup';
 import { processVoiceRehost } from './processors/voice-rehost';
+import { processVocalInspect, processVocalQcBackfill } from './processors/vocal-inspect';
+import { processBeatInspect, processBeatQcBackfill } from './processors/beat-inspect';
 import { processImage } from './processors/image';
 import { processVideo } from './processors/video';
 import { processMix } from './processors/mix';
@@ -67,7 +69,7 @@ const secretsReady = process.env.ENCRYPTION_KEY
   : Promise.resolve();
 
 // Job names that belong to the background LAKE lane (never the render lane).
-const LAKE_JOBS = new Set(['deep-measure', 'nightly-compound', 'measure-backfill', 'learn-backfill', 'listen-back', 'refile-references', 'mine-lexicon', 'lexicon-research', 'wiktionary-harvest', 'wiktionary-burst', 'lexicon-gloss', 'lexicon-verify']);
+const LAKE_JOBS = new Set(['deep-measure', 'nightly-compound', 'measure-backfill', 'learn-backfill', 'listen-back', 'refile-references', 'mine-lexicon', 'lexicon-research', 'wiktionary-harvest', 'wiktionary-burst', 'lexicon-gloss', 'lexicon-verify', 'vocal-qc-backfill', 'beat-qc-backfill', 'voice-dataset-purge-backfill']);
 
 if (process.env.SENTRY_DSN) {
   Sentry.init({
@@ -144,6 +146,7 @@ const workers = [
     else if (job.name === 'produce') await processProduce(job.data as never);
     else if (job.name === 'song-edit') await processSongEdit(job.data as never);
     else if (job.name === 'synth-material') await processSynthMaterial(job.data as never);
+    else if (job.name === 'inspect-beat') await processBeatInspect(job.data as never);
     // BACKGROUND work found on the render queue (legacy enqueues) migrates to
     // the LAKE queue — the render lane is for the user ("the 10-minute song").
     else if (LAKE_JOBS.has(job.name)) await enqueueJob('lake', job.name, job.data);
@@ -179,6 +182,9 @@ const workers = [
       else if (job.name === 'wiktionary-burst') await processWiktionaryHarvest({ all: true });
       else if (job.name === 'lexicon-gloss') await processGlossPass();
       else if (job.name === 'lexicon-verify') await processVerifyLexicon();
+      else if (job.name === 'vocal-qc-backfill') await processVocalQcBackfill();
+      else if (job.name === 'beat-qc-backfill') await processBeatQcBackfill();
+      else if (job.name === 'voice-dataset-purge-backfill') await processVoiceDatasetPurgeBackfill();
       // Voice DATASET BUILDER: local ffmpeg convert/split/zip — background lane
       // by design (CPU work, never blocks a render; no LLM, so the bulk brain
       // context wrapper is a no-op for it).
@@ -194,6 +200,7 @@ const workers = [
   makeWorker('voice', async (job: { data: never; name: string }) => {
     if (job.name === 'setup-voice-profile') await processVoiceProfile(job.data as never);
     else if (job.name === 'sing-convert') await processSingConvert(job.data as never);
+    else if (job.name === 'inspect-vocal') await processVocalInspect(job.data as never);
     else if (job.name === 'rehost-voice-model') await processVoiceRehost(job.data as never);
     else if (job.name === 'voice-cleanup') await processVoiceCleanup(job.data as never);
     else await processVoice(job.data as never);
@@ -296,6 +303,22 @@ process.on('SIGTERM', () => void shutdown('SIGTERM'));
 process.on('SIGINT', () => void shutdown('SIGINT'));
 
 log.info('worker up, listening on queues: music, voice, image, video, mix, master, export, cron');
+
+// Deploy maintenance is not an autonomy feature: historical vocal rows must be
+// measured before any of them can re-enter a mix. The dated id makes this once
+// per day across replicas while leaving failed work retryable the next day.
+void enqueueJob('lake', 'vocal-qc-backfill', {}, {
+  delayMs: 60_000,
+  jobId: `vocal-qc-backfill-${new Date().toISOString().slice(0, 10)}`,
+}).catch((err) => log.warn({ err }, 'vocal QC backfill could not be queued'));
+void enqueueJob('lake', 'beat-qc-backfill', {}, {
+  delayMs: 75_000,
+  jobId: `beat-qc-backfill-${new Date().toISOString().slice(0, 10)}`,
+}).catch((err) => log.warn({ err }, 'beat QC backfill could not be queued'));
+void enqueueJob('lake', 'voice-dataset-purge-backfill', {}, {
+  delayMs: 90_000,
+  jobId: `voice-dataset-purge-${new Date().toISOString().slice(0, 10)}`,
+}).catch((err) => log.warn({ err }, 'voice dataset purge backfill could not be queued'));
 
 // PATCH 2 — announce the log-drum TRUTH-GATE status once at boot. Never silent: the
 // operator must always know whether the log drum is calibrated (voting in lane scores)

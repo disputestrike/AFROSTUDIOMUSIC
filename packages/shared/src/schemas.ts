@@ -189,11 +189,13 @@ export const voiceTrainInputSchema = z.object({
 
 /** DATASET BUILDER: raw recordings → a trainer-ready zip (layout
  *  `dataset/<name>/split_<i>.wav`, 48k mono, ~10s segments) — exactly what the
- *  default trainer (replicate/train-rvc-model) expects. 10–20 minutes of clean
- *  solo vocals make the best voice. */
+ *  default trainer (replicate/train-rvc-model) expects. Two minutes is the
+ *  measured minimum; 10–20 minutes of clean solo vocals is the quality target. */
 export const voiceDatasetInputSchema = z.object({
   name: z.string().min(1).max(60),
   sampleUrls: z.array(z.string().url()).min(1).max(20),
+  isolationConfirmed: z.literal(true),
+  purgeSourceSamples: z.boolean().default(false),
 }).strict();
 
 /** SING WITH MY VOICE: the trained voice performs an existing track. HONEST:
@@ -204,6 +206,7 @@ export const voiceDatasetInputSchema = z.object({
 export const voiceSingInputSchema = z.object({
   songId: z.string().cuid().optional(),
   songUrl: z.string().url().optional(),
+  rightsConfirmed: z.boolean().optional(),
   pitchChange: z.enum(['no-change', 'male-to-female', 'female-to-male']).default('no-change'),
   // Realism knobs (all optional — studio realism defaults apply when omitted).
   tuning: z
@@ -348,6 +351,7 @@ export const attachVocalUploadSchema = z.object({
   role: z.enum(['lead', 'double', 'ad-lib', 'harmony']).default('lead'),
   durationS: z.number().min(1).max(1200).optional(),
   language: langSchema.optional(),
+  isolationConfirmed: z.literal(true),
 });
 
 // Upload a FINISHED song / full mix — stored as a mix and (by default) sent
@@ -376,6 +380,7 @@ export const importUrlSchema = z.object({
   bpm: z.number().int().min(40).max(220).optional(),
   keySignature: z.string().max(12).optional(),
   role: z.enum(['lead', 'double', 'ad-lib', 'harmony']).optional(),
+  isolationConfirmed: z.boolean().optional(),
   title: z.string().max(120).optional(),
   /** kind 'song' only: learn + harvest WITHOUT filing a catalog Song — training
    *  uploads must never appear in the artist's working catalog. */

@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { openSecret, prisma } from '@afrohit/db';
 import { musicAdapter } from '@afrohit/ai';
 import { markFailed, markRunning, markSucceeded } from '../lib/jobs';
@@ -429,12 +430,15 @@ export async function processAssembleBeat(p: AssemblePayload) {
     if (!qc) {
       throw new Error('assembled take could not be technically measured — nothing shipped');
     }
-    if (qc.verdict === 'fail') {
+    if (qc.verdict !== 'pass') {
       throw new Error(`assembled take failed QC (${(qc.flags ?? []).join(', ') || 'broken audio'}) — nothing shipped`);
     }
     for (const staleUrl of attemptedUrls.filter((candidate) => candidate !== url)) {
       await deleteObjectByUrl(staleUrl).catch(() => {});
     }
+    const assembledContentHash = createHash('sha256')
+      .update(await downloadToBuffer(url))
+      .digest('hex');
 
     const usedPicks = picks.filter((pick) => pick.role !== 'fill' || fillApplied);
     const assemblyLog = usedPicks.map((pick) => ({
@@ -456,6 +460,10 @@ export async function processAssembleBeat(p: AssemblePayload) {
           bpm: p.bpm,
           duration: qc.durationS,
           provider: 'material',
+          assetKind: 'instrumental',
+          qualityState: 'passed',
+          contentHash: assembledContentHash,
+          verifiedAt: new Date(),
           approved: true,
           meta: {
             assembled: true,

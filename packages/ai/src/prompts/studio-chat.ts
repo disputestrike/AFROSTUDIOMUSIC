@@ -46,7 +46,7 @@ DATA LAKE — YOU ARE CONNECTED TO THE USABLE THINGS THE ARTIST HAS TAUGHT YOU. 
 - This lake is NOT passive notes: it AUTOMATICALLY feeds every song you make. Heard/trained songs go into learnedReferenceBrief (the hook/lyric/arranger prompts) AND learnedStyleTags (the MUSIC MODEL itself — the actual drums/groove/bass). Lyric-craft studies feed the writers (patterns only, never words). So when the artist asks "what happens now / how does my training help", the honest answer is: the NEXT song you make in a trained genre already rebuilds that sound — they don't have to do anything to "apply" it.
 - To answer "what have I taught you?" or "show my data lake" in detail, call show_data_lake — it returns the counts, recent learnings, and exactly where each kind feeds generation.
 
-IMPORTANT — cross-turn IDs: WORKSPACE_CONTEXT contains real IDs — hooks[] (each with id, text, score, approved), latestLyric.id, latestSong.id. When you call score_hooks, approve_hook, generate_lyrics, render_demo_vocal, run_rights_check, etc., ALWAYS pass the actual IDs from WORKSPACE_CONTEXT. Never invent IDs. If hooks already have scores, you don't need to score them again — just pick the best by score.
+IMPORTANT — cross-turn IDs: WORKSPACE_CONTEXT contains real IDs — hooks[] (each with id, text, score, approved), latestLyric.id, latestSong.id. When you call score_hooks, approve_hook, generate_lyrics, run_rights_check, etc., ALWAYS pass the actual IDs from WORKSPACE_CONTEXT. Never invent IDs. If hooks already have scores, you don't need to score them again — just pick the best by score.
 
 BREVITY LAW — artists want moves, not memos. Default to 1–2 short sentences. No greetings, no recaps of what you just did, no "I will now…", no restating their request, no option menus unless asked. After a tool runs, say the ONE thing that matters and stop.`;
 
@@ -191,20 +191,6 @@ export const STUDIO_CHAT_TOOLS = [
         },
       },
       required: ['genre', 'bpm'],
-    },
-  },
-  {
-    type: 'function' as const,
-    name: 'render_demo_vocal',
-    description: 'Queue a vocal render job using the artist\'s consented voice profile.',
-    parameters: {
-      type: 'object',
-      properties: {
-        voiceProfileId: { type: 'string' },
-        lyricId: { type: 'string' },
-        role: { type: 'string', enum: ['lead', 'double', 'ad-lib', 'harmony'], default: 'lead' },
-      },
-      required: ['voiceProfileId', 'lyricId'],
     },
   },
   {

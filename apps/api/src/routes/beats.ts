@@ -12,6 +12,7 @@ import { createQueuedProviderJob, scopedRequestKey } from '../lib/queued-job';
 import { publicUrlFor, verifyUploadedAudio } from '../lib/storage';
 import { voiceVocalTag, languageVocalTag } from '../services/chat-tools';
 import { musicRouteCapabilities, validateMusicRoute } from '../lib/music-capabilities';
+import { registerBeatForInspection } from '../lib/beat-ingest';
 
 export default async function beats(app: FastifyInstance) {
   app.get<{ Params: { projectId: string } }>(
@@ -328,27 +329,25 @@ export default async function beats(app: FastifyInstance) {
         ).id;
 
       const uploadUrl = publicUrlFor(uploaded.key);
-      const beat =
-        (await prisma.beatAsset.findFirst({ where: { projectId: project.id, songId, url: uploadUrl } })) ??
-        (await prisma.beatAsset.create({
-          data: {
-          projectId: project.id,
-          songId,
-          url: uploadUrl,
-          format: input.format,
-          bpm: input.bpm ?? null,
-          keySignature: input.keySignature ?? null,
-          duration: input.durationS ?? null,
-          provider: 'upload',
-          approved: true, // the artist's own beat is authentic — auto-approved
-          meta: {
-            uploaded: true,
-            source: 'artist_upload',
-            title: input.title ?? null,
-            instrumental: input.instrumental ?? false,
-          },
-          },
-        }));
+      const { beat, job: qcJob } = await registerBeatForInspection({
+        app,
+        workspaceId,
+        projectId: project.id,
+        songId,
+        url: uploadUrl,
+        format: input.format,
+        provider: 'upload',
+        bpm: input.bpm ?? null,
+        keySignature: input.keySignature ?? null,
+        claimedDurationS: input.durationS ?? null,
+        sourceMeta: {
+          uploaded: true,
+          source: 'artist_upload',
+          title: input.title ?? null,
+          instrumental: true,
+          rightsBasis: 'user-attested',
+        },
+      });
 
       // Auto-harvest the artist's own uploaded beat into reusable role loops.
       await enqueueHarvest(app, { workspaceId, projectId: project.id, beatId: beat.id, sourceUrl: beat.url });
@@ -356,8 +355,8 @@ export default async function beats(app: FastifyInstance) {
       // beat joins the learned lake as a SoundReference — genre hint = the
       // project's genre, read by the analyze processor. Charged; best-effort.
       await enqueueLearn(app, { workspaceId, projectId: project.id, url: beat.url, source: 'beat-upload' });
-      reply.code(201);
-      return { ...beat, songId };
+      reply.code(202);
+      return { ...beat, songId, jobId: qcJob.jobId, qualityState: 'pending' };
     }
   );
 }

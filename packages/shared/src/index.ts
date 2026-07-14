@@ -22,6 +22,8 @@ export * from './learned-select';
 export * from './expert-priors';
 export * from './lyric-scorecard';
 export * from './melody-score';
+export * from './vocal-assets';
+export * from './lyric-audio-alignment';
 export * from './title-law';
 export * from './lyric-qa';
 export * from './contamination';

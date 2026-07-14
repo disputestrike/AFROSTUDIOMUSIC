@@ -18,6 +18,8 @@
 import { responsesJson } from './providers/text';
 import { generateJson } from './generate';
 import { replicateToken } from './providers/music';
+import { getOpenAI, MODELS } from './openai-client';
+import { toFile } from 'openai';
 
 export interface AudioProfile {
   bpm: number | null;
@@ -90,7 +92,7 @@ function extractText(output: unknown): string {
  * "Thank you for watching" / "Please subscribe") so an instrumental beat isn't
  * mis-read as having vocals and fed to the model as bogus "lyrics".
  */
-function cleanTranscript(t: string): string {
+export function cleanAudioTranscript(t: string): string {
   return t
     .replace(/\[[^\]]*\]/g, ' ') // [BLANK_AUDIO], [Applause], [Music]
     .replace(/\((?:music|applause|inaudible|foreign|silence|instrumental)[^)]*\)/gi, ' ')
@@ -145,7 +147,10 @@ async function runPrediction(
  * LAYER 1 — Transcribe (Whisper). Reliable + always warm. Returns the lyrics,
  * detected language, and vocal-presence. Non-fatal: null on any failure.
  */
-async function transcribe(url: string, auth: Record<string, string>): Promise<{ text: string; language: string | null } | null> {
+async function transcribeReplicate(
+  url: string,
+  auth: Record<string, string>,
+): Promise<{ text: string; language: string | null; provider: 'replicate'; model: string } | null> {
   try {
     const slug = process.env.REPLICATE_TRANSCRIBE_MODEL ?? 'openai/whisper';
     const version = process.env.REPLICATE_TRANSCRIBE_VERSION ?? (await latestVersion(slug, auth));
@@ -158,10 +163,60 @@ async function transcribe(url: string, auth: Record<string, string>): Promise<{ 
       const o = output as { detected_language?: string; language?: string };
       language = o.detected_language ?? o.language ?? null;
     }
-    return { text, language };
+    return { text, language, provider: 'replicate', model: slug };
   } catch {
     return null;
   }
+}
+
+export interface AudioTranscription {
+  text: string;
+  language: string | null;
+  provider: 'openai' | 'replicate';
+  model: string;
+}
+
+/** Independent speech-to-text evidence for finished-audio verification. OpenAI
+ * receives bytes, Replicate receives a short-lived URL; either path can fail
+ * over to the other, and neither ever invents a successful empty transcript. */
+export async function transcribeAudio(opts: {
+  url?: string;
+  bytes?: Uint8Array;
+  filename?: string;
+  replicateApiKey?: string;
+}): Promise<AudioTranscription | null> {
+  const preference = (process.env.AUDIO_TRANSCRIBE_PROVIDER ?? 'auto').toLowerCase();
+  const tryOpenAI = async (): Promise<AudioTranscription | null> => {
+    if (!opts.bytes?.byteLength || !process.env.OPENAI_API_KEY) return null;
+    try {
+      const response = await getOpenAI().audio.transcriptions.create({
+        file: await toFile(opts.bytes, opts.filename ?? 'audio.mp3'),
+        model: MODELS.transcribe,
+        response_format: 'json',
+        temperature: 0,
+      });
+      const text = cleanAudioTranscript(typeof response === 'string' ? response : response.text ?? '');
+      return text ? { text, language: null, provider: 'openai', model: MODELS.transcribe } : null;
+    } catch {
+      return null;
+    }
+  };
+  const tryReplicate = async (): Promise<AudioTranscription | null> => {
+    const token = opts.replicateApiKey || replicateToken();
+    if (!opts.url || !token) return null;
+    const result = await transcribeReplicate(opts.url, { authorization: `Bearer ${token}` });
+    if (!result?.text) return null;
+    return { ...result, text: cleanAudioTranscript(result.text) };
+  };
+
+  const order = preference === 'replicate'
+    ? [tryReplicate, tryOpenAI]
+    : [tryOpenAI, tryReplicate];
+  for (const attempt of order) {
+    const result = await attempt();
+    if (result?.text) return result;
+  }
+  return null;
 }
 
 /**
@@ -195,13 +250,13 @@ export async function analyzeAudio(url: string, apiKey?: string, ctx?: AnalyzeCo
   const auth = { authorization: `Bearer ${token}` };
 
   // Run the two listening layers in parallel; both are non-fatal.
-  const [transcript, richText] = await Promise.all([transcribe(url, auth), richDescribe(url, auth)]);
+  const [transcript, richText] = await Promise.all([transcribeReplicate(url, auth), richDescribe(url, auth)]);
 
   const m = ctx?.metrics ?? {};
   // Clean Whisper's hallucinated filler before deciding a vocal is present, and
   // require a real amount of text (short hallucinations like "Thank you." survive
   // an 8-char check — 12 + de-filler is much harder to false-trigger).
-  const transcriptText = transcript?.text ? cleanTranscript(transcript.text) : '';
+  const transcriptText = transcript?.text ? cleanAudioTranscript(transcript.text) : '';
   const hasVocal = transcriptText.replace(/\s/g, '').length > 12;
 
   // Assemble every objective signal we actually observed — this is the honest

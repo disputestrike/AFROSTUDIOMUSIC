@@ -86,6 +86,7 @@ const TS: Array<[string, string]> = [
   ['Training isolation (lane/pin/zap)', 'test-training-isolation.ts'],
   ['Singing brain (sung-form laws)', 'test-singing-brain.ts'],
   ['Melody brain (composed, not guessed)', 'test-melody-brain.ts'],
+  ['Vocal assets + mix truth', 'test-vocal-assets.ts'],
   ['Title law (brand, not sentence)', 'test-title-law.ts'],
   ['Catalogue QA (blocks the garbage)', 'test-lyric-qa.ts'],
   ['SONG_STATE (no AI "mastered")', 'test-song-state.ts'],

@@ -19,6 +19,7 @@ import { presignAssetRef } from '../lib/storage';
 import { safeFetch } from '../lib/url-guard';
 import { queueAssetDeletion, songAssetRefs } from '../lib/asset-lifecycle';
 import { operationErrorBody, runIdempotentOperation } from '../lib/idempotent-operation';
+import { registerBeatForInspection } from '../lib/beat-ingest';
 
 /** Freshest playable audio for a song: the most RECENT of master/mix/beat by
  *  createdAt — so a re-sing (new beat) or a re-master (new master) both become
@@ -623,31 +624,70 @@ export default async function songs(app: FastifyInstance) {
     const { workspaceId } = requireAuth(req);
     const song = await prisma.song.findFirst({
       where: { id: req.params.id, workspaceId },
-      include: { beats: { orderBy: { createdAt: 'desc' }, take: 1, include: { stems: true } }, project: true },
+      include: { beats: { orderBy: { createdAt: 'desc' }, take: 20, include: { stems: true } }, project: true },
     });
     if (!song) return reply.code(404).send({ error: 'song_not_found' });
-    const beat = song.beats[0];
+    const beat = song.beats.find((candidate: { assetKind: string; qualityState: string; approved: boolean; stems: Array<{ role: string }> }) =>
+      candidate.stems.some((stem: { role: string }) => stem.role === 'instrumental')
+      || (candidate.assetKind === 'instrumental' && candidate.qualityState === 'passed' && candidate.approved),
+    );
     if (!beat) return reply.code(400).send({ error: 'no_beat_to_reuse', message: 'This song has no beat yet.' });
 
     const targetProjectId = (req.body?.targetProjectId as string) || song.projectId;
     const project = await prisma.project.findFirst({ where: { id: targetProjectId, workspaceId }, select: { id: true } });
     if (!project) return reply.code(404).send({ error: 'target_project_not_found' });
 
-    // "Reuse the BEAT" should reuse a clean INSTRUMENTAL when we have one (from a
-    // prior stem separation) — not the full song with baked-in vocals. Fall back
-    // to the beat audio otherwise (and tell the user so they can run stems first).
+    // "Reuse the BEAT" means a measured instrumental, never a full song with
+    // baked-in vocals. A separated stem is re-certified before the mixer sees it.
     const instrumental = beat.stems.find((s: { role: string; url: string }) => s.role === 'instrumental');
+    const sourceIsCertifiedInstrumental = beat.assetKind === 'instrumental'
+      && beat.qualityState === 'passed'
+      && !!beat.contentHash
+      && !!beat.verifiedAt
+      && beat.approved;
+    if (!instrumental && !sourceIsCertifiedInstrumental) {
+      return reply.code(409).send({
+        error: 'verified_instrumental_required',
+        message: 'Extract the instrumental first; a complete song cannot be reused as a backing beat.',
+      });
+    }
     const reuseUrl = instrumental?.url ?? beat.url;
-    const cleanInstrumental = !!instrumental;
 
     const newSong = await prisma.song.create({
       data: { workspaceId, projectId: project.id, title: (req.body?.title as string) || `${song.title} (reuse beat)`, status: 'SKETCH' },
     });
-    const newBeat = await prisma.beatAsset.create({
+    const pendingCertification = !!instrumental;
+    const registered = pendingCertification
+      ? await registerBeatForInspection({
+          app,
+          workspaceId,
+          projectId: project.id,
+          songId: newSong.id,
+          url: reuseUrl,
+          format: instrumental!.format ?? 'wav',
+          provider: 'instrumental-reuse',
+          bpm: beat.bpm,
+          keySignature: beat.keySignature,
+          claimedDurationS: instrumental!.duration ?? beat.duration,
+          sourceMeta: { reusedFromBeat: beat.id, instrumentalStemId: instrumental!.id },
+        })
+      : null;
+    const newBeat = registered?.beat ?? await prisma.beatAsset.create({
       data: {
-        projectId: project.id, songId: newSong.id, url: reuseUrl, format: cleanInstrumental ? 'mp3' : beat.format,
-        bpm: beat.bpm, keySignature: beat.keySignature, duration: beat.duration,
-        provider: beat.provider, meta: { reusedFromBeat: beat.id, cleanInstrumental } as never, approved: true,
+        projectId: project.id,
+        songId: newSong.id,
+        url: reuseUrl,
+        format: beat.format,
+        bpm: beat.bpm,
+        keySignature: beat.keySignature,
+        duration: beat.duration,
+        provider: beat.provider,
+        assetKind: 'instrumental',
+        qualityState: 'passed',
+        contentHash: beat.contentHash,
+        verifiedAt: beat.verifiedAt,
+        meta: { reusedFromBeat: beat.id, cleanInstrumental: true } as never,
+        approved: true,
       },
     });
     // Carry over the non-vocal stems so the reused beat is remixable.
@@ -655,15 +695,17 @@ export default async function songs(app: FastifyInstance) {
     if (carry.length) {
       await prisma.$transaction(carry.map((st: { role: string; url: string; format: string; duration: number | null }) => prisma.stem.create({ data: { beatId: newBeat.id, role: st.role, url: st.url, format: st.format, duration: st.duration } })));
     }
-    reply.code(201);
+    reply.code(pendingCertification ? 202 : 201);
     return {
       songId: newSong.id,
       projectId: project.id,
       beatId: newBeat.id,
-      cleanInstrumental,
-      message: cleanInstrumental
-        ? 'Clean instrumental reused in a new song — write a fresh topline over it.'
-        : 'Beat reused (full track — run "Instrumental" on the original first for a vocals-free version).',
+      cleanInstrumental: true,
+      jobId: registered?.job.jobId,
+      qualityState: pendingCertification ? 'pending' : 'passed',
+      message: pendingCertification
+        ? 'Instrumental copied and queued for QC before it enters the mixer.'
+        : 'Verified instrumental reused in a new song — write a fresh topline over it.',
     };
   });
 
@@ -705,10 +747,12 @@ export default async function songs(app: FastifyInstance) {
     const { workspaceId } = requireAuth(req);
     const song = await prisma.song.findFirst({
       where: { id: req.params.id, workspaceId },
-      include: { beats: { orderBy: { createdAt: 'desc' }, take: 1, include: { stems: true } } },
+      include: { beats: { orderBy: { createdAt: 'desc' }, take: 20, include: { stems: true } } },
     });
     if (!song) return reply.code(404).send({ error: 'song_not_found' });
-    const beat = song.beats[0];
+    const beat = song.beats.find((candidate: { stems: Array<{ role: string }> }) =>
+      candidate.stems.some((stem: { role: string }) => stem.role === 'instrumental'),
+    );
     const instrumental = beat?.stems.find((s: { role: string; url: string; format: string; duration: number | null }) => s.role === 'instrumental');
     if (!instrumental) {
       return reply.code(400).send({ error: 'no_instrumental_stem', message: 'Run "Instrumental" on this song first to extract the clean instrumental, then reuse it.' });
@@ -721,15 +765,21 @@ export default async function songs(app: FastifyInstance) {
     const newSong = await prisma.song.create({
       data: { workspaceId, projectId: project.id, title: (req.body?.title as string) || `${song.title} (instrumental)`, status: 'SKETCH' },
     });
-    const newBeat = await prisma.beatAsset.create({
-      data: {
-        projectId: project.id, songId: newSong.id, url: instrumental.url, format: instrumental.format ?? 'mp3',
-        bpm: beat!.bpm, keySignature: beat!.keySignature, duration: instrumental.duration ?? beat!.duration,
-        provider: beat!.provider, meta: { reusedInstrumentalFromBeat: beat!.id, instrumental: true } as never, approved: true,
-      },
+    const { beat: newBeat, job } = await registerBeatForInspection({
+      app,
+      workspaceId,
+      projectId: project.id,
+      songId: newSong.id,
+      url: instrumental.url,
+      format: instrumental.format ?? 'wav',
+      bpm: beat!.bpm,
+      keySignature: beat!.keySignature,
+      claimedDurationS: instrumental.duration ?? beat!.duration,
+      provider: 'instrumental-reuse',
+      sourceMeta: { reusedInstrumentalFromBeat: beat!.id, instrumental: true },
     });
-    reply.code(201);
-    return { songId: newSong.id, projectId: project.id, beatId: newBeat.id, message: 'Clean instrumental reused in a new song — write fresh lyrics/vocals over it.' };
+    reply.code(202);
+    return { songId: newSong.id, projectId: project.id, beatId: newBeat.id, jobId: job.jobId, qualityState: 'pending', message: 'Instrumental copied and queued for QC before it enters the mixer.' };
   });
 
   // ---- Re-sing the song with the CURRENT (edited) lyrics — the surgical edit ----

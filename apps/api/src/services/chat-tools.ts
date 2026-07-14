@@ -135,8 +135,6 @@ async function dispatchChatTool(args: Ctx & { name: string; args: Record<string,
       return generateLyrics(ctx, String(a.hookId), Boolean(a.cleanVersion ?? true), a.languages as string[] | undefined, selectionsOf(a), a.genre ? String(a.genre) : undefined);
     case 'create_beat_job':
       return createBeatJob(ctx, a as never);
-    case 'render_demo_vocal':
-      return renderDemoVocal(ctx, a as never);
     case 'generate_cover_art':
       return generateCoverArt(ctx, a as never);
     case 'generate_video_storyboard':
@@ -935,37 +933,6 @@ async function createBeatJob(ctx: Ctx, a: { genre: string; fusionGenres?: string
     }),
   });
   return { jobId: job.jobId, replayed: job.replayed, status: 'queued', mode: a.withVocals ? 'full_song_with_vocals' : 'instrumental' };
-}
-
-async function renderDemoVocal(ctx: Ctx, a: { voiceProfileId: string; lyricId: string; role?: 'lead' | 'double' | 'ad-lib' | 'harmony' }) {
-  if (!ctx.projectId) return { error: 'no_project_in_thread' };
-  const voice = await prisma.voiceProfile.findFirstOrThrow({
-    where: { id: a.voiceProfileId, workspaceId: ctx.workspaceId, status: 'READY' },
-  });
-  const lyric = await prisma.lyricDraft.findFirstOrThrow({
-    where: { id: a.lyricId, projectId: ctx.projectId, approved: true },
-  });
-  const idempotencyKey = toolKey(ctx, 'voice-render');
-  const charge = await ctx.app.chargeCredits({ workspaceId: ctx.workspaceId, key: 'voice_render_full', refTable: 'Project', refId: ctx.projectId, idempotencyKey });
-  if (!charge.ok) return { error: 'insufficient_credits', ...charge };
-  const job = await createQueuedProviderJob({
-    app: ctx.app,
-    queue: ctx.app.queues.voice,
-    jobName: 'render-vocal',
-    workspaceId: ctx.workspaceId,
-    projectId: ctx.projectId,
-    kind: 'voice',
-    provider: voice.provider,
-    inputJson: a,
-    charge,
-    idempotencyKey,
-    payload: (jobId) => ({
-      jobId, workspaceId: ctx.workspaceId, projectId: ctx.projectId,
-      voiceProfileId: voice.id, providerVoiceId: voice.providerVoiceId,
-      lyricBody: lyric.cleanVersion ?? lyric.body, role: a.role ?? 'lead',
-    }),
-  });
-  return { jobId: job.jobId, replayed: job.replayed, status: 'queued' };
 }
 
 async function generateCoverArt(ctx: Ctx, a: { prompt: string; quality?: 'low' | 'medium' | 'high'; size?: '1024x1024' | '1024x1792' | '1792x1024' }) {

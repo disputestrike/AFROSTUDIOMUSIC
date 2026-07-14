@@ -25,7 +25,6 @@ export * from './lexicon-sa';
 export * from './lexicon-parity';
 export * from './chat-claude';
 export * from './voice-sing';
-export * from './singing-synth';
 // Multi-agent producer studio (owner spec 2026-07-12) — specialist agents.
 export * from './agents/music-producer';
 export * from './agents/vocal-producer';

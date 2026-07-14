@@ -21,6 +21,8 @@ interface ProviderCleanup {
   versionDeleted?: boolean;
   providerVoiceDeleted?: boolean;
   failedStorageRefs?: unknown;
+  datasetIds?: unknown;
+  datasetReceiptsDeleted?: boolean;
 }
 
 const RETRY_DELAYS_MS = [5_000, 15_000] as const;
@@ -38,6 +40,11 @@ function cleanupFrom(meta: unknown): ProviderCleanup {
 function storageRefs(cleanup: ProviderCleanup): string[] {
   if (!Array.isArray(cleanup.failedStorageRefs)) return [];
   return cleanup.failedStorageRefs.filter((value): value is string => typeof value === 'string');
+}
+
+function datasetIds(cleanup: ProviderCleanup): string[] {
+  if (!Array.isArray(cleanup.datasetIds)) return [];
+  return cleanup.datasetIds.filter((value): value is string => typeof value === 'string');
 }
 
 async function cancelTraining(
@@ -142,7 +149,18 @@ export async function processVoiceCleanup(payload: VoiceCleanupPayload): Promise
     const refs = storageRefs(cleanup);
     const deletions = await Promise.allSettled(refs.map((ref) => deleteObjectByUrl(ref)));
     const failedStorageRefs = refs.filter((_ref, index) => deletions[index]?.status === 'rejected');
-    const complete = canceled && versionDeleted && providerVoiceDeleted && failedStorageRefs.length === 0;
+    let datasetReceiptsDeleted = cleanup.datasetReceiptsDeleted === true || datasetIds(cleanup).length === 0;
+    if (!datasetReceiptsDeleted && failedStorageRefs.length === 0) {
+      try {
+        await prisma.voiceDataset.deleteMany({
+          where: { id: { in: datasetIds(cleanup) }, workspaceId: payload.workspaceId },
+        });
+        datasetReceiptsDeleted = true;
+      } catch {
+        datasetReceiptsDeleted = false;
+      }
+    }
+    const complete = canceled && versionDeleted && providerVoiceDeleted && datasetReceiptsDeleted && failedStorageRefs.length === 0;
     const now = new Date().toISOString();
 
     if (complete) {
@@ -159,7 +177,7 @@ export async function processVoiceCleanup(payload: VoiceCleanupPayload): Promise
       return;
     }
 
-    cleanup = { ...cleanup, canceled, versionDeleted, providerVoiceDeleted, failedStorageRefs };
+    cleanup = { ...cleanup, canceled, versionDeleted, providerVoiceDeleted, datasetReceiptsDeleted, failedStorageRefs };
     await prisma.voiceProfile.update({
       where: { id: profile.id },
       data: {
