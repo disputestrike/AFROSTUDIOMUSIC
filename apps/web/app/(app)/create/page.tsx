@@ -199,6 +199,8 @@ export default function CreatePage() {
       .then(setMusicRoutes)
       .catch(() => setMusicRoutes({ flagship: false, advanced: false, standard: false }));
   }, [api]);
+  const hasMusicRoute = musicRoutes !== null
+    && (musicRoutes.flagship || musicRoutes.advanced || musicRoutes.standard);
 
   // Three ways in: describe it / bring your own lyrics / listen & recreate.
   const [path, setPath] = useState<'song' | 'lyrics' | 'mumble'>('song');
@@ -264,12 +266,16 @@ export default function CreatePage() {
   useEffect(() => {
     // Fire once autoProduce is set. Phase may already be 'producing' (we start
     // there on ?produce=1 to skip the form flash), so don't gate on phase==='form'.
-    if (autoProduce) {
-      setAutoProduce(false);
-      void createSong();
+    if (!autoProduce || musicRoutes === null) return;
+    setAutoProduce(false);
+    if (!hasMusicRoute) {
+      setErr('No music engine is connected. Ask an owner to connect one in Settings.');
+      setPhase('error');
+      return;
     }
+    void createSong();
 
-  }, [autoProduce]);
+  }, [autoProduce, hasMusicRoute, musicRoutes]);
 
   // SALIENCE: the software knows each lane's natural tempo and tongue — picking a
   // genre sets them; fusing two BLENDS the tempo; the user's touch always wins.
@@ -301,6 +307,11 @@ export default function CreatePage() {
 
   async function createSong() {
     setErr('');
+    if (!hasMusicRoute) {
+      setErr('No music engine is connected. Ask an owner to connect one in Settings.');
+      setPhase('error');
+      return;
+    }
     // PRE-FLIGHT: refuse BEFORE the user commits to a multi-minute wait — never
     // let them sit through "producing…" only to hit the daily cap at the end.
     try {
@@ -468,6 +479,11 @@ export default function CreatePage() {
     // (daily cap, malformed JSON) and used to leave this (and the button) dead.
     if (lyricsText.trim().length < 20) return;
     setErr('');
+    if (!hasMusicRoute) {
+      setErr('No music engine is connected. Ask an owner to connect one in Settings.');
+      setPhase('error');
+      return;
+    }
     try {
       const pf = await api.get<{ ok: boolean; mode: string }>('/billing/preflight').catch(() => ({ ok: true, mode: 'unknown' }));
       if (!pf.ok) { setErr('Daily limit reached — resets at midnight UTC.'); setPhase('error'); return; }
@@ -796,7 +812,7 @@ export default function CreatePage() {
           {([
             // §1.11 THE WALL: public surfaces speak in ENGINE CLASSES, never
             // vendor names. Values stay internal identifiers; labels are classes.
-            { value: 'auto', label: 'Auto', hint: 'Connected route', available: true },
+            { value: 'auto', label: 'Auto', hint: 'Connected route', available: hasMusicRoute },
             { value: 'suno', label: 'Flagship', hint: 'First-party route', available: musicRoutes?.flagship === true },
             { value: 'eleven', label: 'Advanced', hint: 'Section-controlled route', available: musicRoutes?.advanced === true },
             { value: 'minimax', label: 'Standard A', hint: 'Full-song route', available: musicRoutes?.standard === true },
@@ -807,7 +823,7 @@ export default function CreatePage() {
             </button>
           ))}
         </div>
-        {musicRoutes && !musicRoutes.flagship && !musicRoutes.advanced && !musicRoutes.standard && (
+        {musicRoutes && !hasMusicRoute && (
           <p className="mt-2 text-sm text-amber-300">No vocal engine is connected. An owner must connect one in Settings before rendering.</p>
         )}
       </div>
@@ -824,15 +840,20 @@ export default function CreatePage() {
 
       <div className="mt-8 flex flex-wrap gap-3">
         {path === 'song' ? (
-          <button onClick={() => void createSong()} className="rounded-full bg-brand-gradient px-6 py-3 font-medium text-ink shadow-glow">
+          <button
+            onClick={() => void createSong()}
+            disabled={!hasMusicRoute}
+            title={!hasMusicRoute ? 'Connect a music engine in Settings first' : undefined}
+            className="rounded-full bg-brand-gradient px-6 py-3 font-medium text-ink shadow-glow disabled:cursor-not-allowed disabled:opacity-50"
+          >
             ⚡ Create the song
           </button>
         ) : (
           <button
             onClick={() => void createFromLyrics()}
-            disabled={lyricsText.trim().length < 20}
-            title={!decon ? 'Deconstruct your lyrics first' : undefined}
-            className="rounded-full bg-brand-gradient px-6 py-3 font-medium text-ink shadow-glow disabled:opacity-50"
+            disabled={lyricsText.trim().length < 20 || !hasMusicRoute}
+            title={!hasMusicRoute ? 'Connect a music engine in Settings first' : !decon ? 'Deconstruct your lyrics first' : undefined}
+            className="rounded-full bg-brand-gradient px-6 py-3 font-medium text-ink shadow-glow disabled:cursor-not-allowed disabled:opacity-50"
           >
             🎤 Sing MY lyrics — make the song
           </button>

@@ -1,4 +1,6 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import {
   assertSafeUrl,
   hostIsBlocked,
@@ -124,6 +126,13 @@ async function main() {
     if (oldNodeEnv === undefined) delete process.env.NODE_ENV; else process.env.NODE_ENV = oldNodeEnv;
   }
 
+  const authSource = readFileSync(
+    join(process.cwd(), '..', 'api', 'src', 'middleware', 'auth.ts'),
+    'utf8'
+  );
+  assert.equal(authSource.includes('prisma.user.upsert({'), true);
+  assert.equal(authSource.includes('prisma.workspace.upsert({'), true);
+  assert.equal(authSource.includes('identityPromise'), true);
   console.log('security boundaries: PASS');
 }
 

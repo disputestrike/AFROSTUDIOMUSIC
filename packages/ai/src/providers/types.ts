@@ -7,7 +7,7 @@
 
 export interface ProviderJobResult<T = unknown> {
   externalId?: string;
-  status: 'queued' | 'running' | 'succeeded' | 'failed';
+  status: "queued" | "running" | "succeeded" | "failed";
   output?: T;
   error?: string;
   estimatedCostUsd?: number;
@@ -72,7 +72,7 @@ export interface MusicGenerationOutput {
    * every one instead of discarding already-generated alternatives. */
   alternates?: MusicGenerationOutput[];
   stems?: Array<{ role: string; url: string }>;
-  format: 'wav' | 'mp3' | 'flac';
+  format: "wav" | "mp3" | "flac";
   durationS: number;
   bpm?: number;
   keySignature?: string;
@@ -80,7 +80,9 @@ export interface MusicGenerationOutput {
 
 export interface MusicProviderAdapter {
   readonly name: string;
-  generate(input: MusicGenerationInput): Promise<ProviderJobResult<MusicGenerationOutput>>;
+  generate(
+    input: MusicGenerationInput
+  ): Promise<ProviderJobResult<MusicGenerationOutput>>;
   poll?(externalId: string): Promise<ProviderJobResult<MusicGenerationOutput>>;
 }
 
@@ -103,7 +105,7 @@ export interface VoiceRenderInput {
   bpm?: number;
   pitchCorrection?: { strength: number; retune: number };
   effects?: Record<string, unknown>;
-  role: 'lead' | 'double' | 'ad-lib' | 'harmony';
+  role: "lead" | "double" | "ad-lib" | "harmony";
   /**
    * Melody spec from the Melody Lab. TTS providers ignore it; a
    * singing-voice-conversion provider consumes it to produce sung vocals.
@@ -119,13 +121,17 @@ export interface VoiceRenderOutput {
    *  bytes attached — the stored URL never played.) */
   audioBytes?: Buffer;
   durationS: number;
-  format: 'wav' | 'mp3';
+  format: "wav" | "mp3";
 }
 
 export interface VoiceProviderAdapter {
   readonly name: string;
-  createProfile(input: VoiceProfileSetupInput): Promise<ProviderJobResult<VoiceProfileSetupOutput>>;
-  render(input: VoiceRenderInput): Promise<ProviderJobResult<VoiceRenderOutput>>;
+  createProfile(
+    input: VoiceProfileSetupInput
+  ): Promise<ProviderJobResult<VoiceProfileSetupOutput>>;
+  render(
+    input: VoiceRenderInput
+  ): Promise<ProviderJobResult<VoiceRenderOutput>>;
   poll?(externalId: string): Promise<ProviderJobResult<VoiceRenderOutput>>;
 }
 
@@ -134,26 +140,32 @@ export interface VideoShotInput {
   durationS: number;
   motion?: string;
   lighting?: string;
-  aspectRatio: '9:16' | '1:1' | '16:9';
+  aspectRatio: "9:16" | "1:1" | "16:9";
   negativePrompt?: string;
 }
 
 export interface VideoRenderOutput {
-  videoUrl: string;
+  videoUrl?: string;
+  videoBytes?: Uint8Array;
   durationS: number;
-  format: 'mp4';
+  format: "mp4";
 }
 
 export interface VideoProviderAdapter {
   readonly name: string;
-  renderShot(input: VideoShotInput): Promise<ProviderJobResult<VideoRenderOutput>>;
-  poll?(externalId: string): Promise<ProviderJobResult<VideoRenderOutput>>;
+  renderShot(
+    input: VideoShotInput
+  ): Promise<ProviderJobResult<VideoRenderOutput>>;
+  poll?(
+    externalId: string,
+    input?: VideoShotInput
+  ): Promise<ProviderJobResult<VideoRenderOutput>>;
 }
 
 export interface ImageInput {
   prompt: string;
-  size: '1024x1024' | '1024x1792' | '1792x1024';
-  quality: 'low' | 'medium' | 'high';
+  size: "1024x1024" | "1024x1792" | "1792x1024";
+  quality: "low" | "medium" | "high";
 }
 
 export interface ImageOutput {

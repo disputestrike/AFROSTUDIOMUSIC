@@ -29,6 +29,8 @@ declare module '@afrohit/db' {
   export const openSecret: (stored: string | null | undefined) => string | undefined;
   export const secretHint: (stored: string | null | undefined) => string | null;
   export const migratePlaintextWorkspaceSecrets: () => Promise<number>;
+  export const chargeWorkspaceCredits: (...args: any[]) => Promise<any>;
+  export const refundWorkspaceCharge: (...args: any[]) => Promise<any>;
   export const releaseEvidenceHash: (value: unknown) => string;
   export const normalizeSplitSheet: (value: unknown) => Array<{ name: string; role: string; share: number }>;
   export const loadReleaseCertification: (

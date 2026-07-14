@@ -39,6 +39,11 @@ function urls() {
 const subscribeSchema = z.object({ plan: z.enum(['STARTER', 'CREATOR', 'PRO', 'STUDIO']) });
 const packSchema = z.object({ pack: z.enum(CREDIT_PACK_KEYS) });
 
+function configuredCap(value: string | undefined, fallback: number): number {
+  const parsed = Number(value ?? fallback);
+  return Number.isFinite(parsed) && parsed >= 0 ? Math.floor(parsed) : fallback;
+}
+
 function checkoutKey(headers: Record<string, unknown>): string | null {
   const raw = headers['idempotency-key'];
   if (typeof raw !== 'string') return null;
@@ -59,17 +64,35 @@ export default async function billing(app: FastifyInstance) {
       // Mirror chargeCredits exactly: caps are on by default and only the
       // explicit ENFORCE_GENERATION_CAP=0 development override disables them.
       const enforced = process.env.ENFORCE_GENERATION_CAP !== '0';
-      const dailyCap = enforced ? Number(process.env.MAX_DAILY_GENERATIONS ?? 100) : 0;
-      const monthlyCap = enforced ? Number(process.env.MAX_MONTHLY_GENERATIONS ?? 2000) : 0;
+      const dailyCap = enforced ? configuredCap(process.env.MAX_DAILY_GENERATIONS, 100) : 0;
+      const monthlyCap = enforced ? configuredCap(process.env.MAX_MONTHLY_GENERATIONS, 2_000) : 0;
       const dayStart = new Date();
       dayStart.setUTCHours(0, 0, 0, 0);
       const monthStart = new Date();
       monthStart.setUTCDate(1);
       monthStart.setUTCHours(0, 0, 0, 0);
-      const [usedToday, usedMonth] = await Promise.all([
-        prisma.creditLedger.count({ where: { workspaceId, createdAt: { gte: dayStart }, delta: { lt: 0 } } }),
-        prisma.creditLedger.count({ where: { workspaceId, createdAt: { gte: monthStart }, delta: { lt: 0 } } }),
+      const [todayUsage, monthUsage] = await Promise.all([
+        prisma.creditLedger.aggregate({
+          where: {
+            workspaceId,
+            createdAt: { gte: dayStart },
+            delta: { lt: 0 },
+            reversal: { is: null },
+          },
+          _sum: { units: true },
+        }),
+        prisma.creditLedger.aggregate({
+          where: {
+            workspaceId,
+            createdAt: { gte: monthStart },
+            delta: { lt: 0 },
+            reversal: { is: null },
+          },
+          _sum: { units: true },
+        }),
       ]);
+      const usedToday = todayUsage._sum.units ?? 0;
+      const usedMonth = monthUsage._sum.units ?? 0;
       const remainingToday = dailyCap > 0 ? Math.max(0, dailyCap - usedToday) : Number.MAX_SAFE_INTEGER;
       const remainingMonth = monthlyCap > 0 ? Math.max(0, monthlyCap - usedMonth) : Number.MAX_SAFE_INTEGER;
       return {
@@ -91,13 +114,17 @@ export default async function billing(app: FastifyInstance) {
     const monthStart = new Date();
     monthStart.setUTCDate(1);
     monthStart.setUTCHours(0, 0, 0, 0);
-    const usedDemos = await prisma.creditLedger.count({
+    const demoUsage = await prisma.creditLedger.aggregate({
       where: {
         workspaceId,
         createdAt: { gte: monthStart },
-        reason: { in: ['full_song_demo', 'beat_idea_short_30s'] },
+        delta: { lt: 0 },
+        reversal: { is: null },
+        creditKey: { in: ['full_song_demo', 'beat_idea_short_30s'] },
       },
+      _sum: { planUnits: true },
     });
+    const usedDemos = demoUsage._sum.planUnits ?? 0;
     const advertisedCap = PLAN_LIMITS[ws.plan as keyof typeof PLAN_LIMITS]?.monthlyDemoSongs ?? 0;
     const hardCap = Math.ceil(advertisedCap * 1.2);
     const withinPlan = usedDemos < hardCap;

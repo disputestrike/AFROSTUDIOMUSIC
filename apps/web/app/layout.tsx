@@ -10,6 +10,10 @@ export const viewport = { themeColor: '#0B0F19' };
 
 export const metadata: Metadata = {
   manifest: '/manifest.json',
+  icons: {
+    icon: [{ url: '/icon-192.png', sizes: '192x192', type: 'image/png' }],
+    apple: '/icon-192.png',
+  },
   title: 'AfroHit Studio — the AI production house',
   description:
     'Bring your beat, finish the whole record. Hooks, lyrics, vocals, industry mastering, cover art & release — one AI production house built for African and diaspora artists.',

@@ -41,33 +41,35 @@ model Workspace {
   deletedAt            DateTime?
   suspendedAt          DateTime? // admin suspension — auth middleware rejects with 403
 
-  members            WorkspaceMember[]
-  artists            Artist[]
-  projects           Project[]
-  voiceConsents      VoiceConsent[]
-  voiceProfiles      VoiceProfile[]
-  voiceDatasets      VoiceDataset[]
-  brandKits          BrandKit[]
-  songs              Song[]
+  members             WorkspaceMember[]
+  artists             Artist[]
+  projects            Project[]
+  voiceConsents       VoiceConsent[]
+  voiceProfiles       VoiceProfile[]
+  voiceDatasets       VoiceDataset[]
+  brandKits           BrandKit[]
+  songs               Song[]
   jobs                ProviderJob[]
   rightsReceipts      RightsReceipt[]
   releaseAttestations ReleaseAttestation[]
   shareLinks          ShareLink[]
-  shareEvents        ShareEvent[]
-  artistMemoryChunks ArtistMemoryChunk[]
-  approvals          Approval[]
-  releases           Release[]
-  benchmarkRatings   BenchmarkRating[]
-  chatThreads        ChatThread[]
-  ledgerEntries      CreditLedger[]
-  analyticsEvents    AnalyticsEvent[]
-  albums             Album[]
-  materials          MaterialAsset[]
-  materialUsages     MaterialUsage[]
-  referenceUsages    ReferenceUsage[]
-  jobOutbox          JobOutbox[]
-  billingIntents     BillingIntent[]
-  billingEvents      BillingEvent[]
+  shareEvents         ShareEvent[]
+  artistMemoryChunks  ArtistMemoryChunk[]
+  approvals           Approval[]
+  releases            Release[]
+  benchmarkRatings    BenchmarkRating[]
+  benchmarkPairs      BenchmarkPair[]
+  benchmarkJudgments  BenchmarkJudgment[]
+  chatThreads         ChatThread[]
+  ledgerEntries       CreditLedger[]
+  analyticsEvents     AnalyticsEvent[]
+  albums              Album[]
+  materials           MaterialAsset[]
+  materialUsages      MaterialUsage[]
+  referenceUsages     ReferenceUsage[]
+  jobOutbox           JobOutbox[]
+  billingIntents      BillingIntent[]
+  billingEvents       BillingEvent[]
 
   @@index([slug])
 }
@@ -84,10 +86,12 @@ model User {
   createdAt    DateTime @default(now()) @db.Timestamptz(6)
   updatedAt    DateTime @updatedAt @db.Timestamptz(6)
 
-  memberships   WorkspaceMember[]
-  chatThreads   ChatThread[]
-  approvals     Approval[]
-  voiceConsents VoiceConsent[]
+  memberships           WorkspaceMember[]
+  chatThreads           ChatThread[]
+  approvals             Approval[]
+  voiceConsents         VoiceConsent[]
+  benchmarkPairsCreated BenchmarkPair[]     @relation("BenchmarkPairCreator")
+  benchmarkJudgments    BenchmarkJudgment[] @relation("BenchmarkJudge")
 }
 
 model WorkspaceMember {
@@ -147,7 +151,7 @@ model Artist {
   cornyBanned     String[] @default([])
   // Automation flags
   morningDrop     Boolean  @default(false) // nightly cron: generate + score hooks, email top 10
-  autoPilot       Boolean  @default(false) // reserved: overnight hook→demo pipeline (not yet wired)
+  autoPilot       Boolean  @default(false) // legacy compatibility only; API input/output omits this field
   createdAt       DateTime @default(now()) @db.Timestamptz(6)
   updatedAt       DateTime @updatedAt @db.Timestamptz(6)
 
@@ -239,7 +243,7 @@ model VoiceDataset {
   meta         Json?
   createdAt    DateTime @default(now()) @db.Timestamptz(6)
 
-  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  workspace     Workspace      @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
   voiceProfiles VoiceProfile[]
 
   @@unique([workspaceId, contentHash])
@@ -293,25 +297,25 @@ model Project {
   createdAt    DateTime      @default(now()) @db.Timestamptz(6)
   updatedAt    DateTime      @updatedAt @db.Timestamptz(6)
 
-  workspace      Workspace       @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  artist         Artist          @relation(fields: [artistId], references: [id], onDelete: Cascade)
-  briefs         SongBrief[]
-  songs          Song[]
-  hooks          HookCandidate[]
-  lyrics         LyricDraft[]
-  beats          BeatAsset[]
-  vocalRenders   VocalRender[]
-  mixes          Mix[]
-  masters        Master[]
-  imageAssets    ImageAsset[]
-  videoConcepts  VideoConcept[]
-  videoRenders   VideoRender[]
-  approvals          Approval[]
-  rightsReceipts     RightsReceipt[]
+  workspace           Workspace            @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  artist              Artist               @relation(fields: [artistId], references: [id], onDelete: Cascade)
+  briefs              SongBrief[]
+  songs               Song[]
+  hooks               HookCandidate[]
+  lyrics              LyricDraft[]
+  beats               BeatAsset[]
+  vocalRenders        VocalRender[]
+  mixes               Mix[]
+  masters             Master[]
+  imageAssets         ImageAsset[]
+  videoConcepts       VideoConcept[]
+  videoRenders        VideoRender[]
+  approvals           Approval[]
+  rightsReceipts      RightsReceipt[]
   releaseAttestations ReleaseAttestation[]
-  exports            Export[]
-  jobs           ProviderJob[]
-  chatThreads    ChatThread[]
+  exports             Export[]
+  jobs                ProviderJob[]
+  chatThreads         ChatThread[]
 
   @@index([workspaceId])
   @@index([artistId])
@@ -413,7 +417,7 @@ model Song {
   status           SongStatus @default(SKETCH)
   storyboard       Json? // arrangement timeline (intro/hook/verse/bridge/outro)
   // Rights spine — what makes a release bankable + payable.
-  isrc             String? // recording code (CC-RRR-YY-DDDDD); placeholder until a real registrant prefix is set
+  isrc             String? // recording code (CC-RRR-YY-DDDDD); null until registrant or distributor assignment
   upc              String? // release barcode; distributors assign the real one free
   splitSheet       Json? // [{name, role, share}] writer/producer splits summing to 100
   nativeReviewOk   Boolean    @default(false) // a native speaker signed off on Yoruba/Igbo/Hausa delivery
@@ -443,24 +447,25 @@ model Song {
   instrumentalMeta Json? // { sourceUrl, sourceLufs, matchedLufs, engine, format, at }
   createdAt        DateTime   @default(now()) @db.Timestamptz(6)
 
-  workspace       Workspace        @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  project         Project          @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  hooks           HookCandidate[]
-  lyric           LyricDraft?      @relation("SongPrimaryLyric")
-  lyricId         String?          @unique
-  beats           BeatAsset[]
-  vocalRenders    VocalRender[]
-  mixes           Mix[]
-  masters         Master[]
+  workspace           Workspace            @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  project             Project              @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  hooks               HookCandidate[]
+  lyric               LyricDraft?          @relation("SongPrimaryLyric")
+  lyricId             String?              @unique
+  beats               BeatAsset[]
+  vocalRenders        VocalRender[]
+  mixes               Mix[]
+  masters             Master[]
   exports             Export[]
   rights              RightsReceipt[]
   releaseAttestations ReleaseAttestation[]
   taste               TasteScore[]
-  materialUsages  MaterialUsage[]
-  referenceUsages ReferenceUsage[]
-  shareLinks      ShareLink[]
-  release         Release?         @relation("ReleaseSong")
-  album           Album?           @relation(fields: [albumId], references: [id], onDelete: SetNull)
+  materialUsages      MaterialUsage[]
+  referenceUsages     ReferenceUsage[]
+  shareLinks          ShareLink[]
+  release             Release?             @relation("ReleaseSong")
+  album               Album?               @relation(fields: [albumId], references: [id], onDelete: SetNull)
+  benchmarkPairs      BenchmarkPair[]
 
   @@index([projectId])
   @@index([albumId])
@@ -483,7 +488,7 @@ enum SongStatus {
   MIXED
   MASTERED
   EXPORTED // bundle built + downloaded — NOT distributed
-  RELEASED // only after a confirmed distributor submission
+  RELEASED // only after a signed distributor event confirms the release is live
 }
 
 // ===========================================================================
@@ -551,22 +556,22 @@ model LyricDraft {
 // ===========================================================================
 
 model BeatAsset {
-  id           String   @id @default(cuid())
+  id           String    @id @default(cuid())
   projectId    String
   songId       String?
   url          String
-  format       String   @default("wav") // wav | mp3 | flac
+  format       String    @default("wav") // wav | mp3 | flac
   bpm          Int?
   keySignature String?
   duration     Float?
   provider     String
-  assetKind    String   @default("instrumental") // instrumental | full_mix
-  qualityState String   @default("unmeasured") // passed | weak | failed | unmeasured
+  assetKind    String    @default("instrumental") // instrumental | full_mix
+  qualityState String    @default("unmeasured") // passed | weak | failed | unmeasured
   contentHash  String?
   verifiedAt   DateTime? @db.Timestamptz(6)
   meta         Json?
-  approved     Boolean  @default(false)
-  createdAt    DateTime @default(now()) @db.Timestamptz(6)
+  approved     Boolean   @default(false)
+  createdAt    DateTime  @default(now()) @db.Timestamptz(6)
 
   project         Project          @relation(fields: [projectId], references: [id], onDelete: Cascade)
   song            Song?            @relation(fields: [songId], references: [id], onDelete: Cascade)
@@ -594,25 +599,25 @@ model Stem {
 }
 
 model VocalRender {
-  id              String   @id @default(cuid())
-  projectId       String
-  songId          String?
-  voiceProfileId  String?
-  role            String // "lead","double","ad-lib","harmony"
-  url             String
-  duration        Float?
-  pitchCorrection Json? // {strength:0.8, retune:0.2}
-  effects         Json? // {reverb, delay, doubler, compressor presets}
-  language        String?
-  assetKind       String   @default("isolated_vocal") // isolated_vocal | spoken_guide | full_mix
-  performanceSource String @default("unknown") // artist_upload | artist_import | voice_conversion | score_synth | tts_guide | stem_separation | unknown
-  qualityState    String   @default("unmeasured") // pending | passed | failed | unmeasured
-  contentHash     String?
-  verifiedAt      DateTime? @db.Timestamptz(6)
-  alignment       Json? // measured lyric/phoneme alignment only; null means not measured
-  meta            Json?
-  approved        Boolean  @default(false)
-  createdAt       DateTime @default(now()) @db.Timestamptz(6)
+  id                String    @id @default(cuid())
+  projectId         String
+  songId            String?
+  voiceProfileId    String?
+  role              String // "lead","double","ad-lib","harmony"
+  url               String
+  duration          Float?
+  pitchCorrection   Json? // {strength:0.8, retune:0.2}
+  effects           Json? // {reverb, delay, doubler, compressor presets}
+  language          String?
+  assetKind         String    @default("isolated_vocal") // isolated_vocal | spoken_guide | full_mix
+  performanceSource String    @default("unknown") // artist_upload | artist_import | voice_conversion | score_synth | tts_guide | stem_separation | unknown
+  qualityState      String    @default("unmeasured") // pending | passed | failed | unmeasured
+  contentHash       String?
+  verifiedAt        DateTime? @db.Timestamptz(6)
+  alignment         Json? // measured lyric/phoneme alignment only; null means not measured
+  meta              Json?
+  approved          Boolean   @default(false)
+  createdAt         DateTime  @default(now()) @db.Timestamptz(6)
 
   project      Project       @relation(fields: [projectId], references: [id], onDelete: Cascade)
   song         Song?         @relation(fields: [songId], references: [id], onDelete: Cascade)
@@ -624,19 +629,19 @@ model VocalRender {
 }
 
 model Mix {
-  id        String   @id @default(cuid())
-  projectId String
-  songId    String?
-  preset    String // "radio","club","tiktok","youtube","console"
-  url       String
-  notes     String?
-  settings  Json? // per-track mixer console state (faders/eq/comp/reverb)
-  qualityState String   @default("unmeasured") // passed | failed | unmeasured
+  id           String    @id @default(cuid())
+  projectId    String
+  songId       String?
+  preset       String // "radio","club","tiktok","youtube","console"
+  url          String
+  notes        String?
+  settings     Json? // per-track mixer console state (faders/eq/comp/reverb)
+  qualityState String    @default("unmeasured") // passed | failed | unmeasured
   contentHash  String?
   verifiedAt   DateTime? @db.Timestamptz(6)
   meta         Json?
-  approved  Boolean  @default(false)
-  createdAt DateTime @default(now()) @db.Timestamptz(6)
+  approved     Boolean   @default(false)
+  createdAt    DateTime  @default(now()) @db.Timestamptz(6)
 
   project Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
   song    Song?    @relation(fields: [songId], references: [id], onDelete: Cascade)
@@ -660,8 +665,8 @@ model Master {
   approved     Boolean   @default(false)
   // WO-6(a): measured QC of the MASTERED artifact — the release gate judges
   // this, never the pre-master take (what ships is what gets certified).
-  meta      Json?
-  createdAt DateTime @default(now()) @db.Timestamptz(6)
+  meta         Json?
+  createdAt    DateTime  @default(now()) @db.Timestamptz(6)
 
   project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
   song    Song?   @relation(fields: [songId], references: [id], onDelete: Cascade)
@@ -988,14 +993,36 @@ model Release {
   isrc        String?   @unique
   upc         String?
   releaseDate DateTime? @db.Timestamptz(6)
+  submittedAt DateTime? @db.Timestamptz(6)
+  liveAt      DateTime? @db.Timestamptz(6)
   distributor String?
+  externalId  String?   @unique
   status      String    @default("draft")
   channels    Json? // {spotify:"link", apple:"link", youtube:"link"}
   createdAt   DateTime  @default(now()) @db.Timestamptz(6)
+  updatedAt   DateTime  @default(now()) @updatedAt @db.Timestamptz(6)
 
-  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  artist    Artist    @relation(fields: [artistId], references: [id], onDelete: Cascade)
-  song      Song      @relation("ReleaseSong", fields: [songId], references: [id], onDelete: Cascade)
+  workspace Workspace           @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  artist    Artist              @relation(fields: [artistId], references: [id], onDelete: Cascade)
+  song      Song                @relation("ReleaseSong", fields: [songId], references: [id], onDelete: Cascade)
+  events    DistributionEvent[]
+}
+
+model DistributionEvent {
+  id          String   @id @default(cuid())
+  eventId     String   @unique
+  releaseId   String
+  externalId  String
+  status      String
+  payloadHash String
+  applied     Boolean  @default(false)
+  occurredAt  DateTime @db.Timestamptz(6)
+  receivedAt  DateTime @default(now()) @db.Timestamptz(6)
+
+  release Release @relation(fields: [releaseId], references: [id], onDelete: Cascade)
+
+  @@index([releaseId, occurredAt])
+  @@index([externalId, receivedAt])
 }
 
 /// LISTENING BENCHMARK — the ear-vs-machine ground truth. Each row is a rendered
@@ -1020,6 +1047,60 @@ model BenchmarkRating {
   workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
 
   @@index([workspaceId, genre])
+}
+
+/// Immutable, blind comparison between one certified AfroHit render and one
+/// rights-attested competitor render. Asset references and hashes are frozen
+/// when the pair is created so later song edits cannot rewrite the evidence.
+model BenchmarkPair {
+  id                   String    @id @default(cuid())
+  workspaceId          String
+  createdById          String
+  songId               String
+  genre                String
+  competitor           String    @default("suno")
+  afrohitAssetRef      String
+  afrohitContentHash   String
+  referenceAssetRef    String
+  referenceContentHash String
+  referenceSizeBytes   Int
+  referenceFormat      String
+  rightsBasis          String
+  rightsAttestation    Json
+  seed                 String
+  status               String    @default("open")
+  createdAt            DateTime  @default(now()) @db.Timestamptz(6)
+  closedAt             DateTime? @db.Timestamptz(6)
+
+  workspace Workspace           @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  createdBy User                @relation("BenchmarkPairCreator", fields: [createdById], references: [id], onDelete: Cascade)
+  song      Song                @relation(fields: [songId], references: [id], onDelete: Cascade)
+  judgments BenchmarkJudgment[]
+
+  @@index([workspaceId, status, createdAt(sort: Desc)])
+  @@index([competitor, genre])
+}
+
+/// One independent listener verdict. The API stores normalized source results
+/// only after mapping the listener's randomized A/B side assignment.
+model BenchmarkJudgment {
+  id               String   @id @default(cuid())
+  workspaceId      String
+  pairId           String
+  userId           String
+  winner           String
+  afrohitScores    Json
+  competitorScores Json
+  confidence       Int
+  note             String?  @db.Text
+  createdAt        DateTime @default(now()) @db.Timestamptz(6)
+
+  workspace Workspace     @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  pair      BenchmarkPair @relation(fields: [pairId], references: [id], onDelete: Cascade)
+  user      User          @relation("BenchmarkJudge", fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([pairId, userId])
+  @@index([workspaceId, createdAt(sort: Desc)])
 }
 
 // ===========================================================================
@@ -1078,8 +1159,8 @@ model ArtistMemoryChunk {
   kind        String // "slang","phrase","reference","note","rejected","approved","melody_idea"
   content     String   @db.Text
   language    String?
-  // Embedding stored as JSON (number[]) for future semantic search. Retrieval
-  // currently uses recency, so no pgvector extension is required.
+  // JSON number[] embedding used by hybrid semantic/lexical retrieval. Keeping
+  // it as JSON avoids requiring pgvector while the memory corpus stays bounded.
   embedding   Json?
   sourceUrl   String?
   meta        Json?
@@ -1089,6 +1170,7 @@ model ArtistMemoryChunk {
   artist    Artist    @relation(fields: [artistId], references: [id], onDelete: Cascade)
 
   @@index([artistId])
+  @@index([workspaceId, artistId, kind, createdAt])
 }
 
 // ===========================================================================
@@ -1212,6 +1294,9 @@ model CreditLedger {
   workspaceId    String
   delta          Int // +/- credits in 1/100 cents
   reason         String // "topup_paypal","job_music","job_voice","refund","grant"
+  creditKey      String?
+  units          Int      @default(1)
+  planUnits      Int      @default(1)
   refTable       String? // e.g. "ProviderJob"
   refId          String?
   paypalEventId  String?  @unique // dedupe key from PayPal webhook event id
@@ -1227,6 +1312,8 @@ model CreditLedger {
 
   @@unique([workspaceId, idempotencyKey])
   @@index([workspaceId])
+  @@index([workspaceId, createdAt])
+  @@index([workspaceId, creditKey, createdAt])
 }
 
 model BillingIntent {

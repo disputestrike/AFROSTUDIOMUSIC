@@ -201,8 +201,8 @@ export default async function admin(app: FastifyInstance) {
     };
   });
 
-  // WO-15 — ECONOMICS: marginal cost per render and RENDERS-PER-KEPT-SONG (the
-  // margin number; the ear's success metric — quality structurally lowers cost).
+  // ECONOMICS: operational render efficiency and unreconciled cost telemetry.
+  // Gross margin requires settlement and invoice reconciliation outside this view.
   app.get<{ Querystring: { days?: string } }>('/economics', async (req) => {
     await requireAdmin(req);
     const days = Math.min(Math.max(Number(req.query.days ?? 30), 1), 365);
@@ -231,17 +231,15 @@ export default async function admin(app: FastifyInstance) {
     }
     const totalCost = Number(costAgg._sum.cost ?? 0);
 
-    // A3-6 — LLM spend by tier/task + stems by mode + projected savings vs the
-    // OLD routing (assumptions stated in the payload; costs are estimates).
+    // LLM and stem telemetry is operational evidence, not reconciled billing.
     const [llmEvents, stemEvents] = await Promise.all([
       prisma.analyticsEvent.findMany({ where: { name: 'llm.call', createdAt: { gte: since } }, select: { properties: true }, take: 10_000 }),
       prisma.analyticsEvent.findMany({ where: { name: 'stems.run', createdAt: { gte: since } }, select: { properties: true }, take: 10_000 }),
     ]);
     const llmByTier = new Map<string, { calls: number; estCostUsd: number }>();
     const llmByTask = new Map<string, { calls: number; estCostUsd: number; tier: string }>();
-    let bulkCalls = 0;
     for (const e of llmEvents) {
-      const p = (e.properties ?? {}) as { tier?: string; task?: string; brain?: string; estCostUsd?: number | null };
+      const p = (e.properties ?? {}) as { tier?: string; task?: string; estCostUsd?: number | null };
       const tier = p.tier ?? 'judgment';
       const t = llmByTier.get(tier) ?? { calls: 0, estCostUsd: 0 };
       t.calls++; t.estCostUsd += p.estCostUsd ?? 0;
@@ -250,7 +248,6 @@ export default async function admin(app: FastifyInstance) {
       const tk = llmByTask.get(taskKey) ?? { calls: 0, estCostUsd: 0, tier };
       tk.calls++; tk.estCostUsd += p.estCostUsd ?? 0;
       llmByTask.set(taskKey, tk);
-      if (tier === 'bulk' && p.brain === 'cerebras') bulkCalls++;
     }
     const stemsByMode = new Map<string, { runs: number; estCostUsd: number; avgWallS: number }>();
     for (const e of stemEvents) {
@@ -261,21 +258,6 @@ export default async function admin(app: FastifyInstance) {
       cur.runs++; cur.estCostUsd += p.estCostUsd ?? 0;
       stemsByMode.set(m, cur);
     }
-    // Projected savings vs the OLD routing. ASSUMPTIONS (stated, not billing truth):
-    // local stems would have cost ~$0.10/run on Replicate; a bulk-tier call would
-    // have run on the judgment brain at ~$0.01/call; per-engine render savings =
-    // assumed old Replicate price minus the recorded cost, floored at 0.
-    const OLD_RENDER_PRICE: Record<string, number> = { ace_step: 0.1, minimax: 0.12, replicate: 0.05 };
-    let renderSavings = 0;
-    for (const [k, v] of byEngine) {
-      const old = OLD_RENDER_PRICE[k];
-      if (old) renderSavings += Math.max(0, v.renders * old - v.costUsd);
-    }
-    const localStemRuns = stemsByMode.get('local')?.runs ?? 0;
-    const stemsSavings = localStemRuns * 0.1;
-    const llmSavings = Math.max(0, bulkCalls * 0.01 - (llmByTier.get('bulk')?.estCostUsd ?? 0));
-    const projectedSavingsUsd = Math.round((renderSavings + stemsSavings + llmSavings) * 100) / 100;
-
     return {
       windowDays: days,
       renders: { succeeded: renders.length, failed, candidatesRendered },
@@ -288,12 +270,11 @@ export default async function admin(app: FastifyInstance) {
         byTask: [...llmByTask].map(([task, v]) => ({ task, ...v, estCostUsd: Math.round(v.estCostUsd * 1000) / 1000 })).sort((a, b) => b.calls - a.calls).slice(0, 12),
       },
       stems: { byMode: Object.fromEntries([...stemsByMode].map(([k, v]) => [k, { ...v, estCostUsd: Math.round(v.estCostUsd * 100) / 100, avgWallS: Math.round(v.avgWallS) }])) },
-      projectedSavings: {
-        usd: projectedSavingsUsd,
-        window: `${days}d`,
-        assumptions: 'old routing = Replicate renders (ace $0.10 / minimax $0.12 / musicgen $0.05), paid stems $0.10/run, bulk LLM calls on the judgment brain ~$0.01/call. Estimates for pricing sign-off (§7.4), not billing truth.',
+      costEvidence: {
+        classification: 'mixed_unreconciled',
+        basis: 'ProviderJob cost fields and analytics estimates; not provider invoices or payment-settlement truth.',
       },
-      note: 'rendersPerKeptSong is THE margin number — the ear lowering it is the moat (§E2). Costs are provider estimates recorded per job.',
+      note: 'rendersPerKeptSong is a production-efficiency signal only. Gross margin requires reconciled provider invoices, refunds, payment fees, storage, egress, and operating costs.',
     };
   });
 

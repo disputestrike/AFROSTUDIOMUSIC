@@ -88,6 +88,17 @@ async function main() {
   assert.match(webApi, /const idempotencyKey = crypto\.randomUUID\(\);[\s\S]*fetchWithRetry[\s\S]*'idempotency-key': idempotencyKey/);
   assert.match(bff, /idempotency-key/);
 
+  const orchestrationWorker = readFileSync(join(apiRoot, 'lib/orchestration-worker.ts'), 'utf8');
+  assert.equal(orchestrationWorker.includes('await worker.waitUntilReady()'), false);
+  assert.equal(orchestrationWorker.includes('void worker.waitUntilReady()'), true);
+  assert.match(orchestrationWorker, /connection\.on\('error', reportConnectionError\)/);
+  assert.match(orchestrationWorker, /worker\.on\('error', reportConnectionError\)/);
+  assert.match(orchestrationWorker, /durable jobs remain queued while Redis reconnects/);
+
+  const queuePlugin = readFileSync(join(apiRoot, 'lib/queue.ts'), 'utf8');
+  assert.match(queuePlugin, /connection\.on\('error', reportRedisError\)/);
+  assert.match(queuePlugin, /queue\.on\('error', reportRedisError\)/);
+  assert.match(queuePlugin, /durable jobs remain in the PostgreSQL outbox/);
   console.log('durable workflows: PASS');
 }
 

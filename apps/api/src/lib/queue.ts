@@ -92,10 +92,19 @@ async function dispatchRow(queues: Record<QueueName, Queue>, row: OutboxRow): Pr
 export const queuePlugin = fp(async function (app) {
   const url = process.env.REDIS_URL ?? 'redis://localhost:6379';
   const connection = new IORedis(url, { maxRetriesPerRequest: null });
+  let lastRedisErrorAt = 0;
+  const reportRedisError = (error: Error) => {
+    const now = Date.now();
+    if (now - lastRedisErrorAt < 30_000) return;
+    lastRedisErrorAt = now;
+    app.log.warn({ err: error }, 'Redis queue connection unavailable; durable jobs remain in the PostgreSQL outbox');
+  };
+  connection.on('error', reportRedisError);
 
   const queues = Object.fromEntries(
     Object.values(QUEUES).map((name) => [name, new Queue(name, { connection })])
   ) as Record<QueueName, Queue>;
+  for (const queue of Object.values(queues)) queue.on('error', reportRedisError);
 
   app.decorate('redis', connection);
   app.decorate('queues', queues);

@@ -94,7 +94,7 @@ assert.match(rightsWorker, /canonicalPayload/, 'rights receipt must retain its h
 assert.match(rightsWorker, /matched_unconfirmed/, 'catalog matches must fail without attestation');
 
 const workerIndex = source('src/index.ts');
-assert.match(workerIndex, /makeWorker\('rights'/, 'rights queue must have a worker');
+assert.match(workerIndex, /makeWorker\(["']rights["']/, 'rights queue must have a worker');
 
 const rightsRoute = source('../api/src/routes/rights.ts');
 assert.match(rightsRoute, /app\.queues\.rights/, 'rights API must queue durable work');

@@ -1,3 +1,7 @@
+> **Historical snapshot (2026-07-06).** This document is retained for provenance
+> and does not describe current production readiness. Use
+> `docs/PRODUCTION_READINESS_2026-07-14.md` for current evidence and blockers.
+
 # 08 — READINESS VERDICT (Apex Phase 6)
 
 _No softening. Issued 2026-07-06 at commit `2e6f97f`+, all evidence in 07._

@@ -1,36 +1,72 @@
 /**
- * Production memory — the taste feedback loop.
- *
- * Every approve/reject writes an ArtistMemoryChunk (with a pgvector embedding
- * when available). Hook generation reads recent approved/rejected chunks and
- * feeds them back into the prompt, so the system converges on the artist's
- * taste instead of resetting every session.
+ * Production memory: approvals and rejections influence later generations.
+ * Stored embeddings are queried when available, with lexical and recency
+ * ranking as a deterministic fallback when the embedding provider is down.
  */
-import { prisma } from '@afrohit/db';
-import { embed } from '@afrohit/ai';
+import { embed } from "@afrohit/ai";
+import { prisma } from "@afrohit/db";
+import { rankMemoryCandidates } from "@afrohit/shared";
 
 export async function recordFeedback(opts: {
   workspaceId: string;
   artistId: string;
-  kind: 'approved' | 'rejected';
+  kind: "approved" | "rejected";
   content: string;
-  sourceKind: 'hook' | 'lyric';
+  sourceKind: "hook" | "lyric";
   sourceId: string;
 }): Promise<void> {
-  // Semantic memory: compute the embedding NOW so the taste graph supports
-  // similarity retrieval, not just recency. Best-effort — feedback must never
-  // be lost because the embedding provider blinked (embedding stays null).
-  const embedding = await embed(opts.content.slice(0, 2_000)).catch(() => null);
-  await prisma.artistMemoryChunk.create({
-    data: {
+  const content = opts.content.trim().slice(0, 2_000);
+  if (!content) return;
+
+  // Repeated clicks and identical drafts should update one memory, not buy and
+  // store the same embedding forever. The latest decision wins.
+  const existing = await prisma.artistMemoryChunk.findFirst({
+    where: {
       workspaceId: opts.workspaceId,
       artistId: opts.artistId,
-      kind: opts.kind,
-      content: opts.content.slice(0, 2_000),
-      embedding: (embedding ?? undefined) as never,
-      meta: { sourceKind: opts.sourceKind, sourceId: opts.sourceId } as never,
+      content,
+      kind: { in: ["approved", "rejected"] },
     },
+    orderBy: { createdAt: "desc" },
+    select: { id: true },
   });
+  if (existing) {
+    await prisma.artistMemoryChunk.update({
+      where: { id: existing.id },
+      data: {
+        kind: opts.kind,
+        meta: { sourceKind: opts.sourceKind, sourceId: opts.sourceId } as never,
+      },
+    });
+    return;
+  }
+
+  const startedAt = Date.now();
+  const embedding = await embed(content).catch(() => null);
+  await prisma.$transaction([
+    prisma.artistMemoryChunk.create({
+      data: {
+        workspaceId: opts.workspaceId,
+        artistId: opts.artistId,
+        kind: opts.kind,
+        content,
+        embedding: (embedding ?? undefined) as never,
+        meta: { sourceKind: opts.sourceKind, sourceId: opts.sourceId } as never,
+      },
+    }),
+    prisma.analyticsEvent.create({
+      data: {
+        workspaceId: opts.workspaceId,
+        name: "artist_memory.embedding",
+        properties: {
+          purpose: "feedback_write",
+          inputCharacters: content.length,
+          durationMs: Date.now() - startedAt,
+          stored: Boolean(embedding),
+        } as never,
+      },
+    }),
+  ]);
 }
 
 export interface MemoryContext {
@@ -38,24 +74,73 @@ export interface MemoryContext {
   rejectedExamples: string[];
 }
 
-/** Latest feedback examples for prompt injection. Recency beats similarity for MVP. */
-export async function memoryContext(artistId: string, limit = 15): Promise<MemoryContext> {
+export async function memoryContext(opts: {
+  workspaceId: string;
+  artistId: string;
+  query: string;
+  limit?: number;
+}): Promise<MemoryContext> {
+  const limit = Math.min(25, Math.max(1, opts.limit ?? 15));
+  const poolSize = Math.max(60, limit * 6);
   const [approved, rejected] = await Promise.all([
     prisma.artistMemoryChunk.findMany({
-      where: { artistId, kind: 'approved' },
-      orderBy: { createdAt: 'desc' },
-      take: limit,
-      select: { content: true },
+      where: {
+        workspaceId: opts.workspaceId,
+        artistId: opts.artistId,
+        kind: "approved",
+      },
+      orderBy: { createdAt: "desc" },
+      take: poolSize,
+      select: { content: true, embedding: true, createdAt: true },
     }),
     prisma.artistMemoryChunk.findMany({
-      where: { artistId, kind: 'rejected' },
-      orderBy: { createdAt: 'desc' },
-      take: limit,
-      select: { content: true },
+      where: {
+        workspaceId: opts.workspaceId,
+        artistId: opts.artistId,
+        kind: "rejected",
+      },
+      orderBy: { createdAt: "desc" },
+      take: poolSize,
+      select: { content: true, embedding: true, createdAt: true },
     }),
   ]);
-  return {
-    approvedExamples: approved.map((c: { content: string }) => c.content),
-    rejectedExamples: rejected.map((c: { content: string }) => c.content),
+
+  const candidates = [...approved, ...rejected];
+  const canUseSemantic =
+    opts.query.trim().length > 0 &&
+    candidates.some(candidate => Array.isArray(candidate.embedding));
+  const startedAt = Date.now();
+  const queryEmbedding = canUseSemantic
+    ? await embed(opts.query.slice(0, 4_000)).catch(() => null)
+    : null;
+  const rank = (rows: typeof approved) =>
+    rankMemoryCandidates({
+      candidates: rows,
+      query: opts.query,
+      queryEmbedding,
+      limit,
+    }).map(candidate => candidate.content);
+
+  const context = {
+    approvedExamples: rank(approved),
+    rejectedExamples: rank(rejected),
   };
+  await prisma.analyticsEvent
+    .create({
+      data: {
+        workspaceId: opts.workspaceId,
+        name: "artist_memory.recall",
+        properties: {
+          artistId: opts.artistId,
+          mode: queryEmbedding ? "hybrid_semantic" : "lexical_recency",
+          queryCharacters: opts.query.length,
+          candidateCount: candidates.length,
+          approvedReturned: context.approvedExamples.length,
+          rejectedReturned: context.rejectedExamples.length,
+          durationMs: Date.now() - startedAt,
+        } as never,
+      },
+    })
+    .catch(() => undefined);
+  return context;
 }

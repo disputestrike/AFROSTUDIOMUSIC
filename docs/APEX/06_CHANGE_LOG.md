@@ -1,3 +1,7 @@
+> **Historical snapshot (2026-07-06).** This document is retained for provenance
+> and does not describe current production readiness. Use
+> `docs/PRODUCTION_READINESS_2026-07-14.md` for current evidence and blockers.
+
 # 06 — CHANGE LOG (Apex Phase 4)
 
 _Every item: files touched — test proving it — result. This run = commit `0cf5d14`

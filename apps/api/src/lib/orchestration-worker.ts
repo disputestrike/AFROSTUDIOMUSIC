@@ -18,6 +18,15 @@ type DropOrchestrationPayload = {
 
 export async function startOrchestrationWorker(app: FastifyInstance): Promise<void> {
   const connection = app.redis.duplicate();
+  let lastConnectionErrorAt = 0;
+  const reportConnectionError = (error: Error) => {
+    const now = Date.now();
+    if (now - lastConnectionErrorAt < 30_000) return;
+    lastConnectionErrorAt = now;
+    app.log.warn({ err: error }, 'orchestration worker unavailable; durable jobs remain queued while Redis reconnects');
+  };
+  connection.on('error', reportConnectionError);
+
   const worker = new Worker(
     QUEUES.orchestration,
     async (bullJob) => {
@@ -144,11 +153,19 @@ export async function startOrchestrationWorker(app: FastifyInstance): Promise<vo
   worker.on('failed', (job, error) => {
     app.log.error({ err: error, bullJobId: job?.id, providerJobId: job?.data?.jobId }, 'orchestration attempt failed');
   });
-  worker.on('error', (error) => app.log.error({ err: error }, 'orchestration worker error'));
-  await worker.waitUntilReady();
+
+  worker.on('error', reportConnectionError);
+
+  // Redis loss must not prevent the API from binding its health and read routes.
+  // BullMQ keeps reconnecting, while PostgreSQL outbox rows preserve every job.
+  void worker.waitUntilReady()
+    .then(() => app.log.info('orchestration worker connected'))
+    .catch((error) => app.log.warn({ err: error }, 'orchestration worker readiness check failed'));
 
   app.addHook('onClose', async () => {
-    await worker.close();
-    await connection.quit();
+    await worker.close(true).catch((error) => {
+      app.log.warn({ err: error }, 'orchestration worker forced close failed');
+    });
+    connection.disconnect();
   });
 }

@@ -1,3 +1,6 @@
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
+
 import { validateMusicRoute, type MusicRouteCapabilities } from '../../api/src/lib/music-capabilities';
 
 let failures = 0;
@@ -60,6 +63,18 @@ try {
   check(validateMusicRoute(undefined, { ...base, standard: true, replicateAvailable: true }, false).ok, 'Instrumental env route resolves to the full-length standard engine');
   process.env.SONG_ENGINE = 'stable_audio';
   check(!validateMusicRoute(undefined, { ...base, standard: true }, true).ok, 'Removed vocal env route cannot hide behind another connected engine');
+
+  const createPage = readFileSync(resolve(process.cwd(), '../web/app/(app)/create/page.tsx'), 'utf8');
+  check(
+    createPage.includes('disabled={!hasMusicRoute}')
+      && createPage.includes('lyricsText.trim().length < 20 || !hasMusicRoute'),
+    'Create UI disables generation when no music route is connected',
+  );
+  check(
+    createPage.includes('if (!autoProduce || musicRoutes === null) return;')
+      && createPage.includes('No music engine is connected.'),
+    'Auto-create waits for capabilities and fails before starting without a route',
+  );
 } finally {
   for (const [name, value] of Object.entries(saved)) {
     if (value === undefined) delete process.env[name];

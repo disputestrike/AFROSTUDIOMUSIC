@@ -35,15 +35,16 @@ export async function arReadSong(
     if (!song) return null;
     const charged = await app.chargeCredits({ workspaceId, key: 'hit_predict', refTable: 'Song', refId: songId, idempotencyKey: operationKey });
     if (!charged.ok) return null;
-    charge = charged;
-    if (charge.replayed && song.hitRead) return song.hitRead as unknown as HitPrediction;
+    const successfulCharge: SuccessfulCharge = charged;
+    charge = successfulCharge;
+    if (successfulCharge.replayed && song.hitRead) return song.hitRead as unknown as HitPrediction;
     const operation = await runIdempotentOperation({
       workspaceId,
       projectId: song.projectId,
       kind: 'ar-read',
       provider: 'text',
       idempotencyKey: operationKey,
-      chargeLedgerId: charge.chargeId,
+      chargeLedgerId: successfulCharge.chargeId,
       inputJson: { songId, operationKey },
       execute: async () => {
         const genre = song.project.genre;
@@ -60,7 +61,7 @@ export async function arReadSong(
           languages: song.project.artist.languages,
         });
         if (!prediction) {
-          await app.refundCredits({ workspaceId, key: 'hit_predict', refTable: 'Song', refId: songId, chargeId: charge!.chargeId });
+          await app.refundCredits({ workspaceId, key: 'hit_predict', refTable: 'Song', refId: songId, chargeId: successfulCharge.chargeId });
           return null;
         }
         await prisma.song.update({

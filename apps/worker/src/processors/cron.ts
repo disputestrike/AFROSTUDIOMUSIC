@@ -11,8 +11,8 @@
  * Both are best-effort per workspace — one failing artist never blocks the rest.
  */
 import { prisma, isAutonomyEnabled } from '@afrohit/db';
-import { GENRES } from '@afrohit/shared';
-import { prompts, generateJson, runWithBrainContext, scoreItems, researchTrends, extractSongCraft, parseTrendSong } from '@afrohit/ai';
+import { GENRES, rankMemoryCandidates } from '@afrohit/shared';
+import { prompts, generateJson, runWithBrainContext, scoreItems, researchTrends, extractSongCraft, parseTrendSong, embed } from '@afrohit/ai';
 import { debitCredits } from '../lib/credits';
 import { jobDoneEmail, morningDropEmail, releaseRadarEmail, sendEmail } from '../lib/email';
 
@@ -63,16 +63,62 @@ async function morningDropRun() {
       }
 
       // Taste memory — same feedback loop as interactive generation.
+      const memoryQuery = JSON.stringify({
+        genre: project.genre,
+        languages: artist.languages,
+        brief: project.briefs[0],
+      });
       const [approved, rejected] = await Promise.all([
         prisma.artistMemoryChunk.findMany({
-          where: { artistId: artist.id, kind: 'approved' },
-          orderBy: { createdAt: 'desc' }, take: 15, select: { content: true },
+          where: {
+            workspaceId: artist.workspaceId,
+            artistId: artist.id,
+            kind: 'approved',
+          },
+          orderBy: { createdAt: 'desc' },
+          take: 90,
+          select: { content: true, embedding: true, createdAt: true },
         }),
         prisma.artistMemoryChunk.findMany({
-          where: { artistId: artist.id, kind: 'rejected' },
-          orderBy: { createdAt: 'desc' }, take: 15, select: { content: true },
+          where: {
+            workspaceId: artist.workspaceId,
+            artistId: artist.id,
+            kind: 'rejected',
+          },
+          orderBy: { createdAt: 'desc' },
+          take: 90,
+          select: { content: true, embedding: true, createdAt: true },
         }),
       ]);
+      const memoryRows = [...approved, ...rejected];
+      const queryEmbedding = memoryRows.some((row) => Array.isArray(row.embedding))
+        ? await embed(memoryQuery.slice(0, 4_000)).catch(() => null)
+        : null;
+      const selectMemory = (rows: typeof approved) =>
+        rankMemoryCandidates({
+          candidates: rows,
+          query: memoryQuery,
+          queryEmbedding,
+          limit: 15,
+        }).map((row) => row.content);
+      const tasteMemory = {
+        approvedExamples: selectMemory(approved),
+        rejectedExamples: selectMemory(rejected),
+      };
+      await prisma.analyticsEvent.create({
+        data: {
+          workspaceId: artist.workspaceId,
+          name: 'artist_memory.recall',
+          properties: {
+            artistId: artist.id,
+            source: 'morning_drop',
+            mode: queryEmbedding ? 'hybrid_semantic' : 'lexical_recency',
+            candidateCount: memoryRows.length,
+            approvedReturned: tasteMemory.approvedExamples.length,
+            rejectedReturned: tasteMemory.rejectedExamples.length,
+          } as never,
+        },
+      }).catch(() => undefined);
 
       // NIGHT LAW: overnight hook drafts ride the bulk brain (the run wrapper
       // forces it anyway — this call also declares it for the economics log).
@@ -86,10 +132,7 @@ async function morningDropRun() {
           artist: artist as never,
           brief: project.briefs[0] as never,
           count: MORNING_DROP_COUNT,
-          tasteMemory: {
-            approvedExamples: approved.map((c: { content: string }) => c.content),
-            rejectedExamples: rejected.map((c: { content: string }) => c.content),
-          },
+          tasteMemory,
         }),
         temperature: 0.95,
         maxTokens: 4_000,
@@ -125,11 +168,17 @@ async function morningDropRun() {
         .slice(0, 10);
 
       const to = await ownerEmail(artist.workspaceId);
+      let emailStatus = 'no_recipient';
       if (to) {
         const tpl = morningDropEmail(artist.stageName, top);
-        await sendEmail({ to, ...tpl });
+        const delivery = await sendEmail({ to, ...tpl });
+        emailStatus = delivery.ok
+          ? 'sent'
+          : delivery.skipped
+            ? 'not_configured'
+            : 'failed';
       }
-      console.log(`[morning-drop] ${artist.stageName}: ${created.length} hooks, emailed=${!!to}`);
+      console.log(`[morning-drop] ${artist.stageName}: ${created.length} hooks, email=${emailStatus}`);
     } catch (err) {
       console.error(`[morning-drop] failed for artist ${artist.id}:`, err);
     }
@@ -157,7 +206,10 @@ export async function processReleaseRadar() {
       if (!to) continue;
       const sorted = countries.sort((a, b) => b.events - a.events);
       const tpl = releaseRadarEmail(sorted);
-      await sendEmail({ to, ...tpl });
+      const delivery = await sendEmail({ to, ...tpl });
+      if (!delivery.ok) {
+        console.warn(`[release-radar] email not sent for workspace ${workspaceId}: ${delivery.error}`);
+      }
     } catch (err) {
       console.error(`[release-radar] failed for workspace ${workspaceId}:`, err);
     }
@@ -271,7 +323,10 @@ export async function notifyJobDone(jobId: string) {
       ((out?.bundle as Record<string, unknown> | undefined)?.mp3 as string | undefined) ??
       null;
     const tpl = jobDoneEmail(job.kind, job.project?.title ?? null, url);
-    await sendEmail({ to, ...tpl });
+    const delivery = await sendEmail({ to, ...tpl });
+    if (!delivery.ok) {
+      console.warn(`[notify] email not sent for job ${jobId}: ${delivery.error}`);
+    }
   } catch (err) {
     console.error(`[notify] failed for job ${jobId}:`, err);
   }

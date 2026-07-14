@@ -1,4 +1,4 @@
-import { prisma, JobStatus } from '@afrohit/db';
+import { prisma, JobStatus, refundWorkspaceCharge } from '@afrohit/db';
 import { costOf, redactSensitiveText } from '@afrohit/shared';
 
 export async function markRunning(jobId: string) {
@@ -44,41 +44,27 @@ export async function markFailed(jobId: string, err: unknown) {
   });
   // REFUND ON FAILURE (audit DEAD: charge-before-enqueue never refunded). If the
   // route stamped a `_charge` on the job, credit it back — atomically and once
-  // (deterministic ledger id). Skipped in internal/owner mode (no real balance).
+  // using the same lock as charging. Owner mode restores cap units without changing balance.
   await refundJobCharge(job).catch((e) => console.warn(`[job ${jobId}] refund skipped:`, (e as Error)?.message));
 }
 
 async function refundJobCharge(job: { id: string; workspaceId: string; inputJson: unknown; chargeLedgerId?: string | null }) {
-  if ((process.env.AUTH_MODE ?? 'internal').toLowerCase() === 'internal') return; // owner pays providers directly
+  const internalMode = (process.env.AUTH_MODE ?? 'internal').toLowerCase() === 'internal';
   if (job.chargeLedgerId) {
-    const charge = await prisma.creditLedger.findFirst({
-      where: { id: job.chargeLedgerId, workspaceId: job.workspaceId, delta: { lt: 0 } },
-      select: { id: true, delta: true, reason: true },
+    const refund = await refundWorkspaceCharge(prisma, {
+      workspaceId: job.workspaceId,
+      chargeId: job.chargeLedgerId,
+      internalMode,
+      refTable: 'ProviderJob',
+      refId: job.id,
     });
-    if (!charge) return;
-    const amount = -charge.delta;
-    try {
-      await prisma.$transaction([
-        prisma.workspace.update({ where: { id: job.workspaceId }, data: { creditsCents: { increment: amount } } }),
-        prisma.creditLedger.create({
-          data: {
-            id: `refund_${charge.id}`,
-            workspaceId: job.workspaceId,
-            delta: amount,
-            reason: `refund_${charge.reason}`,
-            refTable: 'ProviderJob',
-            refId: job.id,
-            reversalOfId: charge.id,
-          },
-        }),
-      ]);
-      console.log(`[job ${job.id}] reversed charge ${charge.id} on failure`);
-    } catch (error) {
-      if ((error as { code?: string }).code !== 'P2002') throw error;
+    if (refund.refunded) {
+      console.log("[job " + job.id + "] reversed charge " + job.chargeLedgerId + " on failure");
     }
     return;
   }
 
+  if (internalMode) return;
   // Compatibility for jobs created before chargeLedgerId existed.
   const charge = (job.inputJson as { _charge?: { key?: string; multiplier?: number } } | null)?._charge;
   if (!charge?.key) return;
