@@ -27,6 +27,7 @@ import { processVideo } from './processors/video';
 import { processMix } from './processors/mix';
 import { processMaster } from './processors/master';
 import { processExport } from './processors/export';
+import { processRights } from './processors/rights';
 import { notifyJobDone, processMorningDrop, processReleaseRadar, processZapRadar } from './processors/cron';
 import { processDeepMeasure } from './processors/deep-measure';
 import { processTransform } from './processors/transform';
@@ -92,7 +93,7 @@ const connection = new IORedis(process.env.REDIS_URL ?? 'redis://localhost:6379'
 });
 
 /** Job kinds whose completion the user cares about → email notification. */
-const NOTIFY_QUEUES = new Set(['music', 'voice', 'video', 'export']);
+const NOTIFY_QUEUES = new Set(['music', 'voice', 'video', 'export', 'rights']);
 
 async function withWorkerUsageContext<T>(job: unknown, fn: () => Promise<T>): Promise<T> {
   const typed = job as { id?: string | number; data?: { jobId?: string; workspaceId?: string } };
@@ -220,6 +221,9 @@ const workers = [
   makeWorker('export', async (job: { data: never }) => {
     await processExport(job.data as never);
   }),
+  makeWorker('rights', async (job: { data: never }) => {
+    await processRights(job.data as never);
+  }),
   makeWorker('cleanup', async (job: { data: never; name: string }) => {
     if (job.name !== 'delete-assets') throw new Error(`unknown cleanup job: ${job.name}`);
     await processAssetCleanup(job.data as never);
@@ -302,7 +306,7 @@ async function shutdown(signal: string) {
 process.on('SIGTERM', () => void shutdown('SIGTERM'));
 process.on('SIGINT', () => void shutdown('SIGINT'));
 
-log.info('worker up, listening on queues: music, voice, image, video, mix, master, export, cron');
+log.info('worker up, listening on queues: music, voice, image, video, mix, master, rights, export, cron');
 
 // Deploy maintenance is not an autonomy feature: historical vocal rows must be
 // measured before any of them can re-enter a mix. The dated id makes this once

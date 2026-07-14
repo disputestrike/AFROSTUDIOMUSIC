@@ -69,6 +69,7 @@ const TS: Array<[string, string]> = [
   ['P5  Material selector', 'test-lane-material.ts'],
   ['P5  Fill insertion', 'test-fills.ts'],
   ['P6  Release gate', 'test-release-gate.ts'],
+  ['P6  Release package truth', 'test-release-package.ts'],
   ['P7  Engine ceilings', 'test-lane-engine.ts'],
   ['Lyric render filter', 'test-clean-lyrics.ts'],
   ['The Wall (W-2/C-1)', 'test-wall.ts'],

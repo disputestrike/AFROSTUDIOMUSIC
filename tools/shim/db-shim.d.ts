@@ -29,4 +29,11 @@ declare module '@afrohit/db' {
   export const openSecret: (stored: string | null | undefined) => string | undefined;
   export const secretHint: (stored: string | null | undefined) => string | null;
   export const migratePlaintextWorkspaceSecrets: () => Promise<number>;
+  export const releaseEvidenceHash: (value: unknown) => string;
+  export const normalizeSplitSheet: (value: unknown) => Array<{ name: string; role: string; share: number }>;
+  export const loadReleaseCertification: (
+    db: PrismaShimClient,
+    options: { workspaceId: string; songId: string; projectId?: string; hitTarget?: number },
+  ) => Promise<any>;
+  export const RELEASE_REVIEW_LANGUAGES: readonly string[];
 }

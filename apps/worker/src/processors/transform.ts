@@ -1,38 +1,97 @@
-/**
- * TRANSFORM — change a finished song's SPEED and/or KEY without regenerating a
- * note. Pitch-preserving tempo (0.5–1.5x) and ±6-semitone shifts; the result is
- * appended as a new Master take, so it shows in Compare Versions as the current
- * version with one-tap revert. Zero model spend — pure ffmpeg.
- */
-import { prisma, Prisma } from '@afrohit/db';
+import { Prisma, prisma } from '@afrohit/db';
+import { certifyAudioBytes } from '../lib/certified-assets';
 import { transformAudio } from '../lib/ffmpeg';
-import { downloadToBuffer, uploadBytes } from '../lib/storage';
-import { markSucceeded, markFailed } from '../lib/jobs';
+import { markFailed, markRunning } from '../lib/jobs';
+import { deleteObjectByUrl, downloadToBuffer } from '../lib/storage';
 
 export interface TransformPayload {
-  jobId: string; workspaceId: string; projectId: string; songId: string;
-  sourceUrl: string; tempo?: number; semitones?: number;
+  jobId: string;
+  workspaceId: string;
+  projectId: string;
+  songId: string;
+  sourceUrl: string;
+  tempo?: number;
+  semitones?: number;
 }
 
-export async function processTransform(p: TransformPayload): Promise<void> {
+export async function processTransform(payload: TransformPayload): Promise<void> {
+  await markRunning(payload.jobId);
+  let storedUrl: string | null = null;
   try {
-    const src = await downloadToBuffer(p.sourceUrl);
-    const out = await transformAudio(src, { tempo: p.tempo, semitones: p.semitones });
-    const url = await uploadBytes({ workspaceId: p.workspaceId, kind: 'masters', bytes: out, contentType: 'audio/wav', ext: 'wav' });
-    const label = [
-      p.tempo && Math.abs(p.tempo - 1) > 0.001 ? `${p.tempo}x` : null,
-      p.semitones ? `${p.semitones > 0 ? '+' : ''}${p.semitones}st` : null,
-    ].filter(Boolean).join(' ') || 'copy';
-    await prisma.master.create({
-      data: { projectId: p.projectId, songId: p.songId, preset: `transform ${label}`, url, approved: true },
+    const song = await prisma.song.findFirstOrThrow({
+      where: {
+        id: payload.songId,
+        workspaceId: payload.workspaceId,
+        projectId: payload.projectId,
+      },
     });
-    // New current take (speed/key changed) — yesterday's instrumental/acapella
-    // no longer match it. Clear; the next request re-separates from this take.
-    await prisma.song.update({ where: { id: p.songId }, data: { instrumentalUrl: null, acapellaUrl: null, instrumentalMeta: Prisma.DbNull } }).catch(() => undefined);
-    await markSucceeded(p.jobId, { url, label });
-    console.log(`[transform] song ${p.songId}: ${label}`);
-  } catch (err) {
-    await markFailed(p.jobId, (err as Error)?.message ?? 'transform failed').catch(() => undefined);
-    console.warn('[transform] failed:', (err as Error)?.message);
+    void song;
+    const source = await downloadToBuffer(payload.sourceUrl);
+    const output = await transformAudio(source, {
+      tempo: payload.tempo,
+      semitones: payload.semitones,
+    });
+    const certified = await certifyAudioBytes({
+      workspaceId: payload.workspaceId,
+      kind: 'masters',
+      bytes: output,
+    });
+    storedUrl = certified.url;
+    const label = [
+      payload.tempo && Math.abs(payload.tempo - 1) > 0.001 ? String(payload.tempo) + 'x' : null,
+      payload.semitones
+        ? (payload.semitones > 0 ? '+' : '') + String(payload.semitones) + 'st'
+        : null,
+    ].filter(Boolean).join(' ') || 'copy';
+
+    const master = await prisma.$transaction(async (tx) => {
+      const created = await tx.master.create({
+        data: {
+          projectId: payload.projectId,
+          songId: payload.songId,
+          preset: 'transform ' + label,
+          url: certified.url,
+          qualityState: certified.qualityState,
+          contentHash: certified.contentHash,
+          verifiedAt: certified.verifiedAt,
+          approved: true,
+          meta: {
+            qc: certified.qc,
+            sourceUrl: payload.sourceUrl,
+            transform: { tempo: payload.tempo, semitones: payload.semitones },
+          } as never,
+        },
+      });
+      await tx.song.update({
+        where: { id: payload.songId },
+        data: {
+          status: 'MASTERED',
+          releaseReady: false,
+          instrumentalUrl: null,
+          acapellaUrl: null,
+          instrumentalMeta: Prisma.DbNull,
+        },
+      });
+      await tx.providerJob.update({
+        where: { id: payload.jobId },
+        data: {
+          status: 'SUCCEEDED',
+          finishedAt: new Date(),
+          outputJson: {
+            masterId: created.id,
+            url: created.url,
+            label,
+            qualityState: created.qualityState,
+            contentHash: created.contentHash,
+          } as never,
+        },
+      });
+      return created;
+    });
+    storedUrl = null;
+    console.log('[transform] song ' + payload.songId + ': ' + label + ' (' + master.id + ')');
+  } catch (error) {
+    if (storedUrl) await deleteObjectByUrl(storedUrl).catch(() => undefined);
+    await markFailed(payload.jobId, error);
   }
 }

@@ -236,7 +236,7 @@ export const STUDIO_CHAT_TOOLS = [
   {
     type: 'function' as const,
     name: 'run_rights_check',
-    description: 'Run a rights/similarity check on the song.',
+    description: 'Queue the fail-closed audio-recognition and lyric-rights scan for a certified song.',
     parameters: {
       type: 'object',
       properties: { songId: { type: 'string' } },
@@ -247,7 +247,7 @@ export const STUDIO_CHAT_TOOLS = [
     type: 'function' as const,
     name: 'create_release_kit',
     description:
-      'Bundle mp3 + wav + stems + cover + lyrics + video + release captions into one zip with a rights receipt.',
+      'Build a verified downloadable release ZIP from the current certified audio, cover, lyrics, splits, and rights receipt.',
     parameters: {
       type: 'object',
       properties: { songId: { type: 'string' } },
@@ -408,13 +408,12 @@ export const STUDIO_CHAT_TOOLS = [
     type: 'function' as const,
     name: 'set_release_rights',
     description:
-      'Set the split-sheet + rights on a song and (if splits sum to 100) auto-assign ISRC/UPC and recompute the release green-light.',
+      'Save a draft split-sheet. Human acceptance and native-language review must be completed by a named workspace owner on the Release screen.',
     parameters: {
       type: 'object',
       properties: {
         songId: { type: 'string' },
         splitSheet: { type: 'array', items: { type: 'object', properties: { name: { type: 'string' }, role: { type: 'string' }, share: { type: 'number' } } } },
-        nativeReviewOk: { type: 'boolean' },
       },
       required: ['songId'],
     },

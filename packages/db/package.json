@@ -23,6 +23,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@afrohit/shared": "workspace:*",
     "@prisma/client": "^5.22.0"
   },
   "devDependencies": {

@@ -804,6 +804,9 @@ export async function processMusic(p: MusicPayload) {
                 preset,
                 url: wavUrl,
                 loudness: measuredLufs ?? target.lufs,
+                qualityState: 'passed',
+                contentHash: wavHash,
+                verifiedAt: masterVerifiedAt,
                 approved: true,
                 meta: {
                   qc: masterQc,
@@ -817,7 +820,7 @@ export async function processMusic(p: MusicPayload) {
             });
           // A fresh render just became the current audio (re-sing lands here) —
           // clear any instrumental/acapella split from the PREVIOUS take.
-            await tx.song.update({ where: { id: p.songId }, data: { status: 'MASTERED', instrumentalUrl: null, acapellaUrl: null, instrumentalMeta: Prisma.DbNull } });
+            await tx.song.update({ where: { id: p.songId }, data: { status: 'MASTERED', releaseReady: false, instrumentalUrl: null, acapellaUrl: null, instrumentalMeta: Prisma.DbNull } });
           });
           uncommittedMasterUrls = [];
           masteredUrl = mp3Url;

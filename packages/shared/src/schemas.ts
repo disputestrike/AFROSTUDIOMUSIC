@@ -292,6 +292,11 @@ export const approvalInputSchema = z.object({
 export const rightsCheckInputSchema = z.object({
   projectId: z.string().cuid(),
   songId: z.string().cuid(),
+  audioRightsAttestation: z.object({
+    confirmed: z.literal(true),
+    basis: z.enum(['owner', 'licensed', 'public_domain']),
+    note: z.string().trim().min(3).max(500).optional(),
+  }).optional(),
 });
 
 // ---------- Sharing / PostGIS ----------------------------------------------
@@ -451,10 +456,17 @@ export const splitEntrySchema = z.object({
 });
 
 export const rightsInputSchema = z.object({
-  splitSheet: z.array(splitEntrySchema).max(20).optional(),
-  isrc: z.string().max(20).optional(),
-  upc: z.string().max(20).optional(),
-  nativeReviewOk: z.boolean().optional(), // a native speaker signed off on YO/IG/HA delivery
+  splitSheet: z.array(splitEntrySchema).min(1).max(20).optional(),
+  acceptSplits: z.boolean().optional(),
+  isrc: z.string().trim().toUpperCase().regex(/^[A-Z]{2}-?[A-Z0-9]{3}-?[0-9]{2}-?[0-9]{5}$/).optional(),
+  upc: z.string().trim().regex(/^[0-9]{12,14}$/).optional(),
+  nativeReview: z.object({
+    reviewerName: z.string().trim().min(2).max(120),
+    languages: z.array(z.string().trim().min(2).max(12)).min(1).max(8),
+    attested: z.literal(true),
+    notes: z.string().trim().max(1000).optional(),
+  }).optional(),
+  revokeNativeReview: z.literal(true).optional(),
 });
 
 // ---------- Drop Machine (batch generate → rank → shortlist) ---------------

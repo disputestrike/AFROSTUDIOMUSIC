@@ -9,9 +9,10 @@
  */
 import { prisma, Prisma } from '@afrohit/db';
 import { forgeKitFor, materialCoverage, seedFrom, selectMaterialRows, withCoarseMaterialRoles } from '@afrohit/shared';
-import { downloadToBuffer, uploadBytes } from '../lib/storage';
+import { deleteObjectByUrl, downloadToBuffer } from '../lib/storage';
+import { certifyAudioBytes } from '../lib/certified-assets';
 import { mixBuffers, runFfmpeg } from '../lib/ffmpeg';
-import { markRunning, markSucceeded, markFailed } from '../lib/jobs';
+import { markRunning, markFailed } from '../lib/jobs';
 import { melodyLayer } from './own-engine';
 import { separateStemsRouted } from '../lib/demucs-local';
 import { processAssembleBeat } from './material';
@@ -152,6 +153,7 @@ async function stemSurgery(sourceUrl: string, target: 'vocals' | 'drums' | 'bass
 
 export async function processSongEdit(p: SongEditPayload): Promise<void> {
   await markRunning(p.jobId);
+  let storedUrl: string | null = null;
   try {
     const src = await downloadToBuffer(p.sourceUrl);
     let out: Buffer;
@@ -269,8 +271,46 @@ export async function processSongEdit(p: SongEditPayload): Promise<void> {
       label = `layer: ${p.op.prompt.slice(0, 40)}`;
     }
 
-    const url = await uploadBytes({ workspaceId: p.workspaceId, kind: 'masters', bytes: out, contentType: 'audio/wav', ext: 'wav' });
-    await prisma.master.create({ data: { projectId: p.projectId, songId: p.songId, preset: `chat ${label}`.slice(0, 60), url, approved: true } });
+    const certified = await certifyAudioBytes({
+      workspaceId: p.workspaceId,
+      kind: 'masters',
+      bytes: out,
+    });
+    storedUrl = certified.url;
+    await prisma.$transaction(async (tx) => {
+      const master = await tx.master.create({
+        data: {
+          projectId: p.projectId,
+          songId: p.songId,
+          preset: `chat ${label}`.slice(0, 60),
+          url: certified.url,
+          qualityState: certified.qualityState,
+          contentHash: certified.contentHash,
+          verifiedAt: certified.verifiedAt,
+          approved: true,
+          meta: { qc: certified.qc, sourceUrl: p.sourceUrl, operation: p.op } as never,
+        },
+      });
+      await tx.song.update({
+        where: { id: p.songId },
+        data: {
+          status: 'MASTERED',
+          releaseReady: false,
+          instrumentalUrl: null,
+          acapellaUrl: null,
+          instrumentalMeta: Prisma.DbNull,
+        },
+      });
+      await tx.providerJob.update({
+        where: { id: p.jobId },
+        data: {
+          status: 'SUCCEEDED',
+          finishedAt: new Date(),
+          outputJson: { masterId: master.id, url: master.url, label, qualityState: master.qualityState, contentHash: master.contentHash } as never,
+        },
+      });
+    });
+    storedUrl = null;
     // The edit just became the song's current audio — a stale instrumental/
     // acapella must never be served for the changed record. Clear; re-separate on demand.
     await prisma.song.update({ where: { id: p.songId }, data: { instrumentalUrl: null, acapellaUrl: null, instrumentalMeta: Prisma.DbNull } }).catch(() => undefined);
@@ -292,9 +332,9 @@ export async function processSongEdit(p: SongEditPayload): Promise<void> {
     } catch (err) {
       console.warn('[song-edit] version prune failed (non-fatal):', (err as Error)?.message);
     }
-    await markSucceeded(p.jobId, { url, label, note: 'New version is live — it auto-plays and reverts in one tap.' });
     console.log(`[song-edit] ${p.songId}: ${label}`);
   } catch (err) {
+    if (storedUrl) await deleteObjectByUrl(storedUrl).catch(() => undefined);
     await markFailed(p.jobId, `song_edit_failed: ${(err as Error)?.message ?? 'unknown'}`);
     console.warn('[song-edit] failed:', (err as Error)?.message);
   }

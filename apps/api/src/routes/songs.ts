@@ -368,24 +368,69 @@ export default async function songs(app: FastifyInstance) {
   // and the revert is itself reversible (newest take is always "current").
   app.post<{ Params: { id: string }; Body: { index?: number } }>('/:id/versions/revert', async (req, reply) => {
     const { workspaceId } = requireAuth(req);
-    const idx = Math.max(0, Number(req.body?.index ?? 0));
+    const index = Math.max(0, Number(req.body?.index ?? 0));
     const song = await prisma.song.findFirst({
       where: { id: req.params.id, workspaceId },
-      include: { masters: { orderBy: { createdAt: 'asc' } }, beats: { orderBy: { createdAt: 'asc' } } },
+      include: {
+        masters: { orderBy: { createdAt: 'asc' } },
+        beats: { orderBy: { createdAt: 'asc' } },
+      },
     });
     if (!song) return reply.code(404).send({ error: 'song_not_found' });
-    const rows = (song.masters.length ? song.masters : song.beats).map((m: { url: string }) => ({ url: m.url }));
-    const audio = rows.filter((r: { url: string }, i: number) => i === 0 || r.url !== rows[i - 1]!.url);
-    const target = audio[idx];
+    type RevertSource = {
+      id: string;
+      url: string;
+      approved: boolean;
+      qualityState: string;
+      contentHash: string | null;
+      verifiedAt: Date | null;
+      meta: unknown;
+    };
+    const sourceRows = (song.masters.length ? song.masters : song.beats) as RevertSource[];
+    const audio = sourceRows.filter((row, rowIndex) =>
+      rowIndex === 0 || row.url !== sourceRows[rowIndex - 1]!.url
+    );
+    const target = audio[index];
     if (!target) return reply.code(400).send({ error: 'no_such_version', have: audio.length });
-    if (idx === audio.length - 1) return { ok: true, alreadyCurrent: true };
-    const label = idx === 0 ? 'Original' : `Take ${idx + 1}`;
-    const master = await prisma.master.create({
-      data: { projectId: song.projectId, songId: song.id, preset: 'reverted', url: target.url, approved: true },
+    if (index === audio.length - 1) return { ok: true, alreadyCurrent: true };
+    if (
+      !target.approved
+      || target.qualityState !== 'passed'
+      || !target.contentHash
+      || !target.verifiedAt
+    ) {
+      return reply.code(409).send({
+        error: 'version_not_certified',
+        message: 'Only an approved, hashed, QC-passed version can become the current master.',
+      });
+    }
+    const label = index === 0 ? 'Original' : 'Take ' + String(index + 1);
+    const master = await prisma.$transaction(async (tx) => {
+      const created = await tx.master.create({
+        data: {
+          projectId: song.projectId,
+          songId: song.id,
+          preset: 'reverted',
+          url: target.url,
+          qualityState: target.qualityState,
+          contentHash: target.contentHash,
+          verifiedAt: target.verifiedAt,
+          approved: true,
+          meta: target.meta == null ? undefined : target.meta as never,
+        },
+      });
+      await tx.song.update({
+        where: { id: song.id },
+        data: {
+          status: 'MASTERED',
+          releaseReady: false,
+          instrumentalUrl: null,
+          acapellaUrl: null,
+          instrumentalMeta: Prisma.DbNull,
+        },
+      });
+      return created;
     });
-    // The reverted take is now the current audio — a stale instrumental/acapella
-    // from the previous take must never be served for it.
-    await prisma.song.update({ where: { id: song.id }, data: { instrumentalUrl: null, acapellaUrl: null, instrumentalMeta: Prisma.DbNull } }).catch(() => undefined);
     return { ok: true, revertedTo: label, masterId: master.id, url: target.url };
   });
 
@@ -569,21 +614,66 @@ export default async function songs(app: FastifyInstance) {
     // re-master never silently masters stale audio.
     const latestMix = song.mixes[0];
     const latestBeat = song.beats[0];
-    const realMix =
-      latestMix && latestMix.preset !== 'source' && (!latestBeat || latestMix.createdAt >= latestBeat.createdAt)
-        ? latestMix
-        : null;
+    const latestMaster = song.masters[0];
+    const candidates = [
+      latestMix ? { kind: 'mix' as const, row: latestMix } : null,
+      latestBeat ? { kind: 'beat' as const, row: latestBeat } : null,
+      latestMaster ? { kind: 'master' as const, row: latestMaster } : null,
+    ].filter(Boolean) as Array<{
+      kind: 'mix' | 'beat' | 'master';
+      row: NonNullable<typeof latestMix | typeof latestBeat | typeof latestMaster>;
+    }>;
+    candidates.sort((left, right) =>
+      right.row.createdAt.getTime() - left.row.createdAt.getTime()
+    );
+    const current = candidates[0];
+    if (!current) return reply.code(400).send({ error: 'nothing_to_master' });
+    if (
+      !current.row.approved
+      || current.row.qualityState !== 'passed'
+      || !current.row.contentHash
+      || !current.row.verifiedAt
+    ) {
+      return reply.code(409).send({
+        error: 'master_source_not_certified',
+        message: 'Inspect and approve the current audio before mastering it.',
+      });
+    }
+
+    const realMix = current.kind === 'mix' && latestMix?.preset !== 'source'
+      ? latestMix
+      : null;
     let mixId: string;
     if (realMix) {
       mixId = realMix.id;
     } else {
-      const sourceUrl = latestBeat?.url ?? latestMix?.url ?? song.masters[0]?.url;
-      if (!sourceUrl) return reply.code(400).send({ error: 'nothing_to_master — no audio on this song yet' });
-      const mix =
-        (await prisma.mix.findFirst({ where: { projectId: song.projectId, songId: song.id, preset: 'source', url: sourceUrl } })) ??
-        (await prisma.mix.create({
-          data: { projectId: song.projectId, songId: song.id, preset: 'source', url: sourceUrl, notes: 'Master source (current rendered audio)', approved: true },
-        }));
+      const sourceUrl = current.row.url;
+      const existing = await prisma.mix.findFirst({
+        where: {
+          projectId: song.projectId,
+          songId: song.id,
+          preset: 'source',
+          url: sourceUrl,
+          approved: true,
+          qualityState: 'passed',
+          contentHash: current.row.contentHash,
+          verifiedAt: { not: null },
+        },
+      });
+      const mix = existing ?? await prisma.mix.create({
+        data: {
+          projectId: song.projectId,
+          songId: song.id,
+          preset: 'source',
+          url: sourceUrl,
+          notes: 'Master source copied from current certified audio',
+          qualityState: 'passed',
+          contentHash: current.row.contentHash,
+          verifiedAt: current.row.verifiedAt,
+          meta: current.row.meta == null ? undefined : current.row.meta as never,
+          approved: true,
+        },
+      });
       mixId = mix.id;
     }
 
@@ -596,8 +686,9 @@ export default async function songs(app: FastifyInstance) {
     // conform, never the full EQ+comp chain that was "mastering a master" into
     // dullness. Raw engines keep the full chain.
     const finished =
-      (!realMix && (['minimax', 'suno'].includes(latestBeat?.provider ?? '') || (!latestBeat?.url && !latestMix?.url && !!song.masters[0]?.url))) ||
-      realMix?.preset === 'uploaded';
+      current.kind === 'master'
+      || (current.kind === 'beat' && ['minimax', 'suno'].includes(latestBeat?.provider ?? ''))
+      || realMix?.preset === 'uploaded';
     // LOUDNESS LAW v2: default = commercial Afro loudness (-9 LUFS / -1.0 dBTP,
     // two-pass driven) for every path; 'breathe_-16.5' is the dynamics opt-in.
     const preset = requestedPreset || 'afro_stream_-9';

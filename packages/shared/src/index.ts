@@ -7,6 +7,8 @@ export * from './lane-compliance';
 export * from './lane-repair';
 export * from './lane-material';
 export * from './release-gate';
+export * from './release-readiness';
+export * from './canonical-json';
 export * from './lane-engine';
 export * from './engine-class';
 export * from './reference-origin';

@@ -10,8 +10,8 @@
  */
 import type { FastifyInstance } from 'fastify';
 import { createHash } from 'node:crypto';
-import { prisma } from '@afrohit/db';
-import { joinBriefs, prompts, generateJson, scoreItems, runRightsCheck, canonicalReceiptHash, directorRefineHooks, researchTrends, enrichLyricsForVocals } from '@afrohit/ai';
+import { loadReleaseCertification, prisma } from '@afrohit/db';
+import { joinBriefs, prompts, generateJson, scoreItems, directorRefineHooks, researchTrends, enrichLyricsForVocals } from '@afrohit/ai';
 import { laneDna, laneDnaBrief } from '../lib/lane-pipeline';
 import { createQueuedProviderJob } from '../lib/queued-job';
 import { assertSafeUrl } from '../lib/url-guard';
@@ -31,6 +31,7 @@ import { arReadSong } from '../lib/ar-read';
 import { applySingingBrain, craftOf } from '../lib/singing-pipeline';
 import { memoryContext, recordFeedback } from './artist-memory';
 import { operationErrorBody, runIdempotentOperation } from '../lib/idempotent-operation';
+import { BLOW_TARGET } from '../lib/will-it-blow';
 
 type Ctx = {
   app: FastifyInstance;
@@ -1031,67 +1032,91 @@ async function renderVideo(ctx: Ctx, a: { conceptId: string; shotIndex?: number 
 async function rightsCheck(ctx: Ctx, songId: string) {
   const song = await prisma.song.findFirstOrThrow({
     where: { id: songId, workspaceId: ctx.workspaceId },
-    include: {
-      project: { include: { artist: true, briefs: { take: 1, orderBy: { createdAt: 'desc' } } } },
-      lyric: true,
-    },
+    select: { id: true, projectId: true },
   });
-  const hook = await prisma.hookCandidate.findFirst({ where: { songId, approved: true } });
-  const check = await runRightsCheck({
-    lyricBody: song.lyric?.body,
-    hookText: hook?.text,
-    references: song.project.artist.references as never,
-    producerNotes: song.project.briefs[0]?.notes ?? undefined,
+  const idempotencyKey = toolKey(ctx, 'rights-check');
+  const charge = await ctx.app.chargeCredits({
+    workspaceId: ctx.workspaceId,
+    key: 'analyze_audio',
+    refTable: 'Song',
+    refId: song.id,
+    idempotencyKey,
   });
-  const approvals = await prisma.approval.findMany({ where: { projectId: song.projectId, decision: 'approved' } });
-  const hash = await canonicalReceiptHash({ songId, check, approvals, t: new Date().toISOString() });
-  const receipt = await prisma.rightsReceipt.create({
-    data: {
-      workspaceId: ctx.workspaceId, projectId: song.projectId, songId,
-      providers: [], prompts: { rightsCheck: check } as never,
-      approvals: approvals.map((a: { id: string; gate: string; decision: string }) => ({ id: a.id, gate: a.gate, decision: a.decision })) as never,
-      aiDisclosure: { distroDisclosure: 'GenAI-assisted, human-edited', credits: { lyrics: 'AI-assisted, human-edited' } } as never,
-      hash,
-    },
+  if (!charge.ok) return { error: 'insufficient_credits', ...charge };
+  const job = await createQueuedProviderJob({
+    app: ctx.app,
+    queue: ctx.app.queues.rights,
+    jobName: 'check-rights',
+    workspaceId: ctx.workspaceId,
+    projectId: song.projectId,
+    kind: 'rights',
+    provider: 'internal+audd',
+    inputJson: { songId: song.id },
+    charge,
+    idempotencyKey,
+    payload: (jobId) => ({
+      jobId,
+      workspaceId: ctx.workspaceId,
+      projectId: song.projectId,
+      songId: song.id,
+    }),
   });
-  return { receiptId: receipt.id, check };
+  return { jobId: job.jobId, replayed: job.replayed };
 }
 
 async function createReleaseKit(ctx: Ctx, songId: string) {
-  const song = await prisma.song.findFirstOrThrow({
-    where: { id: songId, workspaceId: ctx.workspaceId },
-    include: {
-      masters: { take: 1 },
-      mixes: { take: 1 },
-      beats: { take: 1 },
-    },
+  const certification = await loadReleaseCertification(prisma, {
+    workspaceId: ctx.workspaceId,
+    songId,
+    hitTarget: BLOW_TARGET,
   });
-  // NEVER bundle a "release" for a song with no rendered audio — that's how
-  // autopilot ended up marking a song RELEASED with audioUrl:null and telling the
-  // user "release complete" when nothing had rendered. Require real audio first.
-  if (!song.masters.length && !song.mixes.length && !song.beats.length) {
+  if (!certification.readiness.ready || !certification.rightsReceipt) {
     return {
-      error: 'not_rendered',
-      message: 'The song has no audio yet — it is still rendering. Wait for the beat/master to finish, then bundle the release.',
+      error: 'not_release_ready',
+      checks: certification.readiness.checks,
+      message: 'Finish the release checklist before building the package.',
     };
   }
-  const idempotencyKey = toolKey(ctx, 'release-export');
-  const charge = await ctx.app.chargeCredits({ workspaceId: ctx.workspaceId, key: 'release_export', refTable: 'Song', refId: songId, idempotencyKey });
+  const operationKey = toolKey(ctx, 'release-export');
+  const idempotencyKey = operationKey
+    ? operationKey + ':' + certification.artifactFingerprint.slice(0, 16)
+    : undefined;
+  const charge = await ctx.app.chargeCredits({
+    workspaceId: ctx.workspaceId,
+    key: 'release_export',
+    refTable: 'Song',
+    refId: songId,
+    idempotencyKey,
+  });
   if (!charge.ok) return { error: 'insufficient_credits', ...charge };
   const job = await createQueuedProviderJob({
     app: ctx.app,
     queue: ctx.app.queues.export,
     jobName: 'export-release',
     workspaceId: ctx.workspaceId,
-    projectId: song.projectId,
+    projectId: certification.song.projectId,
     kind: 'export',
     provider: 'internal',
-    inputJson: { songId },
+    inputJson: {
+      songId,
+      receiptId: certification.rightsReceipt.id,
+      artifactFingerprint: certification.artifactFingerprint,
+    },
     charge,
     idempotencyKey,
-    payload: (jobId) => ({ jobId, workspaceId: ctx.workspaceId, projectId: song.projectId, songId }),
+    payload: (jobId) => ({
+      jobId,
+      workspaceId: ctx.workspaceId,
+      projectId: certification.song.projectId,
+      songId,
+      receiptId: certification.rightsReceipt!.id,
+    }),
   });
-  return { jobId: job.jobId, replayed: job.replayed };
+  return {
+    jobId: job.jobId,
+    replayed: job.replayed,
+    artifactFingerprint: certification.artifactFingerprint,
+  };
 }
 
 async function requestApproval(ctx: Ctx, gate: string, note: string) {
@@ -1420,14 +1445,32 @@ async function makeMaterialBeatTool(ctx: Ctx, a: { genre?: string; bpm?: number;
   });
 }
 
-async function setReleaseRightsTool(ctx: Ctx, a: { songId: string; splitSheet?: Array<{ name: string; role: string; share: number }>; nativeReviewOk?: boolean }) {
-  const song = await prisma.song.findFirst({ where: { id: a.songId, workspaceId: ctx.workspaceId }, select: { id: true } });
+async function setReleaseRightsTool(ctx: Ctx, a: {
+  songId: string;
+  splitSheet?: Array<{ name: string; role: string; share: number }>;
+  nativeReviewOk?: boolean;
+}) {
+  const song = await prisma.song.findFirst({
+    where: { id: a.songId, workspaceId: ctx.workspaceId },
+    select: { id: true },
+  });
   if (!song) return { error: 'song_not_found' };
-  const data: Record<string, unknown> = {};
-  if (a.splitSheet) data.splitSheet = a.splitSheet as never;
-  if (typeof a.nativeReviewOk === 'boolean') data.nativeReviewOk = a.nativeReviewOk;
-  if (!Object.keys(data).length) return { error: 'nothing_to_set' };
-  await prisma.song.update({ where: { id: song.id }, data });
-  const sum = (a.splitSheet ?? []).reduce((t, s) => t + (Number(s.share) || 0), 0);
-  return { ok: true, songId: song.id, splitsSumTo: sum, note: 'Saved. Finalize ISRC/UPC + green-light on the Release page (rights assignment stays on the canonical release step).' };
+  if (!a.splitSheet?.length) {
+    return {
+      error: a.nativeReviewOk == null ? 'nothing_to_set' : 'named_native_review_required',
+      message: 'Native-language approval requires a named human attestation on the Release screen.',
+    };
+  }
+  await prisma.song.update({
+    where: { id: song.id },
+    data: { splitSheet: a.splitSheet as never, releaseReady: false },
+  });
+  const sum = a.splitSheet.reduce((total, split) => total + (Number(split.share) || 0), 0);
+  return {
+    ok: true,
+    songId: song.id,
+    splitsSumTo: sum,
+    accepted: false,
+    note: 'Draft splits saved. A workspace owner must explicitly accept them on the Release screen.',
+  };
 }

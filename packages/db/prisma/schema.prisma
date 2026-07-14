@@ -49,9 +49,10 @@ model Workspace {
   voiceDatasets      VoiceDataset[]
   brandKits          BrandKit[]
   songs              Song[]
-  jobs               ProviderJob[]
-  rightsReceipts     RightsReceipt[]
-  shareLinks         ShareLink[]
+  jobs                ProviderJob[]
+  rightsReceipts      RightsReceipt[]
+  releaseAttestations ReleaseAttestation[]
+  shareLinks          ShareLink[]
   shareEvents        ShareEvent[]
   artistMemoryChunks ArtistMemoryChunk[]
   approvals          Approval[]
@@ -305,9 +306,10 @@ model Project {
   imageAssets    ImageAsset[]
   videoConcepts  VideoConcept[]
   videoRenders   VideoRender[]
-  approvals      Approval[]
-  rightsReceipts RightsReceipt[]
-  exports        Export[]
+  approvals          Approval[]
+  rightsReceipts     RightsReceipt[]
+  releaseAttestations ReleaseAttestation[]
+  exports            Export[]
   jobs           ProviderJob[]
   chatThreads    ChatThread[]
 
@@ -450,9 +452,10 @@ model Song {
   vocalRenders    VocalRender[]
   mixes           Mix[]
   masters         Master[]
-  exports         Export[]
-  rights          RightsReceipt[]
-  taste           TasteScore[]
+  exports             Export[]
+  rights              RightsReceipt[]
+  releaseAttestations ReleaseAttestation[]
+  taste               TasteScore[]
   materialUsages  MaterialUsage[]
   referenceUsages ReferenceUsage[]
   shareLinks      ShareLink[]
@@ -644,14 +647,17 @@ model Mix {
 }
 
 model Master {
-  id        String   @id @default(cuid())
-  projectId String
-  songId    String?
-  mixId     String?
-  preset    String // "streaming_lufs_-14","club_-9","reels_-16"
-  url       String
-  loudness  Float?
-  approved  Boolean  @default(false)
+  id           String    @id @default(cuid())
+  projectId    String
+  songId       String?
+  mixId        String?
+  preset       String // "streaming_lufs_-14","club_-9","reels_-16"
+  url          String
+  loudness     Float?
+  qualityState String    @default("unmeasured") // passed | failed | unmeasured
+  contentHash  String?
+  verifiedAt   DateTime? @db.Timestamptz(6)
+  approved     Boolean   @default(false)
   // WO-6(a): measured QC of the MASTERED artifact — the release gate judges
   // this, never the pre-master take (what ships is what gets certified).
   meta      Json?
@@ -662,6 +668,8 @@ model Master {
   mix     Mix?    @relation(fields: [mixId], references: [id])
 
   @@index([projectId])
+  @@index([songId, qualityState, approved])
+  @@index([projectId, contentHash])
 }
 
 // ===========================================================================
@@ -784,22 +792,27 @@ model LexiconEntry {
 // ===========================================================================
 
 model ImageAsset {
-  id         String   @id @default(cuid())
-  projectId  String?
-  brandKitId String?
-  kind       String // "cover","social","lyric_card","logo","promo"
-  prompt     String?  @db.Text
-  url        String
-  width      Int?
-  height     Int?
-  provider   String
-  approved   Boolean  @default(false)
-  createdAt  DateTime @default(now()) @db.Timestamptz(6)
+  id           String    @id @default(cuid())
+  projectId    String?
+  brandKitId   String?
+  kind         String // "cover","social","lyric_card","logo","promo"
+  prompt       String?   @db.Text
+  url          String
+  width        Int?
+  height       Int?
+  provider     String
+  qualityState String    @default("unmeasured") // passed | failed | unmeasured
+  contentHash  String?
+  verifiedAt   DateTime? @db.Timestamptz(6)
+  approved     Boolean   @default(false)
+  createdAt    DateTime  @default(now()) @db.Timestamptz(6)
 
   project  Project?  @relation(fields: [projectId], references: [id], onDelete: Cascade)
   brandKit BrandKit? @relation(fields: [brandKitId], references: [id])
 
   @@index([projectId])
+  @@index([projectId, kind, qualityState, approved])
+  @@index([projectId, contentHash])
 }
 
 model VideoConcept {
@@ -906,6 +919,7 @@ model RightsReceipt {
   voiceConsentId    String?
   providers         Json // [{kind:"music", provider:"eleven", model:"music-v1", commercial_terms_url:"..."}]
   prompts           Json // captured prompts/inputs
+  canonicalPayload  Json? // complete recursively-canonical evidence object hashed by hash
   samples           Json? // [{source:"upload://...", licensed:true}]
   approvals         Json // snapshot of approval IDs at receipt creation
   humanContribution String?  @db.Text // describing what the human did
@@ -920,22 +934,50 @@ model RightsReceipt {
   @@index([projectId])
 }
 
+model ReleaseAttestation {
+  id          String   @id @default(cuid())
+  workspaceId String
+  projectId   String
+  songId      String
+  kind        String // split_sheet | native_language
+  payload     Json
+  hash        String
+  attestedBy  String
+  createdAt   DateTime @default(now()) @db.Timestamptz(6)
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  project   Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  song      Song      @relation(fields: [songId], references: [id], onDelete: Cascade)
+
+  @@index([workspaceId])
+  @@index([songId, kind, createdAt(sort: Desc)])
+}
+
 // ===========================================================================
 // Exports + Releases
 // ===========================================================================
 
 model Export {
-  id        String   @id @default(cuid())
-  projectId String
-  songId    String
-  bundle    Json // {mp3:"url",wav:"url",stems:["..."],coverArt:"url",lyrics:"url",video:"url"}
-  receiptId String?
-  createdAt DateTime @default(now()) @db.Timestamptz(6)
+  id                String    @id @default(cuid())
+  projectId         String
+  songId            String
+  bundle            Json // release package summary; never a substitute for archiveUrl
+  archiveUrl        String?
+  contentHash       String?
+  sourceFingerprint String?
+  sizeBytes         Int?
+  qualityState      String    @default("pending") // ready | failed | pending | legacy_reference_only
+  manifest          Json?
+  verifiedAt        DateTime? @db.Timestamptz(6)
+  receiptId         String?
+  createdAt         DateTime  @default(now()) @db.Timestamptz(6)
 
   project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
   song    Song    @relation(fields: [songId], references: [id], onDelete: Cascade)
 
+  @@unique([songId, sourceFingerprint])
   @@index([projectId])
+  @@index([songId, qualityState])
 }
 
 model Release {

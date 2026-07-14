@@ -2,6 +2,7 @@ import { PrismaClient, Prisma } from '@prisma/client';
 import { isSealedSecret, sealSecret } from './secrets';
 
 export * from './secrets';
+export * from './release-certification';
 
 declare global {
   var __afrohit_prisma: PrismaClient | undefined;

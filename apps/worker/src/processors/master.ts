@@ -1,7 +1,9 @@
-import { prisma, Prisma } from '@afrohit/db';
-import { markFailed, markRunning, markSucceeded } from '../lib/jobs';
-import { downloadToBuffer, uploadBytes } from '../lib/storage';
-import { ffmpegAvailable, master as ffmpegMaster, MASTER_TARGETS, measureAudioQuality } from '../lib/ffmpeg';
+import { createHash } from 'node:crypto';
+import { Prisma, prisma } from '@afrohit/db';
+import { certifyAudioBytes } from '../lib/certified-assets';
+import { ffmpegAvailable, master as ffmpegMaster, MASTER_TARGETS } from '../lib/ffmpeg';
+import { markFailed, markRunning } from '../lib/jobs';
+import { deleteObjectByUrl, downloadToBuffer, uploadBytes } from '../lib/storage';
 
 interface MasterPayload {
   jobId: string;
@@ -10,65 +12,119 @@ interface MasterPayload {
   songId: string;
   mixId?: string;
   preset: string;
-  /** The source is ALREADY a finished master (an uploaded song — Suno, or any
-   * bring-your-own master): conform loudness + peak only, don't re-EQ/comp it
-   * ("mastering a master" dulls it). */
   finished?: boolean;
 }
 
-/**
- * Real mastering: loudnorm to preset LUFS target, upload WAV + 320k MP3.
- */
-export async function processMaster(p: MasterPayload) {
-  await markRunning(p.jobId);
+export async function processMaster(payload: MasterPayload): Promise<void> {
+  await markRunning(payload.jobId);
+  const uploaded: string[] = [];
   try {
     if (!(await ffmpegAvailable())) {
-      throw new Error('ffmpeg binary not found on worker host — install ffmpeg (Railway nixpacks includes it)');
+      throw new Error('ffmpeg binary not found on worker host');
     }
-    // Re-scope by the payload workspace — treat the job payload as untrusted
-    // (defense-in-depth; never master a mix from another workspace).
-    const mix = p.mixId
-      ? await prisma.mix.findFirstOrThrow({ where: { id: p.mixId, project: { workspaceId: p.workspaceId } } })
+    const mix = payload.mixId
+      ? await prisma.mix.findFirstOrThrow({
+          where: {
+            id: payload.mixId,
+            songId: payload.songId,
+            projectId: payload.projectId,
+            project: { workspaceId: payload.workspaceId },
+            approved: true,
+            qualityState: 'passed',
+            contentHash: { not: null },
+            verifiedAt: { not: null },
+          },
+        })
       : await prisma.mix.findFirstOrThrow({
-          where: { songId: p.songId, project: { workspaceId: p.workspaceId } },
+          where: {
+            songId: payload.songId,
+            projectId: payload.projectId,
+            project: { workspaceId: payload.workspaceId },
+            approved: true,
+            qualityState: 'passed',
+            contentHash: { not: null },
+            verifiedAt: { not: null },
+          },
           orderBy: { createdAt: 'desc' },
         });
 
-    const mixBytes = await downloadToBuffer(mix.url);
-    // 'uploaded' mixes are the artist's OWN finished master (Suno, or a bring-your-
-    // own song) → conform light-touch. Also honor an explicit finished flag.
-    const finished = p.finished || mix.preset === 'uploaded';
-    const { wav, mp3 } = await ffmpegMaster({ mix: mixBytes, preset: p.preset, finished });
-
-    const [wavUrl, mp3Url] = await Promise.all([
-      uploadBytes({ workspaceId: p.workspaceId, kind: 'masters', bytes: wav, contentType: 'audio/wav', ext: 'wav' }),
-      uploadBytes({ workspaceId: p.workspaceId, kind: 'masters', bytes: mp3, contentType: 'audio/mpeg', ext: 'mp3' }),
-    ]);
-
-    const target = MASTER_TARGETS[p.preset] ?? MASTER_TARGETS['streaming_lufs_-14']!;
-    // WO-6(a): measure THE MASTERED ARTIFACT — the release gate certifies what
-    // actually ships, never the pre-master take. Measured loudness stored where
-    // available (the target only as fallback — honesty law).
-    const masterQc = await measureAudioQuality(wavUrl).catch(() => null);
-    const masterRow = await prisma.master.create({
-      data: {
-        projectId: p.projectId,
-        songId: p.songId,
-        mixId: mix.id,
-        preset: p.preset,
-        url: wavUrl,
-        loudness: masterQc?.integratedLufs ?? target.lufs,
-        meta: (masterQc ? { qc: masterQc } : { qc: null, note: 'master QC measurement unavailable' }) as never,
-        // Rendered by an explicit user action → usable immediately (same rule as
-        // uploads). Without this the export bundle + catalog download see null.
-        approved: true,
-      },
+    const sourceBytes = await downloadToBuffer(mix.url);
+    const finished = payload.finished || mix.preset === 'uploaded';
+    const rendered = await ffmpegMaster({
+      mix: sourceBytes,
+      preset: payload.preset,
+      finished,
     });
-    // A new master is now the song's current audio — yesterday's instrumental/
-    // acapella no longer describe it. Clear them; the next request re-separates.
-    await prisma.song.update({ where: { id: p.songId }, data: { status: 'MASTERED', instrumentalUrl: null, acapellaUrl: null, instrumentalMeta: Prisma.DbNull } });
-    await markSucceeded(p.jobId, { masterId: masterRow.id, wavUrl, mp3Url, targetLufs: target.lufs });
-  } catch (err) {
-    await markFailed(p.jobId, err);
+    const certified = await certifyAudioBytes({
+      workspaceId: payload.workspaceId,
+      kind: 'masters',
+      bytes: rendered.wav,
+    });
+    uploaded.push(certified.url);
+    const mp3Url = await uploadBytes({
+      workspaceId: payload.workspaceId,
+      kind: 'masters',
+      bytes: rendered.mp3,
+      contentType: 'audio/mpeg',
+      ext: 'mp3',
+    });
+    uploaded.push(mp3Url);
+
+    const target = MASTER_TARGETS[payload.preset] ?? MASTER_TARGETS['streaming_lufs_-14']!;
+    const mp3Hash = createHash('sha256').update(rendered.mp3).digest('hex');
+    const master = await prisma.$transaction(async (tx) => {
+      const created = await tx.master.create({
+        data: {
+          projectId: payload.projectId,
+          songId: payload.songId,
+          mixId: mix.id,
+          preset: payload.preset,
+          url: certified.url,
+          loudness: certified.qc.integratedLufs ?? target.lufs,
+          qualityState: certified.qualityState,
+          contentHash: certified.contentHash,
+          verifiedAt: certified.verifiedAt,
+          approved: true,
+          meta: {
+            qc: certified.qc,
+            sourceMixId: mix.id,
+            sourceContentHash: mix.contentHash,
+            deliveryMp3: { url: mp3Url, contentHash: mp3Hash },
+          } as never,
+        },
+      });
+      await tx.song.update({
+        where: { id: payload.songId },
+        data: {
+          status: 'MASTERED',
+          releaseReady: false,
+          instrumentalUrl: null,
+          acapellaUrl: null,
+          instrumentalMeta: Prisma.DbNull,
+        },
+      });
+      await tx.providerJob.update({
+        where: { id: payload.jobId },
+        data: {
+          status: 'SUCCEEDED',
+          finishedAt: new Date(),
+          outputJson: {
+            masterId: created.id,
+            wavUrl: certified.url,
+            mp3Url,
+            targetLufs: target.lufs,
+            measuredLufs: certified.qc.integratedLufs,
+            qualityState: certified.qualityState,
+            contentHash: certified.contentHash,
+          } as never,
+        },
+      });
+      return created;
+    });
+    void master;
+    uploaded.length = 0;
+  } catch (error) {
+    await Promise.allSettled(uploaded.map((url) => deleteObjectByUrl(url)));
+    await markFailed(payload.jobId, error);
   }
 }
