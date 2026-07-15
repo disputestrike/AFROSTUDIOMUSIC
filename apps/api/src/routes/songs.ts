@@ -641,37 +641,120 @@ export default async function songs(app: FastifyInstance) {
       });
     }
 
-    const realMix = current.type === 'mix' && latestMix?.id === current.id && latestMix.preset !== 'source'
+    const realMix = current.type === 'mix' && latestMix?.id === current.id
       ? latestMix
       : null;
     let mixId: string;
     if (realMix) {
       mixId = realMix.id;
+    } else if (current.type === 'master') {
+      const currentMaster = song.masters.find((master) => master.id === current.id);
+      const masterMeta = currentMaster?.meta as { sourceMixId?: unknown; sourceContentHash?: unknown } | null;
+      const sourceMixId = typeof masterMeta?.sourceMixId === 'string' ? masterMeta.sourceMixId : null;
+      const sourceMixHash = typeof masterMeta?.sourceContentHash === 'string' ? masterMeta.sourceContentHash : null;
+      const sourceMix = sourceMixId && sourceMixHash
+        ? await prisma.mix.findFirst({
+            where: {
+              id: sourceMixId,
+              projectId: song.projectId,
+              songId: song.id,
+              project: { workspaceId },
+              approved: true,
+              qualityState: 'passed',
+              contentHash: sourceMixHash,
+              verifiedAt: { not: null },
+            },
+          })
+        : null;
+      const sourceMixMeta = sourceMix?.meta as { source?: unknown } | null;
+      const sourceLineage = sourceMixMeta?.source as Record<string, unknown> | null;
+      const beatId = typeof sourceLineage?.beatId === 'string' ? sourceLineage.beatId : null;
+      const beatContentHash = typeof sourceLineage?.beatContentHash === 'string' ? sourceLineage.beatContentHash : null;
+      const vocalRenderIds = Array.isArray(sourceLineage?.vocalRenderIds)
+        && sourceLineage.vocalRenderIds.every((id): id is string => typeof id === 'string' && id.length > 0)
+        ? [...new Set(sourceLineage.vocalRenderIds)]
+        : null;
+      const [sourceBeat, certifiedVocalCount] = sourceMix && beatId && beatContentHash && vocalRenderIds
+        ? await Promise.all([
+            prisma.beatAsset.findFirst({
+              where: {
+                id: beatId,
+                projectId: song.projectId,
+                songId: song.id,
+                project: { workspaceId },
+                approved: true,
+                qualityState: 'passed',
+                contentHash: beatContentHash,
+                verifiedAt: { not: null },
+              },
+              select: { id: true },
+            }),
+            vocalRenderIds.length
+              ? prisma.vocalRender.count({
+                  where: {
+                    id: { in: vocalRenderIds },
+                    projectId: song.projectId,
+                    songId: song.id,
+                    project: { workspaceId },
+                    approved: true,
+                    qualityState: 'passed',
+                    contentHash: { not: null },
+                    verifiedAt: { not: null },
+                  },
+                })
+              : Promise.resolve(0),
+          ])
+        : [null, -1];
+      if (!sourceMix || !sourceBeat || !vocalRenderIds || certifiedVocalCount !== vocalRenderIds.length) {
+        return reply.code(409).send({
+          error: 'master_source_lineage_unresolved',
+          message: 'The current master is not bound to one exact certified mix lineage.',
+        });
+      }
+      mixId = sourceMix.id;
     } else {
       const sourceUrl = current.url;
-      const existing = await prisma.mix.findFirst({
+      const sourceContentHash = current.certification.contentHash!;
+      const sourceVerifiedAt = current.certification.verifiedAt!;
+      const sourceEvidence = {
+        beatId: current.id,
+        beatContentHash: sourceContentHash,
+        vocalRenderIds: [] as string[],
+      };
+      const candidate = await prisma.mix.findFirst({
         where: {
           projectId: song.projectId,
           songId: song.id,
+          project: { workspaceId },
           preset: 'source',
           url: sourceUrl,
           approved: true,
           qualityState: 'passed',
-          contentHash: current.certification.contentHash,
+          contentHash: sourceContentHash,
           verifiedAt: { not: null },
         },
       });
+      const candidateMeta = candidate?.meta as { source?: unknown; sourceContentHash?: unknown } | null;
+      const candidateSource = candidateMeta?.source as Record<string, unknown> | null;
+      const existing = candidate
+        && candidateMeta?.sourceContentHash === sourceContentHash
+        && candidateSource?.beatId === current.id
+        && candidateSource.beatContentHash === sourceContentHash
+        && Array.isArray(candidateSource.vocalRenderIds)
+        && candidateSource.vocalRenderIds.length === 0
+        ? candidate
+        : null;
       const mix = existing ?? await prisma.mix.create({
         data: {
           projectId: song.projectId,
           songId: song.id,
           preset: 'source',
           url: sourceUrl,
-          notes: 'Master source copied from current certified audio',
+          notes: 'Master source copied from current certified beat',
           qualityState: 'passed',
-          contentHash: current.certification.contentHash,
-          verifiedAt: current.certification.verifiedAt,
-          meta: current.meta == null ? undefined : current.meta as never,
+          contentHash: sourceContentHash,
+          verifiedAt: sourceVerifiedAt,
+          meta: { source: sourceEvidence, sourceContentHash } as never,
           approved: true,
         },
       });
