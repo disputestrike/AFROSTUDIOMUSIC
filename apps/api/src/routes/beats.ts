@@ -7,7 +7,14 @@ import {
   requestedMaterialRoleContract,
 } from '@afrohit/shared';
 import { enrichLyricsForVocals } from '@afrohit/ai';
-import { learnedReferenceBrief, learnedStyleTags, learnedMeasuredTags, learnedUsage } from '../lib/learned';
+import {
+  learnedReferenceBrief,
+  learnedStyleTags,
+  learnedMeasuredTags,
+  learnedUsage,
+  PinnedLearnedReferenceUnavailableError,
+  type TrainingUsage,
+} from '../lib/learned';
 import { applySingingBrain, craftOf, type DraftCraft } from '../lib/singing-pipeline';
 import { enqueueHarvest, enqueueLearn } from '../lib/harvest';
 import { ownShelfRoles } from '../lib/material-plan';
@@ -18,6 +25,60 @@ import { publicUrlFor, verifyUploadedAudio } from '../lib/storage';
 import { voiceVocalTag, languageVocalTag } from '../services/chat-tools';
 import { musicRouteCapabilities, validateMusicRoute } from '../lib/music-capabilities';
 import { registerBeatForInspection } from '../lib/beat-ingest';
+
+export interface OwnEngineRoutingInput {
+  songEngine?: string;
+  withVocals?: boolean;
+  fusionGenres?: readonly string[];
+  mood?: string;
+  influence?: string;
+  keySignature?: string;
+  pinnedReferenceId?: string;
+  withStems?: boolean;
+  durationS?: number;
+  vibePrompt?: string;
+  candidates?: number;
+}
+
+export type OwnEngineRoutingDecision =
+  | { mode: 'own'; unsupportedControls: [] }
+  | { mode: 'auto-candidate'; unsupportedControls: [] }
+  | { mode: 'provider'; unsupportedControls: string[] }
+  | { mode: 'reject'; unsupportedControls: string[] };
+
+export function unsupportedOwnEngineControls(
+  input: OwnEngineRoutingInput,
+  trainingReferenceCount = 0,
+): string[] {
+  return [
+    input.fusionGenres?.length ? 'fusionGenres' : null,
+    input.mood?.trim() ? 'mood' : null,
+    input.influence?.trim() ? 'influence' : null,
+    input.keySignature?.trim() ? 'keySignature' : null,
+    input.pinnedReferenceId ? 'pinnedReferenceId' : null,
+    trainingReferenceCount > 0 ? 'trainingReferences' : null,
+    input.withStems ? 'withStems' : null,
+    input.durationS !== undefined ? 'durationS' : null,
+    input.vibePrompt?.trim() ? 'vibePrompt' : null,
+    (input.candidates ?? 1) > 1 ? 'candidates' : null,
+  ].filter((control): control is string => control !== null);
+}
+
+export function resolveOwnEngineRouting(
+  input: OwnEngineRoutingInput,
+  trainingReferenceCount = 0,
+): OwnEngineRoutingDecision {
+  const unsupportedControls = unsupportedOwnEngineControls(input, trainingReferenceCount);
+  if (input.songEngine === 'own') {
+    return unsupportedControls.length
+      ? { mode: 'reject', unsupportedControls }
+      : { mode: 'own', unsupportedControls: [] };
+  }
+  if (input.songEngine || input.withVocals || unsupportedControls.length) {
+    return { mode: 'provider', unsupportedControls };
+  }
+  return { mode: 'auto-candidate', unsupportedControls: [] };
+}
 
 export default async function beats(app: FastifyInstance) {
   app.get<{ Params: { projectId: string } }>(
@@ -99,15 +160,32 @@ export default async function beats(app: FastifyInstance) {
       const dna = input.fusionGenres?.length
         ? laneDna(genre, { mood: input.mood, fusionGenres: input.fusionGenres })
         : laneDna(genre, { mood: input.mood });
-      const learned = await learnedReferenceBrief(workspaceId, genre, input.pinnedReferenceId);
-      const learnedTags = await learnedStyleTags(workspaceId, genre, input.pinnedReferenceId);
+      let learned: string;
+      let learnedTags: string[];
+      let measuredTags: string[];
+      let trainingUsage: TrainingUsage;
+      try {
+        [learned, learnedTags, measuredTags, trainingUsage] = await Promise.all([
+          learnedReferenceBrief(workspaceId, genre, input.pinnedReferenceId),
+          learnedStyleTags(workspaceId, genre, input.pinnedReferenceId),
+          learnedMeasuredTags(workspaceId, genre, input.pinnedReferenceId),
+          learnedUsage(workspaceId, genre, input.pinnedReferenceId),
+        ]);
+      } catch (error) {
+        if (error instanceof PinnedLearnedReferenceUnavailableError) {
+          return reply.code(422).send({
+            error: error.code,
+            message: error.message,
+            pinnedReferenceId: error.referenceId,
+          });
+        }
+        throw error;
+      }
       // MEASURED facts (the truly reference-specific signal) now reach the render.
-      const measuredTags = await learnedMeasuredTags(workspaceId, genre, input.pinnedReferenceId);
       // TRACEABILITY: capture exactly which of the artist's references this render
       // draws on, so "have my beats been used?" is provable per beat. Stored on
       // the job (below) and logged. measured<total = training that hasn't been
-      // deep-measured yet contributes little — the honest signal to backfill.
-      const trainingUsage = await learnedUsage(workspaceId, genre, input.pinnedReferenceId);
+      // deep-measured yet contributes little - the honest signal to backfill.
       req.log.info({ workspaceId, genre, usedRefs: trainingUsage.referenceIds.length, measured: `${trainingUsage.measured}/${trainingUsage.total}`, pin: trainingUsage.pinnedReferenceId }, '[training] references applied to this render');
       const dnaTags = [...measuredTags, ...(dna.tags ?? []), ...learnedTags];
 
@@ -135,10 +213,21 @@ export default async function beats(app: FastifyInstance) {
       }
 
       const roleRequest = requestedMaterialRoleContract(input.instruments);
-      const autoOwnRoles = !input.songEngine && !input.withVocals && !roleRequest.unsupportedInstruments.length
+      const ownRouting = resolveOwnEngineRouting(input, trainingUsage.total);
+      if (ownRouting.mode === 'reject') {
+        return reply.code(422).send({
+          error: 'own_engine_unsupported_controls',
+          message: 'Our Engine cannot honor every selected control yet. Choose Auto or a provider, or remove the listed controls.',
+          unsupportedControls: ownRouting.unsupportedControls,
+        });
+      }
+      // Auto may use the owned engine only when its worker contract can preserve
+      // every requested semantic. Otherwise it remains on a provider route.
+      const autoOwnRoles = ownRouting.mode === 'auto-candidate'
+        && !roleRequest.unsupportedInstruments.length
         ? await ownShelfRoles(workspaceId, genre)
         : null;
-      const useOwnEngine = input.songEngine === 'own' || !!autoOwnRoles;
+      const useOwnEngine = ownRouting.mode === 'own' || !!autoOwnRoles;
       if (useOwnEngine && roleRequest.unsupportedInstruments.length) {
         return reply.code(422).send({
           error: 'unsupported_exact_instruments',

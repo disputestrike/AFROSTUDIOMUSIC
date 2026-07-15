@@ -61,6 +61,16 @@ export interface LearnedPromptReference {
 }
 
 type RefRow = LearnedPromptReference;
+type SelectedRefRow = Omit<RefRow, 'recipe' | 'generated' | 'zap'> & { recipe: unknown };
+
+export class PinnedLearnedReferenceUnavailableError extends Error {
+  readonly code = 'pinned_reference_unavailable';
+
+  constructor(readonly referenceId: string) {
+    super('The selected learned reference is unavailable or is not eligible for generation.');
+    this.name = 'PinnedLearnedReferenceUnavailableError';
+  }
+}
 
 // Selection law now lives in @afrohit/shared (learned-select.ts) so the worker
 // gate can PROVE lane isolation + pin-first + artist-over-machine without a DB.
@@ -70,24 +80,50 @@ async function fetchRefs(workspaceId: string, genre: string, pinnedId?: string |
   // The lake holds more than SOUND now (lyric craft, trend snapshots) — those
   // are excluded IN THE QUERY, not after take:60, so a growing lake can never
   // evict the artist's real heard/uploaded references from the window.
-  const rows = await prisma.soundReference.findMany({
-    where: {
-      workspaceId,
-      active: true,
-      analysisState: { not: 'failed' },
-      OR: [
-        { rightsBasis: { in: ['user-attested', 'self-generated'] } },
-        { rightsBasis: 'facts-only', sourceUrl: { startsWith: 'zap:' } },
-      ],
-      // Generic facts rows shape aggregate lane profiles only. Zap is the one
-      // facts-only source admitted here, through its identity-free formatter.
-      NOT: [{ sourceUrl: { startsWith: 'lyric:' } }, { sourceUrl: { startsWith: 'trend:' } }, { sourceUrl: { startsWith: 'facts:' } }],
-    },
-    orderBy: { createdAt: 'desc' },
-    take: 60,
-    select: { id: true, title: true, summary: true, genre: true, sourceUrl: true, createdAt: true, recipe: true },
-  });
-  const all: RefRow[] = rows.map((r: Omit<RefRow, 'recipe' | 'generated' | 'zap'> & { recipe: unknown }) => {
+  const eligibilityWhere = {
+    workspaceId,
+    active: true,
+    analysisState: { not: 'failed' },
+    OR: [
+      { rightsBasis: { in: ['user-attested', 'self-generated'] } },
+      { rightsBasis: 'facts-only', sourceUrl: { startsWith: 'zap:' } },
+    ],
+    // Generic facts rows shape aggregate lane profiles only. Zap is the one
+    // facts-only source admitted here, through its identity-free formatter.
+    NOT: [{ sourceUrl: { startsWith: 'lyric:' } }, { sourceUrl: { startsWith: 'trend:' } }, { sourceUrl: { startsWith: 'facts:' } }],
+  };
+  const select = {
+    id: true,
+    title: true,
+    summary: true,
+    genre: true,
+    sourceUrl: true,
+    createdAt: true,
+    recipe: true,
+  } as const;
+  const [recentRows, pinnedRow] = await Promise.all([
+    prisma.soundReference.findMany({
+      where: eligibilityWhere,
+      orderBy: { createdAt: 'desc' },
+      take: 60,
+      select,
+    }),
+    pinnedId
+      ? prisma.soundReference.findFirst({
+          where: { ...eligibilityWhere, id: pinnedId },
+          select,
+        })
+      : Promise.resolve(null),
+  ]) as [SelectedRefRow[], SelectedRefRow | null];
+  if (pinnedId && !pinnedRow) {
+    throw new PinnedLearnedReferenceUnavailableError(pinnedId);
+  }
+  // A pin is a direct user choice, so it is fetched outside the rolling newest
+  // window. Dedupe it when it also happens to be among those newest rows.
+  const rows = pinnedRow
+    ? [pinnedRow, ...recentRows.filter((row) => row.id !== pinnedRow.id)]
+    : recentRows;
+  const all: RefRow[] = rows.map((r: SelectedRefRow) => {
     const recipe = (r.recipe ?? {}) as RecipeShape;
     const zap = r.sourceUrl.startsWith('zap:') || recipe.source === 'zap';
     return { ...r, recipe, generated: recipe.source === 'generated', zap };

@@ -25,9 +25,12 @@ import { ownedRightsEvidence } from "../src/lib/harvest";
 import {
   learnedReferenceBrief,
   learnedReferenceLines,
+  learnedUsage,
+  PinnedLearnedReferenceUnavailableError,
   type LearnedPromptReference,
 } from "../src/lib/learned";
 import uploads from "../src/routes/uploads";
+import { resolveOwnEngineRouting } from "../src/routes/beats";
 import { identitySafeZapFacts } from "../src/routes/zap";
 
 const repoRoot = fileURLToPath(new URL("../../../", import.meta.url));
@@ -167,6 +170,158 @@ function assertRequestedRoleContracts(): void {
   );
 }
 
+function assertOwnEngineRoutingIsLossless(): void {
+  const unsupportedCases: Array<{
+    input: Parameters<typeof resolveOwnEngineRouting>[0];
+    trainingReferenceCount?: number;
+    expected: string;
+  }> = [
+    { input: { fusionGenres: ["amapiano"], withStems: false }, expected: "fusionGenres" },
+    { input: { mood: "joyful", withStems: false }, expected: "mood" },
+    { input: { influence: "live highlife pocket", withStems: false }, expected: "influence" },
+    { input: { keySignature: "F# minor", withStems: false }, expected: "keySignature" },
+    { input: { pinnedReferenceId: "old-pin", withStems: false }, expected: "pinnedReferenceId" },
+    { input: { withStems: false }, trainingReferenceCount: 1, expected: "trainingReferences" },
+    { input: { withStems: true }, expected: "withStems" },
+    { input: { durationS: 90, withStems: false }, expected: "durationS" },
+    { input: { vibePrompt: "dry live room", withStems: false }, expected: "vibePrompt" },
+    { input: { candidates: 2, withStems: false }, expected: "candidates" },
+  ];
+
+  for (const testCase of unsupportedCases) {
+    const automatic = resolveOwnEngineRouting(
+      testCase.input,
+      testCase.trainingReferenceCount ?? 0,
+    );
+    assert.equal(
+      automatic.mode,
+      "provider",
+      `automatic routing must keep ${testCase.expected} on a capable provider`,
+    );
+    assert.ok(automatic.unsupportedControls.includes(testCase.expected));
+
+    const explicit = resolveOwnEngineRouting(
+      { ...testCase.input, songEngine: "own" },
+      testCase.trainingReferenceCount ?? 0,
+    );
+    assert.equal(
+      explicit.mode,
+      "reject",
+      `explicit Own Engine must fail closed for ${testCase.expected}`,
+    );
+    assert.ok(explicit.unsupportedControls.includes(testCase.expected));
+  }
+
+  assert.deepEqual(
+    resolveOwnEngineRouting({ songEngine: "own", withStems: false }),
+    { mode: "own", unsupportedControls: [] },
+  );
+  assert.deepEqual(
+    resolveOwnEngineRouting({ withStems: false }),
+    { mode: "auto-candidate", unsupportedControls: [] },
+  );
+  assert.equal(
+    resolveOwnEngineRouting({ songEngine: "minimax", withStems: false }).mode,
+    "provider",
+  );
+}
+
+async function assertPinnedReferenceEscapesRecentWindow(): Promise<void> {
+  type FindMany = (args: unknown) => Promise<unknown[]>;
+  type FindFirst = (args: unknown) => Promise<unknown | null>;
+  const delegate = prisma.soundReference as unknown as {
+    findMany: FindMany;
+    findFirst: FindFirst;
+  };
+  const originalFindMany = delegate.findMany;
+  const originalFindFirst = delegate.findFirst;
+  const pinned: LearnedPromptReference = {
+    id: "old-pin",
+    title: "Old owned reference",
+    summary: "Pinned sound",
+    genre: "highlife",
+    sourceUrl: "owned:old-pin.wav",
+    createdAt: new Date("2020-01-01T00:00:00.000Z"),
+    recipe: { source: "upload", drums: "live pocket" },
+    generated: false,
+    zap: false,
+  };
+  const recent: LearnedPromptReference[] = Array.from({ length: 60 }, (_, index) => ({
+    id: `recent-${index}`,
+    title: `Recent ${index}`,
+    summary: null,
+    genre: "highlife",
+    sourceUrl: `owned:recent-${index}.wav`,
+    createdAt: new Date(1_800_000_000_000 - index * 1_000),
+    recipe: { source: "upload", drums: "recent pocket" },
+    generated: false,
+    zap: false,
+  }));
+  let capturedPinQuery: unknown;
+
+  delegate.findMany = async () => recent;
+  delegate.findFirst = async (args) => {
+    capturedPinQuery = args;
+    return pinned;
+  };
+
+  try {
+    const usage = await learnedUsage(workspaceId, "highlife", pinned.id);
+    assert.equal(
+      usage.referenceIds[0],
+      pinned.id,
+      "an eligible old pin must lead even when it is outside the newest-60 window",
+    );
+    assert.equal(
+      usage.referenceIds.filter((id) => id === pinned.id).length,
+      1,
+      "the separately fetched pin must be deduplicated",
+    );
+    const where = (capturedPinQuery as {
+      where?: {
+        id?: string;
+        workspaceId?: string;
+        active?: boolean;
+        analysisState?: { not?: string };
+      };
+    }).where;
+    assert.deepEqual(
+      {
+        id: where?.id,
+        workspaceId: where?.workspaceId,
+        active: where?.active,
+        analysisState: where?.analysisState,
+      },
+      {
+        id: pinned.id,
+        workspaceId,
+        active: true,
+        analysisState: { not: "failed" },
+      },
+      "the direct pin lookup must retain tenant and eligibility filters",
+    );
+
+    delegate.findMany = async () => [pinned, ...recent.slice(0, 59)];
+    const deduped = await learnedUsage(workspaceId, "highlife", pinned.id);
+    assert.equal(deduped.referenceIds.filter((id) => id === pinned.id).length, 1);
+
+    delegate.findFirst = async () => null;
+    await assert.rejects(
+      () => learnedReferenceBrief(workspaceId, "highlife", pinned.id),
+      (error: unknown) => {
+        assert.ok(error instanceof PinnedLearnedReferenceUnavailableError);
+        assert.equal(error.referenceId, pinned.id);
+        assert.equal(error.code, "pinned_reference_unavailable");
+        return true;
+      },
+      "an unavailable explicit pin must fail instead of silently substituting recent rows",
+    );
+  } finally {
+    delegate.findMany = originalFindMany;
+    delegate.findFirst = originalFindFirst;
+  }
+}
+
 async function assertRequestedRoleWiring(): Promise<void> {
   const [beatsSource, chatSource, ownEngineSource] = await Promise.all([
     readFile(resolve(repoRoot, "apps/api/src/routes/beats.ts"), "utf8"),
@@ -187,6 +342,14 @@ async function assertRequestedRoleWiring(): Promise<void> {
   assert.match(
     ownEngineSource,
     /missingExactRequestedMaterialRoles\(\s*picks,\s*requestedRoles\s*\)/,
+  );
+  const routingGuardIndex = beatsSource.indexOf("const ownRouting = resolveOwnEngineRouting");
+  const chargeIndex = beatsSource.indexOf("const charge = await app.chargeCredits");
+  const ownJobIndex = beatsSource.indexOf("jobName: 'own-engine'");
+  assert.ok(routingGuardIndex >= 0);
+  assert.ok(
+    routingGuardIndex < chargeIndex && routingGuardIndex < ownJobIndex,
+    "owned-engine semantic validation must run before charging or creating a job",
   );
   assert.match(ownEngineSource, /exact requested material unavailable/);
   assert.match(ownEngineSource, /requestedRoleReceipts/);
@@ -346,6 +509,8 @@ async function assertCrossTenantSongRejectedBeforeNetwork(): Promise<void> {
 async function main(): Promise<void> {
   assertRightsContracts();
   assertRequestedRoleContracts();
+  assertOwnEngineRoutingIsLossless();
+  await assertPinnedReferenceEscapesRecentWindow();
   await assertRequestedRoleWiring();
   await assertZapPromptSafety();
   await assertCrossTenantSongRejectedBeforeNetwork();
