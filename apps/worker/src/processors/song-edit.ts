@@ -32,23 +32,120 @@ export type SongEditOp =
 
 export interface SongEditPayload {
   jobId: string; workspaceId: string; projectId: string; songId: string;
-  sourceUrl: string; genre?: string | null; durationS?: number; bpm?: number | null; boundaries?: number[]; op: SongEditOp;
+  sourceUrl: string;
+  sourceAsset?: { type: 'beat' | 'mix' | 'master'; id: string; url?: string } | null;
+  genre?: string | null; durationS?: number; bpm?: number | null; boundaries?: number[]; op: SongEditOp;
 }
 
-/** Trim out [fromS, toS) and butt-join the remainder (concat demuxer, WAV). */
-async function cutRegion(input: Buffer, fromS: number, toS: number): Promise<Buffer> {
-  const dir = await mkdtemp(join(tmpdir(), 'cut-'));
-  try {
-    const inPath = join(dir, 'in.wav');
-    await writeFile(inPath, input);
-    const a = join(dir, 'a.wav'); const b = join(dir, 'b.wav'); const out = join(dir, 'out.wav');
-    await runFfmpeg(['-i', inPath, '-t', String(Math.max(0.1, fromS)), '-ac', '2', '-ar', '44100', a]);
-    await runFfmpeg(['-i', inPath, '-ss', String(toS), '-ac', '2', '-ar', '44100', b]);
-    const list = join(dir, 'list.txt');
-    await writeFile(list, `file '${a}'\nfile '${b}'\n`);
-    await runFfmpeg(['-f', 'concat', '-safe', '0', '-i', list, '-c', 'copy', out]);
-    return await readFile(out);
-  } finally { await rm(dir, { recursive: true, force: true }).catch(() => {}); }
+export interface TimeSlice { s: number; e: number }
+
+export interface SongEditArrangement {
+  durationS: number;
+  boundaries: number[];
+  slices?: TimeSlice[];
+}
+
+const TIME_EPSILON_S = 0.001;
+
+const finiteDuration = (value: unknown): number | null =>
+  typeof value === 'number' && Number.isFinite(value) && value > TIME_EPSILON_S ? value : null;
+
+export function nonEmptyTimeSlices(slices: ReadonlyArray<TimeSlice>): TimeSlice[] {
+  return slices
+    .filter((slice) => Number.isFinite(slice.s) && Number.isFinite(slice.e) && slice.e - slice.s > TIME_EPSILON_S)
+    .map((slice) => ({ s: Math.max(0, slice.s), e: slice.e }));
+}
+
+const arrangementBoundaries = (boundaries: ReadonlyArray<number> | undefined, durationS: number): number[] =>
+  [...new Set((boundaries ?? [])
+    .filter((value) => Number.isFinite(value) && value > TIME_EPSILON_S && value < durationS - TIME_EPSILON_S)
+    .map((value) => Math.round(value * 1000) / 1000))]
+    .sort((left, right) => left - right);
+
+export function cutTimeSlices(durationS: number, fromS: number, toS: number): TimeSlice[] {
+  if (!Number.isFinite(fromS) || !Number.isFinite(toS) || fromS < 0 || !(toS > fromS)) {
+    throw new Error('cut needs 0 <= from < to');
+  }
+  const from = Math.min(fromS, durationS);
+  const to = Math.min(toS, durationS);
+  if (!(to > from)) throw new Error('cut starts beyond the end of the current take');
+  const slices = nonEmptyTimeSlices([{ s: 0, e: from }, { s: to, e: durationS }]);
+  if (!slices.length) throw new Error('cut must leave some audio');
+  return slices;
+}
+
+function arrangementFromSlices(slices: ReadonlyArray<TimeSlice>): SongEditArrangement {
+  const clean = nonEmptyTimeSlices(slices);
+  if (!clean.length) throw new Error('arrangement must contain audio');
+  const lengths = clean.map((slice) => slice.e - slice.s);
+  const durationS = lengths.reduce((sum, length) => sum + length, 0);
+  let elapsed = 0;
+  const boundaries: number[] = [];
+  for (const length of lengths.slice(0, -1)) {
+    elapsed += length;
+    boundaries.push(elapsed);
+  }
+  return { durationS, boundaries, slices: clean };
+}
+
+export function planSongEditArrangement(
+  durationS: number,
+  boundaries: ReadonlyArray<number> | undefined,
+  op: SongEditOp,
+): SongEditArrangement {
+  const duration = finiteDuration(durationS);
+  if (duration == null) throw new Error('song edit needs a positive current duration');
+  const currentBoundaries = arrangementBoundaries(boundaries, duration);
+
+  if (op.kind === 'cut') {
+    const slices = cutTimeSlices(duration, op.fromS, op.toS);
+    const from = Math.min(op.fromS, duration);
+    const to = Math.min(op.toS, duration);
+    const removed = to - from;
+    const outputDuration = duration - removed;
+    const mapped = currentBoundaries.flatMap((boundary) => {
+      if (boundary <= from) return [boundary];
+      if (boundary >= to) return [boundary - removed];
+      return [];
+    });
+    if (from > TIME_EPSILON_S && to < duration - TIME_EPSILON_S) mapped.push(from);
+    return {
+      durationS: outputDuration,
+      boundaries: arrangementBoundaries(mapped, outputDuration),
+      slices,
+    };
+  }
+
+  if (op.kind === 'move_section' || op.kind === 'duplicate_section') {
+    const order = [...segmentsFrom(duration, currentBoundaries)];
+    if (order.length < 2) throw new Error('no measured section map on this take yet');
+    if (op.kind === 'move_section') {
+      const from = op.fromIndex - 1;
+      const to = op.toIndex - 1;
+      if (from < 0 || from >= order.length || to < 0 || to >= order.length) throw new Error(`sections are S1-S${order.length}`);
+      const [section] = order.splice(from, 1);
+      order.splice(to, 0, section!);
+    } else {
+      const index = op.index - 1;
+      if (index < 0 || index >= order.length) throw new Error(`sections are S1-S${order.length}`);
+      order.splice(index + 1, 0, order[index]!);
+    }
+    return arrangementFromSlices(order);
+  }
+
+  return { durationS: duration, boundaries: currentBoundaries };
+}
+
+export function reconcileArrangementDuration(
+  arrangement: SongEditArrangement,
+  measuredDurationS: number,
+): SongEditArrangement {
+  const measured = finiteDuration(measuredDurationS) ?? arrangement.durationS;
+  const scale = arrangement.durationS > 0 ? measured / arrangement.durationS : 1;
+  return {
+    durationS: measured,
+    boundaries: arrangementBoundaries(arrangement.boundaries.map((boundary) => boundary * scale), measured),
+  };
 }
 
 /** Overlay one hit (the genre's fill) at each timestamp via adelay + amix. */
@@ -70,10 +167,12 @@ async function overlayAtTimes(bed: Buffer, hit: Buffer, timesS: number[], gain =
 
 
 /** Section plan from measured boundaries: contiguous [s,e) segments, 1-based for humans. */
-function segmentsFrom(durationS: number, boundaries?: number[]): Array<{ s: number; e: number }> {
-  const edges = [...new Set([0, ...(boundaries ?? []).filter((t) => t > 2 && t < durationS - 2), durationS])].sort((a, b) => a - b);
+export function segmentsFrom(durationS: number, boundaries?: number[]): TimeSlice[] {
+  const edges = [0, ...arrangementBoundaries(boundaries, durationS), durationS];
   const segs: Array<{ s: number; e: number }> = [];
-  for (let i = 0; i < edges.length - 1; i++) if (edges[i + 1]! - edges[i]! >= 3) segs.push({ s: edges[i]!, e: edges[i + 1]! });
+  for (let i = 0; i < edges.length - 1; i++) {
+    if (edges[i + 1]! - edges[i]! > TIME_EPSILON_S) segs.push({ s: edges[i]!, e: edges[i + 1]! });
+  }
   return segs;
 }
 
@@ -83,20 +182,24 @@ async function concatSlices(input: Buffer, order: Array<{ s: number; e: number }
   try {
     const inPath = join(dir, 'in.wav');
     await writeFile(inPath, input);
+    const slices = nonEmptyTimeSlices(order);
+    if (!slices.length) throw new Error('cannot concatenate an empty arrangement');
     const files: string[] = [];
-    for (let i = 0; i < order.length; i++) {
+    for (let i = 0; i < slices.length; i++) {
       const f = join(dir, `p${i}.wav`);
-      await runFfmpeg(['-i', inPath, '-ss', String(order[i]!.s), '-t', String(Math.max(0.2, order[i]!.e - order[i]!.s)), '-ac', '2', '-ar', '44100', f]);
+      await runFfmpeg(['-i', inPath, '-ss', String(slices[i]!.s), '-t', String(slices[i]!.e - slices[i]!.s), '-ac', '2', '-ar', '44100', f]);
       files.push(f);
     }
     const out = join(dir, 'out.wav');
-    await crossfadeJoin(files, out);
+    const fadeS = Math.min(0.12, ...slices.map((slice) => (slice.e - slice.s) / 4));
+    await crossfadeJoin(files, out, fadeS);
     return await readFile(out);
   } finally { await rm(dir, { recursive: true, force: true }).catch(() => {}); }
 }
 
 /** Join WAV parts with short equal-power crossfades (v3: no clicky seams). */
 async function crossfadeJoin(files: string[], outPath: string, fadeS = 0.12): Promise<void> {
+  if (!files.length) throw new Error('cannot join zero audio files');
   if (files.length === 1) { await runFfmpeg(['-i', files[0]!, '-c', 'copy', outPath]); return; }
   const inputs = files.flatMap((f) => ['-i', f]);
   let chain = '';
@@ -156,13 +259,14 @@ export async function processSongEdit(p: SongEditPayload): Promise<void> {
   let storedUrl: string | null = null;
   try {
     const src = await downloadToBuffer(p.sourceUrl);
+    const sourceDurationS = p.durationS ?? 180;
+    const arrangementPlan = planSongEditArrangement(sourceDurationS, p.boundaries, p.op);
     let out: Buffer;
     let label = '';
 
     if (p.op.kind === 'cut') {
       const { fromS, toS } = p.op;
-      if (!(toS > fromS) || fromS < 0) throw new Error('cut needs 0 <= from < to');
-      out = await cutRegion(src, fromS, toS);
+      out = await concatSlices(src, arrangementPlan.slices ?? []);
       label = `cut ${fromS.toFixed(1)}–${toS.toFixed(1)}s`;
     } else if (p.op.kind === 'add_fill') {
       const fill = await prisma.materialAsset.findFirst({
@@ -181,22 +285,12 @@ export async function processSongEdit(p: SongEditPayload): Promise<void> {
       out = await overlayAtTimes(src, hit, p.op.timesS);
       label = `fills @ ${p.op.timesS.map((t) => t.toFixed(0) + 's').join(', ')}`;
     } else if (p.op.kind === 'move_section' || p.op.kind === 'duplicate_section') {
-      const segs = segmentsFrom(p.durationS ?? 180, p.boundaries);
-      if (segs.length < 2) throw new Error('no measured section map on this take yet — regenerate once and the ear will chart it');
-      const order = [...segs];
       if (p.op.kind === 'move_section') {
-        const from = p.op.fromIndex - 1, to = p.op.toIndex - 1;
-        if (from < 0 || from >= order.length || to < 0 || to >= order.length) throw new Error(`sections are S1–S${order.length}`);
-        const [seg] = order.splice(from, 1);
-        order.splice(to, 0, seg!);
         label = `moved S${p.op.fromIndex} → position ${p.op.toIndex}`;
       } else {
-        const i = p.op.index - 1;
-        if (i < 0 || i >= order.length) throw new Error(`sections are S1–S${order.length}`);
-        order.splice(i + 1, 0, order[i]!);
         label = `duplicated S${p.op.index}`;
       }
-      out = await concatSlices(src, order);
+      out = await concatSlices(src, arrangementPlan.slices ?? []);
     } else if (p.op.kind === 'stem_fx') {
       const amt = Math.max(0, Math.min(1, p.op.amount ?? 0.5));
       out = await stemSurgery(p.sourceUrl, p.op.stem, FX_CHAIN[p.op.fx]!(amt));
@@ -210,7 +304,7 @@ export async function processSongEdit(p: SongEditPayload): Promise<void> {
       // V3: RE-PLAY one section — a FRESH owned beat under the ORIGINAL vocal.
       // (True new-vocal re-sing activates when an engine exposes section vocals;
       // this variant is real today and labeled exactly for what it is.)
-      const segs = segmentsFrom(p.durationS ?? 180, p.boundaries);
+      const segs = segmentsFrom(sourceDurationS, p.boundaries);
       const i = p.op.index - 1;
       if (i < 0 || i >= segs.length) throw new Error(`sections are S1–S${segs.length}`);
       const bpm = p.bpm ?? 112;
@@ -249,11 +343,20 @@ export async function processSongEdit(p: SongEditPayload): Promise<void> {
         const instrP = join(dir, 'instr.wav'); const secP = join(dir, 'sec.wav'); const secFit = join(dir, 'fit.wav');
         await writeFile(instrP, await downloadToBuffer(instrUrl));
         await writeFile(secP, await downloadToBuffer(newUrl));
-        await runFfmpeg(['-i', secP, '-t', String(Math.max(1, segLen)), '-af', 'apad', '-ac', '2', '-ar', '44100', secFit]);
-        const a = join(dir, 'a.wav'); const c = join(dir, 'c.wav'); const outI = join(dir, 'outI.wav');
-        await runFfmpeg(['-i', instrP, '-t', String(Math.max(0.2, seg.s)), '-ac', '2', '-ar', '44100', a]);
-        await runFfmpeg(['-i', instrP, '-ss', String(seg.e), '-ac', '2', '-ar', '44100', c]);
-        const parts = [ ...(seg.s > 0.3 ? [a] : []), secFit, ...(seg.e < (p.durationS ?? 180) - 0.3 ? [c] : []) ];
+        await runFfmpeg(['-i', secP, '-t', String(segLen), '-af', 'apad', '-ac', '2', '-ar', '44100', secFit]);
+        const outI = join(dir, 'outI.wav');
+        const parts: string[] = [];
+        if (seg.s > TIME_EPSILON_S) {
+          const prefix = join(dir, 'prefix.wav');
+          await runFfmpeg(['-i', instrP, '-t', String(seg.s), '-ac', '2', '-ar', '44100', prefix]);
+          parts.push(prefix);
+        }
+        parts.push(secFit);
+        if (seg.e < sourceDurationS - TIME_EPSILON_S) {
+          const suffix = join(dir, 'suffix.wav');
+          await runFfmpeg(['-i', instrP, '-ss', String(seg.e), '-t', String(sourceDurationS - seg.e), '-ac', '2', '-ar', '44100', suffix]);
+          parts.push(suffix);
+        }
         await crossfadeJoin(parts, outI);
         const instrNew = await readFile(outI);
         const vox = await downloadToBuffer(vocalUrl);
@@ -263,7 +366,7 @@ export async function processSongEdit(p: SongEditPayload): Promise<void> {
     } else {
       // add_layer — MusicGen conditioned on THIS song, mixed under it (fail-closed:
       // if the layer can't render, the edit fails honestly rather than faking it).
-      const dur = Math.min(30, Math.max(8, Math.round(p.durationS ?? 30)));
+      const dur = Math.min(30, Math.max(8, Math.round(sourceDurationS)));
       const mel = await melodyLayer(p.sourceUrl, p.op.prompt, dur);
       if (!mel.url) throw new Error(mel.note);
       const layer = await downloadToBuffer(mel.url);
@@ -276,6 +379,7 @@ export async function processSongEdit(p: SongEditPayload): Promise<void> {
       kind: 'masters',
       bytes: out,
     });
+    const arrangement = reconcileArrangementDuration(arrangementPlan, certified.qc.durationS);
     storedUrl = certified.url;
     await prisma.$transaction(async (tx) => {
       const master = await tx.master.create({
@@ -288,7 +392,36 @@ export async function processSongEdit(p: SongEditPayload): Promise<void> {
           contentHash: certified.contentHash,
           verifiedAt: certified.verifiedAt,
           approved: true,
-          meta: { qc: certified.qc, sourceUrl: p.sourceUrl, operation: p.op } as never,
+          meta: {
+            qc: certified.qc,
+            sourceUrl: p.sourceUrl,
+            sourceAsset: p.sourceAsset ?? null,
+            operation: p.op,
+            arrangement: {
+              durationS: arrangement.durationS,
+              boundaries: arrangement.boundaries,
+              bpm: p.bpm ?? null,
+            },
+            measured: {
+              engineOk: true,
+              analyzedAt: certified.verifiedAt.toISOString(),
+              durationS: {
+                value: arrangement.durationS,
+                source: 'measured',
+                confidence: 1,
+                method: 'ffprobe-after-song-edit',
+              },
+              tempoBpm: p.bpm != null
+                ? { value: p.bpm, source: 'inferred', confidence: 1, method: 'carried-from-source' }
+                : { value: null, source: 'unknown', confidence: 0, method: 'song-edit-source-unavailable' },
+              sectionBoundaries: {
+                value: arrangement.boundaries,
+                source: 'inferred',
+                confidence: 1,
+                method: 'deterministic-song-edit-remap',
+              },
+            },
+          } as never,
         },
       });
       await tx.song.update({
@@ -306,7 +439,28 @@ export async function processSongEdit(p: SongEditPayload): Promise<void> {
         data: {
           status: 'SUCCEEDED',
           finishedAt: new Date(),
-          outputJson: { masterId: master.id, url: master.url, label, qualityState: master.qualityState, contentHash: master.contentHash } as never,
+          outputJson: {
+            masterId: master.id,
+            url: master.url,
+            label,
+            durationS: arrangement.durationS,
+            boundaries: arrangement.boundaries,
+            asset: {
+              type: 'master',
+              id: master.id,
+              url: master.url,
+              createdAt: master.createdAt,
+              format: 'wav',
+              certification: {
+                status: 'certified',
+                certified: true,
+                approved: true,
+                qualityState: master.qualityState,
+                contentHash: master.contentHash,
+                verifiedAt: master.verifiedAt,
+              },
+            },
+          } as never,
         },
       });
     });
