@@ -8,12 +8,17 @@
  *  - mode 'full': four stems (vocals/drums/bass/other) → true remix material.
  */
 import { replicateToken } from './providers/music';
+import type {
+  StemAudioContentType,
+  StemAudioFormat,
+  StemAudioOutput,
+} from './providers/types';
 
 const DEMUCS_MODEL = process.env.REPLICATE_DEMUCS_MODEL ?? 'cjwbw/demucs';
 
 export interface StemSeparationResult {
   instrumentalUrl?: string;
-  stems: Array<{ role: string; url: string }>;
+  stems: StemAudioOutput[];
   raw?: unknown;
 }
 
@@ -48,7 +53,9 @@ export async function separateStems(opts: {
   // REPLICATE_DEMUCS_OUTPUT=wav: ask the model for lossless stems instead of its
   // mp3 default — the TRUE INSTRUMENTAL path must not re-encode a finished
   // master. Opt-in only (bigger transfers); default keeps the old behavior.
-  if ((process.env.REPLICATE_DEMUCS_OUTPUT ?? '').toLowerCase() === 'wav') input.output_format = 'wav';
+  const outputFormat: StemAudioFormat =
+    (process.env.REPLICATE_DEMUCS_OUTPUT ?? '').toLowerCase() === 'wav' ? 'wav' : 'mp3';
+  if (outputFormat === 'wav') input.output_format = 'wav';
 
   const res = await fetch('https://api.replicate.com/v1/predictions', {
     method: 'POST',
@@ -77,12 +84,58 @@ export async function separateStems(opts: {
   if (data.status !== 'succeeded' || !data.output) {
     throw new Error(`demucs ${data.status}: ${data.error ?? 'no output'}`);
   }
-  return mapOutput(data.output, opts.mode ?? 'instrumental');
+  return mapOutput(data.output, opts.mode ?? 'instrumental', outputFormat);
 }
 
 /** Demucs output shape varies by model build — handle object OR array. */
-function mapOutput(output: unknown, mode: 'instrumental' | 'full'): StemSeparationResult {
-  const stems: Array<{ role: string; url: string }> = [];
+function mapOutput(
+  output: unknown,
+  mode: 'instrumental' | 'full',
+  fallbackFormat: StemAudioFormat,
+): StemSeparationResult {
+  const stems: StemAudioOutput[] = [];
+
+  const contentTypeFor = (format: StemAudioFormat): StemAudioContentType =>
+    format === 'wav' ? 'audio/wav' : format === 'flac' ? 'audio/flac' : 'audio/mpeg';
+
+  const normalizeFormat = (value: unknown): StemAudioFormat | undefined => {
+    if (typeof value !== 'string') return undefined;
+    const normalized = value.toLowerCase().trim().replace(/^\./, '');
+    if (normalized === 'wav' || normalized === 'wave' || normalized === 'audio/wav' || normalized === 'audio/x-wav') return 'wav';
+    if (normalized === 'mp3' || normalized === 'mpeg' || normalized === 'audio/mpeg' || normalized === 'audio/mp3') return 'mp3';
+    if (normalized === 'flac' || normalized === 'audio/flac' || normalized === 'audio/x-flac') return 'flac';
+    return undefined;
+  };
+
+  const formatFromUrl = (url: string): StemAudioFormat | undefined => {
+    try {
+      const match = /\.(wav|wave|mp3|flac)$/i.exec(new URL(url).pathname);
+      return normalizeFormat(match?.[1]);
+    } catch {
+      return undefined;
+    }
+  };
+
+  const remoteStem = (value: unknown): Omit<StemAudioOutput, 'role'> | null => {
+    let url: string | undefined;
+    let declaredFormat: unknown;
+    let declaredContentType: unknown;
+    if (typeof value === 'string') {
+      url = value;
+    } else if (value && typeof value === 'object' && !Array.isArray(value)) {
+      const record = value as Record<string, unknown>;
+      url = typeof record.url === 'string' ? record.url : undefined;
+      declaredFormat = record.format;
+      declaredContentType = record.contentType ?? record.content_type ?? record.mimeType ?? record.mime_type;
+    }
+    if (!url || !/^https?:\/\//.test(url)) return null;
+    const format =
+      normalizeFormat(declaredFormat) ??
+      normalizeFormat(declaredContentType) ??
+      formatFromUrl(url) ??
+      fallbackFormat;
+    return { url, format, contentType: contentTypeFor(format) };
+  };
 
   const classify = (key: string): string => {
     const k = key.toLowerCase();
@@ -96,12 +149,13 @@ function mapOutput(output: unknown, mode: 'instrumental' | 'full'): StemSeparati
 
   if (output && typeof output === 'object' && !Array.isArray(output)) {
     for (const [key, val] of Object.entries(output as Record<string, unknown>)) {
-      if (typeof val !== 'string' || !/^https?:\/\//.test(val)) continue;
-      stems.push({ role: classify(key), url: val });
+      const stem = remoteStem(val);
+      if (stem) stems.push({ role: classify(key), ...stem });
     }
   } else if (Array.isArray(output)) {
-    (output as unknown[]).forEach((u, i) => {
-      if (typeof u === 'string' && /^https?:\/\//.test(u)) stems.push({ role: `stem_${i + 1}`, url: u });
+    (output as unknown[]).forEach((value, i) => {
+      const stem = remoteStem(value);
+      if (stem) stems.push({ role: `stem_${i + 1}`, ...stem });
     });
   }
 

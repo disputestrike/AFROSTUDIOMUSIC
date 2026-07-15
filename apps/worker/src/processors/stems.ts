@@ -1,7 +1,7 @@
 import { openSecret, prisma } from '@afrohit/db';
-import { separateStemsRouted } from '../lib/demucs-local';
+import { materializeStemAudio, separateStemsRouted } from '../lib/demucs-local';
 import { markFailed, markRunning, markSucceeded } from '../lib/jobs';
-import { deleteObjectByUrl, downloadToBuffer, ingestRemoteFile, uploadBytes } from '../lib/storage';
+import { deleteObjectByUrl, downloadToBuffer, uploadBytes } from '../lib/storage';
 import { encodeMp3320, ffmpegAvailable, loudnessMatchToSource, measureAudioQuality, transformAudio } from '../lib/ffmpeg';
 import { inspectMaterialAudio } from '../lib/material-inspection';
 
@@ -68,20 +68,38 @@ export async function processStems(p: StemsPayload) {
     const result = await separateStemsRouted({ audioUrl: sepSource, apiKey: replicateApiKey, mode: 'full', purpose: 'user', workspaceId: p.workspaceId });
     if (!result.stems.length) throw new Error('stem separation returned no audio');
 
-    // Re-host to our bucket (parallel), then persist as Stem rows.
-    const ingested = await Promise.all(
-      result.stems.map(async (s) => ({
-        role: s.role,
-        url: await ingestRemoteFile({ workspaceId: p.workspaceId, url: s.url, kind: 'stems', ext: 'mp3', contentType: 'audio/mpeg' }),
-      }))
-    );
+    // Sniff and re-host sequentially so four lossless stems cannot all occupy
+    // worker memory at once. The byte signature, not the provider label, decides
+    // extension, MIME, and the Stem.format value.
+    const ingested: Awaited<ReturnType<typeof materializeStemAudio>>[] = [];
+    try {
+      for (const stem of result.stems) {
+        ingested.push(await materializeStemAudio({ workspaceId: p.workspaceId, stem }));
+      }
+    } catch (error) {
+      await Promise.allSettled(ingested.map((stem) => deleteObjectByUrl(stem.url)));
+      throw error;
+    } finally {
+      await Promise.allSettled(result.stems.map((stem) => deleteObjectByUrl(stem.url)));
+    }
     const roles = ingested.map((s) => s.role);
     // Replace any prior separated stems of the same roles so re-runs don't pile up.
     // Beat-less (finished-song) harvests skip this — Stem rows need a beat FK; the
     // MaterialAsset filing below is the whole point of that harvest.
     if (beat) {
-      await prisma.stem.deleteMany({ where: { beatId: beat.id, role: { in: roles } } });
-      await prisma.$transaction(ingested.map((s) => prisma.stem.create({ data: { beatId: beat.id, role: s.role, url: s.url, format: 'mp3' } })));
+      try {
+        await prisma.$transaction(async (tx) => {
+          await tx.stem.deleteMany({ where: { beatId: beat.id, role: { in: roles } } });
+          await Promise.all(
+            ingested.map((s) =>
+              tx.stem.create({ data: { beatId: beat.id, role: s.role, url: s.url, format: s.format } }),
+            ),
+          );
+        });
+      } catch (error) {
+        await Promise.allSettled(ingested.map((stem) => deleteObjectByUrl(stem.url)));
+        throw error;
+      }
     }
 
     // MATERIAL HARVEST: the artist's own non-vocal stems join the material

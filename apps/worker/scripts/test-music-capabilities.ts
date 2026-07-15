@@ -75,6 +75,28 @@ try {
       && createPage.includes('No music engine is connected.'),
     'Auto-create waits for capabilities and fails before starting without a route',
   );
+
+  const songsRoute = readFileSync(
+    resolve(process.cwd(), '../api/src/routes/songs.ts'),
+    'utf8',
+  );
+  const regenerateRoute = songsRoute.slice(
+    songsRoute.indexOf('/:id/regenerate-beat'),
+  );
+  const unsupportedIndex = regenerateRoute.search(/error:\s*['"]unsupported_conditioning['"]/);
+  const chargeIndex = regenerateRoute.search(/key:\s*['"]full_song_demo['"]/);
+  check(
+    unsupportedIndex >= 0 && chargeIndex >= 0 && unsupportedIndex < chargeIndex,
+    'Unsupported reference-audio conditioning fails before credit reservation',
+  );
+  const adjustRoute = readFileSync(
+    resolve(process.cwd(), '../api/src/routes/adjust.ts'),
+    'utf8',
+  );
+  check(
+    !adjustRoute.includes('payload: { conditionOnCurrent: true }'),
+    'Adjust labels its rerender as text-and-lane steering instead of fake conditioning',
+  );
 } finally {
   for (const [name, value] of Object.entries(saved)) {
     if (value === undefined) delete process.env[name];

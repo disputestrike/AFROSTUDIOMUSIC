@@ -11,12 +11,16 @@ import { createHash } from "node:crypto";
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { prisma } from "@afrohit/db";
-import { PLAN_CREDIT_GRANT_CENTS } from "@afrohit/shared";
 import { verifyWebhookSignature, type WebhookHeaders } from "../lib/paypal";
 import { creditReceiptEmail, sendEmail } from "../lib/email";
 import { track } from "../lib/observability";
 import {
+  applyBillingAdjustment,
   applyCreditCapture,
+  applySubscriptionSale,
+  applySubscriptionStatus,
+  bindSubscriptionIdentity,
+  paypalMoneyToCents,
   resolveCreditIntent,
 } from "../lib/billing-service";
 import {
@@ -43,6 +47,28 @@ const distributorEventSchema = z
 
 function singleHeader(value: string | string[] | undefined): string {
   return typeof value === "string" ? value : "";
+}
+
+function distributionStatusRank(status: string): number {
+  if (status === "accepted") return 1;
+  if (status === "failed" || status === "cancelled") return 2;
+  if (status === "live") return 3;
+  return 0;
+}
+
+function shouldApplyDistributionStatus(
+  current: { status: string; distributionStatusAt: Date | null },
+  incomingStatus: string,
+  occurredAt: Date
+): boolean {
+  const currentRank = distributionStatusRank(current.status);
+  const incomingRank = distributionStatusRank(incomingStatus);
+  if (incomingRank < currentRank) return false;
+  if (!current.distributionStatusAt) return true;
+  const timeDelta = occurredAt.getTime() - current.distributionStatusAt.getTime();
+  if (timeDelta < 0) return false;
+  if (timeDelta === 0) return incomingRank > currentRank;
+  return incomingRank >= currentRank;
 }
 
 export default async function webhooks(app: FastifyInstance) {
@@ -187,6 +213,22 @@ export default async function webhooks(app: FastifyInstance) {
           );
           break;
         }
+        case "PAYMENT.CAPTURE.REFUNDED":
+        case "PAYMENT.SALE.REFUNDED": {
+          workspaceId = await refundPayment(event);
+          break;
+        }
+        case "PAYMENT.CAPTURE.REVERSED":
+        case "PAYMENT.SALE.REVERSED": {
+          workspaceId = await reversePayment(event);
+          break;
+        }
+        case "CUSTOMER.DISPUTE.CREATED":
+        case "CUSTOMER.DISPUTE.UPDATED":
+        case "CUSTOMER.DISPUTE.RESOLVED": {
+          workspaceId = await updateDispute(event);
+          break;
+        }
         default:
           recognized = false;
           req.log.info(
@@ -307,33 +349,39 @@ export default async function webhooks(app: FastifyInstance) {
         );
         const current = await tx.release.findUniqueOrThrow({
           where: { id: release.id },
-          select: { liveAt: true, songId: true },
+          select: {
+            liveAt: true,
+            songId: true,
+            status: true,
+            distributionStatusAt: true,
+          },
         });
-        let didApply = false;
-        if (event.status === "live") {
+        const didApply = shouldApplyDistributionStatus(
+          current,
+          event.status,
+          occurredAt
+        );
+        if (didApply) {
           await tx.release.update({
             where: { id: release.id },
             data: {
-              status: "live",
-              liveAt: current.liveAt ?? occurredAt,
-              releaseDate: current.liveAt ?? occurredAt,
-              ...(channels ? { channels: channels as never } : {}),
-            },
-          });
-          await tx.song.update({
-            where: { id: current.songId },
-            data: { status: "RELEASED" },
-          });
-          didApply = true;
-        } else {
-          const updated = await tx.release.updateMany({
-            where: { id: release.id, status: { not: "live" } },
-            data: {
               status: event.status,
+              distributionStatusAt: occurredAt,
+              ...(event.status === "live"
+                ? {
+                    liveAt: current.liveAt ?? occurredAt,
+                    releaseDate: current.liveAt ?? occurredAt,
+                  }
+                : {}),
               ...(channels ? { channels: channels as never } : {}),
             },
           });
-          didApply = updated.count === 1;
+          if (event.status === "live") {
+            await tx.song.update({
+              where: { id: current.songId },
+              data: { status: "RELEASED" },
+            });
+          }
         }
 
         await tx.distributionEvent.create({
@@ -375,10 +423,22 @@ export default async function webhooks(app: FastifyInstance) {
 interface PaypalEvent {
   id: string;
   event_type: string;
+  create_time?: string;
+  resource_type?: string;
   resource: Record<string, unknown>;
 }
 
 // --------- handlers ---------------------------------------------------------
+
+function paypalEventOccurredAt(event: PaypalEvent): Date {
+  const resource = event.resource as { create_time?: unknown; update_time?: unknown };
+  for (const value of [event.create_time, resource.update_time, resource.create_time]) {
+    if (typeof value !== "string") continue;
+    const parsed = new Date(value);
+    if (!Number.isNaN(parsed.getTime())) return parsed;
+  }
+  return new Date();
+}
 
 async function activateSubscription(
   event: PaypalEvent
@@ -396,63 +456,46 @@ async function activateSubscription(
   // cannot double-credit the workspace.
   const intent = await prisma.billingIntent.findFirst({
     where: { id: r.custom_id, kind: "SUBSCRIPTION" },
+    select: { id: true, plan: true },
   });
   if (!intent || intent.plan !== plan) return null;
-  if (intent.paypalSubscriptionId && intent.paypalSubscriptionId !== r.id) {
-    throw new Error("subscription intent provider mismatch");
-  }
-  await prisma.$transaction([
-    prisma.workspace.update({
-      where: { id: intent.workspaceId },
-      data: { plan, paypalSubscriptionId: r.id },
-    }),
-    prisma.billingIntent.update({
-      where: { id: intent.id },
-      data: { paypalSubscriptionId: r.id, status: "APPROVED" },
-    }),
-  ]);
-  return intent.workspaceId;
+  await bindSubscriptionIdentity({
+    intentId: intent.id,
+    paypalSubscriptionId: r.id,
+  });
+  return applySubscriptionStatus({
+    paypalSubscriptionId: r.id,
+    status: "ACTIVE",
+    occurredAt: paypalEventOccurredAt(event),
+  });
 }
 
 /** Grant a subscription cycle's credit allowance. Idempotent via the unique
  *  paypalEventId — a re-delivered webhook grants nothing twice. */
 async function grantRecurring(event: PaypalEvent): Promise<string | null> {
-  const r = event.resource as { id?: string; billing_agreement_id?: string };
+  const r = event.resource as {
+    id?: string;
+    billing_agreement_id?: string;
+    amount?: {
+      value?: string;
+      currency_code?: string;
+      total?: string;
+      currency?: string;
+    };
+  };
   const subId = r.billing_agreement_id;
   if (!subId || !r.id) return null;
-  const ws = await prisma.workspace.findUnique({
-    where: { paypalSubscriptionId: subId },
+  const paid = paypalMoneyToCents(r.amount);
+  if (!paid) return null;
+  const result = await applySubscriptionSale({
+    paypalSubscriptionId: subId,
+    saleId: r.id,
+    paypalEventId: event.id,
+    amountCents: paid.amountCents,
+    currency: paid.currency,
+    occurredAt: paypalEventOccurredAt(event),
   });
-  if (!ws) return null;
-  const grant =
-    PLAN_CREDIT_GRANT_CENTS[ws.plan as keyof typeof PLAN_CREDIT_GRANT_CENTS] ??
-    0;
-  if (!grant) return ws.id;
-  try {
-    await prisma.$transaction([
-      prisma.workspace.update({
-        where: { id: ws.id },
-        data: { creditsCents: { increment: grant } },
-      }),
-      prisma.creditLedger.create({
-        data: {
-          workspaceId: ws.id,
-          delta: grant,
-          reason: "paypal_subscription_cycle",
-          paypalEventId: event.id,
-          idempotencyKey: `paypal-sale:${subId}:${r.id}`,
-          meta: { grant, subscriptionId: subId, saleId: r.id } as never,
-        },
-      }),
-      prisma.billingIntent.updateMany({
-        where: { paypalSubscriptionId: subId },
-        data: { status: "COMPLETED", completedAt: new Date() },
-      }),
-    ]);
-  } catch (e) {
-    if ((e as { code?: string }).code !== "P2002") throw e;
-  }
-  return ws.id;
+  return result?.workspaceId ?? null;
 }
 
 async function downgradeSubscription(
@@ -461,22 +504,191 @@ async function downgradeSubscription(
   const r = event.resource as { id?: string; custom_id?: string };
   const subscriptionId = r.id;
   if (!subscriptionId) return null;
-  // Find workspace by subscription id (custom_id may not be present on cancel events).
-  const ws = await prisma.workspace.findUnique({
-    where: { paypalSubscriptionId: subscriptionId },
+  if (r.custom_id) {
+    await bindSubscriptionIdentity({
+      intentId: r.custom_id,
+      paypalSubscriptionId: subscriptionId,
+    });
+  }
+  const status =
+    event.event_type === "BILLING.SUBSCRIPTION.SUSPENDED"
+      ? "SUSPENDED"
+      : event.event_type === "BILLING.SUBSCRIPTION.EXPIRED"
+        ? "EXPIRED"
+        : "CANCELED";
+  return applySubscriptionStatus({
+    paypalSubscriptionId: subscriptionId,
+    status,
+    occurredAt: paypalEventOccurredAt(event),
   });
-  if (!ws) return null;
-  await prisma.$transaction([
-    prisma.workspace.update({
-      where: { id: ws.id },
-      data: { plan: "STARTER", paypalSubscriptionId: null },
-    }),
-    prisma.billingIntent.updateMany({
-      where: { paypalSubscriptionId: subscriptionId },
-      data: { status: "CANCELED" },
-    }),
-  ]);
-  return ws.id;
+}
+
+function providerId(value: unknown): string | null {
+  return typeof value === "string" && /^[A-Za-z0-9-]{1,255}$/.test(value)
+    ? value
+    : null;
+}
+
+function paymentIdFromLinks(
+  resource: Record<string, unknown>,
+  kind: "capture" | "sale"
+): string | null {
+  if (!Array.isArray(resource.links)) return null;
+  const segment = kind === "capture" ? "captures?" : "sale";
+  const pattern = new RegExp(`/v[12]/payments/${segment}/([^/?#]+)`);
+  for (const candidate of resource.links) {
+    if (!candidate || typeof candidate !== "object") continue;
+    const href = (candidate as { href?: unknown }).href;
+    if (typeof href !== "string") continue;
+    try {
+      const match = pattern.exec(new URL(href).pathname);
+      const id = match?.[1] ? providerId(decodeURIComponent(match[1])) : null;
+      if (id) return id;
+    } catch {
+      continue;
+    }
+  }
+  return null;
+}
+
+function relatedPaymentId(
+  event: PaypalEvent,
+  kind: "capture" | "sale"
+): string | null {
+  const resource = event.resource as {
+    id?: unknown;
+    capture_id?: unknown;
+    sale_id?: unknown;
+    supplementary_data?: { related_ids?: { capture_id?: unknown } };
+  };
+  const direct =
+    kind === "capture"
+      ? providerId(resource.capture_id) ??
+        providerId(resource.supplementary_data?.related_ids?.capture_id)
+      : providerId(resource.sale_id);
+  if (direct) return direct;
+  const linked = paymentIdFromLinks(event.resource, kind);
+  if (linked) return linked;
+  if (
+    event.resource_type === kind ||
+    event.event_type.endsWith(".REVERSED")
+  ) {
+    return providerId(resource.id);
+  }
+  return null;
+}
+
+async function refundPayment(event: PaypalEvent): Promise<string | null> {
+  const kind = event.event_type.includes(".CAPTURE.") ? "capture" : "sale";
+  const paypalTransactionId = relatedPaymentId(event, kind);
+  if (!paypalTransactionId) return null;
+  const resource = event.resource as {
+    id?: unknown;
+    amount?: Parameters<typeof paypalMoneyToCents>[0];
+    total_refunded_amount?: Parameters<typeof paypalMoneyToCents>[0];
+    seller_payable_breakdown?: {
+      total_refunded_amount?: Parameters<typeof paypalMoneyToCents>[0];
+    };
+  };
+  const refundId = providerId(resource.id);
+  const aggregate = refundId === paypalTransactionId;
+  const money = paypalMoneyToCents(
+    aggregate
+      ? resource.seller_payable_breakdown?.total_refunded_amount ??
+          resource.total_refunded_amount ??
+          resource.amount
+      : resource.amount
+  );
+  const result = await applyBillingAdjustment({
+    paypalTransactionId,
+    paypalEventId: event.id,
+    kind: "REFUND",
+    sourceId:
+      refundId && refundId !== paypalTransactionId
+        ? `refund:${refundId}`
+        : `refund-total:${paypalTransactionId}`,
+    sourceStatus: event.event_type,
+    amountCents: money?.amountCents,
+    currency: money?.currency,
+    fullRevoke: !money,
+    occurredAt: paypalEventOccurredAt(event),
+  });
+  return result?.workspaceId ?? null;
+}
+
+async function reversePayment(event: PaypalEvent): Promise<string | null> {
+  const kind = event.event_type.includes(".CAPTURE.") ? "capture" : "sale";
+  const paypalTransactionId = relatedPaymentId(event, kind);
+  if (!paypalTransactionId) return null;
+  const resourceId = providerId(event.resource.id) ?? paypalTransactionId;
+  const result = await applyBillingAdjustment({
+    paypalTransactionId,
+    paypalEventId: event.id,
+    kind: "REVERSAL",
+    sourceId: `reversal:${resourceId}`,
+    sourceStatus: event.event_type,
+    fullRevoke: true,
+    occurredAt: paypalEventOccurredAt(event),
+  });
+  return result?.workspaceId ?? null;
+}
+
+const DISPUTE_RELEASE_OUTCOMES = new Set([
+  "RESOLVED_SELLER_FAVOUR",
+  "RESOLVED_SELLER_FAVOR",
+  "RESOLVED_WITH_PAYOUT",
+  "CANCELED_BY_BUYER",
+  "DENIED",
+]);
+
+async function updateDispute(event: PaypalEvent): Promise<string | null> {
+  const resource = event.resource as {
+    id?: unknown;
+    dispute_id?: unknown;
+    dispute_amount?: Parameters<typeof paypalMoneyToCents>[0];
+    dispute_outcome?: { outcome_code?: unknown };
+    disputed_transactions?: Array<{
+      seller_transaction_id?: unknown;
+      dispute_amount?: Parameters<typeof paypalMoneyToCents>[0];
+      transaction_info?: {
+        seller_transaction_id?: unknown;
+        dispute_amount?: Parameters<typeof paypalMoneyToCents>[0];
+      };
+    }>;
+  };
+  const disputeId = providerId(resource.dispute_id) ?? providerId(resource.id);
+  if (!disputeId || !Array.isArray(resource.disputed_transactions)) return null;
+  const outcome =
+    typeof resource.dispute_outcome?.outcome_code === "string"
+      ? resource.dispute_outcome.outcome_code
+      : "OPEN";
+  const release = DISPUTE_RELEASE_OUTCOMES.has(outcome);
+  let workspaceId: string | null = null;
+  for (const transaction of resource.disputed_transactions) {
+    const paypalTransactionId =
+      providerId(transaction.seller_transaction_id) ??
+      providerId(transaction.transaction_info?.seller_transaction_id);
+    if (!paypalTransactionId) continue;
+    const money = paypalMoneyToCents(
+      transaction.dispute_amount ??
+        transaction.transaction_info?.dispute_amount ??
+        resource.dispute_amount
+    );
+    const result = await applyBillingAdjustment({
+      paypalTransactionId,
+      paypalEventId: event.id,
+      kind: "DISPUTE",
+      sourceId: `dispute:${disputeId}`,
+      sourceStatus: `${event.event_type}:${outcome}`,
+      amountCents: money?.amountCents,
+      currency: money?.currency,
+      fullRevoke: !money,
+      release,
+      occurredAt: paypalEventOccurredAt(event),
+    });
+    workspaceId ??= result?.workspaceId ?? null;
+  }
+  return workspaceId;
 }
 
 async function creditCapture(event: PaypalEvent): Promise<string | null> {
@@ -485,10 +697,13 @@ async function creditCapture(event: PaypalEvent): Promise<string | null> {
     status?: string;
     custom_id?: string;
     amount?: { value: string; currency_code: string };
+    supplementary_data?: { related_ids?: { order_id?: unknown } };
   };
   if (!r.id || !r.custom_id || r.status !== "COMPLETED") return null;
+  const orderId = providerId(r.supplementary_data?.related_ids?.order_id);
   const intent = await resolveCreditIntent({
     intentId: r.custom_id,
+    paypalOrderId: orderId ?? undefined,
     amount: r.amount,
   });
   if (!intent) return null;
@@ -497,7 +712,9 @@ async function creditCapture(event: PaypalEvent): Promise<string | null> {
   const result = await applyCreditCapture({
     intent,
     captureId: r.id,
+    orderId: orderId ?? undefined,
     webhookEventId: event.id,
+    occurredAt: paypalEventOccurredAt(event),
   });
   // Receipt email to the workspace owner (best-effort).
   const owner = await prisma.workspaceMember.findFirst({

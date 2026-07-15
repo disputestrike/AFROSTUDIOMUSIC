@@ -1,9 +1,13 @@
-import { createHash } from 'node:crypto';
 import { Prisma, prisma } from '@afrohit/db';
-import { certifyAudioBytes } from '../lib/certified-assets';
-import { ffmpegAvailable, master as ffmpegMaster, MASTER_TARGETS } from '../lib/ffmpeg';
+import { assertStoredContentHash, certifyAudioBytes } from '../lib/certified-assets';
+import {
+  ffmpegAvailable,
+  master as ffmpegMaster,
+  MASTER_TARGETS,
+  NATIVE_AUDIO_LIMITS,
+} from '../lib/ffmpeg';
 import { markFailed, markRunning } from '../lib/jobs';
-import { deleteObjectByUrl, downloadToBuffer, uploadBytes } from '../lib/storage';
+import { deleteObjectByUrl, downloadToBuffer } from '../lib/storage';
 
 interface MasterPayload {
   jobId: string;
@@ -48,7 +52,11 @@ export async function processMaster(payload: MasterPayload): Promise<void> {
           orderBy: { createdAt: 'desc' },
         });
 
-    const sourceBytes = await downloadToBuffer(mix.url);
+    const sourceBytes = await downloadToBuffer(mix.url, {
+      maxBytes: NATIVE_AUDIO_LIMITS.remoteInputMaxBytes,
+      timeoutMs: NATIVE_AUDIO_LIMITS.remoteInputTimeoutMs,
+    });
+    assertStoredContentHash(sourceBytes, mix.contentHash, 'master_source_mix');
     const finished = payload.finished || mix.preset === 'uploaded';
     const rendered = await ffmpegMaster({
       mix: sourceBytes,
@@ -61,17 +69,16 @@ export async function processMaster(payload: MasterPayload): Promise<void> {
       bytes: rendered.wav,
     });
     uploaded.push(certified.url);
-    const mp3Url = await uploadBytes({
+    const certifiedMp3 = await certifyAudioBytes({
       workspaceId: payload.workspaceId,
       kind: 'masters',
       bytes: rendered.mp3,
       contentType: 'audio/mpeg',
       ext: 'mp3',
     });
-    uploaded.push(mp3Url);
+    uploaded.push(certifiedMp3.url);
 
     const target = MASTER_TARGETS[payload.preset] ?? MASTER_TARGETS['streaming_lufs_-14']!;
-    const mp3Hash = createHash('sha256').update(rendered.mp3).digest('hex');
     const master = await prisma.$transaction(async (tx) => {
       const created = await tx.master.create({
         data: {
@@ -89,7 +96,13 @@ export async function processMaster(payload: MasterPayload): Promise<void> {
             qc: certified.qc,
             sourceMixId: mix.id,
             sourceContentHash: mix.contentHash,
-            deliveryMp3: { url: mp3Url, contentHash: mp3Hash },
+            deliveryMp3: {
+              url: certifiedMp3.url,
+              contentHash: certifiedMp3.contentHash,
+              qualityState: certifiedMp3.qualityState,
+              verifiedAt: certifiedMp3.verifiedAt.toISOString(),
+              qc: certifiedMp3.qc,
+            },
           } as never,
         },
       });
@@ -111,7 +124,7 @@ export async function processMaster(payload: MasterPayload): Promise<void> {
           outputJson: {
             masterId: created.id,
             wavUrl: certified.url,
-            mp3Url,
+            mp3Url: certifiedMp3.url,
             targetLufs: target.lufs,
             measuredLufs: certified.qc.integratedLufs,
             qualityState: certified.qualityState,

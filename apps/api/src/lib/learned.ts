@@ -1,5 +1,5 @@
 import { prisma } from '@afrohit/db';
-import { learnedGenreMatches, selectLearnedRefs } from '@afrohit/shared';
+import { GENRES, genreSignature, learnedGenreMatches, selectLearnedRefs } from '@afrohit/shared';
 
 /**
  * The "listen & learn" retrieval — rebuilt for FIDELITY:
@@ -15,7 +15,7 @@ import { learnedGenreMatches, selectLearnedRefs } from '@afrohit/shared';
  *     was heard shapes the AUDIO, not only the words.
  */
 
-interface RecipeShape {
+export interface RecipeShape {
   source?: string;
   drums?: string | null;
   percussion?: string | null;
@@ -28,12 +28,27 @@ interface RecipeShape {
   bpm?: number | null;
   key?: string | null;
   learnedRecipe?: string | null;
+  title?: string | null;
+  artist?: string | null;
+  craft?: string[] | null;
+  identitySafe?: boolean;
   /** DSP MeasuredAnalysis when the ear actually ran (engineOk=true). The
    *  genuinely reference-specific signal — distinct from the LLM prose above. */
-  measured?: { engineOk?: boolean; tempoBpm?: { value?: number }; swingRatio?: number; logDrumLikelihood?: number } | null;
+  measured?: {
+    engineOk?: boolean;
+    tempoBpm?: { value?: number | null };
+    key?: { value?: string | null };
+    mode?: { value?: string | null };
+    swingRatio?: number | { value?: number | null };
+    syncopationIndex?: number | { value?: number | null };
+    logDrumLikelihood?: number | { value?: number | null };
+    shakerContinuity?: number | { value?: number | null };
+    introLengthBars?: number | { value?: number | null };
+    firstDropAtS?: number | { value?: number | null };
+  } | null;
 }
 
-interface RefRow {
+export interface LearnedPromptReference {
   id: string;
   title: string | null;
   summary: string | null;
@@ -42,7 +57,10 @@ interface RefRow {
   createdAt: Date;
   recipe: RecipeShape;
   generated: boolean;
+  zap: boolean;
 }
+
+type RefRow = LearnedPromptReference;
 
 // Selection law now lives in @afrohit/shared (learned-select.ts) so the worker
 // gate can PROVE lane isolation + pin-first + artist-over-machine without a DB.
@@ -57,32 +75,103 @@ async function fetchRefs(workspaceId: string, genre: string, pinnedId?: string |
       workspaceId,
       active: true,
       analysisState: { not: 'failed' },
-      rightsBasis: { in: ['user-attested', 'self-generated'] },
-      // facts: rows are NUMBERS for the lane profile only — they carry no prose
-      // and must never occupy a brief slot (and never could leak expression).
-      NOT: [{ sourceUrl: { startsWith: 'lyric:' } }, { sourceUrl: { startsWith: 'trend:' } }, { sourceUrl: { startsWith: 'facts:' } }, { sourceUrl: { startsWith: 'zap:' } }],
+      OR: [
+        { rightsBasis: { in: ['user-attested', 'self-generated'] } },
+        { rightsBasis: 'facts-only', sourceUrl: { startsWith: 'zap:' } },
+      ],
+      // Generic facts rows shape aggregate lane profiles only. Zap is the one
+      // facts-only source admitted here, through its identity-free formatter.
+      NOT: [{ sourceUrl: { startsWith: 'lyric:' } }, { sourceUrl: { startsWith: 'trend:' } }, { sourceUrl: { startsWith: 'facts:' } }],
     },
     orderBy: { createdAt: 'desc' },
     take: 60,
     select: { id: true, title: true, summary: true, genre: true, sourceUrl: true, createdAt: true, recipe: true },
   });
-  const all: RefRow[] = rows.map((r: Omit<RefRow, 'recipe' | 'generated'> & { recipe: unknown }) => {
+  const all: RefRow[] = rows.map((r: Omit<RefRow, 'recipe' | 'generated' | 'zap'> & { recipe: unknown }) => {
     const recipe = (r.recipe ?? {}) as RecipeShape;
-    return { ...r, recipe, generated: recipe.source === 'generated' };
+    const zap = r.sourceUrl.startsWith('zap:') || recipe.source === 'zap';
+    return { ...r, recipe, generated: recipe.source === 'generated', zap };
   });
   // Selection law (pin-first, in-genre only, artist over machine) lives in
   // shared learned-select.ts — the worker gate proves it holds. The seed
   // ROTATES which real refs teach each render ("184 unused references": the
   // seedless pick was the newest 3 forever, the rest of the lake sat idle).
   // Minute-grained so the brief + tags + usage receipt of ONE render agree.
-  return selectLearnedRefs(all, genre, pinnedId, { varietySeed: Math.floor(Date.now() / 60_000) });
+  const varietySeed = Math.floor(Date.now() / 60_000);
+  const artistRows = all.filter((r) => !r.zap && !r.generated);
+  const selfRows = all.filter((r) => !r.zap && r.generated);
+  const zaps = all.filter((r) => r.zap).map((r) => ({ ...r, generated: true }));
+  const offset = zaps.length ? Math.abs(varietySeed) % zaps.length : 0;
+  const rotatedZaps = [...zaps.slice(offset), ...zaps.slice(0, offset)];
+  return selectLearnedRefs(
+    [...artistRows, ...rotatedZaps, ...selfRows],
+    genre,
+    pinnedId,
+    { varietySeed },
+  );
 }
 
-function refLines(refs: RefRow[]): string[] {
+function measuredValue<T>(fact: T | { value?: T | null } | null | undefined): T | undefined {
+  if (fact == null) return undefined;
+  if (typeof fact === 'object' && 'value' in fact) {
+    return fact.value ?? undefined;
+  }
+  return fact as T;
+}
+
+function measuredPromptFacts(recipe: RecipeShape): string[] {
+  const measured = recipe.measured;
+  if (!measured?.engineOk) return [];
+  const out: string[] = [];
+  const tempo = measuredValue(measured.tempoBpm);
+  const key = measuredValue(measured.key);
+  const mode = measuredValue(measured.mode);
+  const swing = measuredValue(measured.swingRatio);
+  const syncopation = measuredValue(measured.syncopationIndex);
+  const logDrum = measuredValue(measured.logDrumLikelihood);
+  const shaker = measuredValue(measured.shakerContinuity);
+  const introBars = measuredValue(measured.introLengthBars);
+  const firstDrop = measuredValue(measured.firstDropAtS);
+  if (typeof tempo === 'number' && Number.isFinite(tempo)) out.push(`${Math.round(tempo)} bpm (measured)`);
+  if (key) out.push(`${key}${mode ? ` ${mode}` : ''} (measured key)`);
+  if (typeof swing === 'number' && swing > 0.55) out.push('laid-back swung groove (measured)');
+  if (typeof syncopation === 'number' && syncopation > 0.55) out.push('high syncopation (measured)');
+  if (typeof logDrum === 'number' && logDrum > 0.5) out.push('deep log-drum sub-bass (measured)');
+  if (typeof shaker === 'number' && shaker > 0.65) out.push('continuous shaker bed (measured)');
+  if (typeof introBars === 'number' && introBars > 0) out.push(`${Math.round(introBars)}-bar intro (measured)`);
+  if (typeof firstDrop === 'number' && firstDrop > 0) out.push(`first drop near ${Math.round(firstDrop)}s (measured)`);
+  return out;
+}
+
+function knownGenreSignature(rawGenre?: string | null) {
+  const genre = rawGenre?.toLowerCase().trim().replace(/[\s/-]+/g, '_') ?? '';
+  if (!(GENRES as readonly string[]).includes(genre)) return null;
+  return { genre, signature: genreSignature(genre) };
+}
+
+export function learnedReferenceLines(refs: RefRow[]): string[] {
   return refs
     .map((r) => {
       const rec = r.recipe;
+      if (r.zap) {
+        const known = knownGenreSignature(r.genre);
+        const measuredFacts = measuredPromptFacts(rec);
+        if (!known) {
+          return measuredFacts.length
+            ? `• ZAP MEASURED FACTS (song and artist identity removed; lane unresolved): ${measuredFacts.join(' · ').slice(0, 900)}`
+            : '';
+        }
+        const { genre, signature } = known;
+        const lane = genre.replace(/_/g, ' ');
+        const facts = [
+          ...measuredFacts,
+          ...signature.tags.slice(0, 3),
+          `arrangement transitions and fills every ${signature.fillBars} bars`,
+        ];
+        return `• ZAP ${lane} FACTS (song and artist identity removed): ${facts.join(' · ').slice(0, 900)}`;
+      }
       const bits = [
+        ...measuredPromptFacts(rec).slice(0, 3),
         rec.bpm ? `${rec.bpm}bpm` : null,
         rec.key || null,
         rec.drums ? `DRUMS: ${rec.drums}` : null,
@@ -113,11 +202,11 @@ export async function learnedReferenceBrief(
 ): Promise<string> {
   if (!genre) return '';
   const refs = await fetchRefs(workspaceId, genre, pinnedReferenceId);
-  const lines = refLines(refs);
+  const lines = learnedReferenceLines(refs);
   if (!lines.length) return '';
   return (
-    "LEARNED FROM THE ARTIST'S OWN REFERENCE SONGS — rebuild THIS real, layered sound (the drums, " +
-    'percussion/log-drum, bass, groove and vocal flow it heard); make it this rich and complex, never generic:\n' +
+    "LEARNED SOUND GUIDANCE — the artist's owned references lead. Zap contributes only identity-free " +
+    'measured numbers and genre craft facts; never infer or repeat a Zapped song, title, or artist:\n' +
     lines.join('\n')
   );
 }
@@ -150,7 +239,9 @@ export async function learnedUsage(workspaceId: string, genre?: string | null, p
   const hasProse = (r: RefRow) => !!(r.recipe.drums || r.recipe.bass || r.recipe.percussion || r.recipe.groove);
   return {
     referenceIds: refs.map((r) => r.id),
-    titles: refs.map((r) => r.title ?? '(untitled)'),
+    titles: refs.map((r) =>
+      r.zap ? `Zap ${(r.genre ?? 'lane').replace(/_/g, ' ')} facts` : r.title ?? '(untitled)',
+    ),
     inferredOnly: refs.filter((r) => !isMeasured(r) && hasProse(r)).length,
     pinnedReferenceId: pinnedReferenceId ?? null,
     total: refs.length,
@@ -171,7 +262,7 @@ export async function learnedStyleTags(
 ): Promise<string[]> {
   if (!genre) return [];
   const refs = await fetchRefs(workspaceId, genre, pinnedReferenceId);
-  const src = refs.find((r) => !r.generated) ?? refs[0];
+  const src = refs.find((r) => !r.generated && !r.zap) ?? refs[0];
   if (!src) return [];
   const rec = src.recipe;
   const shorten = (s?: string | null, max = 44) => {
@@ -180,6 +271,17 @@ export async function learnedStyleTags(
     const t = clause.trim();
     return t.length > 4 ? t.slice(0, max) : null;
   };
+  if (src.zap) {
+    const known = knownGenreSignature(src.genre);
+    const safeFacts = [
+      ...measuredPromptFacts(rec),
+      ...(known ? known.signature.tags : []),
+    ];
+    return safeFacts
+      .map((tag) => shorten(tag))
+      .filter((tag): tag is string => !!tag)
+      .slice(0, 4);
+  }
   return [shorten(rec.drums), shorten(rec.percussion, 36), shorten(rec.groove, 36), shorten(rec.bass, 32)]
     .filter((t): t is string => !!t)
     .slice(0, 4);
@@ -195,13 +297,7 @@ export async function learnedMeasuredTags(workspaceId: string, genre?: string | 
   if (!genre) return [];
   const refs = await fetchRefs(workspaceId, genre, pinnedReferenceId);
   const src = refs.find((r) => (r.recipe.measured as { engineOk?: boolean } | undefined)?.engineOk);
-  const m = (src?.recipe.measured ?? null) as { tempoBpm?: { value?: number }; swingRatio?: number; logDrumLikelihood?: number } | null;
-  if (!m) return [];
-  const out: string[] = [];
-  if (m.tempoBpm?.value) out.push(`${Math.round(m.tempoBpm.value)} bpm (measured)`);
-  if (typeof m.swingRatio === 'number' && m.swingRatio > 0.55) out.push('laid-back swung groove');
-  if (typeof m.logDrumLikelihood === 'number' && m.logDrumLikelihood > 0.5) out.push('deep log-drum sub-bass');
-  return out.slice(0, 3);
+  return src ? measuredPromptFacts(src.recipe).slice(0, 3) : [];
 }
 
 /**

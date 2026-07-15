@@ -1,5 +1,15 @@
-import { prisma, JobStatus, refundWorkspaceCharge } from '@afrohit/db';
-import { costOf, redactSensitiveText } from '@afrohit/shared';
+import { prisma, JobStatus, refundWorkspaceCharge } from "@afrohit/db";
+import { costOf, redactSensitiveText } from "@afrohit/shared";
+import { AsyncLocalStorage } from "node:async_hooks";
+
+const attemptContext = new AsyncLocalStorage<{ finalAttempt: boolean }>();
+
+export function runWithJobAttemptContext<T>(
+  finalAttempt: boolean,
+  fn: () => Promise<T>
+): Promise<T> {
+  return attemptContext.run({ finalAttempt }, fn);
+}
 
 export async function markRunning(jobId: string) {
   await prisma.providerJob.update({
@@ -8,7 +18,11 @@ export async function markRunning(jobId: string) {
   });
 }
 
-export async function markSucceeded(jobId: string, output: unknown, cost?: number) {
+export async function markSucceeded(
+  jobId: string,
+  output: unknown,
+  cost?: number
+) {
   await prisma.providerJob.update({
     where: { id: jobId },
     data: {
@@ -26,13 +40,20 @@ export async function markSucceeded(jobId: string, output: unknown, cost?: numbe
  *  logged internally first — diagnosis never loses information. */
 function wallSafe(message: string): string {
   return message
-    .replace(/\bfal\b/gi, 'engine route')
-    .replace(/suno|minimax|ace[-_ ]?step|replicate|eleven(labs)?|stable[_ ]?audio|musicgen|demucs|cerebras/gi, 'engine');
+    .replace(/\bfal\b/gi, "engine route")
+    .replace(
+      /suno|minimax|ace[-_ ]?step|replicate|eleven(labs)?|stable[_ ]?audio|musicgen|demucs|cerebras/gi,
+      "engine"
+    );
 }
 
 export async function markFailed(jobId: string, err: unknown) {
-  const real = redactSensitiveText((err as Error)?.message ?? err ?? '', 800).trim() || 'unknown failure (no message)';
-  console.warn(`[job ${jobId}] failed — internal reason: ${real.slice(0, 300)}`);
+  const real =
+    redactSensitiveText((err as Error)?.message ?? err ?? "", 800).trim() ||
+    "unknown failure (no message)";
+  console.warn(
+    `[job ${jobId}] failed — internal reason: ${real.slice(0, 300)}`
+  );
   const job = await prisma.providerJob.update({
     where: { id: jobId },
     data: {
@@ -40,45 +61,92 @@ export async function markFailed(jobId: string, err: unknown) {
       finishedAt: new Date(),
       errorJson: { message: wallSafe(real).slice(0, 800) } as never,
     },
-    select: { id: true, workspaceId: true, inputJson: true, chargeLedgerId: true },
+    select: {
+      id: true,
+      workspaceId: true,
+      inputJson: true,
+      chargeLedgerId: true,
+    },
   });
   // REFUND ON FAILURE (audit DEAD: charge-before-enqueue never refunded). If the
   // route stamped a `_charge` on the job, credit it back — atomically and once
   // using the same lock as charging. Owner mode restores cap units without changing balance.
-  await refundJobCharge(job).catch((e) => console.warn(`[job ${jobId}] refund skipped:`, (e as Error)?.message));
+  if (attemptContext.getStore()?.finalAttempt !== false) {
+    await refundJobCharge(job);
+  }
 }
 
-async function refundJobCharge(job: { id: string; workspaceId: string; inputJson: unknown; chargeLedgerId?: string | null }) {
-  const internalMode = (process.env.AUTH_MODE ?? 'internal').toLowerCase() === 'internal';
+export async function refundFailedJob(jobId: string): Promise<void> {
+  const job = await prisma.providerJob.findUnique({
+    where: { id: jobId },
+    select: {
+      id: true,
+      workspaceId: true,
+      inputJson: true,
+      chargeLedgerId: true,
+    },
+  });
+  if (!job) throw new Error(`failed job ${jobId} no longer exists`);
+  await refundJobCharge(job);
+}
+
+async function refundJobCharge(job: {
+  id: string;
+  workspaceId: string;
+  inputJson: unknown;
+  chargeLedgerId?: string | null;
+}) {
+  const internalMode =
+    (process.env.AUTH_MODE ?? "internal").toLowerCase() === "internal";
   if (job.chargeLedgerId) {
     const refund = await refundWorkspaceCharge(prisma, {
       workspaceId: job.workspaceId,
       chargeId: job.chargeLedgerId,
       internalMode,
-      refTable: 'ProviderJob',
+      refTable: "ProviderJob",
       refId: job.id,
     });
     if (refund.refunded) {
-      console.log("[job " + job.id + "] reversed charge " + job.chargeLedgerId + " on failure");
+      console.log(
+        "[job " +
+          job.id +
+          "] reversed charge " +
+          job.chargeLedgerId +
+          " on failure"
+      );
     }
     return;
   }
 
   if (internalMode) return;
   // Compatibility for jobs created before chargeLedgerId existed.
-  const charge = (job.inputJson as { _charge?: { key?: string; multiplier?: number } } | null)?._charge;
+  const charge = (
+    job.inputJson as { _charge?: { key?: string; multiplier?: number } } | null
+  )?._charge;
   if (!charge?.key) return;
   const amount = costOf(charge.key as never) * (charge.multiplier ?? 1);
   if (!amount) return;
   try {
     await prisma.$transaction([
-      prisma.workspace.update({ where: { id: job.workspaceId }, data: { creditsCents: { increment: amount } } }),
+      prisma.workspace.update({
+        where: { id: job.workspaceId },
+        data: { creditsCents: { increment: amount } },
+      }),
       prisma.creditLedger.create({
-        data: { id: `refund_${job.id}`, workspaceId: job.workspaceId, delta: amount, reason: `refund_${charge.key}`, refTable: 'ProviderJob', refId: job.id },
+        data: {
+          id: `refund_${job.id}`,
+          workspaceId: job.workspaceId,
+          delta: amount,
+          reason: `refund_${charge.key}`,
+          refTable: "ProviderJob",
+          refId: job.id,
+        },
       }),
     ]);
-    console.log(`[job ${job.id}] refunded ${amount} (${charge.key}) on failure`);
+    console.log(
+      `[job ${job.id}] refunded ${amount} (${charge.key}) on failure`
+    );
   } catch (e) {
-    if ((e as { code?: string }).code !== 'P2002') throw e; // already refunded
+    if ((e as { code?: string }).code !== "P2002") throw e; // already refunded
   }
 }

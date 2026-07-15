@@ -1,10 +1,10 @@
 import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import { z } from 'zod';
-import { blueprintFromMeasured, structureBrief, genreSignature, type MeasuredAnalysis, type SongBlueprint } from '@afrohit/shared';
+import { structureBrief, genreSignature, type SongBlueprint } from '@afrohit/shared';
 import { prisma, Prisma } from '@afrohit/db';
 import { predictHit, researchTrends, enrichLyricsForVocals, cleanLyricsForMinimax } from '@afrohit/ai';
 import { laneDna, laneDnaBrief } from '../lib/lane-pipeline';
-import { requireAuth } from '../middleware/auth';
+import { requireAuth, requireRole } from '../middleware/auth';
 import { createQueuedProviderJob, scopedRequestKey } from '../lib/queued-job';
 import { musicRouteCapabilities, validateMusicRoute } from '../lib/music-capabilities';
 import { learnedReferenceBrief } from '../lib/learned';
@@ -20,21 +20,18 @@ import { safeFetch } from '../lib/url-guard';
 import { queueAssetDeletion, songAssetRefs } from '../lib/asset-lifecycle';
 import { operationErrorBody, runIdempotentOperation } from '../lib/idempotent-operation';
 import { registerBeatForInspection } from '../lib/beat-ingest';
+import {
+  arrangementBlueprint,
+  currentPlayableAsset,
+  playableArrangement,
+  playableAssetHistory,
+  playableAssetRef,
+  type PlayableAssetRow,
+} from '../lib/current-playable-asset';
 
 /** Freshest playable audio for a song: the most RECENT of master/mix/beat by
  *  createdAt — so a re-sing (new beat) or a re-master (new master) both become
  *  the song's current audio. Edits propagate; the newest render always wins. */
-function freshestAudioUrl(s: {
-  masters?: Array<{ url: string; createdAt: Date }>;
-  mixes?: Array<{ url: string; createdAt: Date }>;
-  beats?: Array<{ url: string; createdAt: Date }>;
-}): string | null {
-  const cands = [s.masters?.[0], s.mixes?.[0], s.beats?.[0]].filter(Boolean) as Array<{ url: string; createdAt: Date }>;
-  if (!cands.length) return null;
-  cands.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
-  return cands[0]!.url;
-}
-
 /** Shape of a catalog list row (song + the includes the list query selects). */
 type CatalogRow = {
   id: string;
@@ -47,9 +44,9 @@ type CatalogRow = {
   viralScore: number | null;
   createdAt: Date;
   project: { id: string; title: string; genre: string; bpm: number | null; artist: { stageName: string } };
-  masters: Array<{ url: string; createdAt: Date }>;
-  mixes: Array<{ url: string; createdAt: Date }>;
-  beats: Array<{ id: string; url: string; createdAt: Date; stems: unknown[] }>;
+  masters: PlayableAssetRow[];
+  mixes: PlayableAssetRow[];
+  beats: Array<PlayableAssetRow & { stems: unknown[] }>;
   lyric: { id: string; title: string | null } | null;
 };
 
@@ -106,29 +103,33 @@ export default async function songs(app: FastifyInstance) {
     const coverByProject = new Map<string, string>();
     for (const c of covers) if (c.projectId && !coverByProject.has(c.projectId)) coverByProject.set(c.projectId, c.url);
 
-    return rows.map((s: CatalogRow) => ({
-      id: s.id,
-      title: s.lyric?.title || s.title,
-      versionLabel: s.versionLabel,
-      status: s.status,
-      artist: s.project.artist.stageName,
-      projectId: s.projectId,
-      projectTitle: s.project.title,
-      genre: s.project.genre,
-      bpm: s.project.bpm,
-      audioUrl: freshestAudioUrl(s),
-      masterUrl: s.masters[0]?.url ?? null,
-      mixUrl: s.mixes[0]?.url ?? null,
-      beatUrl: s.beats[0]?.url ?? null,
-      beatId: s.beats[0]?.id ?? null,
-      stemCount: s.beats[0]?.stems.length ?? 0,
-      hasLyrics: !!s.lyric,
-      releaseReady: s.releaseReady,
-      hitScore: s.hitScore,
-      viralScore: s.viralScore,
-      coverUrl: coverByProject.get(s.projectId) ?? null,
-      createdAt: s.createdAt,
-    }));
+    return rows.map((s: CatalogRow) => {
+      const currentAudio = currentPlayableAsset(s);
+      return {
+        id: s.id,
+        title: s.lyric?.title || s.title,
+        versionLabel: s.versionLabel,
+        status: s.status,
+        artist: s.project.artist.stageName,
+        projectId: s.projectId,
+        projectTitle: s.project.title,
+        genre: s.project.genre,
+        bpm: s.project.bpm,
+        audioUrl: currentAudio?.url ?? null,
+        currentAudio: playableAssetRef(currentAudio),
+        masterUrl: s.masters[0]?.url ?? null,
+        mixUrl: s.mixes[0]?.url ?? null,
+        beatUrl: s.beats[0]?.url ?? null,
+        beatId: s.beats[0]?.id ?? null,
+        stemCount: s.beats[0]?.stems.length ?? 0,
+        hasLyrics: !!s.lyric,
+        releaseReady: s.releaseReady,
+        hitScore: s.hitScore,
+        viralScore: s.viralScore,
+        coverUrl: coverByProject.get(s.projectId) ?? null,
+        createdAt: s.createdAt,
+      };
+    });
   });
 
   // ---- Detail: everything about one song ----
@@ -150,7 +151,13 @@ export default async function songs(app: FastifyInstance) {
       orderBy: { createdAt: 'desc' },
       select: { url: true },
     });
-    return { ...song, coverUrl: cover?.url ?? null };
+    const currentAudio = currentPlayableAsset(song);
+    return {
+      ...song,
+      audioUrl: currentAudio?.url ?? null,
+      currentAudio: playableAssetRef(currentAudio),
+      coverUrl: cover?.url ?? null,
+    };
   });
 
   // ---- SUNO BRIDGE: everything you need to generate this song in your own Suno
@@ -329,23 +336,26 @@ export default async function songs(app: FastifyInstance) {
       where: { id: req.params.id, workspaceId },
       include: {
         masters: { orderBy: { createdAt: 'asc' } },
+        mixes: { orderBy: { createdAt: 'asc' } },
         beats: { orderBy: { createdAt: 'asc' } },
         lyric: { select: { body: true, title: true, versions: true } },
       },
     });
     if (!song) return reply.code(404).send({ error: 'song_not_found' });
 
-    // Audio takes, oldest→newest: prefer masters (the deliverable); fall back to
-    // beats if a take never mastered. Drop consecutive duplicate URLs (a promoted
-    // master re-points the same file).
-    const rows = (song.masters.length ? song.masters : song.beats).map((m: { url: string; createdAt: Date }) => ({ url: m.url, at: m.createdAt }));
-    const audio = rows.filter((r: { url: string }, i: number) => i === 0 || r.url !== rows[i - 1]!.url);
-    const audioVersions = audio.map((a: { url: string; at: Date }, i: number) => ({
+    // Audio takes form one chronological stream across beats, mixes, and masters.
+    const audio = playableAssetHistory(song);
+    const currentAudio = audio.at(-1) ?? null;
+    const audioVersions = audio.map((asset, i) => ({
       index: i,
       label: audio.length === 1 ? 'Version' : i === audio.length - 1 ? 'Bigger (current)' : i === 0 ? 'Original' : `Take ${i + 1}`,
-      url: a.url,
-      at: a.at,
-      isCurrent: i === audio.length - 1,
+      type: asset.type,
+      id: asset.id,
+      url: asset.url,
+      format: asset.format,
+      certification: asset.certification,
+      at: asset.createdAt,
+      isCurrent: asset.type === currentAudio?.type && asset.id === currentAudio.id,
       // per-version download (proxied, clean filename) + a revert affordance for the older takes
       dl: `/songs/${song.id}/file?type=version&index=${i}`,
       canRevert: i !== audio.length - 1,
@@ -360,7 +370,14 @@ export default async function songs(app: FastifyInstance) {
     ].filter((v) => v.body?.trim());
 
     const hasBigger = /bigger/i.test(song.versionLabel ?? '') || audioVersions.length > 1 || lyricVersions.length > 1;
-    return { songId: song.id, versionLabel: song.versionLabel, hasBigger, audioVersions, lyricVersions };
+    return {
+      songId: song.id,
+      versionLabel: song.versionLabel,
+      currentAudio: playableAssetRef(currentAudio),
+      hasBigger,
+      audioVersions,
+      lyricVersions,
+    };
   });
 
   // ---- Revert audio to ANY prior version (make that take the current one) ----
@@ -373,32 +390,16 @@ export default async function songs(app: FastifyInstance) {
       where: { id: req.params.id, workspaceId },
       include: {
         masters: { orderBy: { createdAt: 'asc' } },
+        mixes: { orderBy: { createdAt: 'asc' } },
         beats: { orderBy: { createdAt: 'asc' } },
       },
     });
     if (!song) return reply.code(404).send({ error: 'song_not_found' });
-    type RevertSource = {
-      id: string;
-      url: string;
-      approved: boolean;
-      qualityState: string;
-      contentHash: string | null;
-      verifiedAt: Date | null;
-      meta: unknown;
-    };
-    const sourceRows = (song.masters.length ? song.masters : song.beats) as RevertSource[];
-    const audio = sourceRows.filter((row, rowIndex) =>
-      rowIndex === 0 || row.url !== sourceRows[rowIndex - 1]!.url
-    );
+    const audio = playableAssetHistory(song);
     const target = audio[index];
     if (!target) return reply.code(400).send({ error: 'no_such_version', have: audio.length });
     if (index === audio.length - 1) return { ok: true, alreadyCurrent: true };
-    if (
-      !target.approved
-      || target.qualityState !== 'passed'
-      || !target.contentHash
-      || !target.verifiedAt
-    ) {
+    if (!target.certification.certified) {
       return reply.code(409).send({
         error: 'version_not_certified',
         message: 'Only an approved, hashed, QC-passed version can become the current master.',
@@ -412,9 +413,9 @@ export default async function songs(app: FastifyInstance) {
           songId: song.id,
           preset: 'reverted',
           url: target.url,
-          qualityState: target.qualityState,
-          contentHash: target.contentHash,
-          verifiedAt: target.verifiedAt,
+          qualityState: target.certification.qualityState,
+          contentHash: target.certification.contentHash,
+          verifiedAt: target.certification.verifiedAt,
           approved: true,
           meta: target.meta == null ? undefined : target.meta as never,
         },
@@ -431,7 +432,13 @@ export default async function songs(app: FastifyInstance) {
       });
       return created;
     });
-    return { ok: true, revertedTo: label, masterId: master.id, url: target.url };
+    return {
+      ok: true,
+      revertedTo: label,
+      masterId: master.id,
+      url: target.url,
+      sourceAudio: playableAssetRef(target),
+    };
   });
 
   // ---- Instrumental for a SPECIFIC version (Demucs on that take) ----
@@ -440,13 +447,15 @@ export default async function songs(app: FastifyInstance) {
     const idx = Math.max(0, Number(req.body?.index ?? 0));
     const song = await prisma.song.findFirst({
       where: { id: req.params.id, workspaceId },
-      include: { masters: { orderBy: { createdAt: 'asc' } }, beats: { orderBy: { createdAt: 'desc' }, take: 1 } },
+      include: {
+        masters: { orderBy: { createdAt: 'asc' } },
+        mixes: { orderBy: { createdAt: 'asc' } },
+        beats: { orderBy: { createdAt: 'asc' } },
+      },
     });
     if (!song) return reply.code(404).send({ error: 'song_not_found' });
-    const rows = song.masters.map((m: { url: string }) => ({ url: m.url }));
-    const ded = rows.filter((r: { url: string }, i: number) => i === 0 || r.url !== rows[i - 1]!.url);
-    const target = ded[idx] ?? ded[ded.length - 1];
-    const beat = song.beats[0];
+    const target = playableAssetHistory(song)[idx];
+    const beat = song.beats.at(-1);
     if (!target || !beat) return reply.code(400).send({ error: 'no_audio_to_separate' });
     const idempotencyKey = scopedRequestKey(req.headers as Record<string, unknown>, `song-instrumental-version:${idx}`);
     const charge = await app.chargeCredits({ workspaceId, key: 'beat_idea_short_30s', refTable: 'Song', refId: song.id, idempotencyKey });
@@ -459,7 +468,7 @@ export default async function songs(app: FastifyInstance) {
       projectId: song.projectId,
       kind: 'stems',
       provider: 'replicate',
-      inputJson: { songId: song.id, beatId: beat.id, mode: 'instrumental', sourceUrl: target.url },
+      inputJson: { songId: song.id, beatId: beat.id, mode: 'instrumental', sourceUrl: target.url, sourceAsset: playableAssetRef(target) },
       charge,
       idempotencyKey,
       payload: (jobId) => ({ jobId, workspaceId, projectId: song.projectId, songId: song.id, beatId: beat.id, mode: 'instrumental', sourceUrl: target.url }),
@@ -482,14 +491,18 @@ export default async function songs(app: FastifyInstance) {
     });
     if (!song) return reply.code(404).send({ error: 'song_not_found' });
     const beat = song.beats[0];
+    const currentAudio = currentPlayableAsset(song);
+    const currentAudioRef = playableAssetRef(currentAudio);
     // `dl` is the proxied download path — forces a real download with a unique,
     // readable filename (the raw R2 url opens in-tab with a cryptic key name).
     return {
       title: song.lyric?.title || song.title,
+      currentAudio: currentAudioRef,
       files: [
-        song.masters[0] && { label: 'Master (WAV)', url: song.masters[0].url, kind: 'master', dl: `/songs/${song.id}/file?type=master` },
-        song.mixes[0] && { label: 'Mix (WAV)', url: song.mixes[0].url, kind: 'mix', dl: `/songs/${song.id}/file?type=mix` },
-        beat && { label: `Audio (${beat.format?.toUpperCase() ?? 'MP3'})`, url: beat.url, kind: 'audio', dl: `/songs/${song.id}/file?type=audio` },
+        currentAudio && { label: `Current audio (${currentAudio.type})`, url: currentAudio.url, kind: 'audio', asset: currentAudioRef, dl: `/songs/${song.id}/file?type=audio` },
+        song.masters[0] && (currentAudio?.type !== 'master' || currentAudio.id !== song.masters[0].id) && { label: 'Latest master (WAV)', url: song.masters[0].url, kind: 'master', dl: `/songs/${song.id}/file?type=master` },
+        song.mixes[0] && (currentAudio?.type !== 'mix' || currentAudio.id !== song.mixes[0].id) && { label: 'Latest mix (WAV)', url: song.mixes[0].url, kind: 'mix', dl: `/songs/${song.id}/file?type=mix` },
+        beat && (currentAudio?.type !== 'beat' || currentAudio.id !== beat.id) && { label: `Latest beat (${beat.format?.toUpperCase() ?? 'MP3'})`, url: beat.url, kind: 'beat', dl: `/songs/${song.id}/file?type=beat` },
         // TRUE INSTRUMENTAL — the finished song minus the voice, loudness-matched
         // to it (never the raw pre-vocal beat). Cleared on re-master/re-sing.
         song.instrumentalUrl && { label: 'Instrumental — full song, voice removed', url: song.instrumentalUrl, kind: 'instrumental', dl: `/songs/${song.id}/file?type=instrumental` },
@@ -507,18 +520,24 @@ export default async function songs(app: FastifyInstance) {
     const song = await prisma.song.findFirst({
       where: { id: req.params.id, workspaceId },
       include: {
-        masters: { orderBy: { createdAt: 'desc' }, take: 1 },
-        mixes: { orderBy: { createdAt: 'desc' }, take: 1 },
-        beats: { orderBy: { createdAt: 'desc' }, take: 1, include: { stems: true } },
+        masters: { orderBy: { createdAt: 'asc' } },
+        mixes: { orderBy: { createdAt: 'asc' } },
+        beats: { orderBy: { createdAt: 'asc' }, include: { stems: true } },
         lyric: { select: { title: true } },
       },
     });
     if (!song) return reply.code(404).send({ error: 'song_not_found' });
-    const beat = song.beats[0];
+    const beat = song.beats.at(-1);
+    const latestMaster = song.masters.at(-1);
+    const latestMix = song.mixes.at(-1);
+    const history = playableAssetHistory(song);
+    const currentAudio = history.at(-1);
     let url: string | undefined;
     let ext = 'mp3';
-    if (type === 'master' && song.masters[0]) { url = song.masters[0].url; ext = 'wav'; }
-    else if (type === 'mix' && song.mixes[0]) { url = song.mixes[0].url; ext = 'wav'; }
+    if ((type === 'audio' || type === 'current') && currentAudio) { url = currentAudio.url; ext = currentAudio.format; }
+    else if (type === 'master' && latestMaster) { url = latestMaster.url; ext = 'wav'; }
+    else if (type === 'mix' && latestMix) { url = latestMix.url; ext = 'wav'; }
+    else if (type === 'beat' && beat) { url = beat.url; ext = beat.format ?? 'mp3'; }
     // The TRUE INSTRUMENTAL / acapella live on the song itself (320k mp3; the WAV
     // is the matching Stem row, served via type=stem).
     else if (type === 'instrumental' && song.instrumentalUrl) { url = song.instrumentalUrl; ext = 'mp3'; }
@@ -533,14 +552,8 @@ export default async function songs(app: FastifyInstance) {
       // Download a SPECIFIC take by its index in the versions list (owned URLs only,
       // resolved server-side — no arbitrary URL, no SSRF).
       const idx = Math.max(0, Number((req.query as { index?: string }).index ?? 0));
-      const [ms, bs] = await Promise.all([
-        prisma.master.findMany({ where: { songId: song.id }, orderBy: { createdAt: 'asc' }, select: { url: true } }),
-        prisma.beatAsset.findMany({ where: { songId: song.id }, orderBy: { createdAt: 'asc' }, select: { url: true, format: true } }),
-      ]);
-      const rows = ms.length ? ms.map((m: { url: string }) => ({ url: m.url, format: 'wav' })) : bs.map((b: { url: string; format: string | null }) => ({ url: b.url, format: b.format ?? 'mp3' }));
-      const ded = rows.filter((r: { url: string }, i: number) => i === 0 || r.url !== rows[i - 1]!.url);
-      const t = ded[idx];
-      if (t) { url = t.url; ext = ms.length ? 'wav' : (t.format ?? 'mp3'); }
+      const target = history[idx];
+      if (target) { url = target.url; ext = target.format; }
     }
     else if (beat) { url = beat.url; ext = beat.format ?? 'mp3'; }
     if (!url) return reply.code(404).send({ error: 'no_such_asset' });
@@ -573,10 +586,15 @@ export default async function songs(app: FastifyInstance) {
     const input = transformSchema.parse(req.body);
     const song = await prisma.song.findFirst({
       where: { id: req.params.id, workspaceId },
-      include: { masters: { orderBy: { createdAt: 'desc' }, take: 1 }, beats: { orderBy: { createdAt: 'desc' }, take: 1 } },
+      include: {
+        masters: { orderBy: { createdAt: 'desc' }, take: 1 },
+        mixes: { orderBy: { createdAt: 'desc' }, take: 1 },
+        beats: { orderBy: { createdAt: 'desc' }, take: 1 },
+      },
     });
     if (!song) return reply.code(404).send({ error: 'song_not_found' });
-    const sourceUrl = song.masters[0]?.url ?? song.beats[0]?.url;
+    const sourceAudio = currentPlayableAsset(song);
+    const sourceUrl = sourceAudio?.url;
     if (!sourceUrl) return reply.code(400).send({ error: 'no_audio_yet', message: 'Render the song first, then transform it.' });
     const idempotencyKey = scopedRequestKey(req.headers as Record<string, unknown>, `song-transform:${input.tempo ?? 1}:${input.semitones ?? 0}`);
     const job = await createQueuedProviderJob({
@@ -587,7 +605,7 @@ export default async function songs(app: FastifyInstance) {
       projectId: song.projectId,
       kind: 'music',
       provider: 'internal',
-      inputJson: { transform: true, songId: song.id, ...input },
+      inputJson: { transform: true, songId: song.id, sourceAsset: playableAssetRef(sourceAudio), ...input },
       idempotencyKey,
       payload: (jobId) => ({ jobId, workspaceId, projectId: song.projectId, songId: song.id, sourceUrl, ...input }),
     });
@@ -614,40 +632,23 @@ export default async function songs(app: FastifyInstance) {
     // re-master never silently masters stale audio.
     const latestMix = song.mixes[0];
     const latestBeat = song.beats[0];
-    const latestMaster = song.masters[0];
-    const candidates = [
-      latestMix ? { kind: 'mix' as const, row: latestMix } : null,
-      latestBeat ? { kind: 'beat' as const, row: latestBeat } : null,
-      latestMaster ? { kind: 'master' as const, row: latestMaster } : null,
-    ].filter(Boolean) as Array<{
-      kind: 'mix' | 'beat' | 'master';
-      row: NonNullable<typeof latestMix | typeof latestBeat | typeof latestMaster>;
-    }>;
-    candidates.sort((left, right) =>
-      right.row.createdAt.getTime() - left.row.createdAt.getTime()
-    );
-    const current = candidates[0];
+    const current = currentPlayableAsset(song);
     if (!current) return reply.code(400).send({ error: 'nothing_to_master' });
-    if (
-      !current.row.approved
-      || current.row.qualityState !== 'passed'
-      || !current.row.contentHash
-      || !current.row.verifiedAt
-    ) {
+    if (!current.certification.certified) {
       return reply.code(409).send({
         error: 'master_source_not_certified',
         message: 'Inspect and approve the current audio before mastering it.',
       });
     }
 
-    const realMix = current.kind === 'mix' && latestMix?.preset !== 'source'
+    const realMix = current.type === 'mix' && latestMix?.id === current.id && latestMix.preset !== 'source'
       ? latestMix
       : null;
     let mixId: string;
     if (realMix) {
       mixId = realMix.id;
     } else {
-      const sourceUrl = current.row.url;
+      const sourceUrl = current.url;
       const existing = await prisma.mix.findFirst({
         where: {
           projectId: song.projectId,
@@ -656,7 +657,7 @@ export default async function songs(app: FastifyInstance) {
           url: sourceUrl,
           approved: true,
           qualityState: 'passed',
-          contentHash: current.row.contentHash,
+          contentHash: current.certification.contentHash,
           verifiedAt: { not: null },
         },
       });
@@ -668,9 +669,9 @@ export default async function songs(app: FastifyInstance) {
           url: sourceUrl,
           notes: 'Master source copied from current certified audio',
           qualityState: 'passed',
-          contentHash: current.row.contentHash,
-          verifiedAt: current.row.verifiedAt,
-          meta: current.row.meta == null ? undefined : current.row.meta as never,
+          contentHash: current.certification.contentHash,
+          verifiedAt: current.certification.verifiedAt,
+          meta: current.meta == null ? undefined : current.meta as never,
           approved: true,
         },
       });
@@ -686,8 +687,8 @@ export default async function songs(app: FastifyInstance) {
     // conform, never the full EQ+comp chain that was "mastering a master" into
     // dullness. Raw engines keep the full chain.
     const finished =
-      current.kind === 'master'
-      || (current.kind === 'beat' && ['minimax', 'suno'].includes(latestBeat?.provider ?? ''))
+      current.type === 'master'
+      || (current.type === 'beat' && current.id === latestBeat?.id && ['minimax', 'suno'].includes(latestBeat?.provider ?? ''))
       || realMix?.preset === 'uploaded';
     // LOUDNESS LAW v2: default = commercial Afro loudness (-9 LUFS / -1.0 dBTP,
     // two-pass driven) for every path; 'breathe_-16.5' is the dynamics opt-in.
@@ -701,13 +702,13 @@ export default async function songs(app: FastifyInstance) {
       projectId: song.projectId,
       kind: 'master',
       provider: 'internal',
-      inputJson: { songId: song.id, mixId, preset, finished },
+      inputJson: { songId: song.id, mixId, preset, finished, sourceAsset: playableAssetRef(current) },
       charge,
       idempotencyKey,
       payload: (jobId) => ({ jobId, workspaceId, projectId: song.projectId, songId: song.id, mixId, preset, finished }),
     });
     reply.code(202);
-    return { jobId: job.jobId, mixId, replayed: job.replayed };
+    return { jobId: job.jobId, mixId, sourceAudio: playableAssetRef(current), replayed: job.replayed };
   });
 
   // ---- Reuse the beat in a NEW song (optionally a different project) ----
@@ -878,18 +879,34 @@ export default async function songs(app: FastifyInstance) {
   // because the new beat is the freshest audio it becomes the song's current take.
   app.post<{ Params: { id: string }; Body: { songEngine?: 'suno' | 'eleven' | 'ace_step' | 'minimax'; conditionOnCurrent?: boolean } }>('/:id/regenerate-beat', async (req, reply) => {
     const { workspaceId } = requireAuth(req);
+    if (req.body?.conditionOnCurrent) {
+      return reply.code(409).send({
+        error: 'unsupported_conditioning',
+        message: 'The connected full-song routes cannot guarantee audio-conditioned regeneration yet.',
+      });
+    }
     const song = await prisma.song.findFirst({
       where: { id: req.params.id, workspaceId },
-      include: { project: { include: { artist: true } }, lyric: true, beats: { orderBy: { createdAt: 'desc' }, take: 1 } },
+      include: {
+        project: { include: { artist: true } },
+        lyric: true,
+        masters: { orderBy: { createdAt: 'asc' } },
+        mixes: { orderBy: { createdAt: 'asc' } },
+        beats: { orderBy: { createdAt: 'asc' } },
+      },
     });
     if (!song) return reply.code(404).send({ error: 'song_not_found' });
+    const audioHistory = playableAssetHistory(song);
+    const currentAudio = audioHistory.at(-1) ?? null;
+    const currentArrangement = playableArrangement(audioHistory, currentAudio);
+    const latestBeat = song.beats.at(-1);
     const lyric = song.lyric ?? (await prisma.lyricDraft.findFirst({ where: { projectId: song.projectId }, orderBy: { createdAt: 'desc' } }));
     const lyrics = lyric?.cleanVersion ?? lyric?.body ?? undefined;
     if (!lyrics) return reply.code(400).send({ error: 'no_lyrics', message: 'Write or edit lyrics first, then re-sing.' });
 
     // Preserve an explicit or previous vocal route only when it remains legal
     // and connected. Validate before lyric enrichment or credit reservation.
-    const prev = song.beats[0]?.provider ?? '';
+    const prev = latestBeat?.provider ?? '';
     const songEngine =
       (req.body?.songEngine as 'suno' | 'eleven' | 'ace_step' | 'minimax' | undefined) ??
       (['suno', 'eleven', 'minimax', 'ace_step'].includes(prev) ? (prev as 'suno' | 'eleven' | 'ace_step' | 'minimax') : undefined);
@@ -901,7 +918,7 @@ export default async function songs(app: FastifyInstance) {
     const learned = await learnedReferenceBrief(workspaceId, genre);
     // SELF-CLONE BLUEPRINT — "same structure, different sound": this song's own
     // measured skeleton becomes the contract for its regeneration.
-    const selfBp: SongBlueprint | null = blueprintFromMeasured(((song.beats[0]?.meta ?? {}) as { measured?: MeasuredAnalysis }).measured);
+    const selfBp: SongBlueprint | null = arrangementBlueprint(currentArrangement);
     let lyricsForSong = lyrics;
     let styleHints: string[] = [];
     const enriched = await enrichLyricsForVocals({
@@ -938,16 +955,14 @@ export default async function songs(app: FastifyInstance) {
       projectId: song.projectId,
       kind: 'music',
       provider: songEngine ?? 'auto',
-      inputJson: { regenerate: true, songId: song.id },
+      inputJson: { regenerate: true, songId: song.id, sourceAsset: playableAssetRef(currentAudio) },
       charge,
       idempotencyKey,
       payload: (jobId) => ({
         jobId, workspaceId, projectId: song.projectId, songId: song.id,
         input: {
           genre, bpm: song.project.bpm ?? 103, withVocals: true, withStems: false, songEngine,
-          // A3-2: Adjust passes conditionOnCurrent — the song's own audio goes IN
-          // as the reference so the repair builds from the sound, not from tags.
-          referenceAudioUrl: req.body?.conditionOnCurrent ? song.beats[0]?.url ?? undefined : undefined,
+          // Audio conditioning is rejected above until a supported full-song route is connected.
           // A re-sing must stay FULL LENGTH: its own measured duration first,
           // genre standard otherwise. With no durationS at all, ACE-Step fell to
           // its 120s default — the will-it-blow gate's final re-sing was
@@ -969,12 +984,20 @@ export default async function songs(app: FastifyInstance) {
     const { workspaceId } = requireAuth(req);
     const song = await prisma.song.findFirst({
       where: { id: req.params.id, workspaceId },
-      include: { lyric: true, beats: { orderBy: { createdAt: 'desc' }, take: 1, include: { stems: true } } },
+      include: {
+        lyric: true,
+        masters: { orderBy: { createdAt: 'asc' } },
+        mixes: { orderBy: { createdAt: 'asc' } },
+        beats: { orderBy: { createdAt: 'asc' }, include: { stems: true } },
+      },
     });
     if (!song) return reply.code(404).send({ error: 'song_not_found' });
     const targetProjectId = (req.body?.targetProjectId as string) || song.projectId;
     const project = await prisma.project.findFirst({ where: { id: targetProjectId, workspaceId }, select: { id: true } });
     if (!project) return reply.code(404).send({ error: 'target_project_not_found' });
+    const audioHistory = playableAssetHistory(song);
+    const sourceAudio = audioHistory.at(-1) ?? null;
+    const sourceArrangement = playableArrangement(audioHistory, sourceAudio);
 
     const copy = await prisma.song.create({
       data: {
@@ -995,17 +1018,44 @@ export default async function songs(app: FastifyInstance) {
       });
       await prisma.song.update({ where: { id: copy.id }, data: { lyricId: newLyric.id } });
     }
-    const beat = song.beats[0];
-    if (beat) {
+    const beat = sourceAudio?.type === 'beat'
+      ? song.beats.find((candidate: { id: string }) => candidate.id === sourceAudio.id)
+      : undefined;
+    let duplicatedAudio: ReturnType<typeof playableAssetRef> = null;
+    if (sourceAudio) {
       const newBeat = await prisma.beatAsset.create({
-        data: { projectId: project.id, songId: copy.id, url: beat.url, format: beat.format, bpm: beat.bpm, keySignature: beat.keySignature, duration: beat.duration, provider: beat.provider, meta: beat.meta as never, approved: false },
+        data: {
+          projectId: project.id,
+          songId: copy.id,
+          url: sourceAudio.url,
+          format: sourceAudio.format,
+          bpm: sourceArrangement?.bpm ?? beat?.bpm ?? null,
+          keySignature: beat?.keySignature ?? null,
+          duration: sourceArrangement?.durationS ?? sourceAudio.durationS,
+          provider: 'duplicate',
+          assetKind: beat?.assetKind ?? 'full_mix',
+          qualityState: 'unmeasured',
+          contentHash: null,
+          verifiedAt: null,
+          meta: {
+            duplicatedFrom: { type: sourceAudio.type, id: sourceAudio.id },
+            arrangement: sourceArrangement ? {
+              durationS: sourceArrangement.durationS,
+              boundaries: sourceArrangement.boundaries,
+              bpm: sourceArrangement.bpm,
+              source: 'duplicate-source',
+            } : undefined,
+          } as never,
+          approved: false,
+        },
       });
-      if (beat.stems.length) {
+      duplicatedAudio = playableAssetRef(currentPlayableAsset({ beats: [newBeat] }));
+      if (beat?.stems.length) {
         await prisma.$transaction(beat.stems.map((st: { role: string; url: string; format: string; duration: number | null }) => prisma.stem.create({ data: { beatId: newBeat.id, role: st.role, url: st.url, format: st.format, duration: st.duration } })));
       }
     }
     reply.code(201);
-    return { songId: copy.id, projectId: project.id };
+    return { songId: copy.id, projectId: project.id, currentAudio: duplicatedAudio };
   });
 
   // ---- Instrumental + stems (Demucs stem separation) ----
@@ -1026,7 +1076,8 @@ export default async function songs(app: FastifyInstance) {
     // THE SOURCE IS WHAT THE USER HEARS — freshest master → mix → beat. The old
     // path always separated the raw pre-vocal beat, so "instrumental" wasn't the
     // finished song minus the voice. Resolved server-side; the worker gets a URL.
-    const sourceUrl = freshestAudioUrl(song) ?? beat.url;
+    const sourceAudio = currentPlayableAsset(song);
+    const sourceUrl = sourceAudio?.url ?? beat.url;
 
     const idempotencyKey = scopedRequestKey(req.headers as Record<string, unknown>, `song-stems:${mode}`);
     const charge = await app.chargeCredits({ workspaceId, key: 'beat_idea_short_30s', refTable: 'Song', refId: song.id, idempotencyKey });
@@ -1040,7 +1091,7 @@ export default async function songs(app: FastifyInstance) {
       projectId: song.projectId,
       kind: 'stems',
       provider: 'replicate',
-      inputJson: { songId: song.id, beatId: beat.id, mode, sourceUrl },
+      inputJson: { songId: song.id, beatId: beat.id, mode, sourceUrl, sourceAsset: playableAssetRef(sourceAudio) },
       charge,
       idempotencyKey,
       payload: (jobId) => ({ jobId, workspaceId, projectId: song.projectId, songId: song.id, beatId: beat.id, mode, sourceUrl }),
@@ -1179,6 +1230,7 @@ export default async function songs(app: FastifyInstance) {
 
   app.delete<{ Params: { id: string } }>('/:id', async (req, reply) => {
     const { workspaceId } = requireAuth(req);
+    requireRole(req, ['OWNER', 'ADMIN']);
     const song = await prisma.song.findFirst({
       where: { id: req.params.id, workspaceId },
       include: {

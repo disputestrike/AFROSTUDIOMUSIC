@@ -22,6 +22,11 @@ import { prisma } from '@afrohit/db';
 import { requireAuth } from '../middleware/auth';
 import { buildLaneReport, planAdjustRoutes, classifyAllLanes, unseededForLane, type AdjustRoute } from '../lib/lane-report';
 import type { MeasuredAnalysis } from '@afrohit/shared';
+import {
+  playableArrangement,
+  playableAssetHistory,
+  playableAssetRef,
+} from '../lib/current-playable-asset';
 
 export default async function adjust(app: FastifyInstance) {
   // §9 — the producer-brain block for a song. Read-only, always honest.
@@ -85,8 +90,9 @@ export default async function adjust(app: FastifyInstance) {
     };
     const dispatch: Record<AdjustRoute['route'], { method: 'POST'; url: string; payload: unknown }> = {
       rebuild_beat_material: { method: 'POST', url: '/api/v1/materials/auto', payload: { projectId: song.projectId, genre, bpm: song.project.bpm ?? undefined, songId: song.id } },
-      // A3-2: steered re-renders are CONDITIONED on the song's current audio.
-      rerender_steered: { method: 'POST', url: `/api/v1/songs/${song.id}/regenerate-beat`, payload: { conditionOnCurrent: true } },
+      // Current providers cannot prove full-song audio conditioning; request an
+      // honest unconditioned rerender until a supported route is connected.
+      rerender_steered: { method: 'POST', url: `/api/v1/songs/${song.id}/regenerate-beat`, payload: {} },
       remix_only: { method: 'POST', url: `/api/v1/songs/${song.id}/master`, payload: {} },
       rewrite_hook: { method: 'POST', url: `/api/v1/projects/${song.projectId}/hooks`, payload: {} },
     };
@@ -122,13 +128,26 @@ export default async function adjust(app: FastifyInstance) {
   // section map for the Arrange strip (same math the chat brain sees)
   app.get<{ Params: { id: string } }>('/:id/sections', async (req, reply) => {
     const { workspaceId } = requireAuth(req);
-    const song = await prisma.song.findFirst({ where: { id: req.params.id, workspaceId }, include: { beats: { orderBy: { createdAt: 'desc' }, take: 1 } } });
+    const song = await prisma.song.findFirst({
+      where: { id: req.params.id, workspaceId },
+      include: {
+        masters: { orderBy: { createdAt: 'asc' } },
+        mixes: { orderBy: { createdAt: 'asc' } },
+        beats: { orderBy: { createdAt: 'asc' } },
+      },
+    });
     if (!song) return reply.code(404).send({ error: 'song_not_found' });
-    const m = ((song.beats[0]?.meta ?? {}) as { measured?: { durationS?: { value?: number }; sectionBoundaries?: { value?: number[] } } }).measured;
-    const dur = m?.durationS?.value ?? 0;
-    const bs = (m?.sectionBoundaries?.value ?? []).filter((t) => t > 2 && t < dur - 2);
+    const history = playableAssetHistory(song);
+    const currentAudio = history.at(-1) ?? null;
+    const arrangement = playableArrangement(history, currentAudio);
+    const dur = arrangement?.durationS ?? 0;
+    const bs = arrangement?.boundaries ?? [];
     const edges = [0, ...bs, dur];
-    return { sections: dur ? edges.slice(0, -1).map((s0, i) => ({ index: i + 1, label: `S${i + 1}`, startS: Math.round(s0), endS: Math.round(edges[i + 1]!) })) : [] };
+    return {
+      currentAudio: playableAssetRef(currentAudio),
+      durationS: dur || null,
+      sections: dur ? edges.slice(0, -1).map((s0, i) => ({ index: i + 1, label: `S${i + 1}`, startS: Math.round(s0), endS: Math.round(edges[i + 1]!) })) : [],
+    };
   });
 
   app.post<{ Params: { id: string }; Body: { message: string; versionIndex?: number } }>('/:id/chat', async (req, reply) => {
@@ -140,10 +159,10 @@ export default async function adjust(app: FastifyInstance) {
       where: { id: req.params.id, workspaceId },
       include: {
         project: { select: { genre: true } },
-        masters: { orderBy: { createdAt: 'desc' } },
-        mixes: { orderBy: { createdAt: 'desc' }, take: 1 },
+        masters: { orderBy: { createdAt: 'asc' } },
+        mixes: { orderBy: { createdAt: 'asc' } },
         lyric: true,
-        beats: { orderBy: { createdAt: 'desc' }, take: 1 },
+        beats: { orderBy: { createdAt: 'asc' } },
       },
     });
     if (!song) return reply.code(404).send({ error: 'song_not_found' });
@@ -152,28 +171,24 @@ export default async function adjust(app: FastifyInstance) {
     // edited a STALE master when a re-sing/upload was newer ("you should be
     // talking to the current version, not the previous one"). An explicit
     // versionIndex (from the chat's version picker) overrides.
-    let sourceUrl: string | undefined;
+    const audioHistory = playableAssetHistory(song);
+    const currentAudio = audioHistory.at(-1) ?? null;
+    let sourceAudio = currentAudio;
+    let sourceUrl = sourceAudio?.url;
     let talkingTo = 'current version';
     if (versionIndex != null) {
-      const vRows = (song.masters.length ? [...song.masters].reverse() : [{ url: song.beats[0]?.url ?? '', createdAt: new Date() }]).map((m) => ({ url: m.url }));
-      const vAudio = vRows.filter((r, i) => r.url && (i === 0 || r.url !== vRows[i - 1]!.url));
-      sourceUrl = vAudio[versionIndex]?.url;
-      talkingTo = `version ${versionIndex + 1} of ${vAudio.length}`;
+      sourceAudio = audioHistory[versionIndex] ?? null;
+      sourceUrl = sourceAudio?.url;
+      talkingTo = `version ${versionIndex + 1} of ${audioHistory.length}`;
       if (!sourceUrl) return reply.code(400).send({ error: 'version_not_found', message: `No version #${versionIndex + 1} — pick one from the selector.` });
-    } else {
-      const cands = [song.masters[0], song.mixes[0], song.beats[0]]
-        .filter((x) => !!x?.url)
-        .map((x) => ({ url: String(x!.url), at: +new Date(x!.createdAt) }))
-        .sort((a, b) => b.at - a.at);
-      sourceUrl = cands[0]?.url;
     }
     if (!sourceUrl) return reply.code(400).send({ error: 'no_audio_yet', message: 'Render the song first — then talk to it.' });
-    const measured = ((song.beats[0]?.meta ?? {}) as { measured?: { durationS?: { value?: number }; tempoBpm?: { value?: number } } }).measured;
-    const durationS = measured?.durationS?.value ?? 180;
-    const bounds = ((measured as unknown as { sectionBoundaries?: { value?: number[] } })?.sectionBoundaries?.value ?? []).filter((t) => t > 2 && t < durationS - 2);
+    const arrangement = playableArrangement(audioHistory, sourceAudio);
+    const durationS = arrangement?.durationS ?? 180;
+    const bounds = arrangement?.boundaries ?? [];
     const secEdges = [0, ...bounds, durationS];
     const sectionMap = secEdges.slice(0, -1).map((s0, i) => `S${i + 1} ${Math.round(s0)}–${Math.round(secEdges[i + 1]!)}s`).join(' · ');
-    const bpm = measured?.tempoBpm?.value ?? null;
+    const bpm = arrangement?.bpm ?? null;
 
     const plan = await generateJson<{ reply: string; op: null | Record<string, unknown> }>({
       tier: 'bulk',
@@ -287,13 +302,13 @@ ${song.lyric.body.slice(0, 4000)}`,
       projectId: song.projectId,
       kind: 'music',
       provider: 'song-chat',
-      inputJson: { songId: song.id, op },
+      inputJson: { songId: song.id, sourceAsset: playableAssetRef(sourceAudio), op },
       charge,
       idempotencyKey,
-      payload: (jobId) => ({ jobId, workspaceId, projectId: song.projectId, songId: song.id, sourceUrl, genre: song.project?.genre, durationS, bpm, boundaries: bounds, op }),
+      payload: (jobId) => ({ jobId, workspaceId, projectId: song.projectId, songId: song.id, sourceUrl, sourceAsset: playableAssetRef(sourceAudio), genre: song.project?.genre, durationS, bpm, boundaries: bounds, op }),
     });
     reply.code(202);
-    return { reply: plan.reply, dispatched: op.kind, jobId: job.jobId, replayed: job.replayed, talkingTo };
+    return { reply: plan.reply, dispatched: op.kind, jobId: job.jobId, replayed: job.replayed, talkingTo, sourceAudio: playableAssetRef(sourceAudio) };
   });
 
 }

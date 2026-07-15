@@ -12,7 +12,11 @@ import {
   getSubscription,
 } from '../lib/paypal';
 import { CREDIT_PACK_KEYS, CREDIT_PACKS } from '../lib/billing-catalog';
-import { applyCreditCapture, resolveCreditIntent } from '../lib/billing-service';
+import {
+  applyCreditCapture,
+  bindSubscriptionIdentity,
+  resolveCreditIntent,
+} from '../lib/billing-service';
 
 /** PayPal Billing Plan IDs per tier — created once in the PayPal dashboard. */
 const PLAN_ID_FOR_TIER: Record<string, string | undefined> = {
@@ -175,6 +179,10 @@ export default async function billing(app: FastifyInstance) {
       }
     }
     if (intent.approvalUrl && intent.paypalSubscriptionId) {
+      await bindSubscriptionIdentity({
+        intentId: intent.id,
+        paypalSubscriptionId: intent.paypalSubscriptionId,
+      });
       return { url: intent.approvalUrl, subscriptionId: intent.paypalSubscriptionId };
     }
 
@@ -189,9 +197,11 @@ export default async function billing(app: FastifyInstance) {
     const approve = approveUrlOf(sub.links);
     if (!approve) return reply.code(502).send({ error: 'no_approve_link' });
 
-    await prisma.billingIntent.update({
-      where: { id: intent.id },
-      data: { paypalSubscriptionId: sub.id, approvalUrl: approve, status: 'PENDING_APPROVAL' },
+    await bindSubscriptionIdentity({
+      intentId: intent.id,
+      paypalSubscriptionId: sub.id,
+      approvalUrl: approve,
+      markPendingApproval: true,
     });
 
     return { url: approve, subscriptionId: sub.id };
@@ -274,8 +284,11 @@ export default async function billing(app: FastifyInstance) {
         if (!intent?.plan || PLAN_ID_FOR_TIER[intent.plan] !== sub.plan_id) {
           return reply.redirect(`${u.webCancel}?reason=invalid_subscription`, 302);
         }
-        await prisma.billingIntent.update({
-          where: { id: intent.id },
+        await prisma.billingIntent.updateMany({
+          where: {
+            id: intent.id,
+            status: { in: ['CREATED', 'PENDING_APPROVAL', 'APPROVED'] },
+          },
           data: { status: sub.status === 'ACTIVE' ? 'APPROVED' : 'PENDING_APPROVAL' },
         });
         req.log.info({ subId, status: sub.status, plan: sub.plan_id }, 'paypal sub return');

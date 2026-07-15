@@ -9,6 +9,11 @@ import { assessLaneCompliance, loadLaneProfile, laneGrounding } from '../lib/lan
 import { overlayFills } from '../lib/fills';
 import { measureAudio, dspAvailable } from '../lib/dsp';
 import { credentialForEngine, elevenMusicRouteApproved, resolveMusicCredentials, workspaceProviderEngine } from '../lib/music-routing';
+import {
+  enforceMusicStemPersistence,
+  materializeStemAudio,
+  resolveMusicStemSources,
+} from '../lib/demucs-local';
 import { genreSignature, planFills, scoreLaneCompliance, scoreLyricAudioAlignment, engineAdequacy, structureMatch, blueprintFromMeasured, isFirstPartyWorkspace, resolveEngineForWorkspace, promotionEligible, selectMaterialRows, type LaneComplianceScore, type LyricAudioAlignmentScore, type MeasuredAnalysis, type SongBlueprint } from '@afrohit/shared';
 
 /** Minimum measured coverage before a lane score is allowed to influence ranking. */
@@ -137,6 +142,8 @@ export async function processMusic(p: MusicPayload) {
   await markRunning(p.jobId);
   const temporaryCandidateUrls: string[] = [];
   let uncommittedBeatUrl: string | null = null;
+  let uncommittedStemUrls: string[] = [];
+  const transientStemSourceUrls: string[] = [];
   let supersededBeatUrl: string | null = null;
   try {
     // Provider + key are set IN-APP (Settings → Music engine), stored per
@@ -499,6 +506,26 @@ export async function processMusic(p: MusicPayload) {
     const sourceContentHash = createHash('sha256').update(sourceBytes).digest('hex');
     const vocalIdentityAccepted = !wantsVocals || !!winner.alignment?.pass || !alignmentRequired;
 
+    // A provider may return a finished master without stems. When stems were
+    // promised, split the exact re-hosted and certified source that will back the
+    // BeatAsset. Keep the job RUNNING until those rows are committed below.
+    const stemResolution = await resolveMusicStemSources({
+      withStems: p.input.withStems,
+      providerStems: out.stems,
+      canonicalSourceUrl: ingestedMain,
+      apiKey: credentials.replicate,
+      workspaceId: p.workspaceId,
+    });
+    if (stemResolution.source === 'canonical-separation') {
+      transientStemSourceUrls.push(...stemResolution.stems.map((stem) => stem.url));
+    }
+    const preparedStems: Awaited<ReturnType<typeof materializeStemAudio>>[] = [];
+    for (const stem of stemResolution.stems) {
+      const materialized = await materializeStemAudio({ workspaceId: p.workspaceId, stem });
+      preparedStems.push(materialized);
+      uncommittedStemUrls.push(materialized.url);
+    }
+
     const trainingUsage = (p.input as {
       trainingUsage?: {
         referenceIds?: string[];
@@ -566,6 +593,18 @@ export async function processMusic(p: MusicPayload) {
         } as never,
         },
       });
+      await Promise.all(
+        preparedStems.map((stem) =>
+          tx.stem.create({
+            data: {
+              beatId: created.id,
+              role: stem.role,
+              url: stem.url,
+              format: stem.format,
+            },
+          }),
+        ),
+      );
       const referenceIds = [...new Set((trainingUsage?.referenceIds ?? []).filter(Boolean))];
       if (referenceIds.length) {
         const references: TrainingReferenceRow[] = await tx.soundReference.findMany({
@@ -624,6 +663,9 @@ export async function processMusic(p: MusicPayload) {
       return created;
     });
     uncommittedBeatUrl = null;
+    uncommittedStemUrls = [];
+    const persistedStemCount = await prisma.stem.count({ where: { beatId: beat.id } });
+    enforceMusicStemPersistence(p.input.withStems, persistedStemCount);
     if (supersededBeatUrl) {
       await deleteObjectByUrl(supersededBeatUrl).catch(() => {});
       supersededBeatUrl = null;
@@ -710,30 +752,6 @@ export async function processMusic(p: MusicPayload) {
         })
         .catch((err: unknown) => console.warn('[music] self-training reference write failed:', (err as Error)?.message));
       }
-    }
-
-    if (out.stems?.length) {
-      // Ingest each stem to our bucket first (parallel I/O), THEN build the
-      // Prisma transaction. $transaction needs PrismaPromise[], not resolved values.
-      const ingested = await Promise.all(
-        out.stems.map(async (s) => ({
-          role: s.role,
-          url: await ingestRemoteFile({
-            workspaceId: p.workspaceId,
-            url: s.url,
-            kind: 'stems',
-            ext: 'wav',
-            contentType: 'audio/wav',
-          }),
-        }))
-      );
-      await prisma.$transaction(
-        ingested.map((s) =>
-          prisma.stem.create({
-            data: { beatId: beat.id, role: s.role, url: s.url, format: 'wav' },
-          })
-        )
-      );
     }
 
     // AUTO-MASTER — a record is NOT done until it can compete sonically (the
@@ -841,7 +859,8 @@ export async function processMusic(p: MusicPayload) {
       p.jobId,
       {
         beatId: beat.id,
-        stems: out.stems?.length ?? 0,
+        stems: persistedStemCount,
+        stemSource: stemResolution.source,
         placeholder,
         fallbackReason,
         autoMastered: !!masteredUrl,
@@ -856,9 +875,11 @@ export async function processMusic(p: MusicPayload) {
     );
   } catch (err) {
     if (uncommittedBeatUrl) await deleteObjectByUrl(uncommittedBeatUrl).catch(() => {});
+    await Promise.allSettled(uncommittedStemUrls.map((url) => deleteObjectByUrl(url)));
     if (supersededBeatUrl) await deleteObjectByUrl(supersededBeatUrl).catch(() => {});
     await markFailed(p.jobId, err);
   } finally {
-    await Promise.allSettled(temporaryCandidateUrls.map((url) => deleteObjectByUrl(url)));
+    const transientUrls = [...new Set([...temporaryCandidateUrls, ...transientStemSourceUrls])];
+    await Promise.allSettled(transientUrls.map((url) => deleteObjectByUrl(url)));
   }
 }

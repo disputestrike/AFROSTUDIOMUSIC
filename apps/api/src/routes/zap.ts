@@ -1,24 +1,23 @@
 /**
  * ZAP — the real Shazam layer. Hear a song → IDENTIFY it (fingerprint) → PLAY its
  * licensed preview → LEARN its craft into the data lake so it makes our songs
- * better. Doctrine-clean: we identify + learn the UNCOPYRIGHTABLE CRAFT (genre,
- * era, lane, production/writing techniques) from the METADATA, and only ever play
- * the official licensed preview. We never download, store, or learn from the
- * commercial recording itself (that's the ripping line the /analyze guard enforces).
+ * better. Identity is retained for display/dedupe only. Training and creation get
+ * local genre craft plus numeric facts measured from the official licensed preview;
+ * title and artist never enter a provider prompt or generation steering.
  */
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { prisma } from '@afrohit/db';
-import { recognizeSong, extractSongCraft, parseTrendSong, researchTrends } from '@afrohit/ai';
+import { recognizeSong, parseTrendSong, researchTrends } from '@afrohit/ai';
 import { createQueuedProviderJob, scopedRequestKey } from '../lib/queued-job';
 import { laneBpm } from '../lib/lane-pipeline';
-import { GENRES } from '@afrohit/shared';
+import { GENRES, genreSignature } from '@afrohit/shared';
 import { requireAuth } from '../middleware/auth';
 import { presignAssetRef, publicUrlFor, verifyUploadedAudio } from '../lib/storage';
 import { assertSafeUrl } from '../lib/url-guard';
 import { operationErrorBody, runIdempotentOperation } from '../lib/idempotent-operation';
 
-const identifySchema = z.object({ key: z.string().min(4) });
+const identifySchema = z.object({ key: z.string().min(4) }).strict();
 const learnSchema = z.object({
   /** AudD's LICENSED 30s preview — measured facts-only (real tempo/groove), never stored. */
   previewUrl: z.string().url().optional(),
@@ -28,13 +27,14 @@ const learnSchema = z.object({
   album: z.string().max(200).optional(),
   releaseDate: z.string().max(40).optional(),
   isrc: z.string().max(40).optional(),
-});
+}).strict();
+
+const KNOWN_GENRES = new Set<string>(GENRES);
 
 function normGenre(g?: string | null): string | null {
   if (!g) return null;
   const k = g.toLowerCase().trim().replace(/[\s/-]+/g, '_').replace(/[^a-z_]/g, '');
-  const KNOWN = new Set(['afrobeats', 'afro_fusion', 'amapiano', 'afro_dancehall', 'street_pop', 'afro_rnb', 'gospel', 'afro_pop', 'hip_hop', 'highlife', 'reggae', 'pop', 'rnb', 'dancehall', 'drill', 'trap', 'house', 'edm', 'reggaeton', 'latin_pop', 'country', 'rock', 'soul']);
-  if (KNOWN.has(k)) return k;
+  if (KNOWN_GENRES.has(k)) return k;
   if (k.includes('afrobeat')) return 'afrobeats';
   if (k.includes('amapiano') || k.includes('piano')) return 'amapiano';
   if (k.includes('hiphop') || k.includes('rap')) return 'hip_hop';
@@ -53,6 +53,40 @@ function normGenre(g?: string | null): string | null {
   if (k.includes('rock') || k.includes('metal')) return 'rock';
   if (k.includes('pop')) return 'pop';
   return null;
+}
+
+export interface IdentitySafeZapFacts {
+  identitySafe: true;
+  factBasis: 'genre-signature-v1';
+  genre: string;
+  craft: string[];
+  vibe: string;
+  whatToLearn: string;
+  suggestedBpm: number;
+  mood: null;
+  languages: string[];
+}
+
+export function identitySafeZapFacts(rawGenre?: string | null): IdentitySafeZapFacts | null {
+  const genre = normGenre(rawGenre);
+  if (!genre) return null;
+  const signature = genreSignature(genre);
+  const craft = [
+    ...signature.tags.slice(0, 4),
+    `arrangement transitions and fills every ${signature.fillBars} bars`,
+  ];
+  const lane = genre.replace(/_/g, ' ');
+  return {
+    identitySafe: true,
+    factBasis: 'genre-signature-v1',
+    genre,
+    craft,
+    vibe: `${lane} lane: ${signature.tags.slice(0, 3).join(', ')}`,
+    whatToLearn: `Apply the ${lane} lane's ${signature.tags.slice(0, 2).join(' and ')} to a fresh original.`,
+    suggestedBpm: signature.bpm,
+    mood: null,
+    languages: [...signature.languages],
+  };
 }
 
 export default async function zap(app: FastifyInstance) {
@@ -108,14 +142,43 @@ export default async function zap(app: FastifyInstance) {
     return reply.code(operation.value.statusCode).send(operation.value.body);
   });
 
-  /** LEARN — extract the identified song's UNCOPYRIGHTABLE CRAFT into the lake.
-   * Metadata only; artist is a LANE reference, never a clone. Deduped by isrc/title. */
+  /** LEARN — retain display identity separately from identity-free lane facts.
+   * Provider work receives only the licensed preview URL and numeric/craft facts. */
   app.post('/learn', { schema: { body: learnSchema } }, async (req, reply) => {
     const { workspaceId } = requireAuth(req);
     const m = learnSchema.parse(req.body);
     const marker = `zap:${(m.isrc || `${m.artist ?? ''}-${m.title}`).toLowerCase().replace(/[^a-z0-9]+/g, '-').slice(0, 80)}`;
-    const existing = await prisma.soundReference.findFirst({ where: { workspaceId, sourceUrl: marker }, select: { id: true } });
-    if (existing) return { learned: true, referenceId: existing.id, deduped: true };
+    const existing = await prisma.soundReference.findFirst({
+      where: { workspaceId, sourceUrl: marker },
+      select: { id: true, genre: true, recipe: true, summary: true },
+    });
+    if (existing) {
+      const rec = (existing.recipe ?? {}) as { genre?: string };
+      const facts = identitySafeZapFacts(existing.genre ?? rec.genre ?? m.genre);
+      return {
+        learned: true,
+        referenceId: existing.id,
+        deduped: true,
+        genre: facts?.genre ?? existing.genre,
+        craft: facts?.craft ?? [],
+        vibe: facts?.vibe ?? null,
+        whatToLearn: facts?.whatToLearn ?? existing.summary,
+        bpm: facts?.suggestedBpm ?? null,
+        mood: null,
+        languages: facts?.languages ?? null,
+        measurementQueued: false,
+      };
+    }
+
+    const facts = identitySafeZapFacts(m.genre);
+    if (!facts) {
+      return reply.code(422).send({
+        error: 'lane_unresolved',
+        needsGenre: true,
+        options: [...GENRES],
+        message: 'Choose a genre before adding this Zap to training; identity is never used to guess the lane.',
+      });
+    }
 
     const idempotencyKey = scopedRequestKey(req.headers as Record<string, unknown>, 'zap-learn');
     const charge = await app.chargeCredits({ workspaceId, key: 'analyze_audio', refTable: 'Workspace', refId: workspaceId, idempotencyKey });
@@ -124,27 +187,38 @@ export default async function zap(app: FastifyInstance) {
     const operation = await runIdempotentOperation({
       workspaceId,
       kind: 'zap-learn',
-      provider: 'text',
+      provider: 'internal',
       idempotencyKey,
       chargeLedgerId: charge.chargeId,
-      inputJson: m,
+      inputJson: {
+        genre: facts.genre,
+        factBasis: facts.factBasis,
+        previewAvailable: !!m.previewUrl,
+      },
       execute: async () => {
     try {
-    const craft = await extractSongCraft({ title: m.title, artist: m.artist, genre: m.genre, releaseDate: m.releaseDate });
-    if (!craft?.craft?.length) {
-      await app.refundCredits({ workspaceId, key: 'analyze_audio', refTable: 'Workspace', refId: workspaceId, chargeId: charge.chargeId });
-      return { statusCode: 503 as const, body: { error: 'learn_failed', message: 'Could not extract craft — try again.' } };
-    }
-
-    const genre = normGenre(craft.genre || m.genre);
     const ref = await prisma.soundReference.create({
       data: {
         workspaceId,
-        genre,
+        genre: facts.genre,
         sourceUrl: marker,
-        title: `Zap · ${(m.genre || genre || 'song')} lane — "${m.title}" (${m.artist ?? '—'})`,
-        recipe: { source: 'zap', title: m.title, artist: m.artist, genre, album: m.album, releaseDate: m.releaseDate, craft: craft.craft, vibe: craft.vibe, bpm: craft.suggestedBpm, mood: craft.mood, languages: craft.languages } as never,
-        summary: (craft.whatToLearn || craft.vibe || '').slice(0, 400),
+        title: `Zap · ${facts.genre} lane — "${m.title}" (${m.artist ?? '—'})`,
+        recipe: {
+          source: 'zap',
+          title: m.title,
+          artist: m.artist,
+          genre: facts.genre,
+          album: m.album,
+          releaseDate: m.releaseDate,
+          identitySafe: facts.identitySafe,
+          factBasis: facts.factBasis,
+          craft: facts.craft,
+          vibe: facts.vibe,
+          bpm: facts.suggestedBpm,
+          mood: facts.mood,
+          languages: facts.languages,
+        } as never,
+        summary: facts.whatToLearn.slice(0, 400),
         analysisState: 'inferred',
         rightsBasis: 'facts-only',
       },
@@ -153,6 +227,7 @@ export default async function zap(app: FastifyInstance) {
     // 30s preview is legally obtained — the ear reads its REAL tempo/groove into
     // recipe.measured so "make in this lane" matches the actual record's speed,
     // not an LLM's guess. The preview is never stored; only numbers land.
+    let measurementQueued = false;
     if (m.previewUrl) {
       const safe = await assertSafeUrl(m.previewUrl);
       if (safe.ok) {
@@ -167,14 +242,26 @@ export default async function zap(app: FastifyInstance) {
           idempotencyKey: `zap-measure:${ref.id}`,
           payload: (jobId) => ({ jobId, referenceId: ref.id, url: m.previewUrl!, workspaceId }),
         });
+        measurementQueued = true;
       }
     }
     await prisma.analyticsEvent
-      .create({ data: { workspaceId, name: 'zap.learn', properties: { title: m.title, genre, measuredPreview: !!m.previewUrl } as never } })
+      .create({ data: { workspaceId, name: 'zap.learn', properties: { title: m.title, genre: facts.genre, measuredPreview: measurementQueued } as never } })
       .catch(() => {});
     return {
       statusCode: 200 as const,
-      body: { learned: true, referenceId: ref.id, genre, craft: craft.craft, vibe: craft.vibe, whatToLearn: craft.whatToLearn, bpm: craft.suggestedBpm ?? null, mood: craft.mood ?? null, languages: craft.languages ?? null },
+      body: {
+        learned: true,
+        referenceId: ref.id,
+        genre: facts.genre,
+        craft: facts.craft,
+        vibe: facts.vibe,
+        whatToLearn: facts.whatToLearn,
+        bpm: facts.suggestedBpm,
+        mood: facts.mood,
+        languages: facts.languages,
+        measurementQueued,
+      },
     };
     } catch (error) {
       await app.refundCredits({ workspaceId, key: 'analyze_audio', refTable: 'Workspace', refId: workspaceId, chargeId: charge.chargeId });
@@ -200,33 +287,42 @@ export default async function zap(app: FastifyInstance) {
       select: { id: true, genre: true, summary: true, recipe: true, createdAt: true },
     });
     return rows.map((r: { id: string; genre: string | null; summary: string | null; recipe: unknown; createdAt: Date }) => {
-      const rec = (r.recipe ?? {}) as { title?: string; artist?: string; vibe?: string; craft?: string[]; radar?: boolean; bpm?: number; mood?: string; languages?: string[] };
+      const rec = (r.recipe ?? {}) as {
+        title?: string;
+        artist?: string;
+        genre?: string;
+        radar?: boolean;
+        bpm?: number;
+        mood?: string;
+        languages?: string[];
+        identitySafe?: boolean;
+        measured?: { tempoBpm?: { value?: number } };
+      };
+      const facts = identitySafeZapFacts(r.genre ?? rec.genre);
+      const measuredBpm = rec.measured?.tempoBpm?.value;
       return {
         id: r.id,
-        genre: r.genre,
-        // Everything "Make in this lane" needs to auto-produce in the SAME style:
-        // the lane's tempo, mood, languages + the artist as a LANE cue (never named
-        // in the song). Falls back to the genre's home tempo when a hint is missing.
-        bpm: (rec as { measured?: { tempoBpm?: { value?: number } } }).measured?.tempoBpm?.value ?? rec.bpm ?? laneBpm(r.genre) ?? 103,
-        mood: rec.mood ?? null,
-        languages: rec.languages ?? null,
+        genre: facts?.genre ?? r.genre,
+        // Display identity stays in history. Creation facts are separately
+        // rebuilt from DSP measurements and the identity-free genre signature.
+        bpm: measuredBpm ?? (rec.identitySafe ? rec.bpm : undefined) ?? facts?.suggestedBpm ?? laneBpm(r.genre) ?? 103,
+        mood: rec.identitySafe ? rec.mood ?? null : null,
+        languages: rec.identitySafe ? rec.languages ?? facts?.languages ?? null : facts?.languages ?? null,
         songTitle: rec.title ?? null,
         artist: rec.artist ?? null,
-        vibe: rec.vibe ?? null,
-        whatToLearn: r.summary ?? null,
-        craft: rec.craft ?? [],
+        vibe: facts?.vibe ?? null,
+        whatToLearn: facts?.whatToLearn ?? null,
+        craft: facts?.craft ?? [],
         viaRadar: !!rec.radar,
         at: r.createdAt,
       };
     });
   });
 
-  /** LANE BRIEF — the exact params to reproduce a reference's LANE (genre, tempo,
-   * MOOD, LANGUAGES, influence, vibe). Backfills older zaps that were learned before
-   * we captured languages/mood/bpm — so e.g. an Asake song enforces YORUBA, not a
-   * default. This is what "Make in this lane" calls so the language/style is right. */
+  /** LANE BRIEF — identity-free creation params for a Zap reference. Measured
+   * preview tempo wins; all fallback craft comes from the local genre signature. */
   app.post('/lane-brief', async (req, reply) => {
-    const { referenceId } = z.object({ referenceId: z.string().min(6) }).parse(req.body);
+    const { referenceId } = z.object({ referenceId: z.string().min(6) }).strict().parse(req.body);
     const { workspaceId } = requireAuth(req);
     const ref = await prisma.soundReference.findFirst({
       where: {
@@ -234,59 +330,62 @@ export default async function zap(app: FastifyInstance) {
         workspaceId,
         active: true,
         analysisState: { not: 'failed' },
-        rightsBasis: { not: 'unknown' },
+        rightsBasis: 'facts-only',
+        sourceUrl: { startsWith: 'zap:' },
       },
     });
     if (!ref) return reply.code(404).send({ error: 'reference_not_found' });
-    let rec = (ref.recipe ?? {}) as { title?: string; artist?: string; genre?: string; bpm?: number; mood?: string; languages?: string[]; vibe?: string; craft?: string[] };
-    // PRECISION FIX (the rap-zap-made-an-afro-song bug): NEVER silently default the
-    // lane. Resolve ref -> recipe -> metadata classify; if still unknown, ASK.
-    let genre = normGenre(ref.genre) ?? normGenre(rec.genre) ?? null;
-    // BACKFILL missing lane facts (old zaps) by deriving from the song's metadata,
-    // then PERSIST so it's a one-time cost — the artist's real language sticks.
-    if ((!genre || !rec.languages || !rec.languages.length || !rec.mood || !rec.bpm) && rec.title) {
-      const idempotencyKey = scopedRequestKey(req.headers as Record<string, unknown>, `zap-lane-brief:${ref.id}`);
-      const charge = await app.chargeCredits({ workspaceId, key: 'brief_polish', refTable: 'SoundReference', refId: ref.id, idempotencyKey });
-      if (!charge.ok) return reply.code(402).send({ error: 'insufficient_credits', ...charge });
-      const craft = await extractSongCraft({ title: rec.title, artist: rec.artist, genre: genre ?? undefined }).catch(() => null);
-      if (!craft) {
-        await app.refundCredits({ workspaceId, key: 'brief_polish', refTable: 'SoundReference', refId: ref.id, chargeId: charge.chargeId });
-      }
-      if (craft) {
-        genre = genre ?? normGenre(craft.genre);
-        rec = {
-          ...rec,
-          languages: rec.languages?.length ? rec.languages : craft.languages,
-          mood: rec.mood ?? craft.mood,
-          bpm: rec.bpm ?? craft.suggestedBpm,
-          craft: rec.craft?.length ? rec.craft : craft.craft,
-          vibe: rec.vibe ?? craft.vibe,
-        };
-        await prisma.soundReference.update({ where: { id: ref.id }, data: { recipe: rec as never, ...(genre && ref.genre !== genre ? { genre } : {}) } }).catch(() => {});
-      }
-    }
-    if (!genre) {
+    const rec = (ref.recipe ?? {}) as {
+      genre?: string;
+      identitySafe?: boolean;
+      factBasis?: string;
+      measured?: { tempoBpm?: { value?: number } };
+      [key: string]: unknown;
+    };
+    const facts = identitySafeZapFacts(ref.genre ?? rec.genre);
+    if (!facts) {
       return reply.code(422).send({
         error: 'lane_unresolved',
         needsGenre: true,
         options: [...GENRES],
-        message: "Could not resolve this song's lane from its metadata — pick the lane and I'll hold it EXACTLY. (No silent afrobeats default, ever.)",
+        message: 'Could not resolve this Zap lane without using song identity; choose a genre explicitly.',
       });
     }
+    if (rec.identitySafe !== true || rec.factBasis !== facts.factBasis) {
+      await prisma.soundReference
+        .update({
+          where: { id: ref.id },
+          data: {
+            genre: facts.genre,
+            recipe: {
+              ...rec,
+              genre: facts.genre,
+              identitySafe: facts.identitySafe,
+              factBasis: facts.factBasis,
+              craft: facts.craft,
+              vibe: facts.vibe,
+              bpm: facts.suggestedBpm,
+              mood: facts.mood,
+              languages: facts.languages,
+            } as never,
+          },
+        })
+        .catch(() => {});
+    }
+    const measuredBpm = rec.measured?.tempoBpm?.value;
     return {
-      genre,
-      // MEASURED tempo (from the licensed preview) outranks the craft guess.
-      bpm: (rec as { measured?: { tempoBpm?: { value?: number } } }).measured?.tempoBpm?.value ?? rec.bpm ?? laneBpm(genre) ?? 103,
-      mood: rec.mood ?? null,
-      languages: rec.languages?.length ? rec.languages : ['pcm', 'en'],
-      influence: rec.artist ?? null,
-      vibe: (ref.summary || rec.vibe || `a fresh original in the ${genre.replace(/_/g, ' ')} lane`).slice(0, 240),
+      genre: facts.genre,
+      bpm: measuredBpm ?? facts.suggestedBpm,
+      mood: facts.mood,
+      languages: facts.languages,
+      influence: null,
+      vibe: facts.vibe.slice(0, 240),
+      factSource: measuredBpm ? 'measured-preview' : facts.factBasis,
     };
   });
 
-  /** RADAR NOW — run Zap on its own, on demand: pull the charts and learn the
-   * craft of new trending songs into the lake. Same thing the daily cron does; this
-   * lets the artist top up the lake instantly (capped). Keyless (Apple charts). */
+  /** RADAR NOW — pull chart identities for display/dedupe, then attach only the
+   * identity-free local craft facts for each known genre (capped). */
   app.post('/radar', async (req) => {
     const { workspaceId } = requireAuth(req);
     const GENRES = ['afrobeats', 'amapiano', 'afro_fusion', 'afro_pop', 'street_pop'];
@@ -309,8 +408,8 @@ export default async function zap(app: FastifyInstance) {
         const idempotencyKey = `zap-radar:${marker}`;
         const charge = await app.chargeCredits({ workspaceId, key: 'brief_polish', refTable: 'Workspace', refId: workspaceId, idempotencyKey });
         if (!charge.ok) { learned = MAX; break; }
-        const craft = await extractSongCraft({ title: song.title, artist: song.artist, genre }).catch(() => null);
-        if (!craft?.craft?.length) {
+        const facts = identitySafeZapFacts(genre);
+        if (!facts) {
           await app.refundCredits({ workspaceId, key: 'brief_polish', refTable: 'Workspace', refId: workspaceId, chargeId: charge.chargeId });
           continue;
         }
@@ -321,8 +420,21 @@ export default async function zap(app: FastifyInstance) {
               genre,
               sourceUrl: marker,
               title: `Zap radar · ${genre} lane — "${song.title}" (${song.artist ?? '—'})`,
-              recipe: { source: 'zap', radar: true, title: song.title, artist: song.artist, genre, craft: craft.craft, vibe: craft.vibe, bpm: craft.suggestedBpm, mood: craft.mood, languages: craft.languages } as never,
-              summary: (craft.whatToLearn || craft.vibe || '').slice(0, 400),
+              recipe: {
+                source: 'zap',
+                radar: true,
+                title: song.title,
+                artist: song.artist,
+                genre: facts.genre,
+                identitySafe: facts.identitySafe,
+                factBasis: facts.factBasis,
+                craft: facts.craft,
+                vibe: facts.vibe,
+                bpm: facts.suggestedBpm,
+                mood: facts.mood,
+                languages: facts.languages,
+              } as never,
+              summary: facts.whatToLearn.slice(0, 400),
               analysisState: 'inferred',
               rightsBasis: 'facts-only',
             },

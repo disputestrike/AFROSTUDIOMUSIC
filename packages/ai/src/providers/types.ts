@@ -62,6 +62,19 @@ export interface MusicGenerationInput {
   instruments?: string[];
 }
 
+export type StemAudioFormat = "wav" | "mp3" | "flac";
+export type StemAudioContentType = "audio/wav" | "audio/mpeg" | "audio/flac";
+
+/** A provider stem with enough media metadata to persist it honestly. The worker
+ * still sniffs the downloaded bytes before storage because provider URLs and
+ * response labels are not authoritative. */
+export interface StemAudioOutput {
+  role: string;
+  url: string;
+  format: StemAudioFormat;
+  contentType: StemAudioContentType;
+}
+
 export interface MusicGenerationOutput {
   /** Provider-hosted audio when the provider returns a URL. */
   mainAudioUrl?: string;
@@ -71,8 +84,8 @@ export interface MusicGenerationOutput {
   /** Extra tracks returned by the same paid provider request. The worker ranks
    * every one instead of discarding already-generated alternatives. */
   alternates?: MusicGenerationOutput[];
-  stems?: Array<{ role: string; url: string }>;
-  format: "wav" | "mp3" | "flac";
+  stems?: StemAudioOutput[];
+  format: StemAudioFormat;
   durationS: number;
   bpm?: number;
   keySignature?: string;

@@ -70,7 +70,7 @@ function provenanceUrl(raw: string): string {
 
 async function ensureSong(workspaceId: string, projectId: string, title: string): Promise<string> {
   const existing = await prisma.song.findFirst({
-    where: { projectId },
+    where: { projectId, workspaceId },
     orderBy: { createdAt: 'desc' },
     select: { id: true },
   });
@@ -80,6 +80,26 @@ async function ensureSong(workspaceId: string, projectId: string, title: string)
     select: { id: true },
   });
   return created.id;
+}
+
+export async function resolveAuthorizedImportTarget(
+  workspaceId: string,
+  projectId: string,
+  songId?: string,
+) {
+  const project = await prisma.project.findFirstOrThrow({
+    where: { id: projectId, workspaceId },
+  });
+  const requestedSong = songId
+    ? await prisma.song.findFirst({
+        where: { id: songId, workspaceId, projectId: project.id },
+        select: { id: true },
+      })
+    : null;
+  if (songId && !requestedSong) {
+    throw Object.assign(new Error('song_not_found'), { statusCode: 404 });
+  }
+  return { project, requestedSong };
 }
 
 export default async function uploads(app: FastifyInstance) {
@@ -126,14 +146,19 @@ export default async function uploads(app: FastifyInstance) {
       });
     }
 
+    // Resolve every caller-supplied relation before DNS, remote fetch, or an
+    // object-store write. A globally valid song ID from another workspace or
+    // project is intentionally indistinguishable from a missing song.
+    const { project, requestedSong } = await resolveAuthorizedImportTarget(
+      workspaceId,
+      input.projectId,
+      input.songId,
+    );
+
     // SSRF + copyright guard: resolves DNS, blocks private/metadata targets and
     // streaming hosts, and re-validates every redirect hop (see lib/url-guard).
     const chk = await assertSafeUrl(input.url);
     if (!chk.ok) return reply.code(chk.code).send({ error: chk.error, message: chk.message });
-
-    const project = await prisma.project.findFirstOrThrow({
-      where: { id: input.projectId, workspaceId },
-    });
 
     // Fetch the audio (rights-cleared source) with a timeout + size cap.
     const controller = new AbortController();
@@ -190,7 +215,7 @@ export default async function uploads(app: FastifyInstance) {
 
     // Register the imported asset just like an upload — authentic, approved.
     if (input.kind === 'vocal') {
-      const songId = input.songId ?? (await ensureSong(workspaceId, project.id, `${project.title} — import`));
+      const songId = requestedSong?.id ?? (await ensureSong(workspaceId, project.id, `${project.title} — import`));
       const { vocal, job } = await registerVocalForInspection({
         app,
         workspaceId,
@@ -211,12 +236,23 @@ export default async function uploads(app: FastifyInstance) {
       // a catalog Song/Mix — the lake and the shelf get everything, the catalog
       // stays the artist's working space.
       if (input.trainingOnly) {
-        await enqueueLearn(app, { workspaceId, projectId: project.id, url, source: 'song-import-training' });
-        await enqueueHarvest(app, { workspaceId, projectId: project.id, sourceUrl: url, owned: true });
+        await enqueueLearn(app, {
+          workspaceId,
+          projectId: project.id,
+          url,
+          source: 'song-import-training',
+          rightsConfirmation: input.rightsConfirmation,
+        });
+        await enqueueHarvest(app, {
+          workspaceId,
+          projectId: project.id,
+          sourceUrl: url,
+          rightsConfirmation: input.rightsConfirmation,
+        });
         reply.code(201);
         return { kind: 'song', trainingOnly: true, url, note: 'Learned + harvested for training — not added to the catalog.' };
       }
-      const songId = input.songId ?? (await ensureSong(workspaceId, project.id, input.title ?? `${project.title} — import`));
+      const songId = requestedSong?.id ?? (await ensureSong(workspaceId, project.id, input.title ?? `${project.title} — import`));
       const mix = await prisma.mix.create({
         data: {
           projectId: project.id, songId, preset: 'imported', url,
@@ -227,8 +263,20 @@ export default async function uploads(app: FastifyInstance) {
       // imported song both LEARNS (SoundReference, genre hint = project genre)
       // and HARVESTS (non-vocal stems → owned material). Song-scoped — a
       // finished record has no beat row. Best-effort, never blocks the import.
-      await enqueueLearn(app, { workspaceId, projectId: project.id, url, source: 'song-import' });
-      await enqueueHarvest(app, { workspaceId, projectId: project.id, songId, sourceUrl: url, owned: true });
+      await enqueueLearn(app, {
+        workspaceId,
+        projectId: project.id,
+        url,
+        source: 'song-import',
+        rightsConfirmation: input.rightsConfirmation,
+      });
+      await enqueueHarvest(app, {
+        workspaceId,
+        projectId: project.id,
+        songId,
+        sourceUrl: url,
+        rightsConfirmation: input.rightsConfirmation,
+      });
       reply.code(201);
       return { kind: 'song', asset: mix, songId };
     }
@@ -239,7 +287,7 @@ export default async function uploads(app: FastifyInstance) {
     }
 
     // beat | instrumental
-    const songId = input.songId ?? (await ensureSong(workspaceId, project.id, `${project.title} — import`));
+    const songId = requestedSong?.id ?? (await ensureSong(workspaceId, project.id, `${project.title} — import`));
     if (input.bpm || input.keySignature) {
       await prisma.project.update({
         where: { id: project.id },
@@ -265,13 +313,26 @@ export default async function uploads(app: FastifyInstance) {
         instrumental: true,
         title: input.title ?? null,
         rightsBasis: 'user-attested',
+        rightsConfirmationVersion: input.rightsConfirmation.version,
       },
     });
     // Auto-harvest the owned import into reusable role loops (drums/bass/other).
-    await enqueueHarvest(app, { workspaceId, projectId: project.id, beatId: beat.id, sourceUrl: url });
+    await enqueueHarvest(app, {
+      workspaceId,
+      projectId: project.id,
+      beatId: beat.id,
+      sourceUrl: url,
+      rightsConfirmation: input.rightsConfirmation,
+    });
     // AUTO-LEARN too (audit: harvested but never learned): the owned import
     // joins the learned lake as a SoundReference. Charged; best-effort.
-    await enqueueLearn(app, { workspaceId, projectId: project.id, url, source: 'beat-import' });
+    await enqueueLearn(app, {
+      workspaceId,
+      projectId: project.id,
+      url,
+      source: 'beat-import',
+      rightsConfirmation: input.rightsConfirmation,
+    });
     reply.code(202);
     return { kind: input.kind, asset: beat, songId, jobId: job.jobId, qualityState: 'pending' };
   });

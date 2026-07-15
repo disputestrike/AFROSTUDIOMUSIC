@@ -2,8 +2,8 @@
 
 /**
  * ZAP — the real Shazam layer. Hear a song → identify it → play its licensed
- * preview → learn its craft into your training. Clean by design: we identify +
- * learn the CRAFT (never the recording), and only play the official preview.
+ * preview → add identity-free lane facts to training. Title and artist remain
+ * display metadata; creation uses local genre craft plus measured preview facts.
  */
 import { useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
@@ -46,7 +46,7 @@ export default function ZapPage() {
   const [err, setErr] = useState('');
   const [secs, setSecs] = useState(0);
   const [learn, setLearn] = useState<'idle' | 'learning' | 'done'>('idle');
-  const [learned, setLearned] = useState<{ referenceId?: string; craft?: string[]; whatToLearn?: string; genre?: string; bpm?: number | null; mood?: string | null; languages?: string[] | null } | null>(null);
+  const [learned, setLearned] = useState<{ referenceId?: string; craft?: string[]; whatToLearn?: string; genre?: string; bpm?: number | null; mood?: string | null; languages?: string[] | null; measurementQueued?: boolean } | null>(null);
   const [radar, setRadar] = useState<'idle' | 'running'>('idle');
   const [radarMsg, setRadarMsg] = useState('');
 
@@ -62,26 +62,35 @@ export default function ZapPage() {
 
   useEffect(() => { void loadHistory(); }, []);
 
-  /** Make a FRESH song in the lane of something you Zapped — everything pre-picked
-   * (genre, tempo, language, the artist as a LANE cue) and it STARTS MAKING
-   * immediately (produce=1). Same lane/style; fresh beat, name, lyrics. The artist
-   * only steers the vibe via influence — never copied or named in the record. */
+  /** Make a fresh song from identity-free lane facts. Song/artist display metadata
+   * never becomes a create query parameter or provider prompt. */
   const [preparing, setPreparing] = useState('');
-  async function makeInLane(opts: { referenceId?: string; genre?: string | null; bpm?: number | null; mood?: string | null; languages?: string[] | null; artist?: string | null; whatToLearn?: string | null; vibe?: string | null }) {
-    let genre = opts.genre || 'afrobeats';
+  async function makeInLane(opts: { referenceId?: string; genre?: string | null; bpm?: number | null; mood?: string | null; languages?: string[] | null }) {
+    let genre = opts.genre || '';
     let bpm = opts.bpm ?? null;
     let mood = opts.mood ?? null;
     let languages = opts.languages ?? null;
-    let influence = opts.artist ?? null;
-    let vibe = opts.whatToLearn || opts.vibe || `a fresh ${genre.replace(/_/g, ' ')} record`;
-    // The lane-brief is the source of truth: it backfills the reference's REAL
-    // language/mood/tempo (e.g. Asake -> Yoruba) so the produced song matches the lane.
+    let vibe = genre
+      ? `a fresh ${genre.replace(/_/g, ' ')} original shaped by measured lane facts`
+      : 'a fresh original shaped by measured lane facts';
+    // The lane brief is the source of truth and intentionally returns no artist
+    // influence or title-derived prose.
     if (opts.referenceId) {
       setPreparing(opts.referenceId);
       try {
-        const b = await api.post<{ genre: string; bpm: number; mood: string | null; languages: string[]; influence: string | null; vibe: string }>('/zap/lane-brief', { referenceId: opts.referenceId });
-        genre = b.genre || genre; bpm = b.bpm ?? bpm; mood = b.mood ?? mood; languages = b.languages?.length ? b.languages : languages; influence = b.influence ?? influence; vibe = b.vibe || vibe;
-      } catch { /* fall back to what we have */ } finally { setPreparing(''); }
+        const b = await api.post<{ genre: string; bpm: number; mood: string | null; languages: string[]; vibe: string }>('/zap/lane-brief', { referenceId: opts.referenceId });
+        genre = b.genre || genre;
+        bpm = b.bpm ?? bpm;
+        mood = b.mood ?? mood;
+        languages = b.languages?.length ? b.languages : languages;
+        vibe = b.vibe || vibe;
+      } catch {
+        // A known local genre is still safe; an unresolved lane is not guessed.
+      } finally { setPreparing(''); }
+    }
+    if (!genre) {
+      setErr('This Zap needs a genre before it can guide a new song. Re-Zap it with genre metadata available.');
+      return;
     }
     const params = new URLSearchParams({ genre, produce: '1', languages: (languages?.length ? languages : ['pcm', 'en']).join(','), vibe: vibe.slice(0, 240) });
     // PIN the reference — without this the render used generic lane DNA and
@@ -89,7 +98,6 @@ export default function ZapPage() {
     if (opts.referenceId) params.set('pin', opts.referenceId);
     if (bpm) params.set('bpm', String(bpm));
     if (mood) params.set('mood', mood);
-    if (influence) params.set('influence', influence);
     router.push(`/create?${params.toString()}`);
   }
 
@@ -157,13 +165,14 @@ export default function ZapPage() {
     if (!match) return;
     setLearn('learning');
     try {
-      const r = await api.post<{ referenceId?: string; craft?: string[]; whatToLearn?: string; genre?: string; bpm?: number | null; mood?: string | null; languages?: string[] | null }>('/zap/learn', {
+      const r = await api.post<{ referenceId?: string; craft?: string[]; whatToLearn?: string; genre?: string; bpm?: number | null; mood?: string | null; languages?: string[] | null; measurementQueued?: boolean }>('/zap/learn', {
         title: match.title, artist: match.artist, genre: match.genre, album: match.album, releaseDate: match.releaseDate, isrc: match.isrc, previewUrl: match.previewUrl,
       });
       setLearned(r);
       setLearn('done');
       void loadHistory();
-    } catch {
+    } catch (error) {
+      setErr(String((error as Error)?.message ?? 'Could not add these lane facts.').slice(0, 180));
       setLearn('idle');
     }
   }
@@ -188,17 +197,17 @@ export default function ZapPage() {
     <div className="mx-auto max-w-lg px-4 py-10 sm:px-6">
       <h1 className="font-display text-3xl">Zap</h1>
       <p className="mt-1 text-sm text-slate-400">
-        Play a song near your mic. Zap finds it, plays it, and <span className="text-slate-200">learns its craft</span> into your training — so your songs get better. It studies the lane, never copies the record.
+        Play a song near your mic. Zap identifies it, then adds <span className="text-slate-200">identity-free lane craft and measured preview facts</span> to training. The title and artist stay display-only.
       </p>
 
-      {/* Autonomous radar — runs daily on its own; tap to top up now. */}
+      {/* Autonomous radar can run on the operator-configured schedule. */}
       <div className="mt-3">
         <button onClick={() => void runRadar()} disabled={radar === 'running'} className="inline-flex items-center gap-1.5 rounded-full border border-white/10 bg-white/5 px-3 py-1.5 text-xs text-slate-300 hover:bg-white/10 disabled:opacity-60">
           {radar === 'running' ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Radar className="h-3.5 w-3.5 text-afrobrand-400" />}
           {radar === 'running' ? 'Scanning the charts…' : 'Run radar — learn today’s trending'}
         </button>
         {radarMsg && <span className="ml-2 text-xs text-emerald-300">{radarMsg}</span>}
-        <p className="mt-1 text-[11px] text-slate-500">Zap also runs on its own daily (03:00 UTC), quietly filling your lake with what’s charting — no keys needed for this.</p>
+        <p className="mt-1 text-[11px] text-slate-500">When autonomy is enabled, Radar refreshes on the operator-configured schedule. Run it here any time for an immediate refresh.</p>
       </div>
 
       {/* The button */}
@@ -251,7 +260,8 @@ export default function ZapPage() {
           <div className="mt-5 border-t border-white/10 pt-4">
             {learn === 'done' && learned ? (
               <div>
-                <div className="flex items-center gap-2 text-sm text-emerald-300"><Check className="h-4 w-4" /> Learned into your training</div>
+                <div className="flex items-center gap-2 text-sm text-emerald-300"><Check className="h-4 w-4" /> Identity-free lane facts added</div>
+                {learned.measurementQueued && <p className="mt-1 text-[11px] text-slate-500">Licensed preview measurement is queued; measured tempo and groove will replace defaults when ready.</p>}
                 {learned.whatToLearn && <p className="mt-1.5 text-xs text-slate-300">{learned.whatToLearn}</p>}
                 {learned.craft?.length ? (
                   <ul className="mt-2 space-y-0.5 text-xs text-slate-400">
@@ -259,7 +269,7 @@ export default function ZapPage() {
                   </ul>
                 ) : null}
                 <button
-                  onClick={() => void makeInLane({ referenceId: learned.referenceId, genre: learned.genre || match.genre || null, artist: match.artist, bpm: learned.bpm, mood: learned.mood, languages: learned.languages, whatToLearn: learned.whatToLearn || null, vibe: null })}
+                  onClick={() => void makeInLane({ referenceId: learned.referenceId, genre: learned.genre || match.genre || null, bpm: learned.bpm, mood: learned.mood, languages: learned.languages })}
                   className="mt-3 inline-flex items-center gap-1.5 rounded-full bg-brand-gradient px-4 py-2 text-sm font-medium text-ink shadow-glow"
                 >
                   <Wand2 className="h-4 w-4" /> Make a song in this lane →
@@ -268,10 +278,10 @@ export default function ZapPage() {
             ) : (
               <button onClick={() => void doLearn()} disabled={learn === 'learning'} className="inline-flex items-center gap-1.5 rounded-full bg-brand-gradient px-4 py-2 text-sm font-medium text-ink shadow-glow disabled:opacity-60">
                 {learn === 'learning' ? <Loader2 className="h-4 w-4 animate-spin" /> : <GraduationCap className="h-4 w-4" />}
-                {learn === 'learning' ? 'Learning the craft…' : 'Learn its craft → my training'}
+                {learn === 'learning' ? 'Adding lane facts…' : 'Add lane facts → my training'}
               </button>
             )}
-            <p className="mt-2 text-[11px] text-slate-500">Studies the lane’s craft (production, groove, hook mechanics) as reference — never copies the song or its lyrics.</p>
+            <p className="mt-2 text-[11px] text-slate-500">Uses local genre craft plus numeric facts measured from the licensed preview. Song and artist identity never steer generation.</p>
           </div>
         </div>
       )}
@@ -288,7 +298,7 @@ export default function ZapPage() {
                   <div className="truncate text-[11px] text-slate-500">{(h.genre || '—').replace(/_/g, ' ')}{h.viaRadar ? ' · via radar' : ''}{h.whatToLearn ? ` · ${h.whatToLearn}` : ''}</div>
                 </div>
                 <button
-                  onClick={() => void makeInLane({ ...h, referenceId: h.id })}
+                  onClick={() => void makeInLane({ referenceId: h.id, genre: h.genre, bpm: h.bpm, mood: h.mood, languages: h.languages })}
                   disabled={preparing === h.id}
                   title="Make a fresh song in this lane"
                   className="inline-flex shrink-0 items-center gap-1 rounded-full border border-afrobrand-500/40 bg-afrobrand-500/10 px-2.5 py-1 text-xs text-afrobrand-300 hover:bg-afrobrand-500/20 disabled:opacity-60"
@@ -298,7 +308,7 @@ export default function ZapPage() {
               </li>
             ))}
           </ul>
-          <p className="mt-2 text-[11px] text-slate-500">Every zap feeds your training — new songs in these lanes already pull from them. “Make in this lane” starts a fresh original (never a copy).</p>
+          <p className="mt-2 text-[11px] text-slate-500">Zap facts are retrieved automatically for new songs in the same lane; owned references still lead. “Make in this lane” pins these facts to a fresh original.</p>
         </div>
       )}
     </div>

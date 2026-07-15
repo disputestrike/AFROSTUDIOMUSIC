@@ -3,11 +3,18 @@ import { canonicalJson } from "@afrohit/shared";
 import { assertSafeUrl, safeFetch } from "./url-guard";
 
 export interface DistributeRelease {
+  releaseId: string;
+  revision: number;
   title: string;
   artist: string;
   genre?: string | null;
   isrc?: string | null;
   upc?: string | null;
+  audioAssetId: string;
+  audioAssetKind: "master" | "mix";
+  coverAssetId: string;
+  exportId: string;
+  artifactFingerprint: string;
   audioUrl: string;
   coverUrl: string;
   bundleUrl: string;
@@ -122,6 +129,39 @@ export function sanitizeDistributionChannels(
   return Object.keys(channels).length ? channels : undefined;
 }
 
+export function distributionSubmissionPayload(
+  release: DistributeRelease,
+  provider: string
+) {
+  return {
+    schemaVersion: 1,
+    event: "release.submit",
+    provider,
+    release: {
+      releaseId: release.releaseId,
+      revision: release.revision,
+      title: release.title,
+      artist: release.artist,
+      genre: release.genre ?? null,
+      isrc: release.isrc ?? null,
+      upc: release.upc ?? null,
+      audioUrl: release.audioUrl,
+      coverUrl: release.coverUrl,
+      bundleUrl: release.bundleUrl,
+      evidenceHash: release.evidenceHash,
+      artifactFingerprint: release.artifactFingerprint,
+      assets: {
+        audio: {
+          id: release.audioAssetId,
+          kind: release.audioAssetKind,
+        },
+        cover: { id: release.coverAssetId },
+        export: { id: release.exportId },
+      },
+    },
+  };
+}
+
 /**
  * Real distribution handoff contract.
  *
@@ -183,22 +223,7 @@ export async function distributeRelease(
   }
 
   const timestamp = Math.floor(Date.now() / 1000).toString();
-  const payload = {
-    schemaVersion: 1,
-    event: "release.submit",
-    provider,
-    release: {
-      title: release.title,
-      artist: release.artist,
-      genre: release.genre ?? null,
-      isrc: release.isrc ?? null,
-      upc: release.upc ?? null,
-      audioUrl: release.audioUrl,
-      coverUrl: release.coverUrl,
-      bundleUrl: release.bundleUrl,
-      evidenceHash: release.evidenceHash,
-    },
-  };
+  const payload = distributionSubmissionPayload(release, provider);
   const body = canonicalJson(payload);
   const signature = distributionSignature(secret, timestamp, body);
   const controller = new AbortController();

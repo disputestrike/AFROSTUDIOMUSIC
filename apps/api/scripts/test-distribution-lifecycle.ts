@@ -146,13 +146,41 @@ async function main() {
     );
     assert.equal(staleResponse.statusCode, 401);
 
+    const failedBeforeLive: StatusEvent = {
+      ...accepted,
+      eventId: "failed_before_live_" + suffix,
+      status: "failed",
+      occurredAt: new Date(new Date(occurredAt).getTime() + 2_000).toISOString(),
+    };
+    const failedBeforeLiveResponse = await send(failedBeforeLive);
+    assert.equal(failedBeforeLiveResponse.statusCode, 200);
+    assert.equal(failedBeforeLiveResponse.json().applied, true);
+
+    const delayedAccepted: StatusEvent = {
+      ...accepted,
+      eventId: "delayed_accepted_" + suffix,
+      occurredAt: new Date(new Date(occurredAt).getTime() + 1_000).toISOString(),
+    };
+    const delayedAcceptedResponse = await send(delayedAccepted);
+    assert.equal(delayedAcceptedResponse.statusCode, 200);
+    assert.equal(delayedAcceptedResponse.json().applied, false);
+
+    const failedState = await prisma.release.findUniqueOrThrow({
+      where: { id: ids.release },
+    });
+    assert.equal(failedState.status, "failed");
+    assert.equal(
+      failedState.distributionStatusAt?.toISOString(),
+      failedBeforeLive.occurredAt
+    );
+
     const live: StatusEvent = {
       schemaVersion: 1,
       event: "release.status",
       eventId: "live_" + suffix,
       externalId: ids.external,
       status: "live",
-      occurredAt: new Date().toISOString(),
+      occurredAt: new Date(new Date(occurredAt).getTime() + 3_000).toISOString(),
       channels: {
         spotify: "https://open.spotify.com/track/contract",
         unsafe: "http://example.com/not-live-proof",
@@ -170,6 +198,7 @@ async function main() {
     assert.equal(liveState.song.status, "RELEASED");
     assert.ok(liveState.liveAt);
     assert.ok(liveState.releaseDate);
+    assert.equal(liveState.distributionStatusAt?.toISOString(), live.occurredAt);
     assert.deepEqual(liveState.channels, {
       spotify: "https://open.spotify.com/track/contract",
     });

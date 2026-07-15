@@ -19,12 +19,64 @@ import { mkdtemp, readFile, writeFile, rm, readdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { prisma } from '@afrohit/db';
-import { separateStems, type StemSeparationResult } from '@afrohit/ai';
+import {
+  separateStems,
+  type StemAudioContentType,
+  type StemAudioFormat,
+  type StemAudioOutput,
+  type StemSeparationResult,
+} from '@afrohit/ai';
 import { downloadToBuffer, resolveAssetForProvider, uploadBytes } from './storage';
 
 const PYTHON = process.env.PYTHON_BIN ?? 'python3';
 // Replicate demucs ≈ $0.10/track (T4, ~1-2 min). Local = electricity.
 const REPLICATE_STEM_COST = 0.1;
+const MAX_STEM_BYTES = 640 * 1024 * 1024;
+
+export interface DetectedStemAudio {
+  format: StemAudioFormat;
+  contentType: StemAudioContentType;
+}
+
+/** Container signatures are authoritative; provider labels and URL suffixes are not. */
+export function sniffStemAudio(bytes: Uint8Array): DetectedStemAudio {
+  const ascii = (from: number, length: number) =>
+    Buffer.from(bytes.subarray(from, from + length)).toString('ascii');
+  if (
+    bytes.byteLength >= 12 &&
+    (ascii(0, 4) === 'RIFF' || ascii(0, 4) === 'RF64') &&
+    ascii(8, 4) === 'WAVE'
+  ) {
+    return { format: 'wav', contentType: 'audio/wav' };
+  }
+  if (bytes.byteLength >= 4 && ascii(0, 4) === 'fLaC') {
+    return { format: 'flac', contentType: 'audio/flac' };
+  }
+  if (
+    (bytes.byteLength >= 3 && ascii(0, 3) === 'ID3') ||
+    (bytes.byteLength >= 2 && bytes[0] === 0xff && (bytes[1]! & 0xe0) === 0xe0)
+  ) {
+    return { format: 'mp3', contentType: 'audio/mpeg' };
+  }
+  throw new Error('stem audio has an unsupported or unrecognized container');
+}
+
+/** Re-host a separator/provider stem under an extension and MIME derived from its bytes. */
+export async function materializeStemAudio(opts: {
+  workspaceId: string;
+  stem: StemAudioOutput;
+}): Promise<StemAudioOutput> {
+  const bytes = await downloadToBuffer(opts.stem.url, { maxBytes: MAX_STEM_BYTES });
+  const detected = sniffStemAudio(bytes);
+  const url = await uploadBytes({
+    workspaceId: opts.workspaceId,
+    kind: 'stems',
+    bytes,
+    contentType: detected.contentType,
+    ext: detected.format,
+  });
+  return { ...opts.stem, ...detected, url };
+}
 
 let _localCache: Promise<boolean> | null = null;
 export function localDemucsAvailable(): Promise<boolean> {
@@ -77,7 +129,7 @@ export async function separateStemsLocal(opts: {
     // Output lands in <dir>/htdemucs/<stem>.wav (per --filename).
     const outDir = join(dir, 'htdemucs');
     const files = await readdir(outDir);
-    const stems: Array<{ role: string; url: string }> = [];
+    const stems: StemAudioOutput[] = [];
     for (const f of files) {
       if (!f.endsWith('.wav')) continue;
       const stemName = f.replace(/\.wav$/, '');
@@ -92,7 +144,7 @@ export async function separateStemsLocal(opts: {
         contentType: 'audio/wav',
         ext: 'wav',
       });
-      stems.push({ role, url });
+      stems.push({ role, url, format: 'wav', contentType: 'audio/wav' });
     }
     if (!stems.length) throw new Error('local demucs produced no stems');
     return { instrumentalUrl: stems.find((s) => s.role === 'instrumental')?.url, stems };
@@ -106,7 +158,7 @@ export async function separateStemsLocal(opts: {
  * mode; DEMUCS_MODE overrides; local failures fall back to the paid path so a
  * broken torch install can never kill a user request or a nightly walk.
  */
-export async function separateStemsRouted(opts: {
+export interface RoutedStemSeparationOptions {
   audioUrl: string;
   apiKey?: string;
   mode?: 'instrumental' | 'full';
@@ -117,7 +169,11 @@ export async function separateStemsRouted(opts: {
    * full WAV quality where the paid default re-encodes to mp3. DEMUCS_MODE=
    * replicate still overrides — operator config beats a caller preference. */
   preferLocal?: boolean;
-}): Promise<StemSeparationResult & { engine?: 'local' | 'replicate' }> {
+}
+
+export async function separateStemsRouted(
+  opts: RoutedStemSeparationOptions,
+): Promise<StemSeparationResult & { engine?: 'local' | 'replicate' }> {
   const configured = (process.env.DEMUCS_MODE ?? '').toLowerCase();
   const wantLocal =
     configured === 'local' ||
@@ -139,11 +195,62 @@ export async function separateStemsRouted(opts: {
     console.warn('[stems] DEMUCS_MODE wants local but torch/demucs not importable in this image — paid path');
   }
   const paidStart = Date.now();
-  const res = await separateStems({
-    audioUrl: await resolveAssetForProvider(opts.audioUrl),
+  try {
+    const res = await separateStems({
+      audioUrl: await resolveAssetForProvider(opts.audioUrl),
+      apiKey: opts.apiKey,
+      mode: opts.mode,
+    });
+    await logStemsRun(opts.workspaceId, 'replicate', opts.purpose, Date.now() - paidStart, REPLICATE_STEM_COST, true);
+    return { ...res, engine: 'replicate' };
+  } catch (error) {
+    await logStemsRun(opts.workspaceId, 'replicate', opts.purpose, Date.now() - paidStart, REPLICATE_STEM_COST, false);
+    throw error;
+  }
+}
+
+type RoutedStemSeparator = (
+  opts: RoutedStemSeparationOptions,
+) => Promise<StemSeparationResult & { engine?: 'local' | 'replicate' }>;
+
+export interface MusicStemResolution {
+  stems: StemAudioOutput[];
+  source: 'provider' | 'canonical-separation' | 'none';
+}
+
+/** Resolve the stem source before a music job can become terminal-successful. */
+export async function resolveMusicStemSources(
+  opts: {
+    withStems: boolean;
+    providerStems?: StemAudioOutput[];
+    canonicalSourceUrl: string;
+    apiKey?: string;
+    workspaceId: string;
+  },
+  separate: RoutedStemSeparator = separateStemsRouted,
+): Promise<MusicStemResolution> {
+  if (opts.providerStems?.length) {
+    return { stems: opts.providerStems, source: 'provider' };
+  }
+  if (!opts.withStems) return { stems: [], source: 'none' };
+
+  const result = await separate({
+    audioUrl: opts.canonicalSourceUrl,
     apiKey: opts.apiKey,
-    mode: opts.mode,
+    mode: 'full',
+    purpose: 'user',
+    workspaceId: opts.workspaceId,
   });
-  await logStemsRun(opts.workspaceId, 'replicate', opts.purpose, Date.now() - paidStart, REPLICATE_STEM_COST, true);
-  return { ...res, engine: 'replicate' };
+  if (!result.stems.length) {
+    throw new Error('music_generation_failed: stem separation returned no audio for the certified source');
+  }
+  return { stems: result.stems, source: 'canonical-separation' };
+}
+
+/** Final database postcondition for a music request that promised stems. */
+export function enforceMusicStemPersistence(withStems: boolean, persistedStemCount: number): number {
+  if (withStems && !(persistedStemCount > 0)) {
+    throw new Error('music_generation_failed: requested stems were not persisted');
+  }
+  return persistedStemCount;
 }

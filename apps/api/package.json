@@ -10,7 +10,10 @@
     "typecheck": "tsc --noEmit",
     "typecheck:shim": "tsc -p tsconfig.shim.json --noEmit",
     "test:distribution-lifecycle": "tsx scripts/test-distribution-lifecycle.ts",
-    "test:credit-caps": "tsx scripts/test-credit-caps.ts"
+    "test:credit-caps": "tsx scripts/test-credit-caps.ts",
+    "test:drop-terminal-integrity": "tsx scripts/test-drop-terminal-integrity.ts",
+    "test:album-generation-integrity": "tsx scripts/test-album-generation-integrity.ts",
+    "test:session-revocation": "tsx scripts/test-session-revocation.ts"
   },
   "dependencies": {
     "@afrohit/ai": "workspace:*",

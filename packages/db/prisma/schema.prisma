@@ -41,35 +41,37 @@ model Workspace {
   deletedAt            DateTime?
   suspendedAt          DateTime? // admin suspension — auth middleware rejects with 403
 
-  members             WorkspaceMember[]
-  artists             Artist[]
-  projects            Project[]
-  voiceConsents       VoiceConsent[]
-  voiceProfiles       VoiceProfile[]
-  voiceDatasets       VoiceDataset[]
-  brandKits           BrandKit[]
-  songs               Song[]
-  jobs                ProviderJob[]
-  rightsReceipts      RightsReceipt[]
-  releaseAttestations ReleaseAttestation[]
-  shareLinks          ShareLink[]
-  shareEvents         ShareEvent[]
-  artistMemoryChunks  ArtistMemoryChunk[]
-  approvals           Approval[]
-  releases            Release[]
-  benchmarkRatings    BenchmarkRating[]
-  benchmarkPairs      BenchmarkPair[]
-  benchmarkJudgments  BenchmarkJudgment[]
-  chatThreads         ChatThread[]
-  ledgerEntries       CreditLedger[]
-  analyticsEvents     AnalyticsEvent[]
-  albums              Album[]
-  materials           MaterialAsset[]
-  materialUsages      MaterialUsage[]
-  referenceUsages     ReferenceUsage[]
-  jobOutbox           JobOutbox[]
-  billingIntents      BillingIntent[]
-  billingEvents       BillingEvent[]
+  members              WorkspaceMember[]
+  artists              Artist[]
+  projects             Project[]
+  voiceConsents        VoiceConsent[]
+  voiceProfiles        VoiceProfile[]
+  voiceDatasets        VoiceDataset[]
+  brandKits            BrandKit[]
+  songs                Song[]
+  jobs                 ProviderJob[]
+  rightsReceipts       RightsReceipt[]
+  releaseAttestations  ReleaseAttestation[]
+  shareLinks           ShareLink[]
+  shareEvents          ShareEvent[]
+  artistMemoryChunks   ArtistMemoryChunk[]
+  approvals            Approval[]
+  releases             Release[]
+  benchmarkRatings     BenchmarkRating[]
+  benchmarkPairs       BenchmarkPair[]
+  benchmarkJudgments   BenchmarkJudgment[]
+  chatThreads          ChatThread[]
+  ledgerEntries        CreditLedger[]
+  analyticsEvents      AnalyticsEvent[]
+  albums               Album[]
+  materials            MaterialAsset[]
+  materialUsages       MaterialUsage[]
+  referenceUsages      ReferenceUsage[]
+  jobOutbox            JobOutbox[]
+  billingIntents       BillingIntent[]
+  billingEvents        BillingEvent[]
+  billingSubscriptions BillingSubscription[]
+  billingEntitlements  BillingEntitlement[]
 
   @@index([slug])
 }
@@ -417,8 +419,8 @@ model Song {
   status           SongStatus @default(SKETCH)
   storyboard       Json? // arrangement timeline (intro/hook/verse/bridge/outro)
   // Rights spine — what makes a release bankable + payable.
-  isrc             String? // recording code (CC-RRR-YY-DDDDD); null until registrant or distributor assignment
-  upc              String? // release barcode; distributors assign the real one free
+  isrc             String?    @unique // recording code (CC-RRR-YY-DDDDD); null until registrant or distributor assignment
+  upc              String?    @unique // release barcode; distributors assign the real one free
   splitSheet       Json? // [{name, role, share}] writer/producer splits summing to 100
   nativeReviewOk   Boolean    @default(false) // a native speaker signed off on Yoruba/Igbo/Hausa delivery
   releaseReady     Boolean    @default(false) // green-lit for distribution
@@ -814,6 +816,7 @@ model ImageAsset {
 
   project  Project?  @relation(fields: [projectId], references: [id], onDelete: Cascade)
   brandKit BrandKit? @relation(fields: [brandKitId], references: [id])
+  releases Release[] @relation("ReleaseCoverAsset")
 
   @@index([projectId])
   @@index([projectId, kind, qualityState, approved])
@@ -979,6 +982,7 @@ model Export {
 
   project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
   song    Song    @relation(fields: [songId], references: [id], onDelete: Cascade)
+  releases Release[] @relation("ReleaseExport")
 
   @@unique([songId, sourceFingerprint])
   @@index([projectId])
@@ -986,26 +990,94 @@ model Export {
 }
 
 model Release {
-  id          String    @id @default(cuid())
-  workspaceId String
-  artistId    String
-  songId      String    @unique
-  isrc        String?   @unique
-  upc         String?
-  releaseDate DateTime? @db.Timestamptz(6)
-  submittedAt DateTime? @db.Timestamptz(6)
-  liveAt      DateTime? @db.Timestamptz(6)
-  distributor String?
-  externalId  String?   @unique
-  status      String    @default("draft")
-  channels    Json? // {spotify:"link", apple:"link", youtube:"link"}
-  createdAt   DateTime  @default(now()) @db.Timestamptz(6)
-  updatedAt   DateTime  @default(now()) @updatedAt @db.Timestamptz(6)
+  id                   String    @id @default(cuid())
+  workspaceId          String
+  projectId            String?
+  artistId             String
+  songId               String    @unique
+  revision             Int       @default(0)
+  title                String?
+  artistName           String?
+  genre                String?
+  isrc                 String?   @unique
+  upc                  String?   @unique
+  audioAssetId         String?
+  audioAssetKind       String?
+  audioUrl             String?
+  coverAssetId         String?
+  coverUrl             String?
+  exportId             String?
+  archiveUrl           String?
+  artifactFingerprint  String?
+  evidenceHash         String?
+  releaseDate          DateTime? @db.Timestamptz(6)
+  submittedAt          DateTime? @db.Timestamptz(6)
+  liveAt               DateTime? @db.Timestamptz(6)
+  distributor          String?
+  externalId           String?   @unique
+  status               String    @default("draft")
+  distributionStatusAt DateTime? @db.Timestamptz(6)
+  channels             Json? // {spotify:"link", apple:"link", youtube:"link"}
+  createdAt            DateTime  @default(now()) @db.Timestamptz(6)
+  updatedAt            DateTime  @default(now()) @updatedAt @db.Timestamptz(6)
 
-  workspace Workspace           @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  artist    Artist              @relation(fields: [artistId], references: [id], onDelete: Cascade)
-  song      Song                @relation("ReleaseSong", fields: [songId], references: [id], onDelete: Cascade)
-  events    DistributionEvent[]
+  workspace  Workspace           @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  artist     Artist              @relation(fields: [artistId], references: [id], onDelete: Cascade)
+  song       Song                @relation("ReleaseSong", fields: [songId], references: [id], onDelete: Cascade)
+  coverAsset ImageAsset?         @relation("ReleaseCoverAsset", fields: [coverAssetId], references: [id], onDelete: SetNull)
+  export     Export?             @relation("ReleaseExport", fields: [exportId], references: [id], onDelete: SetNull)
+  events     DistributionEvent[]
+  revisions  ReleaseRevision[]
+
+  @@index([workspaceId, status])
+  @@index([projectId])
+  @@index([coverAssetId])
+  @@index([exportId])
+}
+
+/// Append-only package and distributor-state snapshots. Database triggers own
+/// inserts so webhook transitions cannot accidentally skip release history.
+model ReleaseRevision {
+  id          String   @id
+  releaseId   String
+  workspaceId String
+  projectId   String?
+  songId      String
+  revision    Int
+  status      String
+  audioUrl    String?
+  coverUrl    String?
+  archiveUrl  String?
+  snapshot    Json
+  createdAt   DateTime @default(now()) @db.Timestamptz(6)
+
+  release Release @relation(fields: [releaseId], references: [id], onDelete: Cascade)
+
+  @@unique([releaseId, revision])
+  @@index([releaseId, createdAt(sort: Desc)])
+  @@index([workspaceId, status])
+}
+
+/// Atomic namespaces for registrant-assigned ISRC and GS1 UPC values.
+model ReleaseIdentifierSequence {
+  namespace String   @id
+  value     Int      @default(0)
+  updatedAt DateTime @updatedAt @db.Timestamptz(6)
+}
+
+/// Storage refs captured by delete triggers before their owning rows disappear.
+/// The cleanup worker consumes these only after checking all surviving owners.
+model AssetDeletionCandidate {
+  id          BigInt   @id @default(autoincrement())
+  workspaceId String
+  projectId   String?
+  songId      String?
+  ref         String
+  kind        String
+  createdAt   DateTime @default(now()) @db.Timestamptz(6)
+
+  @@index([workspaceId, songId])
+  @@index([workspaceId, projectId])
 }
 
 model DistributionEvent {
@@ -1305,10 +1377,12 @@ model CreditLedger {
   meta           Json?
   createdAt      DateTime @default(now()) @db.Timestamptz(6)
 
-  workspace  Workspace     @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  chargedJob ProviderJob?  @relation("ProviderJobCharge")
-  reversalOf CreditLedger? @relation("CreditReversal", fields: [reversalOfId], references: [id], onDelete: SetNull)
-  reversal   CreditLedger? @relation("CreditReversal")
+  workspace               Workspace           @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  chargedJob              ProviderJob?        @relation("ProviderJobCharge")
+  reversalOf              CreditLedger?       @relation("CreditReversal", fields: [reversalOfId], references: [id], onDelete: SetNull)
+  reversal                CreditLedger?       @relation("CreditReversal")
+  billingEntitlementGrant BillingEntitlement? @relation("BillingEntitlementGrant")
+  billingAdjustment       BillingAdjustment?  @relation("BillingAdjustmentLedger")
 
   @@unique([workspaceId, idempotencyKey])
   @@index([workspaceId])
@@ -1334,7 +1408,9 @@ model BillingIntent {
   createdAt            DateTime            @default(now()) @db.Timestamptz(6)
   updatedAt            DateTime            @updatedAt @db.Timestamptz(6)
 
-  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  workspace            Workspace            @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  subscriptionIdentity BillingSubscription?
+  entitlements         BillingEntitlement[]
 
   @@unique([workspaceId, kind, idempotencyKey])
   @@index([workspaceId, createdAt(sort: Desc)])
@@ -1352,6 +1428,90 @@ enum BillingIntentStatus {
   COMPLETED
   CANCELED
   FAILED
+}
+
+enum BillingSubscriptionStatus {
+  PENDING
+  ACTIVE
+  SUSPENDED
+  EXPIRED
+  CANCELED
+}
+
+model BillingSubscription {
+  id                   String                    @id @default(cuid())
+  workspaceId          String
+  billingIntentId      String                    @unique
+  paypalSubscriptionId String                    @unique
+  plan                 Plan
+  status               BillingSubscriptionStatus @default(PENDING)
+  statusEventAt        DateTime?                 @db.Timestamptz(6)
+  activatedAt          DateTime?                 @db.Timestamptz(6)
+  endedAt              DateTime?                 @db.Timestamptz(6)
+  createdAt            DateTime                  @default(now()) @db.Timestamptz(6)
+  updatedAt            DateTime                  @updatedAt @db.Timestamptz(6)
+
+  workspace     Workspace            @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  billingIntent BillingIntent        @relation(fields: [billingIntentId], references: [id], onDelete: Cascade)
+  entitlements  BillingEntitlement[]
+
+  @@index([workspaceId, status, statusEventAt(sort: Desc)])
+}
+
+enum BillingEntitlementKind {
+  CREDIT_PACK
+  SUBSCRIPTION_CYCLE
+}
+
+model BillingEntitlement {
+  id                  String                 @id @default(cuid())
+  workspaceId         String
+  billingIntentId     String?
+  subscriptionId      String?
+  kind                BillingEntitlementKind
+  paypalTransactionId String                 @unique
+  grossAmountCents    Int?
+  currency            String                 @default("USD") @db.Char(3)
+  creditsGranted      Int
+  grantLedgerId       String                 @unique
+  occurredAt          DateTime               @db.Timestamptz(6)
+  createdAt           DateTime               @default(now()) @db.Timestamptz(6)
+
+  workspace     Workspace            @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  billingIntent BillingIntent?       @relation(fields: [billingIntentId], references: [id], onDelete: SetNull)
+  subscription  BillingSubscription? @relation(fields: [subscriptionId], references: [id], onDelete: SetNull)
+  grantLedger   CreditLedger         @relation("BillingEntitlementGrant", fields: [grantLedgerId], references: [id], onDelete: Cascade)
+  adjustments   BillingAdjustment[]
+
+  @@index([workspaceId, occurredAt(sort: Desc)])
+  @@index([subscriptionId, occurredAt(sort: Desc)])
+}
+
+enum BillingAdjustmentKind {
+  REFUND
+  REVERSAL
+  DISPUTE
+}
+
+model BillingAdjustment {
+  id            String                @id @default(cuid())
+  entitlementId String
+  paypalEventId String
+  kind          BillingAdjustmentKind
+  sourceId      String
+  sourceStatus  String
+  amountCents   Int?
+  creditsAtRisk Int
+  ledgerDelta   Int                   @default(0)
+  ledgerId      String?               @unique
+  occurredAt    DateTime              @db.Timestamptz(6)
+  createdAt     DateTime              @default(now()) @db.Timestamptz(6)
+
+  entitlement BillingEntitlement @relation(fields: [entitlementId], references: [id], onDelete: Cascade)
+  ledger      CreditLedger?      @relation("BillingAdjustmentLedger", fields: [ledgerId], references: [id], onDelete: SetNull)
+
+  @@unique([paypalEventId, entitlementId])
+  @@index([entitlementId, kind, sourceId, occurredAt(sort: Desc)])
 }
 
 model BillingEvent {

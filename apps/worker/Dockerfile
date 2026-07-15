@@ -48,5 +48,9 @@ RUN pnpm install --frozen-lockfile --prod=false \
 
 ENV NODE_ENV=production
 
+# Runtime media tools do not require root. Keep the writable surface to normal
+# temporary directories even if a codec receives a hostile input file.
+USER node
+
 # Railway's railway.json startCommand overrides this; kept as a sane default.
 CMD ["pnpm", "--filter", "@afrohit/worker", "start"]

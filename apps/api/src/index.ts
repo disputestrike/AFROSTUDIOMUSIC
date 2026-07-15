@@ -29,7 +29,11 @@ import { privateAssetsPlugin } from "./middleware/private-assets";
 import { creditsPlugin } from "./middleware/credits";
 import { queuePlugin } from "./lib/queue";
 import { startOrchestrationWorker } from "./lib/orchestration-worker";
-import { captureError, initObservability } from "./lib/observability";
+import {
+  captureError,
+  initObservability,
+  sanitizeRequestUrl,
+} from "./lib/observability";
 import { assertStorageConfiguration } from "./lib/storage";
 
 import projects from "./routes/projects";
@@ -113,7 +117,19 @@ const app = Fastify({
       process.env.NODE_ENV === "production"
         ? undefined
         : { target: "pino-pretty" },
-    serializers: { err: safeError, error: safeError },
+    serializers: {
+      err: safeError,
+      error: safeError,
+      req(request) {
+        return {
+          method: request.method,
+          url: sanitizeRequestUrl(request.url),
+          hostname: request.hostname,
+          remoteAddress: request.ip,
+          remotePort: request.socket?.remotePort,
+        };
+      },
+    },
     redact: {
       paths: [
         "req.headers.authorization",
@@ -168,39 +184,6 @@ app.setErrorHandler((unknownError, req, reply) => {
   });
 });
 
-// LAUNCH GUARDRAIL — dependency-free per-IP rate limit (token window). Real
-// per-plan quotas ride the credit system; this stops abuse and runaway loops.
-{
-  const WINDOW_MS = 60_000;
-  const LIMIT = parseInt(process.env.RATE_LIMIT_PER_MIN ?? "240", 10) || 240;
-  const hits = new Map<string, { n: number; reset: number }>();
-  app.addHook("onRequest", async (req, reply) => {
-    const path = req.url.split("?")[0] ?? "";
-    if (path === "/health" || path === "/docs" || path.startsWith("/docs/"))
-      return;
-    const now = Date.now();
-    const key = req.ip || "unknown";
-    const cur = hits.get(key);
-    if (!cur || cur.reset < now) {
-      hits.set(key, { n: 1, reset: now + WINDOW_MS });
-      return;
-    }
-    cur.n++;
-    if (cur.n > LIMIT) {
-      return reply
-        .code(429)
-        .send({
-          error: "rate_limited",
-          retryInS: Math.ceil((cur.reset - now) / 1000),
-        });
-    }
-  });
-  setInterval(() => {
-    const now = Date.now();
-    for (const [k, v] of hits) if (v.reset < now) hits.delete(k);
-  }, WINDOW_MS).unref();
-}
-
 app.setValidatorCompiler(validatorCompiler);
 app.setSerializerCompiler(serializerCompiler);
 
@@ -226,7 +209,30 @@ async function bootstrap() {
     origin: configuredWebOrigins(),
     credentials: true,
   });
-  await app.register(rateLimit, { max: 240, timeWindow: "1 minute" });
+  await app.register(queuePlugin);
+  const configuredRateLimit = Number.parseInt(
+    process.env.RATE_LIMIT_PER_MIN ?? "240",
+    10
+  );
+  const maxRequestsPerMinute =
+    Number.isFinite(configuredRateLimit) && configuredRateLimit > 0
+      ? configuredRateLimit
+      : 240;
+  // Redis keeps the abuse boundary consistent across every API replica.
+  await app.register(rateLimit, {
+    max: maxRequestsPerMinute,
+    timeWindow: "1 minute",
+    redis: app.redis,
+    skipOnError: false,
+    allowList: req => {
+      const path = req.url.split("?")[0] ?? "";
+      return path === "/health" || path === "/docs" || path.startsWith("/docs/");
+    },
+    errorResponseBuilder: (_req, context) => ({
+      error: "rate_limited",
+      retryInS: Math.max(1, Math.ceil(context.ttl / 1000)),
+    }),
+  });
   await app.register(swagger, {
     openapi: {
       info: { title: "AfroHit Studio API", version: "0.1.0" },
@@ -248,7 +254,6 @@ async function bootstrap() {
     await app.register(swaggerUI, { routePrefix: "/docs" });
   }
 
-  await app.register(queuePlugin);
   await app.register(authPlugin);
   await app.register(privateAssetsPlugin);
   await app.register(creditsPlugin);
@@ -420,7 +425,10 @@ async function bootstrap() {
 
   // Sentry capture on unhandled route errors (after Fastify's own handling).
   app.addHook("onError", async (req, _reply, err) => {
-    captureError(err, { url: req.url, method: req.method });
+    captureError(err, {
+      url: sanitizeRequestUrl(req.url),
+      method: req.method,
+    });
   });
 
   const port = Number(process.env.PORT ?? 4000);

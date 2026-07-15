@@ -9,6 +9,7 @@ import {
   clearAdminGrantCookie,
   clearSessionCookie,
   constantTimeSecretEqual,
+  revokeSessionFamily,
   sessionCookie,
   signAdminGrant,
   signSession,
@@ -167,7 +168,16 @@ export default async function auth(app: FastifyInstance) {
     return { ok: true, expiresInSeconds: 2 * 60 * 60 };
   });
 
-  app.post('/logout', async (_req, reply) => {
+  app.post('/logout', async (req, reply) => {
+    const session = requireAuth(req).session;
+    if (session) {
+      try {
+        await revokeSessionFamily(app.redis, session);
+      } catch (error) {
+        req.log.error({ err: error }, 'session family revocation failed during logout');
+        return reply.code(503).send({ error: 'logout_unavailable' });
+      }
+    }
     reply.header('set-cookie', [clearSessionCookie(), clearAdminGrantCookie()]).code(204).send();
   });
 

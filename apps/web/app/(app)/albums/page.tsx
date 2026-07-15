@@ -12,6 +12,39 @@ import { Disc3, Loader2, Plus, Trash2 } from 'lucide-react';
 
 interface AlbumSong { id: string; title: string; status: string; projectId: string; audioUrl: string | null; isAnchor: boolean }
 interface Album { id: string; title: string; anchorSongId: string | null; styleBrief: string | null; createdAt: string; songs: AlbumSong[] }
+interface DropPlayableOutput {
+  songId: string;
+  projectId: string;
+  assetId: string;
+  url: string;
+  contentHash: string;
+  verifiedAt: string;
+  certified: boolean;
+  approved: boolean;
+  qualityState: string;
+  qualityGate?: { willBlow?: boolean };
+}
+interface DropJob {
+  status: string;
+  outputJson?: { playableOutputs?: DropPlayableOutput[] } | null;
+  errorJson?: { message?: string } | null;
+}
+
+function successfulPlayableOutput(job: DropJob): DropPlayableOutput | undefined {
+  if (job.status !== 'SUCCEEDED') return undefined;
+  return job.outputJson?.playableOutputs?.find((output) =>
+    !!output.songId
+    && !!output.projectId
+    && !!output.assetId
+    && !!output.url
+    && /^[a-f0-9]{64}$/i.test(output.contentHash)
+    && Number.isFinite(Date.parse(output.verifiedAt))
+    && output.certified === true
+    && output.approved === true
+    && output.qualityState === 'passed'
+    && output.qualityGate?.willBlow === true
+  );
+}
 
 export default function AlbumsPage() {
   const api = useApi();
@@ -34,9 +67,22 @@ export default function AlbumsPage() {
       flash('Writing + singing the next track in this album’s sound (2–4 min)…');
       for (let i = 0; i < 70; i++) {
         await new Promise((res) => setTimeout(res, 6000));
-        const j = await api.get<{ status: string }>(`/jobs/${r.jobId}`);
-        if (j.status === 'SUCCEEDED') { flash('New track landed — rendering finishes in the background. Refreshing…'); await load(); break; }
-        if (j.status === 'FAILED') { flash('Couldn’t make that track — try again.'); break; }
+        const j = await api.get<DropJob>(`/jobs/${r.jobId}`);
+        if (j.status === 'SUCCEEDED') {
+          const playable = successfulPlayableOutput(j);
+          if (!playable) {
+            flash('Track finished without verified playable audio. Try again.');
+            break;
+          }
+          flash('New track landed and is ready to play. Refreshing…');
+          await load();
+          break;
+        }
+        if (j.status === 'FAILED') {
+          const detail = j.errorJson?.message?.slice(0, 100);
+          flash(detail ? `Couldn’t make that track: ${detail}` : 'Couldn’t make that track — try again.');
+          break;
+        }
       }
     } catch (e) { flash((e as Error).message.slice(0, 140)); }
     finally { setBusy(''); }
@@ -99,7 +145,7 @@ export default function AlbumsPage() {
                   </div>
                   {s.audioUrl ? <audio controls preload="none" className="mt-1.5 w-full" src={s.audioUrl} /> : <div className="mt-1 text-xs text-slate-600">rendering…</div>}
                 </div>
-                <button onClick={() => router.push(`/projects/${s.projectId}`)} className="shrink-0 rounded-full border border-white/10 bg-white/5 px-3 py-1.5 text-xs text-slate-300 hover:bg-white/10">Studio</button>
+                <button onClick={() => router.push(`/projects/${s.projectId}?song=${s.id}`)} className="shrink-0 rounded-full border border-white/10 bg-white/5 px-3 py-1.5 text-xs text-slate-300 hover:bg-white/10">Studio</button>
               </li>
             ))}
           </ul>

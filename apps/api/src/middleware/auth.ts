@@ -5,8 +5,10 @@ import { runWithLlmUsageContext, setLlmUsageContext } from "@afrohit/ai";
 import {
   assertSessionConfiguration,
   constantTimeSecretEqual,
+  isSessionRevoked,
   originAllowed,
   requestSession,
+  type SessionClaims,
   verifySession,
 } from "../lib/session";
 
@@ -17,6 +19,7 @@ declare module "fastify" {
       workspaceId: string;
       role: string;
       isService: boolean;
+      session?: SessionClaims;
     };
   }
 }
@@ -210,6 +213,14 @@ export const authPlugin = fp(async function auth(app: FastifyInstance) {
     if (!session) return reply.unauthorized("missing session");
     const claims = verifySession(session.token);
     if (!claims) return reply.unauthorized("invalid or expired session");
+    try {
+      if (await isSessionRevoked(app.redis, claims)) {
+        return reply.unauthorized("revoked session");
+      }
+    } catch (error) {
+      req.log.error({ err: error }, "session revocation validation unavailable");
+      return reply.code(503).send({ error: "session_validation_unavailable" });
+    }
     if (session.source === "cookie" && unsafe) {
       if (
         !originAllowed(
@@ -236,6 +247,7 @@ export const authPlugin = fp(async function auth(app: FastifyInstance) {
       workspaceId: claims.workspaceId,
       role: membership.role,
       isService: false,
+      session: claims,
     };
     setLlmUsageContext({ userId: claims.sub, workspaceId: claims.workspaceId });
   });

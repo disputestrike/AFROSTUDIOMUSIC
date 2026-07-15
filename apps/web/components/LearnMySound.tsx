@@ -14,6 +14,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useApi } from '@/lib/api';
 import { Loader2, Check, X, UploadCloud, Brain } from 'lucide-react';
+import { OWNED_AUDIO_RIGHTS_CONFIRMATION_VERSION } from '@afrohit/shared';
 
 interface QueueItem {
   name: string;
@@ -35,6 +36,7 @@ export function LearnMySound({ projectId }: { projectId: string }) {
   const [queue, setQueue] = useState<QueueItem[]>([]);
   const [running, setRunning] = useState(false);
   const [profile, setProfile] = useState<SoundProfile | null>(null);
+  const [rightsConfirmed, setRightsConfirmed] = useState(false);
 
   const loadProfile = useCallback(async () => {
     try {
@@ -62,13 +64,20 @@ export function LearnMySound({ projectId }: { projectId: string }) {
   }
 
   async function runQueue(items: QueueItem[]) {
+    if (!rightsConfirmed) return;
     setRunning(true);
     for (let i = 0; i < items.length; i++) {
       try {
         setItem(i, { status: 'uploading' });
         const { publicUrl } = await api.uploadAudioDirect(items[i]!.file, 'reference');
         setItem(i, { status: 'listening' });
-        const { jobId } = await api.post<{ jobId: string }>(`/projects/${projectId}/analyze`, { url: publicUrl });
+        const { jobId } = await api.post<{ jobId: string }>(`/projects/${projectId}/analyze`, {
+          url: publicUrl,
+          rightsConfirmation: {
+            version: OWNED_AUDIO_RIGHTS_CONFIRMATION_VERSION,
+            confirmed: true,
+          },
+        });
         await pollJob(jobId);
         setItem(i, { status: 'learned' });
         void loadProfile(); // profile grows live as each song lands
@@ -81,7 +90,7 @@ export function LearnMySound({ projectId }: { projectId: string }) {
   }
 
   function onFiles(list: FileList | null) {
-    if (!list?.length || running) return;
+    if (!list?.length || running || !rightsConfirmed) return;
     const items: QueueItem[] = [...list].slice(0, 10).map((f) => ({ name: f.name, file: f, status: 'waiting' }));
     setQueue(items);
     void runQueue(items);
@@ -100,9 +109,21 @@ export function LearnMySound({ projectId }: { projectId: string }) {
 
       <div className="mt-4 rounded-2xl glass p-4">
         <input ref={fileRef} type="file" multiple accept="audio/*,audio/mpeg,.wav,.mp3,.m4a,.ogg,.flac,.mpeg,.mpg" className="hidden" onChange={(e) => onFiles(e.target.files)} />
+        <label className="mb-3 flex items-start gap-2 text-xs text-slate-300">
+          <input
+            type="checkbox"
+            checked={rightsConfirmed}
+            disabled={running}
+            onChange={(event) => setRightsConfirmed(event.target.checked)}
+            className="mt-0.5 h-4 w-4 shrink-0 accent-emerald-500"
+          />
+          <span>
+            I confirm I own or control the rights needed to use every selected recording for sound learning (confirmation v{OWNED_AUDIO_RIGHTS_CONFIRMATION_VERSION}).
+          </span>
+        </label>
         <button
           onClick={() => fileRef.current?.click()}
-          disabled={running}
+          disabled={running || !rightsConfirmed}
           className="flex items-center gap-2 rounded-full bg-brand-gradient px-5 py-2.5 text-sm font-medium text-ink shadow-glow disabled:opacity-50"
         >
           <UploadCloud className="h-4 w-4" /> {running ? 'Learning…' : 'Upload my songs'}

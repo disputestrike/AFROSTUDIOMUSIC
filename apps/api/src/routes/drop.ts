@@ -4,7 +4,7 @@ import { runWithBrainContext, brainRunCosts } from '@afrohit/ai';
 import { dropBatchSchema } from '@afrohit/shared';
 import { requireAuth } from '../middleware/auth';
 import { runChatTool } from '../services/chat-tools';
-import { willItBlowGate } from '../lib/will-it-blow';
+import { BLOW_TARGET, willItBlowGate } from '../lib/will-it-blow';
 import { createQueuedProviderJob } from '../lib/queued-job';
 
 /**
@@ -68,6 +68,412 @@ export default async function drop(app: FastifyInstance) {
 export type DropCtx = { app: FastifyInstance; workspaceId: string; userId: string; projectId: string };
 export type DropInput = ReturnType<typeof dropBatchSchema.parse>;
 
+type DropTake = {
+  songId?: string;
+  hookId?: string;
+  hookText?: string;
+  title?: string;
+  score: number | null;
+  jobId?: string;
+  error?: string;
+};
+
+type DropChildJob = {
+  id: string;
+  status: string;
+  idempotencyKey: string | null;
+  inputJson: unknown;
+  outputJson: unknown;
+  errorJson: unknown;
+  createdAt: Date;
+  startedAt: Date | null;
+  finishedAt: Date | null;
+};
+
+type PersistedPlayable = {
+  assetType: 'beat' | 'mix' | 'master';
+  id: string;
+  projectId: string;
+  songId: string | null;
+  url: string;
+  qualityState: string;
+  contentHash: string | null;
+  verifiedAt: Date | null;
+  approved: boolean;
+  createdAt: Date;
+  meta: unknown;
+};
+
+export type DropQualityGateEvidence = {
+  willBlow: true;
+  bestScore: number;
+  passes: number;
+  target: number;
+  receiptJobId?: string;
+};
+
+export type DropPlayableOutput = {
+  songId: string;
+  projectId: string;
+  initialChildJobId: string;
+  childJobId: string;
+  assetType: PersistedPlayable['assetType'];
+  assetId: string;
+  url: string;
+  contentHash: string;
+  verifiedAt: string;
+  qualityState: 'passed';
+  approved: true;
+  certified: true;
+  qualityGate: DropQualityGateEvidence;
+};
+
+function record(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null;
+}
+
+function errorMessage(value: unknown): string | undefined {
+  if (typeof value === 'string' && value.trim()) return value.trim().slice(0, 240);
+  const message = record(value)?.message;
+  return typeof message === 'string' && message.trim() ? message.trim().slice(0, 240) : undefined;
+}
+
+/** Pure terminal-state policy used by the poller and focused regression tests. */
+export function dropChildTerminalState(
+  expectedJobIds: string[],
+  jobs: Array<{ id: string; status: string; errorJson?: unknown }>
+): 'pending' | 'succeeded' {
+  const expected = [...new Set(expectedJobIds)];
+  if (!expected.length) throw new Error('drop produced zero render children');
+
+  const byId = new Map(jobs.map((job) => [job.id, job]));
+  const missing = expected.filter((id) => !byId.has(id));
+  if (missing.length) {
+    throw new Error(`drop child job missing or outside workspace/project (${missing.join(', ')})`);
+  }
+
+  for (const id of expected) {
+    const job = byId.get(id)!;
+    if (job.status === 'FAILED' || job.status === 'CANCELED') {
+      const detail = errorMessage(job.errorJson);
+      throw new Error(`drop child ${id} ${job.status.toLowerCase()}${detail ? `: ${detail}` : ''}`);
+    }
+    if (!['QUEUED', 'RUNNING', 'SUCCEEDED'].includes(job.status)) {
+      throw new Error(`drop child ${id} has unexpected status ${job.status}`);
+    }
+  }
+
+  return expected.every((id) => byId.get(id)!.status === 'SUCCEEDED') ? 'succeeded' : 'pending';
+}
+
+export function isCertifiedPlayableAsset(asset: {
+  url: string;
+  approved: boolean;
+  qualityState: string;
+  contentHash: string | null;
+  verifiedAt: Date | null;
+}): boolean {
+  return asset.url.trim().length > 0
+    && asset.approved
+    && asset.qualityState === 'passed'
+    && /^[a-f0-9]{64}$/i.test(asset.contentHash ?? '')
+    && asset.verifiedAt instanceof Date
+    && Number.isFinite(asset.verifiedAt.getTime());
+}
+
+export function passedDropQualityGate(
+  hitRead: unknown,
+  target = BLOW_TARGET
+): DropQualityGateEvidence | null {
+  const read = record(hitRead);
+  const bestScore = Number(read?.bestScore);
+  const passes = Number(read?.blowPasses);
+  if (read?.willBlow !== true || !Number.isFinite(bestScore) || bestScore < target) return null;
+  return {
+    willBlow: true,
+    bestScore,
+    passes: Number.isFinite(passes) ? Math.max(0, Math.trunc(passes)) : 0,
+    target,
+  };
+}
+
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+function positiveMs(name: string, fallback: number): number {
+  const configured = Number(process.env[name]);
+  return Number.isFinite(configured) && configured > 0 ? configured : fallback;
+}
+
+async function waitForDropChildren(ctx: DropCtx, childJobIds: string[]): Promise<DropChildJob[]> {
+  const ids = [...new Set(childJobIds)];
+  if (!ids.length) dropChildTerminalState([], []);
+  const timeoutMs = positiveMs('DROP_CHILD_TIMEOUT_MS', 30 * 60_000);
+  const pollMs = positiveMs('DROP_CHILD_POLL_MS', 5_000);
+  const deadline = Date.now() + timeoutMs;
+
+  for (;;) {
+    const jobs: DropChildJob[] = await prisma.providerJob.findMany({
+      where: {
+        id: { in: ids },
+        workspaceId: ctx.workspaceId,
+        projectId: ctx.projectId,
+        kind: 'music',
+      },
+      select: {
+        id: true,
+        status: true,
+        idempotencyKey: true,
+        inputJson: true,
+        outputJson: true,
+        errorJson: true,
+        createdAt: true,
+        startedAt: true,
+        finishedAt: true,
+      },
+    });
+    if (dropChildTerminalState(ids, jobs) === 'succeeded') return jobs;
+    if (Date.now() >= deadline) {
+      const pending = jobs.filter((job) => job.status !== 'SUCCEEDED').map((job) => `${job.id}:${job.status}`);
+      throw new Error(`drop child jobs did not reach terminal state before timeout (${pending.join(', ')})`);
+    }
+    await sleep(pollMs);
+  }
+}
+
+type RenderedDropTake = DropTake & { jobId: string; songId: string };
+
+async function requirePassedDropQualityGates(
+  ctx: DropCtx,
+  rendered: RenderedDropTake[]
+): Promise<{
+  evidenceBySongId: Map<string, DropQualityGateEvidence>;
+  gateJobBySongId: Map<string, DropChildJob>;
+}> {
+  const songIds = [...new Set(rendered.map((item) => item.songId))];
+  const songs: Array<{ id: string; hitRead: unknown }> = await prisma.song.findMany({
+    where: {
+      id: { in: songIds },
+      workspaceId: ctx.workspaceId,
+      projectId: ctx.projectId,
+    },
+    select: { id: true, hitRead: true },
+  });
+  if (songs.length !== songIds.length) {
+    throw new Error('drop quality gate song missing or outside workspace/project');
+  }
+
+  const songById = new Map(songs.map((song) => [song.id, song]));
+  const readKeyBySongId = new Map(
+    rendered.map((item) => [
+      item.songId,
+      `will-it-blow:${item.jobId}:${item.songId}:initial-read`,
+    ] as const)
+  );
+  const readJobs: Array<{
+    id: string;
+    idempotencyKey: string | null;
+    status: string;
+    outputJson: unknown;
+    errorJson: unknown;
+  }> = await prisma.providerJob.findMany({
+    where: {
+      workspaceId: ctx.workspaceId,
+      projectId: ctx.projectId,
+      kind: 'ar-read',
+      idempotencyKey: { in: [...readKeyBySongId.values()] },
+    },
+    select: { id: true, idempotencyKey: true, status: true, outputJson: true, errorJson: true },
+  });
+  const readJobByKey = new Map(
+    readJobs.flatMap((job) => job.idempotencyKey ? [[job.idempotencyKey, job] as const] : [])
+  );
+  const evidenceBySongId = new Map<string, DropQualityGateEvidence>();
+  for (const item of rendered) {
+    const readJob = readJobByKey.get(readKeyBySongId.get(item.songId)!);
+    if (!readJob) throw new Error(`drop quality gate receipt unavailable for song ${item.songId}`);
+    if (readJob.status !== 'SUCCEEDED') {
+      const detail = errorMessage(readJob.errorJson);
+      throw new Error(
+        `drop quality gate receipt ${readJob.status.toLowerCase()} for song ${item.songId}${detail ? `: ${detail}` : ''}`
+      );
+    }
+    const receiptValue = record(record(readJob.outputJson)?.value);
+    if (typeof receiptValue?.hitScore !== 'number' && typeof receiptValue?.viralScore !== 'number') {
+      throw new Error(`drop quality gate receipt unavailable for song ${item.songId}`);
+    }
+    const hitRead = songById.get(item.songId)?.hitRead;
+    const evidence = passedDropQualityGate(hitRead);
+    if (!evidence) {
+      const read = record(hitRead);
+      const measured = Number(read?.bestScore);
+      const failed = read?.willBlow === false
+        || (Number.isFinite(measured) && measured < BLOW_TARGET);
+      throw new Error(
+        failed
+          ? `drop quality gate failed for song ${item.songId}`
+          : `drop quality gate unavailable for song ${item.songId}`
+      );
+    }
+    evidenceBySongId.set(item.songId, { ...evidence, receiptJobId: readJob.id });
+  }
+
+  // A gate that improved the writing must also land the corrective re-render.
+  // will-it-blow persists blowPasses, while the re-render has this stable key.
+  const gateKeyBySongId = new Map(
+    rendered.flatMap((item) => {
+      const evidence = evidenceBySongId.get(item.songId)!;
+      return evidence.passes > 0
+        ? [[item.songId, `will-it-blow:${item.jobId}:${item.songId}:resing`] as const]
+        : [];
+    })
+  );
+  if (!gateKeyBySongId.size) {
+    return { evidenceBySongId, gateJobBySongId: new Map() };
+  }
+
+  const gateJobs: Array<{ id: string; idempotencyKey: string | null }> = await prisma.providerJob.findMany({
+    where: {
+      workspaceId: ctx.workspaceId,
+      projectId: ctx.projectId,
+      kind: 'music',
+      idempotencyKey: { in: [...gateKeyBySongId.values()] },
+    },
+    select: { id: true, idempotencyKey: true },
+  });
+  const gateJobByKey = new Map<string, { id: string; idempotencyKey: string | null }>(
+    gateJobs.flatMap((job) => job.idempotencyKey ? [[job.idempotencyKey, job]] : [])
+  );
+  const missing = [...gateKeyBySongId.entries()].filter(([, key]) => !gateJobByKey.has(key));
+  if (missing.length) {
+    throw new Error(`drop quality gate corrective render unavailable for song ${missing[0]![0]}`);
+  }
+
+  const terminalGateJobs = await waitForDropChildren(ctx, gateJobs.map((job) => job.id));
+  const terminalById = new Map(terminalGateJobs.map((job) => [job.id, job]));
+  const gateJobBySongId = new Map<string, DropChildJob>();
+  for (const [songId, key] of gateKeyBySongId) {
+    const job = gateJobByKey.get(key)!;
+    gateJobBySongId.set(songId, terminalById.get(job.id)!);
+  }
+  return { evidenceBySongId, gateJobBySongId };
+}
+
+function stringField(value: Record<string, unknown> | null, key: string): string | undefined {
+  const field = value?.[key];
+  return typeof field === 'string' && field.trim() ? field : undefined;
+}
+
+function assetProducedByChild(asset: PersistedPlayable, child: DropChildJob, songId: string): boolean {
+  const output = record(child.outputJson);
+  const expectedId = stringField(output, `${asset.assetType}Id`);
+  if (expectedId === asset.id) return true;
+
+  const outputUrls = ['url', 'masterUrl', 'wavUrl', 'mp3Url']
+    .map((key) => stringField(output, key))
+    .filter((url): url is string => !!url);
+  const deliveryUrl = stringField(record(record(asset.meta)?.deliveryMp3), 'url');
+  if (outputUrls.includes(asset.url) || (!!deliveryUrl && outputUrls.includes(deliveryUrl))) return true;
+
+  if (asset.songId !== songId || !child.finishedAt) return false;
+  const skewMs = 10_000;
+  const startedAt = (child.startedAt ?? child.createdAt).getTime() - skewMs;
+  const finishedAt = child.finishedAt.getTime() + skewMs;
+  const createdAt = asset.createdAt.getTime();
+  return createdAt >= startedAt && createdAt <= finishedAt;
+}
+
+async function loadDropPlayableOutputs(
+  ctx: DropCtx,
+  rendered: RenderedDropTake[],
+  directChildren: DropChildJob[],
+  quality: Awaited<ReturnType<typeof requirePassedDropQualityGates>>
+): Promise<DropPlayableOutput[]> {
+  const songIds = [...new Set(rendered.map((item) => item.songId))];
+  const children = [...directChildren, ...quality.gateJobBySongId.values()];
+  const outputRecords = children.map((child) => record(child.outputJson));
+  const referencedIds = (key: string) => [...new Set(
+    outputRecords.map((output) => stringField(output, key)).filter((id): id is string => !!id)
+  )];
+  const beatIds = referencedIds('beatId');
+  const mixIds = referencedIds('mixId');
+  const masterIds = referencedIds('masterId');
+  const certifiedWhere = {
+    projectId: ctx.projectId,
+    project: { workspaceId: ctx.workspaceId },
+    approved: true,
+    qualityState: 'passed',
+    contentHash: { not: null },
+    verifiedAt: { not: null },
+  } as const;
+  const select = {
+    id: true,
+    projectId: true,
+    songId: true,
+    url: true,
+    qualityState: true,
+    contentHash: true,
+    verifiedAt: true,
+    approved: true,
+    createdAt: true,
+    meta: true,
+  } as const;
+
+  const [beats, mixes, masters] = await Promise.all([
+    prisma.beatAsset.findMany({
+      where: { ...certifiedWhere, OR: [{ songId: { in: songIds } }, { id: { in: beatIds } }] },
+      select,
+    }),
+    prisma.mix.findMany({
+      where: { ...certifiedWhere, OR: [{ songId: { in: songIds } }, { id: { in: mixIds } }] },
+      select,
+    }),
+    prisma.master.findMany({
+      where: { ...certifiedWhere, OR: [{ songId: { in: songIds } }, { id: { in: masterIds } }] },
+      select,
+    }),
+  ]) as [
+    Array<Omit<PersistedPlayable, 'assetType'>>,
+    Array<Omit<PersistedPlayable, 'assetType'>>,
+    Array<Omit<PersistedPlayable, 'assetType'>>,
+  ];
+  const candidates: PersistedPlayable[] = [
+    ...beats.map((asset) => ({ ...asset, assetType: 'beat' as const })),
+    ...mixes.map((asset) => ({ ...asset, assetType: 'mix' as const })),
+    ...masters.map((asset) => ({ ...asset, assetType: 'master' as const })),
+  ].filter(isCertifiedPlayableAsset);
+  const rank = { beat: 1, mix: 2, master: 3 } as const;
+  candidates.sort((a, b) => rank[b.assetType] - rank[a.assetType]
+    || b.createdAt.getTime() - a.createdAt.getTime());
+
+  const directById = new Map(directChildren.map((child) => [child.id, child]));
+  return rendered.map((item) => {
+    const gate = quality.evidenceBySongId.get(item.songId)!;
+    const child = quality.gateJobBySongId.get(item.songId) ?? directById.get(item.jobId);
+    if (!child) throw new Error(`drop terminal child evidence missing for song ${item.songId}`);
+    const asset = candidates.find((candidate) => assetProducedByChild(candidate, child, item.songId));
+    if (!asset) {
+      throw new Error(`drop child ${child.id} succeeded without a persisted certified playable asset`);
+    }
+    return {
+      songId: item.songId,
+      projectId: ctx.projectId,
+      initialChildJobId: item.jobId,
+      childJobId: child.id,
+      assetType: asset.assetType,
+      assetId: asset.id,
+      url: asset.url,
+      contentHash: asset.contentHash!,
+      verifiedAt: asset.verifiedAt!.toISOString(),
+      qualityState: 'passed',
+      approved: true,
+      certified: true,
+      qualityGate: gate,
+    };
+  });
+}
+
 /** The actual Drop Machine pipeline; the orchestration worker owns its retry.
  *  Exported so Albums can generate "the next track in this album's style". */
 export async function runDropPipeline(app: FastifyInstance, ctx: DropCtx, input: DropInput, dropJobId: string) {
@@ -115,15 +521,7 @@ async function runDropPipelineInner(app: FastifyInstance, ctx: DropCtx, input: D
       .catch(() => undefined);
   }
 
-  const drops: Array<{
-        songId?: string;
-        hookId?: string;
-        hookText?: string;
-        title?: string;
-        score: number | null;
-        jobId?: string;
-        error?: string;
-      }> = [];
+  const drops: DropTake[] = [];
 
       for (let i = 0; i < input.count; i++) {
         try {
@@ -227,39 +625,47 @@ async function runDropPipelineInner(app: FastifyInstance, ctx: DropCtx, input: D
   }
 
   drops.sort((a, b) => (b.score ?? 0) - (a.score ?? 0));
-  // If NOT ONE take produced a render job, the drop failed even though the
-  // pipeline ran to completion. Surface the real reason (the first take's error)
-  // at the TOP LEVEL so every UI shows WHY instead of a blank "Could not start
-  // the render". produced now counts REAL renders, not attempted takes.
-  const rendered = drops.filter((d) => d.jobId);
-  const failReason = rendered.length === 0
-    ? (drops.find((d) => d.error)?.error ?? 'the studio produced no song this run — check the API brain keys (ANTHROPIC / OPENAI) and try again')
-    : undefined;
-  // The run's LLM bill (metered by the brain context; estimates, labeled so).
-  // The RENDER cost lands on the render job itself when the engine reports it.
-  const costs = brainRunCosts();
-  await prisma.providerJob.update({
-    where: { id: dropJobId },
-    data: {
-      status: 'SUCCEEDED',
-      finishedAt: new Date(),
-      outputJson: {
-        theme: input.theme,
-        requested: input.count,
-        produced: rendered.length,
-        drop: drops,
-        error: failReason,
-        ...(costs ? { llmCosts: { estUsd: +costs.estUsd.toFixed(4), calls: costs.calls, byBrain: Object.fromEntries(Object.entries(costs.byBrain).map(([k, v]) => [k, { calls: v.calls, estUsd: +v.estUsd.toFixed(4) }])), degraded: costs.degraded, note: 'LLM writing bill (estimates); the render cost lands on the render job' } } : {}),
-      } as never,
-    },
+  // A queued child ID is not an output. The parent remains RUNNING until every
+  // direct render reaches a successful terminal state.
+  const queued = drops.filter((item): item is DropTake & { jobId: string } => !!item.jobId);
+  if (!queued.length) {
+    const detail = drops.find((item) => item.error)?.error
+      ?? 'the studio produced no render child this run';
+    throw new Error(`drop produced zero render children: ${detail}`);
+  }
+  const rendered: RenderedDropTake[] = queued.map((item) => {
+    if (!item.songId) throw new Error(`drop child ${item.jobId} has no persisted song identity`);
+    return { ...item, songId: item.songId };
   });
+  const directChildren = await waitForDropChildren(ctx, rendered.map((item) => item.jobId));
+  app.log.info({ dropJobId, children: directChildren.length }, `[drop] render children terminal @${secs()}s`);
 
-  // THE WILL-IT-BLOW GATE — no song ships until it's run through Will-it-hit, and
-  // if it won't blow the studio AUTO-APPLIES the A&R's own recommendations (rewrite
-  // + re-sing + re-master), re-scores, and KEEPS THE BEST version. It waits
-  // for each render, scores, improves below the bar. (WILL_IT_BLOW_MAX_PASSES=0
-  // reverts to score-only.)
-  await willItBlowGate(app, ctx.workspaceId, drops).catch((error) => {
-    app.log.warn({ err: error, dropJobId }, 'post-drop quality gate failed');
-  });
+  // Every rendered song needs a persisted passing quality receipt. A corrective
+  // re-render created by the gate is also a required terminal child.
+  await willItBlowGate(app, ctx.workspaceId, rendered);
+  const quality = await requirePassedDropQualityGates(ctx, rendered);
+  app.log.info({ dropJobId, songs: quality.evidenceBySongId.size }, `[drop] quality gate passed @${secs()}s`);
+
+  const playableOutputs = await loadDropPlayableOutputs(ctx, rendered, directChildren, quality);
+  if (!playableOutputs.length) {
+    throw new Error('drop completed without a persisted certified playable output');
+  }
+
+  // The orchestration worker owns the single parent terminal write. Returning
+  // concrete evidence keeps SUCCEEDED synonymous with "can be played now".
+  const costs = brainRunCosts();
+  return {
+    theme: input.theme,
+    requested: input.count,
+    produced: playableOutputs.length,
+    drop: drops,
+    childJobs: directChildren.map((child) => ({ jobId: child.id, status: 'SUCCEEDED' as const })),
+    playableOutputs,
+    qualityGate: {
+      status: 'passed' as const,
+      target: BLOW_TARGET,
+      songs: [...quality.evidenceBySongId.entries()].map(([songId, evidence]) => ({ songId, ...evidence })),
+    },
+    ...(costs ? { llmCosts: { estUsd: +costs.estUsd.toFixed(4), calls: costs.calls, byBrain: Object.fromEntries(Object.entries(costs.byBrain).map(([k, v]) => [k, { calls: v.calls, estUsd: +v.estUsd.toFixed(4) }])), degraded: costs.degraded, note: 'LLM writing bill (estimates); the render cost lands on the render job' } } : {}),
+  };
 }

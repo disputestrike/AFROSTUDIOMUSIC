@@ -15,6 +15,7 @@ import {
   assertSecretConfiguration,
   migratePlaintextWorkspaceSecrets,
   prisma,
+  Prisma,
 } from "@afrohit/db";
 import {
   assertProductionRuntimeSafety,
@@ -78,7 +79,13 @@ import {
   processGlossPass,
   processVerifyLexicon,
 } from "./processors/compound";
-import { markFailed, markRunning, markSucceeded } from "./lib/jobs";
+import {
+  markFailed,
+  markRunning,
+  markSucceeded,
+  refundFailedJob,
+  runWithJobAttemptContext,
+} from "./lib/jobs";
 
 const safeError = (error: unknown) => {
   const serialized = pino.stdSerializers.err(error as Error);
@@ -195,10 +202,88 @@ async function withWorkerUsageContext<T>(
   );
 }
 
+type ManagedWorkerJob = {
+  id?: string | number;
+  data?: { jobId?: string; workspaceId?: string };
+  attemptsMade?: number;
+  opts?: { attempts?: number };
+};
+
+async function runManagedAttempt(
+  job: ManagedWorkerJob,
+  handler: () => Promise<void>
+): Promise<void> {
+  const dbJobId = job.data?.jobId;
+  const finalAttempt = (job.attemptsMade ?? 0) + 1 >= (job.opts?.attempts ?? 1);
+
+  await runWithJobAttemptContext(finalAttempt, async () => {
+    let thrown: unknown;
+    try {
+      await handler();
+    } catch (error) {
+      thrown = error;
+    }
+
+    if (!dbJobId) {
+      if (thrown) throw thrown;
+      return;
+    }
+
+    let state = await prisma.providerJob.findUnique({
+      where: { id: dbJobId },
+      select: { status: true, errorJson: true },
+    });
+    if (!state) {
+      if (thrown) throw thrown;
+      throw new Error(`managed provider job ${dbJobId} is missing`);
+    }
+    if (state.status === "SUCCEEDED" || state.status === "CANCELED") {
+      if (thrown) throw thrown;
+      return;
+    }
+
+    if (state.status !== "FAILED") {
+      await markFailed(
+        dbJobId,
+        thrown ?? new Error(`processor exited with ${state.status} status`)
+      );
+      state = await prisma.providerJob.findUnique({
+        where: { id: dbJobId },
+        select: { status: true, errorJson: true },
+      });
+    }
+
+    const recordedMessage = (state?.errorJson as { message?: string } | null)
+      ?.message;
+    const failure =
+      thrown instanceof Error
+        ? thrown
+        : new Error(recordedMessage || "managed provider job failed");
+
+    if (!finalAttempt) {
+      await prisma.providerJob.updateMany({
+        where: { id: dbJobId, status: "FAILED" },
+        data: {
+          status: "QUEUED",
+          finishedAt: null,
+          errorJson: Prisma.DbNull,
+        },
+      });
+    } else {
+      // Idempotent and deliberately not swallowed: a failed refund must remain
+      // operationally visible instead of silently leaking customer credit.
+      await refundFailedJob(dbJobId);
+    }
+    throw failure;
+  });
+}
+
 function makeWorker(queue: string, handler: (job: never) => Promise<void>) {
   const guarded = async (job: never) => {
     await secretsReady;
-    await withWorkerUsageContext(job, () => handler(job));
+    await withWorkerUsageContext(job, () =>
+      runManagedAttempt(job as ManagedWorkerJob, () => handler(job))
+    );
   };
   const w = new Worker(queue, guarded as never, {
     connection,
@@ -250,67 +335,70 @@ const workers = [
     (async (job: { id?: string | number; data: never; name: string }) => {
       await secretsReady;
       await withWorkerUsageContext(job, async () => {
-        const data = job.data as { jobId?: string };
-        const managed = data.jobId
-          ? await prisma.providerJob.findFirst({
-              where: { id: data.jobId, kind: "lake" },
-              select: { id: true },
-            })
-          : null;
-        if (managed) await markRunning(managed.id);
-        // OWNER LAW: EVERYTHING on the lake queue is background text/analysis work
-        // — Cerebras-first for every LLM call, whether the nightly cron fired it or
-        // the owner clicked a Data-lake button in Admin. Claude never bills for
-        // lake work; the ladder stays as the failure safety only.
-        try {
-          await runWithBrainContext(
-            { forceTier: "bulk", runId: managed?.id ?? `lake:${job.name}` },
-            async () => {
-              if (job.name === "deep-measure")
-                await processDeepMeasure(job.data as never);
-              else if (job.name === "analyze-audio")
-                await processAnalyze(job.data as never);
-              else if (job.name === "nightly-compound")
-                await processNightlyCompound();
-              else if (job.name === "measure-backfill")
-                await processMeasureBackfill();
-              else if (job.name === "learn-backfill")
-                await processLearnBackfill();
-              else if (job.name === "listen-back") await processListenBack();
-              else if (job.name === "refile-references")
-                await processRefileReferences();
-              else if (job.name === "mine-lexicon") await processMineLexicon();
-              else if (job.name === "lexicon-research")
-                await processLexiconResearch();
-              else if (job.name === "wiktionary-harvest")
-                await processWiktionaryHarvest();
-              else if (job.name === "wiktionary-burst")
-                await processWiktionaryHarvest({ all: true });
-              else if (job.name === "lexicon-gloss") await processGlossPass();
-              else if (job.name === "lexicon-verify")
-                await processVerifyLexicon();
-              else if (job.name === "vocal-qc-backfill")
-                await processVocalQcBackfill();
-              else if (job.name === "beat-qc-backfill")
-                await processBeatQcBackfill();
-              else if (job.name === "voice-dataset-purge-backfill")
-                await processVoiceDatasetPurgeBackfill();
-              // Voice DATASET BUILDER: local ffmpeg convert/split/zip — background lane
-              // by design (CPU work, never blocks a render; no LLM, so the bulk brain
-              // context wrapper is a no-op for it).
-              else if (job.name === "voice-dataset")
-                await processVoiceDataset(job.data as never);
-            }
-          );
-          if (managed)
-            await markSucceeded(managed.id, {
-              task: job.name,
-              completed: true,
-            });
-        } catch (error) {
-          if (managed) await markFailed(managed.id, error);
-          throw error;
-        }
+        await runManagedAttempt(job as ManagedWorkerJob, async () => {
+          const data = job.data as { jobId?: string };
+          const managed = data.jobId
+            ? await prisma.providerJob.findFirst({
+                where: { id: data.jobId, kind: "lake" },
+                select: { id: true },
+              })
+            : null;
+          if (managed) await markRunning(managed.id);
+          // OWNER LAW: EVERYTHING on the lake queue is background text/analysis work
+          // — Cerebras-first for every LLM call, whether the nightly cron fired it or
+          // the owner clicked a Data-lake button in Admin. Claude never bills for
+          // lake work; the ladder stays as the failure safety only.
+          try {
+            await runWithBrainContext(
+              { forceTier: "bulk", runId: managed?.id ?? `lake:${job.name}` },
+              async () => {
+                if (job.name === "deep-measure")
+                  await processDeepMeasure(job.data as never);
+                else if (job.name === "analyze-audio")
+                  await processAnalyze(job.data as never);
+                else if (job.name === "nightly-compound")
+                  await processNightlyCompound();
+                else if (job.name === "measure-backfill")
+                  await processMeasureBackfill();
+                else if (job.name === "learn-backfill")
+                  await processLearnBackfill();
+                else if (job.name === "listen-back") await processListenBack();
+                else if (job.name === "refile-references")
+                  await processRefileReferences();
+                else if (job.name === "mine-lexicon")
+                  await processMineLexicon();
+                else if (job.name === "lexicon-research")
+                  await processLexiconResearch();
+                else if (job.name === "wiktionary-harvest")
+                  await processWiktionaryHarvest();
+                else if (job.name === "wiktionary-burst")
+                  await processWiktionaryHarvest({ all: true });
+                else if (job.name === "lexicon-gloss") await processGlossPass();
+                else if (job.name === "lexicon-verify")
+                  await processVerifyLexicon();
+                else if (job.name === "vocal-qc-backfill")
+                  await processVocalQcBackfill();
+                else if (job.name === "beat-qc-backfill")
+                  await processBeatQcBackfill();
+                else if (job.name === "voice-dataset-purge-backfill")
+                  await processVoiceDatasetPurgeBackfill();
+                // Voice DATASET BUILDER: local ffmpeg convert/split/zip — background lane
+                // by design (CPU work, never blocks a render; no LLM, so the bulk brain
+                // context wrapper is a no-op for it).
+                else if (job.name === "voice-dataset")
+                  await processVoiceDataset(job.data as never);
+              }
+            );
+            if (managed)
+              await markSucceeded(managed.id, {
+                task: job.name,
+                completed: true,
+              });
+          } catch (error) {
+            if (managed) await markFailed(managed.id, error);
+            throw error;
+          }
+        });
       });
     }) as never,
     { connection, concurrency: 1 }
