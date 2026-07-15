@@ -50,6 +50,10 @@ try {
   for (let index = 0; index < 10; index += 1) {
     const bytes = wav(index);
     const file = "reference-" + index + ".wav";
+    const referenceHash = createHash("sha256").update(bytes).digest("hex");
+    const afrohitHash = createHash("sha256")
+      .update("afrohit-" + index)
+      .digest("hex");
     await writeFile(join(directory, file), bytes);
     entries.push({
       id: "reference-" + index,
@@ -57,13 +61,38 @@ try {
       genre: genres[index % genres.length],
       file,
       format: "wav",
-      sha256: createHash("sha256").update(bytes).digest("hex"),
+      sha256: referenceHash,
       rights: {
         confirmed: true,
         basis: "licensed_evaluation",
         note: "Licensed for controlled benchmark evaluation.",
         attestedBy: "Automated corpus test",
         attestedAt: "2026-07-14T12:00:00.000Z",
+      },
+      normalizationEvidence: {
+        schemaVersion: 1,
+        measuredAt: "2026-07-14T12:00:00.000Z",
+        analyzer: {
+          name: "ffmpeg",
+          version: "7.1",
+          loudnessMethod: "ebu_r128",
+        },
+        tolerances: {
+          maxIntegratedLufsDelta: 0.5,
+          maxDurationDeltaSeconds: 1,
+        },
+        afrohit: {
+          contentHash: afrohitHash,
+          integratedLufs: -9,
+          durationSeconds: 180 + index,
+          metadata: { formatTagKeys: [], streamTagKeys: [] },
+        },
+        reference: {
+          contentHash: referenceHash,
+          integratedLufs: -8.7,
+          durationSeconds: 180.5 + index,
+          metadata: { formatTagKeys: [], streamTagKeys: [] },
+        },
       },
     });
   }
@@ -105,7 +134,60 @@ try {
   assert.equal(report.mode, "validate-only");
   assert.equal(report.corpus.entries, 10);
   assert.equal(report.corpus.genres.length, 5);
+  assert.equal(report.corpus.normalizationMeasured, 10);
   assert.match(report.evidenceHash, /^[a-f0-9]{64}$/);
+
+  const missingEvidence = structuredClone(manifest);
+  delete missingEvidence.entries[0].normalizationEvidence;
+  const missingEvidencePath = join(directory, "missing-evidence.json");
+  await writeFile(missingEvidencePath, JSON.stringify(missingEvidence));
+  const missingEvidenceRejected = spawnSync(
+    process.execPath,
+    [cli, "--manifest", missingEvidencePath, "--validate-only"],
+    { cwd: repo, encoding: "utf8" }
+  );
+  assert.notEqual(
+    missingEvidenceRejected.status,
+    0,
+    "boolean-only normalization claims were accepted"
+  );
+
+  const loudnessMismatch = structuredClone(manifest);
+  loudnessMismatch.entries[0].normalizationEvidence.reference.integratedLufs =
+    -7;
+  const loudnessMismatchPath = join(directory, "loudness-mismatch.json");
+  await writeFile(loudnessMismatchPath, JSON.stringify(loudnessMismatch));
+  const loudnessRejected = spawnSync(
+    process.execPath,
+    [cli, "--manifest", loudnessMismatchPath, "--validate-only"],
+    { cwd: repo, encoding: "utf8" }
+  );
+  assert.notEqual(loudnessRejected.status, 0, "loudness mismatch was accepted");
+
+  const durationMismatch = structuredClone(manifest);
+  durationMismatch.entries[0].normalizationEvidence.reference.durationSeconds =
+    182;
+  const durationMismatchPath = join(directory, "duration-mismatch.json");
+  await writeFile(durationMismatchPath, JSON.stringify(durationMismatch));
+  const durationRejected = spawnSync(
+    process.execPath,
+    [cli, "--manifest", durationMismatchPath, "--validate-only"],
+    { cwd: repo, encoding: "utf8" }
+  );
+  assert.notEqual(durationRejected.status, 0, "duration mismatch was accepted");
+
+  const metadataLeak = structuredClone(manifest);
+  metadataLeak.entries[0].normalizationEvidence.reference.metadata.formatTagKeys.push(
+    "artist"
+  );
+  const metadataLeakPath = join(directory, "metadata-leak.json");
+  await writeFile(metadataLeakPath, JSON.stringify(metadataLeak));
+  const metadataRejected = spawnSync(
+    process.execPath,
+    [cli, "--manifest", metadataLeakPath, "--validate-only"],
+    { cwd: repo, encoding: "utf8" }
+  );
+  assert.notEqual(metadataRejected.status, 0, "identity metadata was accepted");
 
   const duplicate = structuredClone(manifest);
   duplicate.entries[1].file = duplicate.entries[0].file;

@@ -3,6 +3,7 @@ import { z } from "zod";
 import { createHash, randomBytes } from "node:crypto";
 import { loadReleaseCertification, prisma } from "@afrohit/db";
 import {
+  BENCHMARK_NORMALIZATION_LIMITS,
   canonicalJson,
   evaluateBenchmarkCorpus,
   evaluateCompetitorBenchmark,
@@ -48,6 +49,75 @@ const scoreSetSchema = z
   })
   .strict();
 
+const normalizationSideEvidenceSchema = z
+  .object({
+    contentHash: z.string().regex(/^[a-f0-9]{64}$/i),
+    integratedLufs: z.number().finite().min(-70).max(5),
+    durationSeconds: z.number().finite().min(1).max(21_600),
+    metadata: z
+      .object({
+        formatTagKeys: z.array(z.string()).length(0),
+        streamTagKeys: z.array(z.string()).length(0),
+      })
+      .strict(),
+  })
+  .strict();
+
+const normalizationEvidenceSchema = z
+  .object({
+    schemaVersion: z.literal(1),
+    measuredAt: z.string().refine(
+      value => value.endsWith("Z") && Number.isFinite(Date.parse(value)),
+      "measuredAt must be a UTC timestamp"
+    ),
+    analyzer: z
+      .object({
+        name: z.string().trim().min(2).max(80),
+        version: z.string().trim().min(1).max(80),
+        loudnessMethod: z.literal("ebu_r128"),
+      })
+      .strict(),
+    tolerances: z
+      .object({
+        maxIntegratedLufsDelta: z
+          .number()
+          .finite()
+          .min(0)
+          .max(BENCHMARK_NORMALIZATION_LIMITS.maxIntegratedLufsDelta),
+        maxDurationDeltaSeconds: z
+          .number()
+          .finite()
+          .min(0)
+          .max(BENCHMARK_NORMALIZATION_LIMITS.maxDurationDeltaSeconds),
+      })
+      .strict(),
+    afrohit: normalizationSideEvidenceSchema,
+    reference: normalizationSideEvidenceSchema,
+  })
+  .strict()
+  .superRefine((value, ctx) => {
+    if (
+      Math.abs(value.afrohit.integratedLufs - value.reference.integratedLufs) >
+      value.tolerances.maxIntegratedLufsDelta
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["reference", "integratedLufs"],
+        message: "measured loudness exceeds the persisted tolerance",
+      });
+    }
+    if (
+      Math.abs(value.afrohit.durationSeconds - value.reference.durationSeconds) >
+      value.tolerances.maxDurationDeltaSeconds
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["reference", "durationSeconds"],
+        message: "measured duration exceeds the persisted tolerance",
+      });
+    }
+  });
+
 const comparisonProtocolSchema = z
   .object({
     version: z.literal(1),
@@ -57,6 +127,7 @@ const comparisonProtocolSchema = z
     durationMatched: z.literal(true),
     independentJudgesMin: z.number().int().min(3).max(100),
     note: z.string().trim().min(10).max(500),
+    normalizationEvidence: normalizationEvidenceSchema.optional(),
   })
   .strict();
 

@@ -1,3 +1,5 @@
+import { canonicalJson } from "./canonical-json";
+
 export const BENCHMARK_DIMENSIONS = [
   "groove",
   "genreIdentity",
@@ -47,8 +49,55 @@ export interface BenchmarkCorpusOptions {
   minGenres?: number;
 }
 
+export const BENCHMARK_NORMALIZATION_LIMITS = {
+  maxIntegratedLufsDelta: 1,
+  maxDurationDeltaSeconds: 1,
+} as const;
+
+export interface BenchmarkNormalizationSideEvidence {
+  contentHash: string;
+  integratedLufs: number;
+  durationSeconds: number;
+  metadata: {
+    formatTagKeys: string[];
+    streamTagKeys: string[];
+  };
+}
+
+export interface BenchmarkNormalizationEvidence {
+  schemaVersion: 1;
+  measuredAt: string;
+  analyzer: {
+    name: string;
+    version: string;
+    loudnessMethod: "ebu_r128";
+  };
+  tolerances: {
+    maxIntegratedLufsDelta: number;
+    maxDurationDeltaSeconds: number;
+  };
+  afrohit: BenchmarkNormalizationSideEvidence;
+  reference: BenchmarkNormalizationSideEvidence;
+}
+
 const CONTENT_HASH = /^[a-f0-9]{64}$/i;
 const RIGHTS_BASES = new Set(["owner", "licensed_evaluation"]);
+const NORMALIZATION_EPSILON = 1e-9;
+
+function record(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
+}
+
+function hasExactKeys(
+  value: Record<string, unknown>,
+  keys: readonly string[]
+): boolean {
+  const actual = Object.keys(value).sort();
+  const expected = [...keys].sort();
+  return canonicalJson(actual) === canonicalJson(expected);
+}
 
 function validUtcTimestamp(value: unknown): boolean {
   return (
@@ -108,6 +157,109 @@ function hasValidComparisonProtocol(row: CompetitorPairEvidence): boolean {
   );
 }
 
+function hasValidNormalizationSide(
+  value: unknown,
+  expectedContentHash: string
+): value is BenchmarkNormalizationSideEvidence {
+  const side = record(value);
+  const metadata = record(side?.metadata);
+  return (
+    !!side &&
+    hasExactKeys(side, [
+      "contentHash",
+      "integratedLufs",
+      "durationSeconds",
+      "metadata",
+    ]) &&
+    typeof side.contentHash === "string" &&
+    CONTENT_HASH.test(side.contentHash) &&
+    side.contentHash.toLowerCase() === expectedContentHash.toLowerCase() &&
+    typeof side.integratedLufs === "number" &&
+    Number.isFinite(side.integratedLufs) &&
+    side.integratedLufs >= -70 &&
+    side.integratedLufs <= 5 &&
+    typeof side.durationSeconds === "number" &&
+    Number.isFinite(side.durationSeconds) &&
+    side.durationSeconds >= 1 &&
+    side.durationSeconds <= 21_600 &&
+    !!metadata &&
+    hasExactKeys(metadata, ["formatTagKeys", "streamTagKeys"]) &&
+    Array.isArray(metadata.formatTagKeys) &&
+    metadata.formatTagKeys.length === 0 &&
+    Array.isArray(metadata.streamTagKeys) &&
+    metadata.streamTagKeys.length === 0
+  );
+}
+
+/**
+ * Validate persisted, asset-bound normalization measurements. Declaration
+ * booleans are intentionally insufficient: both sides need measured LUFS and
+ * duration values, plus empty post-normalization metadata tag inventories.
+ */
+export function hasValidBenchmarkNormalizationEvidence(
+  row: CompetitorPairEvidence
+): boolean {
+  const attestation = record(row.rightsAttestation);
+  const protocol = record(attestation?.comparisonProtocol);
+  const evidence = record(protocol?.normalizationEvidence);
+  const analyzer = record(evidence?.analyzer);
+  const tolerances = record(evidence?.tolerances);
+  if (
+    !evidence ||
+    !hasExactKeys(evidence, [
+      "schemaVersion",
+      "measuredAt",
+      "analyzer",
+      "tolerances",
+      "afrohit",
+      "reference",
+    ]) ||
+    evidence.schemaVersion !== 1 ||
+    !validUtcTimestamp(evidence.measuredAt) ||
+    !analyzer ||
+    !hasExactKeys(analyzer, ["name", "version", "loudnessMethod"]) ||
+    typeof analyzer.name !== "string" ||
+    analyzer.name.trim().length < 2 ||
+    typeof analyzer.version !== "string" ||
+    analyzer.version.trim().length < 1 ||
+    analyzer.loudnessMethod !== "ebu_r128" ||
+    !tolerances ||
+    !hasExactKeys(tolerances, [
+      "maxIntegratedLufsDelta",
+      "maxDurationDeltaSeconds",
+    ]) ||
+    typeof tolerances.maxIntegratedLufsDelta !== "number" ||
+    !Number.isFinite(tolerances.maxIntegratedLufsDelta) ||
+    tolerances.maxIntegratedLufsDelta < 0 ||
+    tolerances.maxIntegratedLufsDelta >
+      BENCHMARK_NORMALIZATION_LIMITS.maxIntegratedLufsDelta ||
+    typeof tolerances.maxDurationDeltaSeconds !== "number" ||
+    !Number.isFinite(tolerances.maxDurationDeltaSeconds) ||
+    tolerances.maxDurationDeltaSeconds < 0 ||
+    tolerances.maxDurationDeltaSeconds >
+      BENCHMARK_NORMALIZATION_LIMITS.maxDurationDeltaSeconds ||
+    !hasValidNormalizationSide(
+      evidence.afrohit,
+      row.afrohitContentHash
+    ) ||
+    !hasValidNormalizationSide(
+      evidence.reference,
+      row.referenceContentHash
+    )
+  ) {
+    return false;
+  }
+
+  const afrohit = evidence.afrohit as unknown as BenchmarkNormalizationSideEvidence;
+  const reference = evidence.reference as unknown as BenchmarkNormalizationSideEvidence;
+  return (
+    Math.abs(afrohit.integratedLufs - reference.integratedLufs) <=
+      tolerances.maxIntegratedLufsDelta + NORMALIZATION_EPSILON &&
+    Math.abs(afrohit.durationSeconds - reference.durationSeconds) <=
+      tolerances.maxDurationDeltaSeconds + NORMALIZATION_EPSILON
+  );
+}
+
 /**
  * Select the frozen, rights-attested, byte-independent pair corpus that may
  * contribute to a competitive claim. Duplicate audio is excluded on both
@@ -146,7 +298,10 @@ export function evaluateBenchmarkCorpus(
   );
   const rightsValid = relevant.filter(hasValidRights);
   const protocolValid = rightsValid.filter(hasValidComparisonProtocol);
-  const eligible = protocolValid.filter(row => {
+  const normalizationValid = protocolValid.filter(
+    hasValidBenchmarkNormalizationEvidence
+  );
+  const eligible = normalizationValid.filter(row => {
     const referenceHash = row.referenceContentHash.toLowerCase();
     const afrohitHash = row.afrohitContentHash.toLowerCase();
     return (
@@ -172,6 +327,7 @@ export function evaluateBenchmarkCorpus(
   ).length;
   const rightsPassed = rightsValid.length >= minPairs;
   const protocolPassed = protocolValid.length >= minPairs;
+  const normalizationPassed = normalizationValid.length >= minPairs;
   const independencePassed = eligible.length >= minPairs;
   const genreCoveragePassed = genres.size >= minGenres;
 
@@ -180,6 +336,7 @@ export function evaluateBenchmarkCorpus(
     claimReady:
       rightsPassed &&
       protocolPassed &&
+      normalizationPassed &&
       independencePassed &&
       genreCoveragePassed,
     eligiblePairIds: eligible.map(row => row.pairId).sort(),
@@ -187,12 +344,15 @@ export function evaluateBenchmarkCorpus(
       totalPairs: relevant.length,
       rightsValidPairs: rightsValid.length,
       protocolValidPairs: protocolValid.length,
+      normalizationValidPairs: normalizationValid.length,
       eligiblePairs: eligible.length,
       uniqueReferenceHashes: referenceCounts.size,
       uniqueAfrohitHashes: afrohitCounts.size,
       genres: genres.size,
       invalidRightsPairs: relevant.length - rightsValid.length,
       invalidProtocolPairs: rightsValid.length - protocolValid.length,
+      invalidNormalizationPairs:
+        protocolValid.length - normalizationValid.length,
       duplicateReferencePairs,
       duplicateAfrohitPairs,
       crossSideHashCollisions: crossSideHashes.size,
@@ -200,9 +360,14 @@ export function evaluateBenchmarkCorpus(
     gates: {
       rightsPassed,
       protocolPassed,
+      normalizationPassed,
       independencePassed,
       genreCoveragePassed,
-      required: { minPairs, minGenres },
+      required: {
+        minPairs,
+        minGenres,
+        ...BENCHMARK_NORMALIZATION_LIMITS,
+      },
     },
   };
 }
