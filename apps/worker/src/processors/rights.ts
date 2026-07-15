@@ -1,6 +1,7 @@
 import { canonicalReceiptHash, recognizeSong, runRightsCheck } from '@afrohit/ai';
 import { loadReleaseCertification, prisma } from '@afrohit/db';
-import { extractClip, probeDurationS } from '../lib/ffmpeg';
+import { assertStoredContentHash } from '../lib/certified-assets';
+import { extractClip, NATIVE_AUDIO_LIMITS, probeAudioBufferDurationS } from '../lib/ffmpeg';
 import { markFailed, markRunning } from '../lib/jobs';
 import { downloadToBuffer } from '../lib/storage';
 
@@ -91,8 +92,12 @@ export async function processRights(payload: RightsPayload): Promise<void> {
       }),
     ]);
 
-    const audioBytes = await downloadToBuffer(certification.audio.url, { maxBytes: 256 * 1024 * 1024 });
-    const duration = await probeDurationS(certification.audio.url);
+    const audioBytes = await downloadToBuffer(certification.audio.url, {
+      maxBytes: 256 * 1024 * 1024,
+      timeoutMs: NATIVE_AUDIO_LIMITS.remoteInputTimeoutMs,
+    });
+    assertStoredContentHash(audioBytes, certification.audio.contentHash, 'rights_source_audio');
+    const duration = await probeAudioBufferDurationS(audioBytes);
     const clipStart = Math.max(0, Math.min(Math.floor(duration / 3), Math.max(0, duration - 12)));
     const clip = await extractClip(audioBytes, clipStart, Math.min(12, Math.max(1, duration || 12)));
     const recognition = await recognizeSong({ audio: clip, filename: 'rights-check.mp3' });

@@ -5,7 +5,16 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { loadReleaseCertification, prisma, releaseEvidenceHash } from '@afrohit/db';
 import { canonicalJson } from '@afrohit/shared';
-import { ffmpegAvailable, runFfmpeg } from '../lib/ffmpeg';
+import {
+  assertCertifiableAudioQuality,
+  assertStoredContentHash,
+} from '../lib/certified-assets';
+import {
+  ffmpegAvailable,
+  measureAudioQuality,
+  NATIVE_AUDIO_LIMITS,
+  runFfmpeg,
+} from '../lib/ffmpeg';
 import { markFailed, markRunning } from '../lib/jobs';
 import { deleteObjectByUrl, downloadToBuffer, uploadBytes } from '../lib/storage';
 
@@ -83,6 +92,8 @@ async function renderReleaseMedia(options: {
       '-flags:a', '+bitexact',
       mp3Path,
     ]);
+    const mp3Qc = await measureAudioQuality(mp3Path);
+    assertCertifiableAudioQuality(mp3Qc, 'release_mp3');
     await runFfmpeg([
       '-i', sourceCover,
       '-map_metadata', '-1',
@@ -123,6 +134,148 @@ async function renderReleaseMedia(options: {
 
 function addPackageFile(files: PackageFile[], path: string, value: Buffer | string): void {
   files.push({ path, bytes: Buffer.isBuffer(value) ? value : Buffer.from(value, 'utf8') });
+}
+
+type ReleaseArchiveVerification = {
+  expectedContentHash?: string | null;
+  expectedSizeBytes?: number | null;
+  expectedSourceFingerprint?: string;
+  expectedManifest?: unknown;
+  requiredPaths?: readonly string[];
+};
+
+function jsonRecord(value: unknown): JsonRecord | null {
+  return value && typeof value === 'object' && !Array.isArray(value) ? value as JsonRecord : null;
+}
+
+function safeArchivePath(path: string): boolean {
+  if (!path || path.startsWith('/') || path.includes('\\') || path.includes('\0')) return false;
+  return path.split('/').every((segment) => segment && segment !== '.' && segment !== '..');
+}
+
+export async function verifyReleaseArchive(
+  archive: Buffer,
+  options: ReleaseArchiveVerification = {},
+): Promise<JsonRecord> {
+  if (options.expectedSizeBytes != null && archive.byteLength !== options.expectedSizeBytes) {
+    throw new Error('release_archive_size_mismatch');
+  }
+  if (options.expectedContentHash !== undefined) {
+    assertStoredContentHash(archive, options.expectedContentHash, 'release_archive');
+  }
+
+  const zip = await JSZip.loadAsync(archive, { checkCRC32: true });
+  const archivePaths = Object.keys(zip.files).filter((path) => !zip.files[path]!.dir);
+  if (archivePaths.some((path) => !safeArchivePath(path))) {
+    throw new Error('release_archive_unsafe_path');
+  }
+  const manifestFile = zip.file('manifest.json');
+  const checksumsFile = zip.file('checksums.sha256');
+  if (!manifestFile || !checksumsFile) throw new Error('release_archive_integrity_files_missing');
+
+  const [manifestBytes, checksumsText] = await Promise.all([
+    manifestFile.async('nodebuffer'),
+    checksumsFile.async('string'),
+  ]);
+  let parsedManifest: unknown;
+  try {
+    parsedManifest = JSON.parse(manifestBytes.toString('utf8'));
+  } catch {
+    throw new Error('release_archive_manifest_invalid_json');
+  }
+  const manifest = jsonRecord(parsedManifest);
+  if (!manifest || manifest.schemaVersion !== 1 || !Array.isArray(manifest.files)) {
+    throw new Error('release_archive_manifest_invalid');
+  }
+  if (
+    options.expectedSourceFingerprint !== undefined
+    && manifest.sourceFingerprint !== options.expectedSourceFingerprint
+  ) {
+    throw new Error('release_archive_source_fingerprint_mismatch');
+  }
+  if (
+    options.expectedManifest !== undefined
+    && canonicalJson(manifest) !== canonicalJson(options.expectedManifest)
+  ) {
+    throw new Error('release_archive_persisted_manifest_mismatch');
+  }
+
+  const entries: ManifestEntry[] = manifest.files.map((value, index) => {
+    const row = jsonRecord(value);
+    if (
+      !row
+      || typeof row.path !== 'string'
+      || !safeArchivePath(row.path)
+      || row.path === 'manifest.json'
+      || row.path === 'checksums.sha256'
+      || typeof row.sizeBytes !== 'number'
+      || !Number.isInteger(row.sizeBytes)
+      || row.sizeBytes < 0
+      || typeof row.sha256 !== 'string'
+      || !/^[a-f0-9]{64}$/i.test(row.sha256)
+    ) {
+      throw new Error(`release_archive_manifest_entry_invalid:${index}`);
+    }
+    return {
+      path: row.path,
+      sizeBytes: row.sizeBytes,
+      sha256: row.sha256.toLowerCase(),
+    };
+  });
+  const entryPaths = new Set(entries.map((entry) => entry.path));
+  if (entryPaths.size !== entries.length) throw new Error('release_archive_manifest_duplicate_path');
+
+  const checksums = new Map<string, string>();
+  const checksumLines = checksumsText.replace(/\r/g, '').split('\n');
+  if (checksumLines.at(-1) === '') checksumLines.pop();
+  for (const [index, line] of checksumLines.entries()) {
+    const match = line.match(/^([a-f0-9]{64}) {2}(.+)$/i);
+    if (!match || !safeArchivePath(match[2]!)) {
+      throw new Error(`release_archive_checksum_entry_invalid:${index}`);
+    }
+    const path = match[2]!;
+    if (checksums.has(path)) throw new Error('release_archive_checksum_duplicate_path');
+    checksums.set(path, match[1]!.toLowerCase());
+  }
+
+  const expectedChecksumPaths = new Set([...entryPaths, 'manifest.json']);
+  if (
+    checksums.size !== expectedChecksumPaths.size
+    || [...checksums.keys()].some((path) => !expectedChecksumPaths.has(path))
+  ) {
+    throw new Error('release_archive_checksum_set_mismatch');
+  }
+  const expectedArchivePaths = new Set([...entryPaths, 'manifest.json', 'checksums.sha256']);
+  if (
+    archivePaths.length !== expectedArchivePaths.size
+    || archivePaths.some((path) => !expectedArchivePaths.has(path))
+  ) {
+    throw new Error('release_archive_file_set_mismatch');
+  }
+  for (const requiredPath of options.requiredPaths ?? []) {
+    if (!expectedArchivePaths.has(requiredPath)) {
+      throw new Error(`release_archive_missing_${requiredPath}`);
+    }
+  }
+
+  if (checksums.get('manifest.json') !== sha256(manifestBytes)) {
+    throw new Error('release_archive_manifest_hash_mismatch');
+  }
+  for (const entry of entries) {
+    if (checksums.get(entry.path) !== entry.sha256) {
+      throw new Error(`release_archive_checksum_manifest_mismatch:${entry.path}`);
+    }
+    const file = zip.file(entry.path);
+    if (!file) throw new Error(`release_archive_missing_${entry.path}`);
+    const bytes = await file.async('nodebuffer');
+    if (bytes.byteLength !== entry.sizeBytes) {
+      throw new Error(`release_archive_file_size_mismatch:${entry.path}`);
+    }
+    if (sha256(bytes) !== entry.sha256) {
+      throw new Error(`release_archive_file_hash_mismatch:${entry.path}`);
+    }
+  }
+  return manifest;
 }
 
 export async function processExport(payload: ExportPayload): Promise<void> {
@@ -170,6 +323,15 @@ export async function processExport(payload: ExportPayload): Promise<void> {
         zip: 'deflate9_deterministic_date',
       },
     });
+    const base = safeFileBase(certification.song.title);
+    const requiredArchivePaths = [
+      'manifest.json',
+      'checksums.sha256',
+      'rights/rights-receipt.json',
+      'artwork/cover-3000x3000-rgb.jpg',
+      'audio/' + base + '.wav',
+      'audio/' + base + '.mp3',
+    ];
     const existing = await prisma.export.findUnique({
       where: { songId_sourceFingerprint: { songId: payload.songId, sourceFingerprint } },
     });
@@ -180,6 +342,17 @@ export async function processExport(payload: ExportPayload): Promise<void> {
       && existing.contentHash
       && existing.verifiedAt
     ) {
+      const existingArchive = await downloadToBuffer(existing.archiveUrl, {
+        maxBytes: MAX_ARCHIVE_BYTES,
+        timeoutMs: NATIVE_AUDIO_LIMITS.remoteInputTimeoutMs,
+      });
+      await verifyReleaseArchive(existingArchive, {
+        expectedContentHash: existing.contentHash,
+        expectedSizeBytes: existing.sizeBytes,
+        expectedSourceFingerprint: sourceFingerprint,
+        expectedManifest: existing.manifest,
+        requiredPaths: requiredArchivePaths,
+      });
       await prisma.$transaction([
         prisma.song.update({ where: { id: payload.songId }, data: { status: 'EXPORTED' } }),
         prisma.providerJob.update({
@@ -211,19 +384,32 @@ export async function processExport(payload: ExportPayload): Promise<void> {
       orderBy: { createdAt: 'desc' },
     });
     const [audioBytes, coverBytes, backingBytes] = await Promise.all([
-      downloadToBuffer(certification.audio.url, { maxBytes: 512 * 1024 * 1024 }),
-      downloadToBuffer(certification.cover.url, { maxBytes: 50 * 1024 * 1024 }),
+      downloadToBuffer(certification.audio.url, {
+        maxBytes: 512 * 1024 * 1024,
+        timeoutMs: NATIVE_AUDIO_LIMITS.remoteInputTimeoutMs,
+      }),
+      downloadToBuffer(certification.cover.url, {
+        maxBytes: 50 * 1024 * 1024,
+        timeoutMs: NATIVE_AUDIO_LIMITS.remoteInputTimeoutMs,
+      }),
       backing
-        ? downloadToBuffer(backing.url, { maxBytes: 512 * 1024 * 1024 })
+        ? downloadToBuffer(backing.url, {
+            maxBytes: 512 * 1024 * 1024,
+            timeoutMs: NATIVE_AUDIO_LIMITS.remoteInputTimeoutMs,
+          })
         : Promise.resolve(null),
     ]);
+    assertStoredContentHash(audioBytes, certification.audio.contentHash, 'export_source_audio');
+    assertStoredContentHash(coverBytes, certification.cover.contentHash, 'export_source_cover');
+    if (backing && backingBytes) {
+      assertStoredContentHash(backingBytes, backing.contentHash, 'export_source_backing');
+    }
     const media = await renderReleaseMedia({
       audio: audioBytes,
       cover: coverBytes,
       backingTrack: backingBytes,
     });
 
-    const base = safeFileBase(certification.song.title);
     const files: PackageFile[] = [];
     addPackageFile(files, 'audio/' + base + '.wav', media.wav);
     addPackageFile(files, 'audio/' + base + '.mp3', media.mp3);
@@ -363,16 +549,12 @@ export async function processExport(payload: ExportPayload): Promise<void> {
     if (archive.byteLength < 1024 || archive.byteLength > MAX_ARCHIVE_BYTES) {
       throw new Error('release_archive_size_invalid');
     }
-    const verifiedZip = await JSZip.loadAsync(archive, { checkCRC32: true });
-    for (const required of [
-      'manifest.json',
-      'checksums.sha256',
-      'rights/rights-receipt.json',
-      'artwork/cover-3000x3000-rgb.jpg',
-      'audio/' + base + '.wav',
-    ]) {
-      if (!verifiedZip.file(required)) throw new Error('release_archive_missing_' + required);
-    }
+    await verifyReleaseArchive(archive, {
+      expectedSizeBytes: archive.byteLength,
+      expectedSourceFingerprint: sourceFingerprint,
+      expectedManifest: manifest,
+      requiredPaths: requiredArchivePaths,
+    });
 
     const archiveHash = sha256(archive);
     archiveUrl = await uploadBytes({
@@ -381,6 +563,17 @@ export async function processExport(payload: ExportPayload): Promise<void> {
       bytes: archive,
       contentType: 'application/zip',
       ext: 'zip',
+    });
+    const uploadedArchive = await downloadToBuffer(archiveUrl, {
+      maxBytes: MAX_ARCHIVE_BYTES,
+      timeoutMs: NATIVE_AUDIO_LIMITS.remoteInputTimeoutMs,
+    });
+    await verifyReleaseArchive(uploadedArchive, {
+      expectedContentHash: archiveHash,
+      expectedSizeBytes: archive.byteLength,
+      expectedSourceFingerprint: sourceFingerprint,
+      expectedManifest: manifest,
+      requiredPaths: requiredArchivePaths,
     });
     const bundle = {
       title: certification.song.title,

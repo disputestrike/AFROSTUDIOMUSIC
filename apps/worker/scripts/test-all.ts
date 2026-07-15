@@ -126,6 +126,7 @@ const TS: Array<[string, string]> = [
   ["P5  Fill insertion", "test-fills.ts"],
   ["P6  Release gate", "test-release-gate.ts"],
   ["P6  Release package truth", "test-release-package.ts"],
+  ["P6  Audio byte certification", "test-audio-certification.ts"],
   ["P7  Competitor evidence", "test-benchmark-evidence.ts"],
   ["Artist memory retrieval", "test-memory-retrieval.ts"],
   ["P7  Engine ceilings", "test-lane-engine.ts"],

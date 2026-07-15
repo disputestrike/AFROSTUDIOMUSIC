@@ -3,35 +3,204 @@
  * Railway worker image includes ffmpeg via nixpacks (see apps/worker/railway.json).
  * Locally, install ffmpeg or mixes/masters will fail with a clear error.
  */
-import { spawn } from 'node:child_process';
+import { spawn, type ChildProcess } from 'node:child_process';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { grooveOffsetMs, parseStorageUri } from '@afrohit/shared';
-import { resolveAssetForProvider } from './storage';
+import { downloadToBuffer } from './storage';
 
-async function resolveFfmpegInput(input: string): Promise<string> {
-  return parseStorageUri(input) ? resolveAssetForProvider(input) : input;
+export const NATIVE_AUDIO_LIMITS = Object.freeze({
+  availabilityTimeoutMs: 10_000,
+  probeTimeoutMs: 30_000,
+  analysisTimeoutMs: 5 * 60_000,
+  renderTimeoutMs: 15 * 60_000,
+  outputLimitBytes: 2 * 1024 * 1024,
+  probeOutputLimitBytes: 64 * 1024,
+  maxOutputLimitBytes: 8 * 1024 * 1024,
+  remoteInputMaxBytes: 512 * 1024 * 1024,
+  remoteInputTimeoutMs: 90_000,
+  terminateGraceMs: 1_000,
+});
+
+export interface NativeAudioExecutionOptions {
+  timeoutMs?: number;
+  outputLimitBytes?: number;
 }
 
-export async function ffmpegAvailable(): Promise<boolean> {
+type NativeProcessFailure = 'timeout' | 'output_limit' | 'spawn' | null;
+type BoundedProcessResult = {
+  exitCode: number | null;
+  stdout: string;
+  stderr: string;
+  failure: NativeProcessFailure;
+  errorMessage: string | null;
+};
+
+function boundedInteger(value: number | undefined, fallback: number, maximum: number): number {
+  if (!Number.isFinite(value)) return fallback;
+  return Math.max(1, Math.min(maximum, Math.floor(value!)));
+}
+
+function stopChild(child: ChildProcess): () => void {
+  if (child.exitCode !== null || child.signalCode !== null) return () => undefined;
+  try {
+    child.kill('SIGTERM');
+  } catch {
+    // The close/error handlers still settle the bounded execution result.
+  }
+  const forceTimer = setTimeout(() => {
+    if (child.exitCode === null && child.signalCode === null) {
+      try {
+        child.kill('SIGKILL');
+      } catch {
+        // Nothing else can be done once the OS rejects termination.
+      }
+    }
+  }, NATIVE_AUDIO_LIMITS.terminateGraceMs);
+  forceTimer.unref();
+  return () => clearTimeout(forceTimer);
+}
+
+function runBoundedProcess(options: {
+  command: 'ffmpeg' | 'ffprobe';
+  args: string[];
+  timeoutMs: number;
+  outputLimitBytes: number;
+  captureStdout: boolean;
+  captureStderr: boolean;
+}): Promise<BoundedProcessResult> {
   return new Promise((resolve) => {
-    const p = spawn('ffmpeg', ['-version'], { stdio: 'ignore' });
-    p.on('error', () => resolve(false));
-    p.on('exit', (code) => resolve(code === 0));
+    const child = spawn(options.command, options.args, {
+      stdio: [
+        'ignore',
+        options.captureStdout ? 'pipe' : 'ignore',
+        options.captureStderr ? 'pipe' : 'ignore',
+      ],
+    });
+    const stdoutChunks: Buffer[] = [];
+    const stderrChunks: Buffer[] = [];
+    let capturedBytes = 0;
+    let failure: NativeProcessFailure = null;
+    let errorMessage: string | null = null;
+    let settled = false;
+    let cancelForcedStop: () => void = () => undefined;
+
+    const requestStop = (reason: Exclude<NativeProcessFailure, null>) => {
+      if (failure) return;
+      failure = reason;
+      cancelForcedStop = stopChild(child);
+    };
+    const append = (target: Buffer[], value: Buffer | string) => {
+      const chunk = Buffer.isBuffer(value) ? value : Buffer.from(value);
+      const remaining = Math.max(0, options.outputLimitBytes - capturedBytes);
+      if (remaining > 0) target.push(chunk.subarray(0, remaining));
+      capturedBytes += Math.min(remaining, chunk.byteLength);
+      if (chunk.byteLength > remaining) requestStop('output_limit');
+    };
+    const deadline = setTimeout(() => requestStop('timeout'), options.timeoutMs);
+    deadline.unref();
+    const finish = (exitCode: number | null) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(deadline);
+      cancelForcedStop();
+      resolve({
+        exitCode,
+        stdout: Buffer.concat(stdoutChunks).toString('utf8'),
+        stderr: Buffer.concat(stderrChunks).toString('utf8'),
+        failure,
+        errorMessage,
+      });
+    };
+
+    child.stdout?.on('data', (chunk) => append(stdoutChunks, chunk));
+    child.stderr?.on('data', (chunk) => append(stderrChunks, chunk));
+    child.once('error', (error) => {
+      failure = 'spawn';
+      errorMessage = error.message;
+      finish(null);
+    });
+    child.once('close', (code) => finish(code));
   });
 }
 
-export function runFfmpeg(args: string[]): Promise<void> {
-  return new Promise((resolve, reject) => {
-    const p = spawn('ffmpeg', ['-y', '-hide_banner', '-loglevel', 'error', ...args]);
-    let stderr = '';
-    p.stderr.on('data', (d) => (stderr += d.toString()));
-    p.on('error', (err) => reject(new Error(`ffmpeg spawn failed: ${err.message}`)));
-    p.on('exit', (code) =>
-      code === 0 ? resolve() : reject(new Error(`ffmpeg exit ${code}: ${stderr.slice(0, 500)}`))
-    );
+type StagedFfmpegInput = { path: string; cleanup: () => Promise<void> };
+
+function hasNonFileScheme(input: string): boolean {
+  return !/^[a-zA-Z]:[\\/]/.test(input) && /^[a-z][a-z0-9+.-]*:/i.test(input);
+}
+
+async function stageFfmpegInput(input: string): Promise<StagedFfmpegInput> {
+  const remote = !!parseStorageUri(input) || /^https?:\/\//i.test(input);
+  if (!remote) {
+    if (hasNonFileScheme(input)) throw new Error('ffmpeg_input_protocol_unsupported');
+    return { path: input, cleanup: async () => undefined };
+  }
+
+  const directory = await mkdtemp(join(tmpdir(), 'ffmpeg-input-'));
+  const path = join(directory, 'input.bin');
+  try {
+    const bytes = await downloadToBuffer(input, {
+      maxBytes: NATIVE_AUDIO_LIMITS.remoteInputMaxBytes,
+      timeoutMs: NATIVE_AUDIO_LIMITS.remoteInputTimeoutMs,
+    });
+    if (!bytes.byteLength) throw new Error('ffmpeg_input_empty');
+    await writeFile(path, bytes);
+    return {
+      path,
+      cleanup: () => rm(directory, { recursive: true, force: true }).catch(() => undefined),
+    };
+  } catch (error) {
+    await rm(directory, { recursive: true, force: true }).catch(() => undefined);
+    throw error;
+  }
+}
+
+export async function ffmpegAvailable(options: NativeAudioExecutionOptions = {}): Promise<boolean> {
+  const result = await runBoundedProcess({
+    command: 'ffmpeg',
+    args: ['-version'],
+    timeoutMs: boundedInteger(
+      options.timeoutMs,
+      NATIVE_AUDIO_LIMITS.availabilityTimeoutMs,
+      NATIVE_AUDIO_LIMITS.renderTimeoutMs,
+    ),
+    outputLimitBytes: 1,
+    captureStdout: false,
+    captureStderr: false,
   });
+  return result.failure === null && result.exitCode === 0;
+}
+
+export async function runFfmpeg(
+  args: string[],
+  options: NativeAudioExecutionOptions = {},
+): Promise<void> {
+  const timeoutMs = boundedInteger(
+    options.timeoutMs,
+    NATIVE_AUDIO_LIMITS.renderTimeoutMs,
+    NATIVE_AUDIO_LIMITS.renderTimeoutMs,
+  );
+  const outputLimitBytes = boundedInteger(
+    options.outputLimitBytes,
+    NATIVE_AUDIO_LIMITS.outputLimitBytes,
+    NATIVE_AUDIO_LIMITS.maxOutputLimitBytes,
+  );
+  const result = await runBoundedProcess({
+    command: 'ffmpeg',
+    args: ['-y', '-hide_banner', '-loglevel', 'error', ...args],
+    timeoutMs,
+    outputLimitBytes,
+    captureStdout: false,
+    captureStderr: true,
+  });
+  if (result.failure === 'timeout') throw new Error(`ffmpeg timeout after ${timeoutMs}ms`);
+  if (result.failure === 'output_limit') throw new Error(`ffmpeg output exceeded ${outputLimitBytes} bytes`);
+  if (result.failure === 'spawn') throw new Error(`ffmpeg spawn failed: ${result.errorMessage ?? 'unknown error'}`);
+  if (result.exitCode !== 0) {
+    throw new Error(`ffmpeg exit ${result.exitCode ?? 'unknown'}: ${result.stderr.slice(0, 500)}`);
+  }
 }
 
 /**
@@ -40,23 +209,63 @@ export function runFfmpeg(args: string[]): Promise<void> {
  * report duration up front, so we probe the rendered file. Returns 0 on any
  * failure — callers treat 0 as "unknown", never crash on it.
  */
-export async function probeDurationS(input: string): Promise<number> {
-  const resolvedInput = await resolveFfmpegInput(input);
-  return new Promise((resolve) => {
-    const p = spawn('ffprobe', [
+async function probeLocalDurationS(
+  input: string,
+  options: NativeAudioExecutionOptions = {},
+): Promise<number> {
+  const result = await runBoundedProcess({
+    command: 'ffprobe',
+    args: [
       '-v', 'error',
       '-show_entries', 'format=duration',
       '-of', 'default=noprint_wrappers=1:nokey=1',
-      resolvedInput,
-    ]);
-    let out = '';
-    p.stdout.on('data', (d) => (out += d.toString()));
-    p.on('error', () => resolve(0));
-    p.on('exit', () => {
-      const s = Math.round(parseFloat(out.trim()));
-      resolve(Number.isFinite(s) && s > 0 ? s : 0);
-    });
+      input,
+    ],
+    timeoutMs: boundedInteger(
+      options.timeoutMs,
+      NATIVE_AUDIO_LIMITS.probeTimeoutMs,
+      NATIVE_AUDIO_LIMITS.renderTimeoutMs,
+    ),
+    outputLimitBytes: boundedInteger(
+      options.outputLimitBytes,
+      NATIVE_AUDIO_LIMITS.probeOutputLimitBytes,
+      NATIVE_AUDIO_LIMITS.maxOutputLimitBytes,
+    ),
+    captureStdout: true,
+    captureStderr: true,
   });
+  if (result.failure !== null || result.exitCode !== 0) return 0;
+  const durationS = Math.round(Number.parseFloat(result.stdout.trim()));
+  return Number.isFinite(durationS) && durationS > 0 ? durationS : 0;
+}
+
+export async function probeDurationS(
+  input: string,
+  options: NativeAudioExecutionOptions = {},
+): Promise<number> {
+  let staged: StagedFfmpegInput | null = null;
+  try {
+    staged = await stageFfmpegInput(input);
+    return await probeLocalDurationS(staged.path, options);
+  } catch {
+    return 0;
+  } finally {
+    await staged?.cleanup();
+  }
+}
+
+export async function probeAudioBufferDurationS(
+  input: Buffer,
+  options: NativeAudioExecutionOptions = {},
+): Promise<number> {
+  const directory = await mkdtemp(join(tmpdir(), 'audio-duration-'));
+  const inputPath = join(directory, 'audio.bin');
+  try {
+    await writeFile(inputPath, input);
+    return await probeLocalDurationS(inputPath, options);
+  } finally {
+    await rm(directory, { recursive: true, force: true }).catch(() => undefined);
+  }
 }
 
 /**
@@ -89,15 +298,34 @@ export interface AudioQuality {
   ok: boolean; // back-compat: verdict !== 'fail'
 }
 
+export type FfmpegCaptureResult = {
+  stderr: string;
+  exitCode: number | null;
+  failure: NativeProcessFailure;
+};
+
 /** Run ffmpeg capturing stderr (where filter summaries print). Never throws. */
-function ffmpegCapture(args: string[]): Promise<string> {
-  return new Promise((resolve) => {
-    const p = spawn('ffmpeg', ['-hide_banner', '-nostats', ...args]);
-    let err = '';
-    p.stderr.on('data', (d) => (err += d.toString()));
-    p.on('error', () => resolve(err));
-    p.on('exit', () => resolve(err));
+async function ffmpegCapture(
+  args: string[],
+  options: NativeAudioExecutionOptions = {},
+): Promise<FfmpegCaptureResult> {
+  const result = await runBoundedProcess({
+    command: 'ffmpeg',
+    args: ['-hide_banner', '-nostats', ...args],
+    timeoutMs: boundedInteger(
+      options.timeoutMs,
+      NATIVE_AUDIO_LIMITS.analysisTimeoutMs,
+      NATIVE_AUDIO_LIMITS.renderTimeoutMs,
+    ),
+    outputLimitBytes: boundedInteger(
+      options.outputLimitBytes,
+      NATIVE_AUDIO_LIMITS.outputLimitBytes,
+      NATIVE_AUDIO_LIMITS.maxOutputLimitBytes,
+    ),
+    captureStdout: false,
+    captureStderr: true,
   });
+  return { stderr: result.stderr, exitCode: result.exitCode, failure: result.failure };
 }
 
 const numAfter = (s: string, re: RegExp): number | null => {
@@ -109,7 +337,7 @@ const numAfter = (s: string, re: RegExp): number | null => {
 
 /**
  * Measure the ACTUAL quality of a rendered track — fast, free, deterministic
- * (one ffmpeg pass, reads http URLs directly, no re-download). This is the first
+ * (one ffmpeg pass after bounded local staging for remote inputs). This is the first
  * gate of the quality loop: it catches the "shallow / same-y / straight line"
  * defect objectively instead of only checking that a file exists.
  *
@@ -122,74 +350,109 @@ const numAfter = (s: string, re: RegExp): number | null => {
  * only flag clear failures). Returns a verdict the UI/eval harness can act on.
  * Falls back to a duration-only verdict if ffmpeg/parse is unavailable.
  */
-export async function measureAudioQuality(input: string): Promise<AudioQuality> {
-  const resolvedInput = await resolveFfmpegInput(input);
-  const durationS = await probeDurationS(resolvedInput);
-  const fallback = (): AudioQuality => ({
+function durationOnlyAudioQuality(durationS: number): AudioQuality {
+  const verdict: AudioQuality['verdict'] = durationS >= 12 ? 'weak' : 'fail';
+  return {
     durationS,
-    integratedLufs: null, loudnessRangeLra: null, truePeakDb: null, crestFactorDb: null, flatFactor: null,
-    flags: [], verdict: durationS >= 12 ? 'pass' : 'fail', ok: durationS >= 12,
-  });
+    integratedLufs: null,
+    loudnessRangeLra: null,
+    truePeakDb: null,
+    crestFactorDb: null,
+    flatFactor: null,
+    flags: ['unmeasured'],
+    verdict,
+    ok: verdict !== 'fail',
+  };
+}
+
+export function audioQualityFromFfmpegCapture(
+  durationS: number,
+  capture: FfmpegCaptureResult,
+): AudioQuality {
+  const fallback = () => durationOnlyAudioQuality(durationS);
+  if (capture.failure !== null || capture.exitCode !== 0) return fallback();
+  const out = capture.stderr;
+  const summaryIdx = out.lastIndexOf('Summary:');
+  const hasSummary = summaryIdx >= 0;
+  const summary = hasSummary ? out.slice(summaryIdx) : '';
+  const integratedLufs = hasSummary ? numAfter(summary, /I:\s*(-?\d+(?:\.\d+)?)\s*LUFS/) : null;
+  const loudnessRangeLra = hasSummary ? numAfter(summary, /LRA:\s*(-?\d+(?:\.\d+)?)\s*LU/) : null;
+  const peaks = hasSummary
+    ? [...summary.matchAll(/Peak:\s*(-?\d+(?:\.\d+)?)\s*dBFS/g)]
+      .map((match) => Number.parseFloat(match[1]!))
+      .filter(Number.isFinite)
+    : [];
+  const truePeakDb = peaks.length ? Math.max(...peaks) : null;
+  const overallIdx = out.lastIndexOf('Overall');
+  const astatsOverall = overallIdx >= 0 ? out.slice(overallIdx) : out;
+  const peakLevelDb = numAfter(astatsOverall, /Peak level dB:\s*(-?\d+(?:\.\d+)?)/);
+  const rmsLevelDb = numAfter(astatsOverall, /RMS level dB:\s*(-?\d+(?:\.\d+)?)/);
+  const crestFactorDb = peakLevelDb !== null && rmsLevelDb !== null
+    ? Math.round((peakLevelDb - rmsLevelDb) * 10) / 10
+    : null;
+  const flatFactor = numAfter(astatsOverall, /Flat factor:\s*(-?\d+(?:\.\d+)?)/);
+
+  const flags: string[] = [];
+  if (integratedLufs !== null && integratedLufs < -23) flags.push('too_quiet');
+  if (truePeakDb !== null && truePeakDb > 0.5) flags.push('clipping');
+  const loudMaster = integratedLufs !== null && integratedLufs > -11;
+  if (loudnessRangeLra !== null && loudnessRangeLra < 3 && !loudMaster) flags.push('flat');
+  if (crestFactorDb !== null && crestFactorDb < 6) flags.push('squashed');
+  if (durationS > 0 && durationS < 20) flags.push('short');
+
+  const hard = flags.some((flag) => flag === 'too_quiet' || flag === 'clipping')
+    || (durationS > 0 && durationS < 8);
+  const soft = flags.some((flag) => flag === 'flat' || flag === 'squashed');
+  const verdict: AudioQuality['verdict'] = hard ? 'fail' : soft ? 'weak' : 'pass';
+  if (integratedLufs === null && loudnessRangeLra === null && crestFactorDb === null) return fallback();
+  return {
+    durationS,
+    integratedLufs,
+    loudnessRangeLra,
+    truePeakDb,
+    crestFactorDb,
+    flatFactor,
+    flags,
+    verdict,
+    ok: verdict !== 'fail',
+  };
+}
+
+export async function measureAudioQuality(
+  input: string,
+  options: NativeAudioExecutionOptions = {},
+): Promise<AudioQuality> {
+  let staged: StagedFfmpegInput | null = null;
+  let durationS = 0;
   try {
-    if (!(await ffmpegAvailable())) return fallback();
-    // ebur128 → loudness/LRA/true-peak summary; astats → crest/flat factor. One pass.
-    const out = await ffmpegCapture([
-      '-i', resolvedInput,
+    staged = await stageFfmpegInput(input);
+    durationS = await probeLocalDurationS(staged.path, options);
+    if (!(await ffmpegAvailable(options))) return durationOnlyAudioQuality(durationS);
+    const capture = await ffmpegCapture([
+      '-i', staged.path,
       '-af', 'ebur128=peak=true,astats=metadata=0',
       '-f', 'null', '-',
-    ]);
-    // ebur128 prints a Summary block at the end with "I:", "LRA:", "Peak:".
-    // CRITICAL: ebur128 prints PER-FRAME "I:"/"LRA:" lines throughout playback —
-    // and those start near -70 LUFS / 0 LU before they accumulate. The REAL values
-    // are in the final "Summary:" block. Parse ONLY the summary; if there is NO
-    // summary (partial/errored decode — ffmpegCapture doesn't check exit code),
-    // treat ebur128 metrics as unavailable rather than reading a bogus first frame.
-    const summaryIdx = out.lastIndexOf('Summary:');
-    const hasSummary = summaryIdx >= 0;
-    const summary = hasSummary ? out.slice(summaryIdx) : '';
-    const integratedLufs = hasSummary ? numAfter(summary, /I:\s*(-?\d+(?:\.\d+)?)\s*LUFS/) : null;
-    const loudnessRangeLra = hasSummary ? numAfter(summary, /LRA:\s*(-?\d+(?:\.\d+)?)\s*LU/) : null;
-    // ebur128's summary prints both "Sample peak" and "True peak" as "Peak: X dBFS"
-    // — take the highest so clipping detection uses the true (inter-sample) peak.
-    const peaks = hasSummary
-      ? [...summary.matchAll(/Peak:\s*(-?\d+(?:\.\d+)?)\s*dBFS/g)].map((m) => parseFloat(m[1]!)).filter((n) => Number.isFinite(n))
-      : [];
-    const truePeakDb = peaks.length ? Math.max(...peaks) : null;
-    // astats prints per-channel blocks first, then the pooled "Overall" block LAST.
-    // Read crest/flat from the Overall slice so a STEREO master isn't judged by one
-    // channel (else a hard-panned / low-crest channel false-flags a fine mix).
-    const overallIdx = out.lastIndexOf('Overall');
-    const astatsOverall = overallIdx >= 0 ? out.slice(overallIdx) : out;
-    // Crest factor (dB) = Peak - RMS. Derive it from the Overall block's "Peak
-    // level dB" / "RMS level dB" (both ALWAYS present there) instead of astats'
-    // own "Crest factor:" line — that line is per-channel-only in some ffmpeg
-    // builds and prints "inf" on silence, so live QC read it back as null.
-    const peakLevelDb = numAfter(astatsOverall, /Peak level dB:\s*(-?\d+(?:\.\d+)?)/);
-    const rmsLevelDb = numAfter(astatsOverall, /RMS level dB:\s*(-?\d+(?:\.\d+)?)/);
-    const crestFactorDb = peakLevelDb !== null && rmsLevelDb !== null ? Math.round((peakLevelDb - rmsLevelDb) * 10) / 10 : null;
-    const flatFactor = numAfter(astatsOverall, /Flat factor:\s*(-?\d+(?:\.\d+)?)/);
-
-    const flags: string[] = [];
-    if (integratedLufs !== null && integratedLufs < -23) flags.push('too_quiet');
-    if (truePeakDb !== null && truePeakDb > 0.5) flags.push('clipping');
-    // Low dynamic movement = the "flat / no depth / same-y" complaint, measured.
-    // BUT a loud, heavily-limited master (e.g. -9 LUFS club/cd) legitimately has a
-    // low LRA — only flag "flat" when the track isn't simply loud-mastered.
-    const loudMaster = integratedLufs !== null && integratedLufs > -11;
-    if (loudnessRangeLra !== null && loudnessRangeLra < 3 && !loudMaster) flags.push('flat');
-    if (crestFactorDb !== null && crestFactorDb < 6) flags.push('squashed');
-    if (durationS > 0 && durationS < 20) flags.push('short');
-
-    // durationS === 0 means UNKNOWN (poll-streamed providers ffprobe can't read up
-    // front), NOT "too short" — don't hard-fail a clean render on unknown duration.
-    const hard = flags.some((f) => f === 'too_quiet' || f === 'clipping') || (durationS > 0 && durationS < 8);
-    const soft = flags.some((f) => f === 'flat' || f === 'squashed');
-    const verdict: AudioQuality['verdict'] = hard ? 'fail' : soft ? 'weak' : 'pass';
-    // If we couldn't read a single metric, don't pretend — fall back to duration.
-    if (integratedLufs === null && loudnessRangeLra === null && crestFactorDb === null) return fallback();
-    return { durationS, integratedLufs, loudnessRangeLra, truePeakDb, crestFactorDb, flatFactor, flags, verdict, ok: verdict !== 'fail' };
+    ], options);
+    return audioQualityFromFfmpegCapture(durationS, capture);
   } catch {
-    return fallback();
+    return durationOnlyAudioQuality(durationS);
+  } finally {
+    await staged?.cleanup();
+  }
+}
+
+/** Measure the exact bytes supplied by a caller, without a second network read. */
+export async function measureAudioBufferQuality(
+  input: Buffer,
+  options: NativeAudioExecutionOptions = {},
+): Promise<AudioQuality> {
+  const dir = await mkdtemp(join(tmpdir(), 'audio-qc-'));
+  const inputPath = join(dir, 'audio.bin');
+  try {
+    await writeFile(inputPath, input);
+    return await measureAudioQuality(inputPath, options);
+  } finally {
+    await rm(dir, { recursive: true, force: true }).catch(() => undefined);
   }
 }
 
@@ -202,41 +465,49 @@ export async function measureVocalActivity(input: string): Promise<{
   activeRatio: number;
   silenceSeconds: number;
 } | null> {
-  const resolvedInput = await resolveFfmpegInput(input);
-  const durationS = await probeDurationS(resolvedInput);
-  if (durationS <= 0 || !(await ffmpegAvailable())) return null;
-  const output = await ffmpegCapture([
-    '-i', resolvedInput,
-    '-af', 'silencedetect=noise=-45dB:d=0.25',
-    '-f', 'null', '-',
-  ]);
-  if (!/silence_(?:start|end|duration)/.test(output)) {
-    // A valid, continuously active take has no silence events at all.
-    if (/audio:|video:0kB/i.test(output)) return { durationS, activeRatio: 1, silenceSeconds: 0 };
+  let staged: StagedFfmpegInput | null = null;
+  try {
+    staged = await stageFfmpegInput(input);
+    const durationS = await probeLocalDurationS(staged.path);
+    if (durationS <= 0 || !(await ffmpegAvailable())) return null;
+    const capture = await ffmpegCapture([
+      '-i', staged.path,
+      '-af', 'silencedetect=noise=-45dB:d=0.25',
+      '-f', 'null', '-',
+    ]);
+    if (capture.failure !== null || capture.exitCode !== 0) return null;
+    const output = capture.stderr;
+    if (!/silence_(?:start|end|duration)/.test(output)) {
+      if (/audio:|video:0kB/i.test(output)) return { durationS, activeRatio: 1, silenceSeconds: 0 };
+      return null;
+    }
+    const durations = [...output.matchAll(/silence_duration:\s*(\d+(?:\.\d+)?)/g)]
+      .map((match) => Number.parseFloat(match[1]!))
+      .filter(Number.isFinite);
+    let silenceSeconds = durations.reduce((sum, value) => sum + value, 0);
+    const trailingStart = [...output.matchAll(/silence_start:\s*(\d+(?:\.\d+)?)/g)]
+      .map((match) => Number.parseFloat(match[1]!))
+      .filter(Number.isFinite)
+      .at(-1);
+    const lastEnd = [...output.matchAll(/silence_end:\s*(\d+(?:\.\d+)?)/g)]
+      .map((match) => Number.parseFloat(match[1]!))
+      .filter(Number.isFinite)
+      .at(-1);
+    if (trailingStart != null && (lastEnd == null || trailingStart > lastEnd)) {
+      silenceSeconds += Math.max(0, durationS - trailingStart);
+    }
+    silenceSeconds = Math.min(durationS, Math.max(0, silenceSeconds));
+    const activeRatio = Math.max(0, Math.min(1, (durationS - silenceSeconds) / durationS));
+    return {
+      durationS,
+      activeRatio: Math.round(activeRatio * 10_000) / 10_000,
+      silenceSeconds: Math.round(silenceSeconds * 100) / 100,
+    };
+  } catch {
     return null;
+  } finally {
+    await staged?.cleanup();
   }
-  const durations = [...output.matchAll(/silence_duration:\s*(\d+(?:\.\d+)?)/g)]
-    .map((match) => Number.parseFloat(match[1]!))
-    .filter(Number.isFinite);
-  let silenceSeconds = durations.reduce((sum, value) => sum + value, 0);
-  const trailingStart = [...output.matchAll(/silence_start:\s*(\d+(?:\.\d+)?)/g)]
-    .map((match) => Number.parseFloat(match[1]!))
-    .filter(Number.isFinite)
-    .at(-1);
-  const lastEnd = [...output.matchAll(/silence_end:\s*(\d+(?:\.\d+)?)/g)]
-    .map((match) => Number.parseFloat(match[1]!))
-    .filter(Number.isFinite)
-    .at(-1);
-  if (trailingStart != null && (lastEnd == null || trailingStart > lastEnd)) {
-    silenceSeconds += Math.max(0, durationS - trailingStart);
-  }
-  silenceSeconds = Math.min(durationS, Math.max(0, silenceSeconds));
-  const activeRatio = Math.max(0, Math.min(1, (durationS - silenceSeconds) / durationS));
-  return {
-    durationS,
-    activeRatio: Math.round(activeRatio * 10_000) / 10_000,
-    silenceSeconds: Math.round(silenceSeconds * 100) / 100,
-  };
 }
 
 // ---------------------------------------------------------------------------
@@ -419,15 +690,16 @@ export async function measureLoudnorm(
   target: { lufs: number; tp: number },
   preChain?: string
 ): Promise<LoudnormStats | null> {
-  const resolvedInput = await resolveFfmpegInput(input);
-  const af = `${preChain ? `${preChain},` : ''}loudnorm=I=${target.lufs}:TP=${target.tp}:LRA=11:print_format=json`;
-  const err = await ffmpegCapture(['-i', resolvedInput, '-af', af, '-f', 'null', '-']);
-  // loudnorm's JSON is FLAT (no nested braces) and prints last — take the
-  // trailing {...} so per-frame chatter above it can't poison the parse.
-  const open = err.lastIndexOf('{');
-  const close = err.lastIndexOf('}');
-  if (open < 0 || close <= open) return null;
+  let staged: StagedFfmpegInput | null = null;
   try {
+    staged = await stageFfmpegInput(input);
+    const af = `${preChain ? `${preChain},` : ''}loudnorm=I=${target.lufs}:TP=${target.tp}:LRA=11:print_format=json`;
+    const capture = await ffmpegCapture(['-i', staged.path, '-af', af, '-f', 'null', '-']);
+    if (capture.failure !== null || capture.exitCode !== 0) return null;
+    const err = capture.stderr;
+    const open = err.lastIndexOf('{');
+    const close = err.lastIndexOf('}');
+    if (open < 0 || close <= open) return null;
     const j = JSON.parse(err.slice(open, close + 1)) as Record<string, string>;
     const num = (k: string): number | null => {
       const v = parseFloat(j[k] ?? '');
@@ -441,6 +713,8 @@ export async function measureLoudnorm(
     return { input_i, input_tp, input_lra, input_thresh };
   } catch {
     return null;
+  } finally {
+    await staged?.cleanup();
   }
 }
 
@@ -582,7 +856,8 @@ export function loudnessMatchChain(
 /**
  * Loudness-match a stem to the SOURCE song's measured integrated LUFS (two-pass:
  * measure raw → measure through the drive/limiter → render once with the linear
- * trim). Input is raw bytes or a URL ffmpeg can read directly; output is 44.1k
+ * trim). Remote input is downloaded with fixed bounds before ffmpeg sees it;
+ * output is 44.1k
  * stereo WAV bytes — the caller decides what lossy encodes to derive from it.
  */
 export async function loudnessMatchToSource(
@@ -594,10 +869,13 @@ export async function loudnessMatchToSource(
   // rather than letting the whole job die on a filter arg error.
   const target = { lufs: Math.min(-5, Math.max(-70, sourceLufs)), tp };
   const dir = await mkdtemp(join(tmpdir(), 'lmatch-'));
+  let staged: StagedFfmpegInput | null = null;
   try {
     let src: string;
-    if (typeof input === 'string') src = await resolveFfmpegInput(input);
-    else {
+    if (typeof input === 'string') {
+      staged = await stageFfmpegInput(input);
+      src = staged.path;
+    } else {
       src = join(dir, 'in.bin');
       await writeFile(src, input);
     }
@@ -611,6 +889,7 @@ export async function loudnessMatchToSource(
     await runFfmpeg(['-i', src, '-af', loudnessMatchChain(target, raw?.input_i ?? null, driven), '-ar', '44100', '-ac', '2', outPath]);
     return await readFile(outPath);
   } finally {
+    await staged?.cleanup();
     await rm(dir, { recursive: true, force: true }).catch(() => {});
   }
 }
