@@ -1,10 +1,11 @@
-import { prisma } from '@afrohit/db';
+import { createHash } from 'node:crypto';
+import { openSecret, prisma } from '@afrohit/db';
 import { musicAdapter } from '@afrohit/ai';
 import { markFailed, markRunning, markSucceeded } from '../lib/jobs';
-import { downloadToBuffer, uploadBytes, ingestRemoteFile } from '../lib/storage';
-import { trimToLoop, assembleBeat, measureAudioQuality, type AssemblyLayer, type AssemblySection } from '../lib/ffmpeg';
+import { deleteObjectByUrl, downloadToBuffer, uploadBytes } from '../lib/storage';
+import { trimToLoop, assembleBeat, measureAudioQuality, transformAudio, type AssemblyLayer, type AssemblySection } from '../lib/ffmpeg';
 import { overlayFills } from '../lib/fills';
-import { genreSignature, planFills, isMaterialRole, jobOf, type MaterialRole } from '@afrohit/shared';
+import { genreSignature, planFills, isKeyedRole, isMaterialRole, jobOf, materialGainFor, materialPanFor } from '@afrohit/shared';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -25,7 +26,8 @@ import { join } from 'node:path';
 // flute, chants, risers — forges as its OWN isolated, characterful loop, melodic
 // roles IN KEY so separately-forged loops fit together. Curated descriptors +
 // family fallbacks live in lib/forge-prompts.ts (one source for forge + tests).
-import { forgePromptFor, isKeyedRole } from '../lib/forge-prompts';
+import { forgePromptFor } from '../lib/forge-prompts';
+import { inspectMaterialAudio } from '../lib/material-inspection';
 
 interface ForgePayload {
   jobId: string;
@@ -42,6 +44,7 @@ interface ForgePayload {
 
 export async function processForgeMaterial(p: ForgePayload) {
   await markRunning(p.jobId);
+  let uploadedUrl: string | null = null;
   try {
     const prompt = forgePromptFor(p.role, p.genre, p.bpm, p.keySignature, p.variant);
     if (!prompt) throw new Error(`unknown material role: ${p.role}`);
@@ -49,13 +52,11 @@ export async function processForgeMaterial(p: ForgePayload) {
     const bars = p.bars ?? 8;
     const loopDur = Math.ceil((60 / p.bpm) * 4 * bars) + 3; // headroom for trim
     const ws = await prisma.workspace.findUnique({ where: { id: p.workspaceId }, select: { musicProvider: true, musicApiKey: true } });
-    const adapter = musicAdapter(ws?.musicProvider ?? undefined, ws?.musicApiKey ?? undefined);
-    // STUB GUARD (audit HIGH): if the forge provider resolves to the stub, EVERY
-    // forged loop would be the SAME SoundHelix mp3 chopped to a "loop" — it passes
-    // loop-QC and gets registered as a real MaterialAsset, so the whole "owned,
-    // rights-clean" engine ends up built from one placeholder rock track. Refuse.
-    if (adapter.name === 'stub' && process.env.ALLOW_STUB_AUDIO !== '1') {
-      throw new Error('forge blocked: no real music engine configured (stub) — set a workspace engine before forging owned material.');
+    const adapter = musicAdapter(ws?.musicProvider ?? undefined, openSecret(ws?.musicApiKey));
+    // Forging must start from a connected real engine; unavailable routes never
+    // become registered material assets.
+    if (adapter.name === 'unavailable') {
+      throw new Error('forge blocked: no music engine is connected; set a workspace engine before forging owned material.');
     }
 
     // Generate with 429-aware retries — Replicate throttles prediction creation
@@ -86,21 +87,42 @@ export async function processForgeMaterial(p: ForgePayload) {
 
     // Trim to an exact loop + QC it. A forged loop that fails QC is discarded —
     // only good material enters the library.
-    const raw = await downloadToBuffer(result.output.mainAudioUrl);
+    const raw = result.output.audioBytes
+      ?? (result.output.mainAudioUrl
+        ? await downloadToBuffer(result.output.mainAudioUrl)
+        : (() => { throw new Error('forge provider returned no playable audio'); })());
     const loop = await trimToLoop(raw, p.bpm, bars);
     const url = await uploadBytes({ workspaceId: p.workspaceId, kind: 'material', bytes: loop, contentType: 'audio/wav', ext: 'wav' });
-    const qc = await measureAudioQuality(url).catch(() => null);
+    uploadedUrl = url;
+    const inspection = await inspectMaterialAudio({
+      bytes: loop,
+      url,
+      role: p.role,
+      roleEvidence: 'provider-prompted',
+      deep: true,
+    });
     // ISOLATED-LOOP gate (not song thresholds): a solo dry chord bed or shaker
     // loop is SUPPOSED to be quiet-ish and steady — 'too_quiet'/'flat' would
     // wrongly discard good material. Only reject true junk: near-silence,
     // clipping, or no meaningful duration.
-    if (qc) {
-      const silent = qc.integratedLufs !== null && qc.integratedLufs < -38;
-      const clipping = (qc.flags ?? []).includes('clipping');
-      const tooShort = qc.durationS > 0 && qc.durationS < 3;
-      if (silent || clipping || tooShort) {
-        throw new Error(`forged ${p.role} loop is unusable (${silent ? 'near-silent' : clipping ? 'clipping' : 'too short'}) — discarded, try again`);
+    if (inspection.readiness !== 'ready') {
+      throw new Error(`forged ${p.role} loop did not pass technical QC (${inspection.reasons.join(', ') || 'unmeasured'})`);
+    }
+    const duplicate = await prisma.materialAsset.findFirst({
+      where: { workspaceId: p.workspaceId, contentHash: inspection.contentHash },
+      select: { id: true, role: true, url: true, readiness: true },
+    });
+    if (duplicate) {
+      await deleteObjectByUrl(url).catch(() => {});
+      uploadedUrl = null;
+      if (duplicate.role !== p.role || duplicate.readiness === 'rejected') {
+        throw new Error(`forged audio duplicates material ${duplicate.id} filed as ${duplicate.role}; refusing a second label`);
       }
+      await markSucceeded(p.jobId, {
+        materialId: duplicate.id, role: p.role, url: duplicate.url,
+        qc: inspection.qualityState, deduped: true,
+      }, result.estimatedCostUsd);
+      return;
     }
 
     const material = await prisma.materialAsset.create({
@@ -115,11 +137,30 @@ export async function processForgeMaterial(p: ForgePayload) {
         durationS: (60 / p.bpm) * 4 * bars,
         url,
         source: 'forged',
-        meta: { qc, prompt, engine: adapter.name, origin: 'forged', license: 'owned-generation', ...(p.variant ? { variant: p.variant } : {}) } as never,
+        readiness: inspection.readiness,
+        qualityState: inspection.qualityState,
+        roleEvidence: inspection.roleEvidence,
+        rightsBasis: 'provider-generated',
+        contentHash: inspection.contentHash,
+        verifiedAt: inspection.verifiedAt,
+        meta: {
+          qc: inspection.qc,
+          measured: inspection.measured,
+          prompt,
+          engine: adapter.name,
+          origin: 'forged',
+          rightsBasis: 'provider-generated',
+          ...(p.variant ? { variant: p.variant } : {}),
+        } as never,
       },
     });
-    await markSucceeded(p.jobId, { materialId: material.id, role: p.role, url, qc: qc?.verdict ?? 'unmeasured' }, result.estimatedCostUsd);
+    uploadedUrl = null;
+    await markSucceeded(p.jobId, {
+      materialId: material.id, role: p.role, url,
+      qc: inspection.qualityState, roleEvidence: inspection.roleEvidence,
+    }, result.estimatedCostUsd);
   } catch (err) {
+    if (uploadedUrl) await deleteObjectByUrl(uploadedUrl).catch(() => {});
     await markFailed(p.jobId, err);
   }
 }
@@ -137,15 +178,157 @@ interface AssemblePayload {
   sections?: Array<{ name: string; bars: number; roles: string[] }> | null;
 }
 
+type AssemblyPick = AssemblePayload['picks'][number];
+
+interface MaterialAssetRow {
+  id: string;
+  workspaceId: string;
+  role: string;
+  url: string;
+  readiness: string;
+  qualityState: string;
+  roleEvidence: string;
+  rightsBasis: string;
+  contentHash: string | null;
+  verifiedAt: Date | null;
+  bpm: number | null;
+  keySignature: string | null;
+  durationS: number | null;
+  source: string;
+  meta: unknown;
+}
+
+async function canonicalAssemblyPicks(p: AssemblePayload): Promise<AssemblyPick[]> {
+  const ids = [...new Set(p.picks.map((pick) => pick.id))];
+  if (ids.length !== p.picks.length) throw new Error('duplicate material id in assembly request');
+  const rows: MaterialAssetRow[] = await prisma.materialAsset.findMany({
+    where: { workspaceId: p.workspaceId, id: { in: ids } },
+  });
+  if (rows.length !== ids.length) throw new Error('assembly material missing or outside workspace');
+  const byId = new Map(rows.map((row) => [row.id, row]));
+  const output: AssemblyPick[] = [];
+
+  for (const requested of p.picks) {
+    let asset = byId.get(requested.id)!;
+    if (asset.role !== requested.role) throw new Error(`material ${asset.id} role mismatch (${asset.role} != ${requested.role})`);
+    if (asset.readiness === 'rejected' || asset.qualityState === 'failed' || asset.qualityState === 'duplicate') {
+      throw new Error(`material ${asset.id} is rejected (${asset.qualityState})`);
+    }
+
+    const meta = (asset.meta ?? {}) as Record<string, unknown> & { synth?: boolean };
+    const declaredEvidence = asset.roleEvidence !== 'unknown'
+      ? asset.roleEvidence
+      : meta.synth
+        ? 'synth-code'
+        : asset.source === 'artist_stem' || asset.source === 'provider_stem'
+          ? 'stem-separated'
+          : 'provider-prompted';
+    const needsInspection =
+      asset.readiness !== 'ready' || !asset.contentHash || !asset.verifiedAt ||
+      asset.bpm == null || (isKeyedRole(asset.role) && asset.keySignature == null);
+    if (needsInspection) {
+      const bytes = await downloadToBuffer(asset.url);
+      const inspection = await inspectMaterialAudio({
+        bytes,
+        url: asset.url,
+        role: asset.role,
+        roleEvidence: declaredEvidence,
+        deep: asset.bpm == null || (isKeyedRole(asset.role) && asset.keySignature == null) || declaredEvidence.startsWith('provider-prompted'),
+      });
+      if (inspection.readiness !== 'ready') {
+        await prisma.materialAsset.update({
+          where: { id: asset.id },
+          data: {
+            readiness: inspection.readiness,
+            qualityState: inspection.qualityState,
+            roleEvidence: inspection.roleEvidence,
+            verifiedAt: inspection.verifiedAt,
+            meta: { ...meta, materialInspection: { reasons: inspection.reasons, qc: inspection.qc } } as never,
+          },
+        });
+        throw new Error(`material ${asset.id} failed verification (${inspection.reasons.join(', ') || 'unmeasured'})`);
+      }
+      const duplicate = await prisma.materialAsset.findFirst({
+        where: { workspaceId: p.workspaceId, contentHash: inspection.contentHash, id: { not: asset.id } },
+      });
+      if (duplicate) {
+        await prisma.materialAsset.update({
+          where: { id: asset.id },
+          data: {
+            readiness: 'rejected',
+            qualityState: 'duplicate',
+            roleEvidence: inspection.roleEvidence,
+            meta: { ...meta, duplicateOf: duplicate.id, materialInspection: { qc: inspection.qc } } as never,
+          },
+        });
+        if (duplicate.role !== asset.role || duplicate.readiness !== 'ready') {
+          throw new Error(`material ${asset.id} duplicates ${duplicate.id} with incompatible role/readiness`);
+        }
+        asset = duplicate;
+      } else {
+        asset = await prisma.materialAsset.update({
+          where: { id: asset.id },
+          data: {
+            readiness: inspection.readiness,
+            qualityState: inspection.qualityState,
+            roleEvidence: inspection.roleEvidence,
+            contentHash: inspection.contentHash,
+            verifiedAt: inspection.verifiedAt,
+            bpm: asset.bpm ?? (inspection.detectedBpm ? Math.round(inspection.detectedBpm) : null),
+            keySignature: asset.keySignature ?? inspection.detectedKey,
+            durationS: asset.durationS ?? inspection.qc?.durationS ?? null,
+            meta: {
+              ...meta,
+              materialInspection: {
+                qc: inspection.qc,
+                measured: inspection.measured,
+                detectedBpm: inspection.detectedBpm,
+                detectedKey: inspection.detectedKey,
+              },
+            } as never,
+          },
+        });
+      }
+    }
+    if (asset.readiness !== 'ready' || asset.qualityState !== 'passed') {
+      throw new Error(`material ${asset.id} is not technically verified`);
+    }
+    if (!asset.rightsBasis || asset.rightsBasis === 'unknown') {
+      throw new Error(`material ${asset.id} has no classified rights basis`);
+    }
+    if (output.some((pick) => pick.id === asset.id)) continue;
+    output.push({
+      id: asset.id,
+      url: asset.url,
+      sourceBpm: asset.bpm ?? requested.sourceBpm ?? p.bpm,
+      role: asset.role,
+      gain: materialGainFor(asset.role),
+      pan: materialPanFor(asset.role),
+    });
+  }
+  return output;
+}
+
 export async function processAssembleBeat(p: AssemblePayload) {
   await markRunning(p.jobId);
   const dir = await mkdtemp(join(tmpdir(), 'mats-'));
+  const attemptedUrls: string[] = [];
   try {
     if (!p.picks.length) throw new Error('no material picked — forge some loops for this genre first');
+    const picks = await canonicalAssemblyPicks(p);
     // A 'fill' is a transition, not a bed — keep it OUT of the section layers (it's
     // overlaid at boundaries below), else it would play continuously under the hook.
-    const bedPicks = p.picks.filter((x) => x.role !== 'fill');
+    const bedPicks = picks.filter((x) => x.role !== 'fill');
     if (!bedPicks.length) throw new Error('no bed material — forge drums/bass/chords for this genre first');
+    const bedJobs = bedPicks.map((pick) => isMaterialRole(pick.role)
+      ? jobOf(pick.role)
+      : ({ drums: 'rhythm', percussion: 'rhythm', bass: 'low_end', log_drum: 'low_end', chords: 'harmony' } as Record<string, string>)[pick.role]);
+    const rhythmCount = bedJobs.filter((job) => job === 'rhythm').length;
+    const lowEndCount = bedJobs.filter((job) => job === 'low_end').length;
+    const tonalCount = bedJobs.filter((job) => job === 'harmony' || job === 'melody').length;
+    if (bedPicks.length < 5 || rhythmCount < 2 || lowEndCount < 1 || tonalCount < 1) {
+      throw new Error(`material bed incomplete (beds=${bedPicks.length}, rhythm=${rhythmCount}, low-end=${lowEndCount}, tonal=${tonalCount})`);
+    }
     // Pull every picked loop local.
     const layers: AssemblyLayer[] = [];
     const roleIdx = new Map<string, number>();
@@ -195,7 +378,9 @@ export async function processAssembleBeat(p: AssemblePayload) {
     let url = '';
     let qc: Awaited<ReturnType<typeof measureAudioQuality>> | null = null;
     let tacticalTrim: number | null = null;
+    let fillApplied = false;
     for (const scale of [1, 0.6]) {
+      let attemptFillApplied = false;
       const scaledLayers = scale === 1 ? layers : layers.map((l) => ({ ...l, gain: +(l.gain * scale).toFixed(2) }));
       const beatWav = await assembleBeat({ layers: scaledLayers, sections, targetBpm: p.bpm });
 
@@ -206,8 +391,7 @@ export async function processAssembleBeat(p: AssemblePayload) {
       let beatBytes = beatWav;
       if (process.env.FILL_OVERLAY !== '0') {
         try {
-          const fillPick = p.picks.find((x) => x.role === 'fill');
-          const fillMat = fillPick ?? (await prisma.materialAsset.findFirst({ where: { workspaceId: p.workspaceId, role: 'fill', OR: [{ genre: p.genre }, { genre: null }] }, orderBy: { createdAt: 'desc' } }));
+          const fillMat = picks.find((x) => x.role === 'fill');
           if (fillMat) {
             const secPerBar = (60 / p.bpm) * 4;
             const boundaries: number[] = [];
@@ -216,8 +400,13 @@ export async function processAssembleBeat(p: AssemblePayload) {
             boundaries.pop(); // no fill after the final section
             const placements = planFills(p.bpm, cum * secPerBar, boundaries, genreSignature(p.genre).fillBars);
             if (placements.length) {
-              const fillBuf = await downloadToBuffer(fillMat.url);
+              const rawFill = await downloadToBuffer(fillMat.url);
+              const tempoRatio = p.bpm / (fillMat.sourceBpm || p.bpm);
+              const fillBuf = Math.abs(tempoRatio - 1) > 0.001
+                ? await transformAudio(rawFill, { tempo: tempoRatio })
+                : rawFill;
               beatBytes = await overlayFills(beatWav, fillBuf, placements.map((f) => f.atS));
+              attemptFillApplied = true;
               console.log(`[assemble] overlaid ${placements.length} fills at section boundaries`);
             }
           }
@@ -226,6 +415,8 @@ export async function processAssembleBeat(p: AssemblePayload) {
         }
       }
       url = await uploadBytes({ workspaceId: p.workspaceId, kind: 'beats', bytes: beatBytes, contentType: 'audio/wav', ext: 'wav' });
+      attemptedUrls.push(url);
+      fillApplied = attemptFillApplied;
       qc = await measureAudioQuality(url).catch(() => null);
       const clippingOnly = qc?.verdict === 'fail' && (qc.flags ?? []).includes('clipping');
       if (!clippingOnly) break;
@@ -236,47 +427,92 @@ export async function processAssembleBeat(p: AssemblePayload) {
     // WO-1 SAFETY RAIL: assembled output passes the SAME QC gate as provider
     // output — a broken render (near-silence/clipping) is rejected with the real
     // reason, never approved. 'weak' ships flagged; unmeasured ships disclosed.
-    if (qc?.verdict === 'fail') {
+    if (!qc) {
+      throw new Error('assembled take could not be technically measured — nothing shipped');
+    }
+    if (qc.verdict !== 'pass') {
       throw new Error(`assembled take failed QC (${(qc.flags ?? []).join(', ') || 'broken audio'}) — nothing shipped`);
     }
+    for (const staleUrl of attemptedUrls.filter((candidate) => candidate !== url)) {
+      await deleteObjectByUrl(staleUrl).catch(() => {});
+    }
+    const assembledContentHash = createHash('sha256')
+      .update(await downloadToBuffer(url))
+      .digest('hex');
 
-    const beat = await prisma.beatAsset.create({
-      data: {
-        projectId: p.projectId,
-        songId: p.songId,
-        url,
-        format: 'wav',
-        bpm: p.bpm,
-        duration: qc?.durationS ?? null,
-        provider: 'material',
-        approved: true,
-        meta: {
-          assembled: true,
-          arrangedBy: planned.length >= 3 ? 'claude' : 'template',
-          // Truth: this take clipped on the first pass and shipped after the
-          // deterministic gain-trim correction (never silently).
-          ...(tacticalTrim ? { tacticalTrim } : {}),
-          materialIds: p.picks.map((x) => x.id),
-          roles: p.picks.map((x) => x.role),
-          sections: sections.map((s) => `${s.name}:${s.bars}`),
-          // PROOF-OF-USE (Executive-Summary spec): the full assembly log — every
-          // loop ID with its transforms (stretch ratio to target bpm, gain, pan).
-          // This is how "which materials made this beat" is provable per beat.
-          assemblyLog: p.picks.map((x) => ({
-            materialId: x.id,
-            role: x.role,
-            sourceBpm: x.sourceBpm,
+    const usedPicks = picks.filter((pick) => pick.role !== 'fill' || fillApplied);
+    const assemblyLog = usedPicks.map((pick) => ({
+      materialId: pick.id,
+      role: pick.role,
+      sourceBpm: pick.sourceBpm,
+      targetBpm: p.bpm,
+      stretchRatio: +(p.bpm / (pick.sourceBpm || p.bpm)).toFixed(4),
+      gain: pick.gain,
+      pan: pick.pan ?? 0,
+    }));
+    await prisma.$transaction(async (tx) => {
+      const created = await tx.beatAsset.create({
+        data: {
+          projectId: p.projectId,
+          songId: p.songId,
+          url,
+          format: 'wav',
+          bpm: p.bpm,
+          duration: qc.durationS,
+          provider: 'material',
+          assetKind: 'instrumental',
+          qualityState: 'passed',
+          contentHash: assembledContentHash,
+          verifiedAt: new Date(),
+          approved: true,
+          meta: {
+            assembled: true,
+            arrangedBy: planned.length >= 3 ? 'claude' : 'template',
+            ...(tacticalTrim ? { tacticalTrim } : {}),
+            materialIds: usedPicks.map((pick) => pick.id),
+            roles: usedPicks.map((pick) => pick.role),
+            sections: sections.map((section) => `${section.name}:${section.bars}`),
+            assemblyLog,
+            qc,
+          } as never,
+        },
+      });
+      await tx.materialUsage.createMany({
+        data: usedPicks.map((pick) => {
+          const layerIndex = bedPicks.findIndex((bed) => bed.id === pick.id);
+          const usedIn = pick.role === 'fill'
+            ? ['section-boundaries']
+            : sections.filter((section) => section.layerIdx.includes(layerIndex)).map((section) => section.name);
+          return {
+            workspaceId: p.workspaceId,
+            materialId: pick.id,
+            providerJobId: p.jobId,
+            beatId: created.id,
+            songId: p.songId ?? null,
+            role: pick.role,
+            sourceBpm: pick.sourceBpm,
             targetBpm: p.bpm,
-            stretchRatio: +(p.bpm / (x.sourceBpm || p.bpm)).toFixed(4),
-            gain: x.gain,
-            pan: x.pan ?? 0,
-          })),
-          qc,
-        } as never,
-      },
+            stretchRatio: +(p.bpm / (pick.sourceBpm || p.bpm)).toFixed(4),
+            gain: pick.gain,
+            pan: pick.pan ?? 0,
+            sections: usedIn as never,
+          };
+        }),
+        skipDuplicates: true,
+      });
+      await tx.providerJob.update({
+        where: { id: p.jobId },
+        data: {
+          status: 'SUCCEEDED',
+          finishedAt: new Date(),
+          outputJson: { beatId: created.id, url, roles: usedPicks.map((pick) => pick.role), qc: qc.verdict } as never,
+        },
+      });
+      return created;
     });
-    await markSucceeded(p.jobId, { beatId: beat.id, url, roles: p.picks.map((x) => x.role), qc: qc?.verdict ?? 'unmeasured' });
+    attemptedUrls.length = 0;
   } catch (err) {
+    for (const attemptedUrl of attemptedUrls) await deleteObjectByUrl(attemptedUrl).catch(() => {});
     await markFailed(p.jobId, err);
   } finally {
     await rm(dir, { recursive: true, force: true }).catch(() => {});

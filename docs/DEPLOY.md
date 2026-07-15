@@ -1,177 +1,210 @@
-# Deploying AfroHit Studio to Railway
+# Railway Deployment
 
-Three services + Postgres (default, no extensions) + Redis + object storage.
+AfroHit Studio deploys as three services plus PostgreSQL, Redis, and private
+S3-compatible object storage:
 
-## 1. Push the repo to GitHub
+- `apps/web`: Next.js
+- `apps/api`: Fastify API and durable orchestration
+- `apps/worker`: BullMQ workers in the supplied Dockerfile
+
+Use the repository root as the build context. Point each Railway service at its
+committed config: `apps/web/railway.json`, `apps/api/railway.json`, or
+`apps/worker/railway.json`. The worker Dockerfile also expects the repository
+root as its context.
+
+## 1. Provision Dependencies
+
+Create PostgreSQL 16, Redis 7, and an S3-compatible bucket. Link PostgreSQL and
+Redis to both the API and worker. Give the API and worker the same private bucket
+configuration.
+
+The bucket must deny anonymous reads. New media is stored as private `s3://`
+references and served through authenticated, short-lived URLs. Set
+`STORAGE_PRIVATE_CONFIRMED=1` only after verifying that public access is disabled.
+
+Enable provider-side backups, point-in-time recovery where available, object
+versioning, and retention policies before accepting customer data.
+
+## 2. Configure Production Secrets
+
+Set `NODE_ENV=production` on every service. Keep secrets in Railway variables,
+never in Git.
+
+Required API safety values:
+
+| Variable | Requirement |
+|---|---|
+| `DATABASE_URL` | PostgreSQL connection string |
+| `REDIS_URL` | Redis connection string |
+| `AUTH_MODE` | `jwt`; production refuses `internal` |
+| `JWT_SECRET` | At least 32 random bytes |
+| `IP_HASH_SECRET` | Independent random secret |
+| `INTERNAL_API_SECRET` | At least 32 random bytes; shared with worker |
+| `ENCRYPTION_KEY` | Key used by the encrypted workspace-secret store |
+| `WEB_URL` / `API_URL` | Exact public HTTPS origins |
+| `SESSION_COOKIE_SAMESITE` | `lax`, or `none` only for cross-site HTTPS |
+| `S3_*` or `R2_*` | Private object-storage endpoint, bucket, and credentials |
+| `STORAGE_PRIVATE_CONFIRMED` | `1` after access-policy verification |
+
+Generate independent secrets, for example:
 
 ```bash
-git init
-git add .
-git commit -m "Initial AfroHit Studio commit"
-git remote add origin https://github.com/<you>/afrohit-studio.git
-git push -u origin main
+openssl rand -base64 48
 ```
 
-`.gitignore` already excludes `apps/*/.env`, `node_modules`, `dist`, and `.next` — only templates (`.env.example`) get committed.
+Set `ALLOW_PUBLIC_SIGNUP=1` only while public registration is intended. Otherwise
+create or invite accounts through an operator-controlled process.
 
-## 2. Create the Railway project
+Required worker values are `DATABASE_URL`, `REDIS_URL`,
+`INTERNAL_API_SECRET`, `ENCRYPTION_KEY`, storage variables, and the credentials
+for every enabled media provider. Unknown or unconfigured production providers
+must fail closed.
 
-In the Railway dashboard:
+Set `NEXT_PUBLIC_API_URL` and server-side `API_URL` on the web service. They must
+point to the public API origin.
 
-1. **New Project** → **Deploy from GitHub repo** → pick your repo.
-2. Railway will offer to detect services. **Cancel** that and create them manually so we control the root-directory mapping.
+Use `.env.example` as the complete variable inventory. Do not set
+`ALLOW_STUB_AUDIO=1` in production.
 
-## 3. Provision databases
+## 3. Configure Billing
 
-From the Railway dashboard, add three plugins:
+Create the PayPal product and plan IDs, then set:
 
-| Plugin | Notes |
-|---|---|
-| **PostgreSQL** | The **default** PostgreSQL template is fine — no extensions required. |
-| **Redis** | Default config is fine. |
-| **Object Storage** | Or connect Cloudflare R2 / AWS S3 via `S3_*` env vars. |
+- `PAYPAL_MODE=live`
+- `PAYPAL_CLIENT_ID`
+- `PAYPAL_CLIENT_SECRET`
+- `PAYPAL_WEBHOOK_ID`
+- `PAYPAL_PLAN_STARTER`
+- `PAYPAL_PLAN_CREATOR`
+- `PAYPAL_PLAN_PRO`
+- `PAYPAL_PLAN_STUDIO`
 
-**Connect DB + Redis to `api` AND `worker`** (both use Prisma + BullMQ). The `web` service needs **neither** — it only talks to the API over HTTP. In each service: Variables → **Add Reference** → `DATABASE_URL` (from Postgres) and `REDIS_URL` (from Redis).
+Register `https://<api-host>/webhooks/paypal` for the subscription and payment
+events used by the application. The API verifies PayPal's webhook signature,
+records each event once, and grants credits only through a matching durable
+billing intent.
 
-Railway auto-injects `DATABASE_URL`, `REDIS_URL`, and `S3_*` when referenced.
+Test order capture and subscription activation in PayPal sandbox before changing
+to live mode. A successful HTTP response alone is not proof that money or credits
+moved; verify the `BillingIntent`, `BillingEvent`, and `CreditLedger` records.
 
-## 4. Create the three services
+## 4. Configure Media Providers
 
-For each service, do **New Service** → **GitHub Repo** → set:
+Configure only providers whose account, model version, rights, rate limit, and
+commercial-use terms have been reviewed. Pin model/version overrides where the
+adapter requires them.
 
-| Service | Root Directory | Watch paths |
-|---|---|---|
-| `api` | `apps/api` | `apps/api/**`, `packages/**` |
-| `worker` | `apps/worker` | `apps/worker/**`, `packages/**` |
-| `web` | `apps/web` | `apps/web/**`, `packages/shared/**` |
+The production worker contains ffmpeg, librosa, pyloudnorm, soundfile, and CPU
+Demucs. Do not replace it with a generic Node image: mix/master, deep measurement,
+and stem-aware quality gates depend on those binaries.
 
-Each service has its own `railway.json` (already committed) with a `buildCommand` that installs the workspace (with dev deps) and compiles the shared packages in dependency order (`shared → db → ai → app`) before building the service. Railway's default builder (Railpack) runs it automatically. Keep each service's **Root Directory at the repo root** (`/`) — the build commands are pnpm workspace filters that must run from root.
+If a Suno-compatible gateway is enabled, its callback may target
+`https://<api-host>/webhooks/suno`; the callback is intentionally a no-op and the
+worker's authenticated polling remains the source of truth.
 
-**Note on ffmpeg (worker):** the worker boots and runs all stub jobs without ffmpeg. Real mix/master needs the `ffmpeg` binary — add it when you move to real audio, either by switching the worker service to a Dockerfile (`apt-get install -y ffmpeg`) or a Railpack package step. Until then, mix/master jobs fail with a clear "ffmpeg not found" message; nothing else is affected.
+## 5. Configure Distribution
 
-Link each service to the Postgres + Redis plugins via the **Variables** tab → **Add Reference**.
+The application hands a certified release bundle to an approved HTTPS partner
+endpoint. Set:
 
-## 5. Set environment variables per service
+- `DISTRIBUTOR`
+- `DISTRIBUTOR_WEBHOOK_URL`
+- `DISTRIBUTOR_WEBHOOK_SECRET` with at least 32 bytes
 
-### `api` service
+The outbound request carries `x-afrohit-timestamp`, an HMAC-SHA256
+`x-afrohit-signature`, and an `idempotency-key`. The partner must return JSON with
+`status` equal to `submitted` or `accepted` and a non-empty `externalId`.
+That confirmation records a submission only; it does not publish the song or
+mark it released.
 
-| Variable | Notes |
-|---|---|
-| `DATABASE_URL` | Auto-injected from Postgres plugin |
-| `REDIS_URL` | Auto-injected from Redis plugin |
-| `OPENAI_API_KEY` | Your real key (or `sk-...` placeholder if `STUB_AI=1`) |
-| `AUTH_MODE` | `internal` — no external auth, one default workspace (current mode) |
-| `INTERNAL_WORKSPACE_SLUG` | `studio` (default) |
-| `INTERNAL_OWNER_EMAIL` | `owner@afrohit.local` (default) |
-| `PAYPAL_MODE` | `sandbox` or `live` |
-| `PAYPAL_CLIENT_ID` | From PayPal app |
-| `PAYPAL_CLIENT_SECRET` | From PayPal app |
-| `PAYPAL_WEBHOOK_ID` | From PayPal webhook setup |
-| `PAYPAL_PLAN_STARTER` / `_CREATOR` / `_PRO` / `_STUDIO` | Plan IDs (start with `P-...`) |
-| `INTERNAL_API_SECRET` | Long random string, shared with worker |
-| `S3_ENDPOINT` `S3_BUCKET` `S3_ACCESS_KEY` `S3_SECRET_KEY` | Auto from Railway Object Storage, or your R2/S3 credentials |
-| `S3_PUBLIC_BASE_URL` | CDN URL (e.g. `https://cdn.afrohit.studio`) |
-| `WEB_URL` | The web service's public domain |
-| `API_URL` | The api service's public domain |
+Configure the partner to POST lifecycle events to
+`https://<api-host>/webhooks/distributor`. Each raw JSON body must carry the same
+timestamp and signature headers, signed as
+`HMAC_SHA256(secret, timestamp + "." + rawBody)`, and contain:
 
-### `worker` service
+```json
+{
+  "schemaVersion": 1,
+  "event": "release.status",
+  "eventId": "unique-partner-event-id",
+  "externalId": "the-submission-external-id",
+  "status": "accepted",
+  "occurredAt": "2026-07-13T00:00:00.000Z",
+  "channels": {}
+}
+```
 
-| Variable | Notes |
-|---|---|
-| `DATABASE_URL` | Auto-injected |
-| `REDIS_URL` | Auto-injected |
-| `OPENAI_API_KEY` | Your real key |
-| `INTERNAL_API_SECRET` | Same string as api |
-| `S3_*` | Same as api |
-| `MUSIC_PROVIDER` | `eleven` / `stable_audio` / `mubert` / `stub` |
-| `ELEVEN_API_KEY` etc. | Whichever providers you enabled |
-| `VOICE_PROVIDER` | `eleven` / `stub` |
-| `VIDEO_PROVIDER` | `veo` / `sora` / `stub` |
-| `IMAGE_PROVIDER` | `openai` / `stub` |
-| `GCP_PROJECT_ID`, `GCP_LOCATION`, `GCP_SERVICE_ACCOUNT_JSON_B64` | If using Veo |
-| `WORKER_CONCURRENCY` | Default 4 |
+Allowed callback statuses are `accepted`, `live`, `failed`, and `cancelled`.
+Only a valid, fresh, idempotent `live` callback moves the song to `RELEASED`.
+The endpoint must be credential-free HTTPS and pass the API's network-safety
+checks. Redirects, private-network destinations, oversized responses, stale
+signatures, replay conflicts, and unverified success payloads are rejected.
 
-### `web` service
+## 6. Apply Migrations
 
-Internal mode needs **no auth keys** — the app is open and the API resolves the single default workspace.
-
-| Variable | Notes |
-|---|---|
-| `NEXT_PUBLIC_API_URL` | Public api URL |
-| `API_URL` | Same (server-side fetches) |
-
-> **Auth:** currently `AUTH_MODE=internal` — the web app has no login and every request maps to one default workspace. This is for internal/single-tenant use only; do not expose the public URL widely. When you want real accounts, add a `google` mode in `apps/api/src/middleware/auth.ts` and a sign-in page — the seam is already there.
-
-## 6. First deploy
-
-Push to `main`. Railway will:
-
-1. Build each service (compiles `@afrohit/shared`, `@afrohit/db`, `@afrohit/ai`, then the app).
-2. On the **api** service, the `preDeployCommand` runs `prisma db push` — it creates every table on the plain Postgres (no extensions, no migration-history fragility), then `node dist/index.js` boots. No manual index step, no PostGIS.
-3. Internal auth mode creates the default workspace on the first request — nothing to seed.
-
-> Already have a Postgres with a **failed migration** from an earlier attempt? No reset needed. `db push` ignores migration history and creates the tables fresh (the old attempt died on the first `CREATE EXTENSION` line, so no tables exist).
-
-(Optional) seed extra demo data:
+The API Railway pre-deploy hook runs:
 
 ```bash
-railway run --service api -- pnpm --filter @afrohit/db seed
+pnpm --filter @afrohit/db migrate:safe
 ```
 
-## 7. Wire webhooks (point at the api service's public domain)
+Behavior:
 
-| Webhook | URL | Events |
-|---|---|---|
-| PayPal | `https://<api>.up.railway.app/webhooks/paypal` | `BILLING.SUBSCRIPTION.ACTIVATED`, `BILLING.SUBSCRIPTION.CANCELLED`, `BILLING.SUBSCRIPTION.EXPIRED`, `BILLING.SUBSCRIPTION.SUSPENDED`, `PAYMENT.SALE.COMPLETED`, `PAYMENT.CAPTURE.COMPLETED` |
-| Music provider (if used) | `https://<api>.up.railway.app/webhooks/music` | Provider-specific |
+1. An empty database receives `prisma migrate deploy`.
+2. A database with Prisma history receives pending migrations normally.
+3. A legacy database previously managed by `db push` is reconciled once:
+   privacy and evidence backfills run, SQL-only constraints are restored, every
+   migration is resolved, and a durable baseline marker is written.
+4. An interrupted baseline resumes without replaying charges or overwriting
+   newer evidence classifications.
+A completed legacy baseline does not suppress later migrations. Every subsequent
+deploy still runs `prisma migrate deploy` and applies only pending migrations.
 
-## 8. Smoke test the live deployment
+Migration `20260713072000_credit_usage_units` backfills ledger `creditKey`,
+`units`, and `planUnits`, then adds constraints and indexes used by spend caps.
+Take a tested backup and schedule the first production application during a
+low-write window because the backfill updates historical ledger rows and index
+creation can contend with billing traffic.
+
+Take a database backup before the first deployment of this transition. Never run
+`prisma db push`, edit `_prisma_migrations`, or reset production as an incident
+shortcut. A failed migration blocks deployment and must be investigated.
+
+## 7. Deploy And Verify
+
+Deploy the worker, API, and web services from the same commit. Then verify:
 
 ```bash
-# From your laptop, point the integration suite at production
-API_URL=https://api.afrohit.studio node scripts/integration-test.mjs
+curl -fsS https://<api-host>/health
+curl -fsS https://<api-host>/health/ready
+curl -fsS https://<web-host>/api/health
 ```
 
-The runner:
+`/health/ready` reports database, Redis, worker-heartbeat, and outbox state.
+Railway treats database unavailability as a failed readiness check. Operators
+must also require `systemOk: true`; a 200 response with `systemOk: false` means
+the API is alive but media production is degraded.
 
-- Hits `/health` and `/docs/json`
-- Exercises every authenticated route family with 401 expectations
-- Creates an artist → project → brief → hooks → lyrics → beat → vocal → mix → cover art → storyboard → rights receipt → export bundle
-- Logs PostGIS share events from 4 countries and queries `/share/heatmap`
-- Verifies the export gate (412 without receipt, 202 with)
-- Verifies webhook signature rejection
+Before public traffic:
 
-Expected: every phase prints `✓`, suite exits 0.
+```bash
+pnpm run lint
+pnpm run verify
+pnpm run build
+pnpm run security:audit
+```
 
-## 9. Costs
+Also execute controlled live tests for sign-up/sign-in, PayPal sandbox capture,
+one job per enabled provider, private media playback, automatic failed-job
+refund, rights/export certification, and distributor sandbox submission. Record
+the asset IDs and external transaction IDs; screenshots alone are not evidence.
 
-See `docs/COSTS.md`. Starting estimate: **$30-$150/month** during light testing.
+## 8. Rollback
 
-## Health checks
+Roll application services back to a previously verified commit only when that
+commit is compatible with the deployed schema. Prisma migrations are forward
+changes; do not delete migration rows or reverse DDL during an outage.
 
-| URL | What |
-|---|---|
-| `https://<web>/api/health` | web app readiness |
-| `https://<api>/health` | API readiness |
-| `https://<api>/docs` | OpenAPI Swagger UI |
-
-## Troubleshooting
-
-### Migration / `P3009` failed-migration errors
-
-Shouldn't happen anymore — the schema needs no extensions and the api uses
-`prisma db push` (which ignores migration history). If you see a leftover
-failed `_prisma_migrations` row from an old attempt, it's harmless; `db push`
-creates the tables regardless. No DB reset needed.
-
-### Worker won't connect to Redis
-
-Make sure you **linked** the Redis plugin to the worker service (Variables → Add Reference → `REDIS_URL`). Just having Redis in the project isn't enough.
-
-### Migration deploy hangs
-
-Check `DATABASE_URL` is set on the **api** service. The startCommand runs `prisma migrate deploy && node dist/index.js` — both need DB access.
-
-### "@afrohit/shared not found" at build time
-
-You're missing a build phase. The `apps/*/railway.json` files build the workspace packages in the right order. If you customized them, ensure `shared → db → ai → app` order.
+For data loss, restore PostgreSQL and object storage to a coordinated recovery
+point, then reconcile provider jobs and billing events by immutable external IDs.
+See `docs/RUNBOOK.md`.

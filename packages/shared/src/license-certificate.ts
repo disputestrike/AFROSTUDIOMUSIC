@@ -48,6 +48,9 @@ export function buildLicenseCertificate(opts: {
   if (opts.engineClass === 'standard') {
     return { ok: false, reason: 'standard renders carry pass-through terms (terms:standard:v1), not a certificate' };
   }
+  if (opts.engineClass === 'unavailable') {
+    return { ok: false, reason: 'unavailable or unknown engines cannot produce a license certificate' };
+  }
   const terms = CLASS_TERMS[opts.engineClass];
   if (!terms) return { ok: false, reason: `unknown engine class '${opts.engineClass}'` };
   return {

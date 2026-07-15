@@ -1,77 +1,157 @@
 # Operations Runbook
 
-Quick reference for the common things that break.
+This runbook favors evidence and reversible controls. Do not repair balances,
+migration history, rights records, or release status with ad hoc SQL writes.
 
-## Health endpoints
+## Health Interpretation
 
-| Service | URL |
+| Endpoint or signal | Meaning |
 |---|---|
-| web | `/api/health` |
-| api | `/health` |
-| worker | check logs; no HTTP endpoint (could add one later) |
+| API `/health` | Process liveness only |
+| API `/health/ready` | Database, Redis, worker heartbeat, and outbox snapshot |
+| Web `/api/health` | Web process and configured API reachability |
+| `SystemSetting` keys `worker:heartbeat:*` | Per-replica worker heartbeat |
+| Provider and queue dashboards | External and transport state |
 
-## Common failure modes
+The API readiness body has two top-level booleans:
 
-### "402 insufficient_credits"
+- `ok` means PostgreSQL is reachable. HTTP is 503 when this is false.
+- `systemOk` means PostgreSQL, Redis, and at least one fresh worker heartbeat are
+  all present.
 
-The user ran out of credits. Direct them to `/billing` → credit pack. The `creditsCents` column on `Workspace` is the source of truth. Refunds go through `app.refundCredits` (server-side only).
+Alert whenever `systemOk` is false, `pendingOutbox` rises continuously, or
+`oldestPendingSeconds` exceeds the normal dispatch window.
 
-### "412 no_rights_receipt"
+## First Response
 
-User tried to export a release without running rights check. POST `/api/v1/rights/check` first. The check writes a `RightsReceipt` row whose `hash` field is the canonical sha256 of the receipt JSON.
+1. Record the UTC start time, affected workspace IDs, request/job/event IDs, and
+   the deployed commit.
+2. Stop further spend if the incident can fan out. Disable the affected entries
+   through `/api/v1/admin/autonomy` and set `ENABLE_AUTONOMY_CRON=0` for a broad
+   scheduled-work stop.
+3. Preserve logs and database/object identifiers before retrying anything.
+4. Classify the fault as auth/tenant, billing, queue, provider, storage, quality,
+   export/distribution, or deployment.
+5. Recover with idempotent application paths; never invent success state.
 
-### Voice profile stuck in `TRAINING`
+## Queue And Worker Incidents
 
-Check the worker logs for the `setup-voice-profile` job. ElevenLabs typically completes in seconds; if it hangs, retry the job (BullMQ does this 3× automatically before marking failed). If it failed in the provider, the `VoiceProfile.status` will be `FAILED` — let the user re-upload samples and retry.
+If Redis or the worker is unhealthy:
 
-### Music generation job hangs
+1. Check `/health/ready`, worker logs, replica count, Redis memory, and network
+   connectivity.
+2. Inspect `JobOutbox` rows in `PENDING` or `FAILED` state and their
+   `nextAttemptAt`, `attempts`, and `lastError`.
+3. Match each outbox row to its `ProviderJob`. Confirm whether a provider request
+   was submitted before retrying.
+4. Restore Redis/worker capacity. The dispatcher will continue durable outbox
+   delivery; do not enqueue a second logical job with a new idempotency key.
+5. Confirm heartbeats return and backlog age declines.
 
-The `processMusic` processor polls up to 25 attempts with 8s waits = ~3 min ceiling. If the provider truly stalls, the job is marked FAILED and credits are NOT auto-refunded — manually refund via:
+A provider timeout does not prove failure. Query the provider using the stored
+external job ID before launching replacement work.
 
-```sql
-UPDATE "Workspace" SET "creditsCents" = "creditsCents" + 75000
-  WHERE id = '...';
-INSERT INTO "CreditLedger" (id, "workspaceId", delta, reason, "createdAt")
-  VALUES (gen_random_uuid(), '...', 75000, 'manual_refund', now());
-```
+## Credits And Billing
 
-Or call `app.refundCredits()` from a tiny script.
+Credit balance is derived through transactional workspace updates plus immutable
+`CreditLedger` entries. Paid job failure creates a one-time reversal linked by
+`reversalOfId`.
+Every debit records `creditKey`, billed `units`, and allowance `planUnits`.
+Generation caps sum `units`; plan allowances sum `planUnits`. Video allowance is
+the sum of normalized provider shot durations, not one unit per storyboard or
+request. Charges and reversals share a workspace advisory lock, and owner-mode
+refunds restore cap units without changing the workspace balance.
 
-### Worker can't reach S3/R2
+For an insufficient-credit response, inspect the balance, plan limit, daily and
+monthly generation caps, and recent ledger entries. Do not bypass a plan or cap
+by editing `Workspace.creditsCents`.
 
-The worker uploads must succeed for `BeatAsset` / `VocalRender` rows to land. If `S3_*` env is wrong, jobs will fail with `BadEndpoint` or `NoSuchBucket`. Test with:
+For a missing refund:
 
-```bash
-aws --endpoint-url=$S3_ENDPOINT s3 ls s3://$S3_BUCKET
-```
+1. Find the failed `ProviderJob` and its `chargeLedgerId`.
+2. Look for the reversal ledger row.
+3. Confirm the worker failure handler completed.
+4. Re-run only the idempotent refund/application workflow after the underlying
+   fault is understood.
 
-### Clerk session not resolving to a workspace
+For PayPal incidents, correlate `BillingIntent`, `BillingEvent`,
+`paypalOrderId`/`paypalSubscriptionId`, and the external event ID. Duplicate
+webhooks are expected and must not duplicate credits. Never grant credit from an
+unverified webhook or a browser success redirect.
 
-The Clerk webhook auto-creates a workspace on `user.created`. If that webhook didn't fire (Clerk dashboard says "no recent deliveries"), the user lands in a state where `WorkspaceMember` is missing. Quick recovery:
+## Storage And Data Isolation
 
-```sql
-INSERT INTO "Workspace" (id, name, slug, plan, "creditsCents", "createdAt", "updatedAt")
-  VALUES (gen_random_uuid(), 'Manual', 'manual-xxx', 'STARTER', 500000, now(), now());
-INSERT INTO "WorkspaceMember" (id, "workspaceId", "userId", role, "createdAt")
-  VALUES (gen_random_uuid(), '<ws id>', '<user id>', 'OWNER', now());
-```
+For failed upload or playback:
 
-### PostGIS index missing
+1. Confirm the stored reference belongs to the active workspace.
+2. Verify bucket privacy and `STORAGE_PRIVATE_CONFIRMED=1`.
+3. Check endpoint, region, credentials, object existence, size, and content hash.
+4. Generate a new short-lived signed URL; do not make the bucket public.
+5. Treat a cross-workspace URL or object disclosure as a security incident and
+   rotate affected credentials after containment.
 
-The `01-postgis-indexes.sql` script must be run after the first Prisma migration. Heatmap queries get slow without it. Re-run is idempotent.
+## Music, Voice, And Quality
 
-## Scaling levers
+For music or vocal failure, inspect the `ProviderJob`, provider response,
+selected engine/model, rights inputs, asset kind, content hash, measured quality,
+and alignment evidence.
 
-| Symptom | Lever |
-|---|---|
-| Hooks/lyrics slow | Bump `gpt-5.4-mini` quota or temporarily switch `OPENAI_DRAFT_MODEL` to `gpt-5.3-mini` |
-| Beat queue backlog | Add worker replicas (each handles `WORKER_CONCURRENCY` jobs) |
-| Video queue backlog | Same — but stay polite to provider rate limits |
-| Postgres slow | Promote to a bigger Railway instance, or add read replicas; never trade ACID for caching here |
-| Redis OOM | Shorten `removeOnComplete` to 100 from 1000 |
+- `spoken_guide` is not singing.
+- `full_mix` is not an instrumental or isolated vocal.
+- `unmeasured`, placeholder, failed, or unverified assets must not be approved.
+- A missing local DSP dependency is an environment failure, not a passed ear test.
 
-## Disaster recovery
+For voice training, verify a current consent record, signer identity, consent
+hash, private immutable dataset, segment/duration evidence, and pinned trainer
+configuration. External datasets remain blocked unless explicitly allowed.
 
-1. Restore Postgres from Railway backup (point-in-time within 7 days).
-2. Object storage is versioned — restore lost objects via R2/S3 versioning.
-3. Re-run any failed BullMQ jobs by enqueuing from `ProviderJob` rows where `status='FAILED'`.
+## Release And Distribution
+
+When release certification is blocked, inspect each failed gate rather than
+changing status:
+
+- approved, measured master with immutable hash
+- approved artwork with verified dimensions/hash
+- rights receipt and current user attestations
+- native-language review where required
+- release metadata, splits, and identifier policy
+- verified export archive and manifest
+
+A distribution submission is confirmed only when the configured partner returns
+a non-empty external ID with `submitted` or `accepted`. That is not proof that
+the release is live. The song remains `EXPORTED` and non-public until a valid signed
+`/webhooks/distributor` event reports `live`.
+
+For an incident, correlate `Release.externalId`, `DistributionEvent.eventId`,
+payload hash, event status, applied flag, and the partner record. Duplicate events
+with the same body are idempotent; the same event ID with a different body is a
+conflict. A failed or cancelled callback cannot downgrade a release already
+confirmed live. Retry outbound submission with the same idempotency key only
+after determining whether the partner accepted the first request.
+
+## Deployment And Migration
+
+A production deployment uses `pnpm --filter @afrohit/db migrate:safe`.
+
+If it fails:
+
+1. Stop the rollout and preserve the migration logs.
+2. Check database reachability, locks, migration status, disk, and backup health.
+3. If the one-time legacy baseline reports `resolving`, rerun the same command;
+   it resumes missing migration resolutions.
+4. Do not run `db push`, delete `_prisma_migrations`, or reset the database.
+5. Escalate any destructive or ambiguous schema change for a backup-tested
+   migration.
+
+## Disaster Recovery
+
+1. Freeze writes and scheduled spend.
+2. Select a coordinated PostgreSQL and object-storage recovery point.
+3. Restore to an isolated environment and run migration plus integrity checks.
+4. Reconcile PayPal events, provider jobs, credit reversals, export hashes, and
+   distributor external IDs after the recovery timestamp.
+5. Validate tenant isolation and private media access before reopening traffic.
+6. Document the root cause, financial impact, affected users, and prevention
+   work.
+
+Backups are not proven until restore drills succeed.

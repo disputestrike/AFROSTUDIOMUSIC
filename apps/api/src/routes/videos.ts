@@ -1,9 +1,14 @@
-import type { FastifyInstance } from 'fastify';
-import { prisma } from '@afrohit/db';
-import { generateStoryboardInputSchema, renderVideoInputSchema } from '@afrohit/shared';
-import { prompts, responsesJson } from '@afrohit/ai';
-import { requireAuth } from '../middleware/auth';
-import { enqueue } from '../lib/queue';
+import type { FastifyInstance } from "fastify";
+import { prisma } from "@afrohit/db";
+import {
+  generateStoryboardInputSchema,
+  normalizeStoryboardShots,
+  renderVideoInputSchema,
+  videoRenderUsage,
+} from "@afrohit/shared";
+import { prompts, responsesJson } from "@afrohit/ai";
+import { requireAuth } from "../middleware/auth";
+import { createQueuedProviderJob, scopedRequestKey } from "../lib/queued-job";
 
 export default async function videos(app: FastifyInstance) {
   /**
@@ -11,7 +16,7 @@ export default async function videos(app: FastifyInstance) {
    * User reviews/approves before any expensive video credit is spent.
    */
   app.post(
-    '/storyboards',
+    "/storyboards",
     { schema: { body: generateStoryboardInputSchema } },
     async (req, reply) => {
       const { workspaceId } = requireAuth(req);
@@ -19,7 +24,10 @@ export default async function videos(app: FastifyInstance) {
 
       const project = await prisma.project.findFirstOrThrow({
         where: { id: input.projectId, workspaceId },
-        include: { artist: true, briefs: { take: 1, orderBy: { createdAt: 'desc' } } },
+        include: {
+          artist: true,
+          briefs: { take: 1, orderBy: { createdAt: "desc" } },
+        },
       });
 
       const result = await responsesJson<{
@@ -36,7 +44,10 @@ export default async function videos(app: FastifyInstance) {
       }>({
         system: prompts.STORYBOARD_SYSTEM,
         user: JSON.stringify({
-          artist: { stageName: project.artist.stageName, lane: project.artist.laneSummary },
+          artist: {
+            stageName: project.artist.stageName,
+            lane: project.artist.laneSummary,
+          },
           brief: project.briefs[0] ?? {},
           totalDurationS: input.durationS,
           format: input.format,
@@ -46,12 +57,19 @@ export default async function videos(app: FastifyInstance) {
         maxOutputTokens: 1_500,
       });
 
+      const storyboard = normalizeStoryboardShots(
+        result.shots,
+        input.durationS
+      );
+      if (!storyboard.length) {
+        return reply.code(502).send({ error: "invalid_storyboard_output" });
+      }
       const concept = await prisma.videoConcept.create({
         data: {
           projectId: project.id,
           title: result.title,
-          storyboard: result.shots as never,
-          durationS: input.durationS,
+          storyboard: storyboard as never,
+          durationS: storyboard.reduce((sum, shot) => sum + shot.duration_s, 0),
           format: input.format,
         },
       });
@@ -62,7 +80,7 @@ export default async function videos(app: FastifyInstance) {
   );
 
   app.post(
-    '/renders',
+    "/renders",
     { schema: { body: renderVideoInputSchema } },
     async (req, reply) => {
       const { workspaceId } = requireAuth(req);
@@ -71,47 +89,58 @@ export default async function videos(app: FastifyInstance) {
       const concept = await prisma.videoConcept.findFirstOrThrow({
         where: { id: input.conceptId, project: { workspaceId } },
       });
+      if (concept.projectId !== input.projectId) {
+        return reply.code(409).send({ error: "concept_project_mismatch" });
+      }
 
-      const shots = (concept.storyboard as Array<{ duration_s?: number }>) ?? [];
-      const totalSec =
-        input.shotIndex == null
-          ? shots.reduce((s, sh) => s + (sh.duration_s ?? 3), 0)
-          : shots[input.shotIndex]?.duration_s ?? 3;
+      const shots =
+        (concept.storyboard as Array<{ duration_s?: number }>) ?? [];
+      const usage = videoRenderUsage(shots, input.shotIndex);
+      if (!usage) {
+        return reply.code(400).send({ error: "invalid_video_shot_selection" });
+      }
+      const idempotencyKey = scopedRequestKey(
+        req.headers as Record<string, unknown>,
+        "video-render"
+      );
       const charge = await app.chargeCredits({
         workspaceId,
-        key: totalSec <= 8 ? 'video_8s' : 'video_20s',
-        refTable: 'VideoConcept',
+        key: usage.creditKey,
+        multiplier: usage.billingUnits,
+        planUnits: usage.planUnits,
+        refTable: "VideoConcept",
         refId: concept.id,
+        idempotencyKey,
       });
-      if (!charge.ok) return reply.code(402).send({ error: 'insufficient_credits', ...charge });
+      if (!charge.ok)
+        return reply
+          .code(402)
+          .send({ error: "insufficient_credits", ...charge });
 
-      const job = await prisma.providerJob.create({
-        data: {
-          workspaceId,
-          projectId: input.projectId,
-          kind: 'video',
-          provider: process.env.VIDEO_PROVIDER ?? 'stub',
-          status: 'QUEUED',
-          inputJson: input as never,
-        },
-      });
-
-      await enqueue({
+      const job = await createQueuedProviderJob({
+        app,
         queue: app.queues.video,
-        name: 'render-video',
-        payload: {
-          jobId: job.id,
+        jobName: "render-video",
+        workspaceId,
+        projectId: concept.projectId,
+        kind: "video",
+        provider: process.env.VIDEO_PROVIDER ?? "unavailable",
+        inputJson: input,
+        charge,
+        idempotencyKey,
+        payload: jobId => ({
+          jobId,
           workspaceId,
-          projectId: input.projectId,
+          projectId: concept.projectId,
           conceptId: concept.id,
           shotIndex: input.shotIndex,
           shots,
           format: concept.format,
-        },
+        }),
       });
 
       reply.code(202);
-      return { jobId: job.id };
+      return { jobId: job.jobId, replayed: job.replayed };
     }
   );
 }

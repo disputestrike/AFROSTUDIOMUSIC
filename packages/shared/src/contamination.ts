@@ -49,7 +49,7 @@ const DAYS = /\b(monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b/i;
 const CLOCK = /\b(\d{1,2}\s*(?:am|pm|o'?clock)|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|noon|midnight)\b/i;
 const APPOINTMENT = /\b(come back|show my face|keep your word|see you again|meet me|i go dey there|link up|pull up)\b/i;
 const TRANSACTION = /\b(pay|money|price|charge|cash|order|owe|fee|balance|change)\b/i;
-const YORUBA_DIACRITIC = /[àáèéìíòóùúẹọṣǹńẹ́ọ́]/i;
+const YORUBA_DIACRITIC = /[àáèéìíòóùúẹọṣǹń]/i;
 // Genuine Yoruba/Igbo phrases that would be DECORATION in a Pidgin/English song.
 // NOTE: common Pidgin interjections ("omo", "jare", "abeg") are NOT here — they
 // are everyday Pidgin, not decorative heritage-language (they false-blocked a

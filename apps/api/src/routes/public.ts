@@ -1,5 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import { prisma } from '@afrohit/db';
+import { presignAssetRef } from '../lib/storage';
 
 /**
  * Public release page data (the pre-save / smart-link catch-page). No workspace
@@ -16,28 +17,34 @@ export default async function publicRoutes(app: FastifyInstance) {
     // Only expose songs the artist has green-lit (audit: an unauthenticated,
     // un-scoped endpoint was leaking title/artist/cover/ISRC for ANY song id in
     // ANY workspace). An unreleased song is 404 to the public.
-    if (!song || !song.releaseReady) return reply.code(404).send({ error: 'not_found' });
+    if (!song || !song.releaseReady || song.status !== 'RELEASED' || song.quarantined) {
+      return reply.code(404).send({ error: 'not_found' });
+    }
 
     const [master, mix, cover, snippet] = await Promise.all([
-      prisma.master.findFirst({ where: { songId: song.id }, orderBy: { createdAt: 'desc' } }),
-      prisma.mix.findFirst({ where: { songId: song.id }, orderBy: { createdAt: 'desc' } }),
-      prisma.imageAsset.findFirst({ where: { projectId: song.projectId, kind: 'cover' }, orderBy: { createdAt: 'desc' } }),
-      prisma.videoRender.findFirst({ where: { projectId: song.projectId, provider: 'snippet' }, orderBy: { createdAt: 'desc' } }),
+      prisma.master.findFirst({ where: { songId: song.id, approved: true }, orderBy: { createdAt: 'desc' } }),
+      prisma.mix.findFirst({ where: { songId: song.id, approved: true }, orderBy: { createdAt: 'desc' } }),
+      prisma.imageAsset.findFirst({ where: { projectId: song.projectId, kind: 'cover', approved: true }, orderBy: { createdAt: 'desc' } }),
+      prisma.videoRender.findFirst({ where: { projectId: song.projectId, provider: 'snippet', approved: true }, orderBy: { createdAt: 'desc' } }),
     ]);
 
-    // Master/mix R2 URLs are PERMANENT + unsigned. Only expose the streamable
-    // audio once the song is green-lit for release — otherwise a leaked/guessed
-    // song id would let anyone stream a finished-but-unreleased master pre-drop.
-    // Cover + snippet are promo assets, safe to show on the "dropping soon" page.
+    const [coverUrl, streamUrl, snippetUrl] = await Promise.all([
+      cover?.url ? presignAssetRef(cover.url, 900) : null,
+      song.releaseReady && (master?.url || mix?.url) ? presignAssetRef(master?.url ?? mix!.url, 900) : null,
+      snippet?.url ? presignAssetRef(snippet.url, 900) : null,
+    ]);
+
+    // Only released rows receive short-lived streaming capabilities. The
+    // stable private object references never leave the API.
     reply.header('cache-control', 'public, max-age=60');
     return {
       id: song.id,
       title: song.title,
       artist: song.project.artist.stageName,
       genre: song.project.genre,
-      coverUrl: cover?.url ?? null,
-      streamUrl: song.releaseReady ? master?.url ?? mix?.url ?? null : null,
-      snippetUrl: snippet?.url ?? null,
+      coverUrl,
+      streamUrl,
+      snippetUrl,
       isrc: song.isrc ?? null,
       releaseReady: song.releaseReady,
     };

@@ -1,9 +1,9 @@
 import type { FastifyInstance } from 'fastify';
 import { prisma } from '@afrohit/db';
-import { mixerRenderSchema, mixerAiSchema, type MixerTrack } from '@afrohit/shared';
+import { mixerAiSchema, mixerRenderSchema, selectDefaultSessionAssets, type MixerTrack } from '@afrohit/shared';
 import { responsesJson } from '@afrohit/ai';
 import { requireAuth } from '../middleware/auth';
-import { enqueue } from '../lib/queue';
+import { createQueuedProviderJob, scopedRequestKey } from '../lib/queued-job';
 
 type TrackDefaults = Omit<MixerTrack, 'id' | 'kind' | 'label'>;
 const DEFAULTS: TrackDefaults = {
@@ -17,137 +17,164 @@ const DEFAULTS: TrackDefaults = {
 };
 
 async function resolveSong(workspaceId: string, projectId: string, songId?: string) {
-  if (songId) {
-    return prisma.song.findFirstOrThrow({ where: { id: songId, projectId, workspaceId } });
-  }
-  return prisma.song.findFirst({
-    where: { projectId, workspaceId },
-    orderBy: { createdAt: 'desc' },
-  });
+  if (songId) return prisma.song.findFirstOrThrow({ where: { id: songId, projectId, workspaceId } });
+  return prisma.song.findFirst({ where: { projectId, workspaceId }, orderBy: { createdAt: 'desc' } });
 }
 
-async function loadTracks(projectId: string, songId: string) {
-  const [beats, vocals, lastConsole] = await Promise.all([
-    // Only approved assets belong on the console (mix/master/export gate on approved).
-    prisma.beatAsset.findMany({ where: { songId, projectId, approved: true }, orderBy: { createdAt: 'asc' } }),
-    prisma.vocalRender.findMany({ where: { songId, projectId, approved: true }, orderBy: { createdAt: 'asc' } }),
+const mixableVocalWhere = {
+  approved: true,
+  assetKind: 'isolated_vocal',
+  qualityState: 'passed',
+  contentHash: { not: null },
+  verifiedAt: { not: null },
+} as const;
+
+const mixableBeatWhere = {
+  approved: true,
+  assetKind: 'instrumental',
+  qualityState: 'passed',
+  contentHash: { not: null },
+  verifiedAt: { not: null },
+} as const;
+
+type BeatRow = { id: string; createdAt: Date; meta: unknown };
+type VocalRow = {
+  id: string;
+  createdAt: Date;
+  role: string;
+  approved: boolean;
+  assetKind: string;
+  qualityState: string;
+  contentHash: string | null;
+  verifiedAt: Date | null;
+};
+
+async function loadTracks(projectId: string, songId: string): Promise<MixerTrack[]> {
+  const [allBeats, allVocals, lastConsole] = await Promise.all([
+    prisma.beatAsset.findMany({
+      where: { songId, projectId, ...mixableBeatWhere },
+      orderBy: { createdAt: 'desc' },
+    }),
+    prisma.vocalRender.findMany({
+      where: { songId, projectId, ...mixableVocalWhere },
+      orderBy: { createdAt: 'desc' },
+    }),
     prisma.mix.findFirst({
-      where: { songId, projectId, preset: 'console' },
+      where: { songId, projectId, preset: 'console', approved: true, qualityState: 'passed' },
       orderBy: { createdAt: 'desc' },
     }),
   ]);
-
+  const { beats, vocals } = selectDefaultSessionAssets(
+    allBeats as BeatRow[],
+    allVocals as VocalRow[],
+  );
   const saved = new Map<string, Partial<MixerTrack>>();
   if (Array.isArray(lastConsole?.settings)) {
-    for (const s of lastConsole!.settings as Array<Partial<MixerTrack>>) {
-      if (s?.id) saved.set(s.id, s);
+    for (const setting of lastConsole.settings as Array<Partial<MixerTrack>>) {
+      if (setting?.id) saved.set(setting.id, setting);
     }
   }
 
-  const rows: Array<MixerTrack & { url: string }> = [];
-  for (const b of beats) {
-    const meta = (b.meta ?? {}) as { instrumental?: boolean; title?: string | null };
+  const rows: MixerTrack[] = [];
+  for (const beat of beats) {
+    const meta = (beat.meta ?? {}) as { instrumental?: boolean; title?: string | null };
     rows.push({
-      id: b.id,
+      ...DEFAULTS,
+      ...saved.get(beat.id),
+      id: beat.id,
       kind: 'beat',
       label: meta.instrumental ? 'Instrumental' : meta.title || 'Beat',
-      url: b.url,
-      ...DEFAULTS,
-      ...saved.get(b.id),
     });
   }
-  for (const v of vocals) {
+  for (const vocal of vocals) {
     rows.push({
-      id: v.id,
-      kind: 'vocal',
-      label: v.role ? `Vocal · ${v.role}` : 'Vocal',
-      url: v.url,
       ...DEFAULTS,
-      ...saved.get(v.id),
+      ...saved.get(vocal.id),
+      id: vocal.id,
+      kind: 'vocal',
+      label: vocal.role ? `Vocal - ${vocal.role}` : 'Vocal',
     });
   }
   return rows;
 }
 
 export default async function mixer(app: FastifyInstance) {
-  // Load the console: tracks (beat + vocals) with any saved channel settings.
-  app.get<{ Params: { projectId: string }; Querystring: { songId?: string } }>(
-    '/',
-    async (req, reply) => {
-      const { workspaceId } = requireAuth(req);
-      await prisma.project.findFirstOrThrow({ where: { id: req.params.projectId, workspaceId } });
-      const song = await resolveSong(workspaceId, req.params.projectId, req.query.songId);
-      if (!song) return { songId: null, tracks: [], message: 'No song yet — generate or upload one first.' };
-      const tracks = await loadTracks(req.params.projectId, song.id);
-      reply.header('cache-control', 'no-store');
-      return { songId: song.id, songTitle: song.title, tracks };
-    }
-  );
+  app.get<{ Params: { projectId: string }; Querystring: { songId?: string } }>('/', async (req, reply) => {
+    const { workspaceId } = requireAuth(req);
+    await prisma.project.findFirstOrThrow({ where: { id: req.params.projectId, workspaceId } });
+    const song = await resolveSong(workspaceId, req.params.projectId, req.query.songId);
+    if (!song) return { songId: null, tracks: [], message: 'No song yet - generate or upload one first.' };
+    const tracks = await loadTracks(req.params.projectId, song.id);
+    reply.header('cache-control', 'no-store');
+    return { songId: song.id, songTitle: song.title, tracks };
+  });
 
-  // Render the mix from the console settings.
   app.post<{ Params: { projectId: string } }>(
     '/render',
     { schema: { body: mixerRenderSchema } },
     async (req, reply) => {
       const { workspaceId } = requireAuth(req);
       const input = mixerRenderSchema.parse(req.body);
-      const project = await prisma.project.findFirstOrThrow({
-        where: { id: req.params.projectId, workspaceId },
-      });
-
-      // Match each posted track to a real asset to get its authentic url.
+      const project = await prisma.project.findFirstOrThrow({ where: { id: req.params.projectId, workspaceId } });
+      await prisma.song.findFirstOrThrow({ where: { id: input.songId, projectId: project.id, workspaceId } });
+      const ids = [...new Set(input.tracks.map((track) => track.id))];
       const [beats, vocals] = await Promise.all([
-        prisma.beatAsset.findMany({ where: { songId: input.songId, projectId: project.id } }),
-        prisma.vocalRender.findMany({ where: { songId: input.songId, projectId: project.id } }),
+        prisma.beatAsset.findMany({
+          where: { id: { in: ids }, songId: input.songId, projectId: project.id, ...mixableBeatWhere },
+          select: { id: true },
+        }),
+        prisma.vocalRender.findMany({
+          where: { id: { in: ids }, songId: input.songId, projectId: project.id, ...mixableVocalWhere },
+          select: { id: true },
+        }),
       ]);
-      const urlById = new Map<string, string>();
-      beats.forEach((b: { id: string; url: string }) => urlById.set(b.id, b.url));
-      vocals.forEach((v: { id: string; url: string }) => urlById.set(v.id, v.url));
-
-      const settings = input.tracks
-        .filter((t) => urlById.has(t.id))
-        .map((t) => ({ ...t, url: urlById.get(t.id)! }));
-      if (settings.length === 0) {
-        return reply.code(400).send({ error: 'no_matching_tracks' });
+      const kindById = new Map<string, 'beat' | 'vocal'>([
+        ...beats.map((beat: { id: string }) => [beat.id, 'beat'] as const),
+        ...vocals.map((vocal: { id: string }) => [vocal.id, 'vocal'] as const),
+      ]);
+      const invalidIds = ids.filter((id) => !kindById.has(id));
+      if (invalidIds.length) {
+        return reply.code(400).send({ error: 'unapproved_or_invalid_tracks', invalidIds });
       }
+      const settings = input.tracks.map(({ label: _label, ...track }) => ({
+        ...track,
+        kind: kindById.get(track.id)!,
+      }));
 
+      const idempotencyKey = scopedRequestKey(req.headers as Record<string, unknown>, 'mixer-console');
       const charge = await app.chargeCredits({
         workspaceId,
         key: 'mix_preset',
         refTable: 'Song',
         refId: input.songId,
+        idempotencyKey,
       });
       if (!charge.ok) return reply.code(402).send({ error: 'insufficient_credits', ...charge });
-
-      const job = await prisma.providerJob.create({
-        data: {
-          workspaceId,
-          projectId: project.id,
-          kind: 'mix',
-          provider: 'internal',
-          status: 'QUEUED',
-          inputJson: { songId: input.songId, preset: 'console' } as never,
-        },
-      });
-      await enqueue({
+      const job = await createQueuedProviderJob({
+        app,
         queue: app.queues.mix,
-        name: 'create-mix',
-        payload: {
-          jobId: job.id,
+        jobName: 'create-mix',
+        workspaceId,
+        projectId: project.id,
+        kind: 'mix',
+        provider: 'internal',
+        inputJson: { songId: input.songId, preset: 'console', trackIds: ids },
+        charge,
+        idempotencyKey,
+        payload: (jobId) => ({
+          jobId,
           workspaceId,
           projectId: project.id,
           songId: input.songId,
           preset: 'console',
           settings,
-        },
+        }),
       });
-
       reply.code(202);
-      return { jobId: job.id };
-    }
+      return { jobId: job.jobId, replayed: job.replayed };
+    },
   );
 
-  // AI mix: let the model propose a full set of channel settings.
   app.post<{ Params: { projectId: string } }>(
     '/ai',
     { schema: { body: mixerAiSchema } },
@@ -158,22 +185,25 @@ export default async function mixer(app: FastifyInstance) {
         where: { id: req.params.projectId, workspaceId },
         include: { artist: true },
       });
+      await prisma.song.findFirstOrThrow({ where: { id: input.songId, projectId: project.id, workspaceId } });
       const tracks = await loadTracks(project.id, input.songId);
-      if (tracks.length === 0) return reply.code(400).send({ error: 'no_tracks' });
-
-      const trackList = tracks.map((t) => `- id=${t.id} kind=${t.kind} label="${t.label}"`).join('\n');
+      if (!tracks.length) return reply.code(400).send({ error: 'no_verified_tracks' });
+      const trackList = tracks.map((track) => `- id=${track.id} kind=${track.kind} label="${track.label}"`).join('\n');
       const proposed = await responsesJson<{ tracks: Array<Partial<MixerTrack> & { id: string }> }>({
-        system:
-          'You are a mixing engineer for Afrobeats / Afro-fusion. Return ONLY JSON. For each track give a channel strip: gainDb (-24..12), pan (-1..1), mute, solo, eq{low,mid,high in dB -12..12 @110Hz/1.5kHz/8kHz}, comp{on,threshold dB,ratio}, reverb (0..1). Beats sit slightly back and wide; lead vocals forward, centred, present, light compression + a touch of reverb; doubles panned, harmonies wider and lower. Be tasteful, not extreme.',
-        user: `Song: ${project.title}. Goal: ${input.goal ?? 'radio-ready, vocal-forward Afro-fusion'}.\nTracks:\n${trackList}\nReturn {"tracks":[{"id":...,"gainDb":...,"pan":...,"mute":false,"solo":false,"eq":{"low":..,"mid":..,"high":..},"comp":{"on":..,"threshold":..,"ratio":..},"reverb":..}]}`,
+        system: 'You are a mixing engineer for Afrobeats and Afro-fusion. Return only JSON. For each track give gainDb (-24..12), pan (-1..1), mute, solo, eq {low,mid,high from -12..12 dB}, comp {on,threshold from -40..0,ratio from 1..20}, and reverb (0..1). Keep the verified lead centered and forward, the instrumental below it, and support vocals lower and wider. Avoid extreme values.',
+        user: `Song: ${project.title}. Goal: ${input.goal ?? 'radio-ready, vocal-forward Afro-fusion'}.\nTracks:\n${trackList}\nReturn {"tracks":[{"id":"...","gainDb":0,"pan":0,"mute":false,"solo":false,"eq":{"low":0,"mid":0,"high":0},"comp":{"on":true,"threshold":-18,"ratio":3},"reverb":0.1}]}`,
         temperature: 0.4,
         maxOutputTokens: 2_000,
       });
-
-      // Merge AI values onto defaults, keyed by id (ignore unknown ids).
-      const byId = new Map(proposed?.tracks?.map((t) => [t.id, t]) ?? []);
-      const merged = tracks.map((t) => ({ ...t, ...(byId.get(t.id) ?? {}), id: t.id, kind: t.kind, label: t.label, url: undefined }));
+      const byId = new Map(proposed?.tracks?.map((track) => [track.id, track]) ?? []);
+      const merged = tracks.map((track) => ({
+        ...track,
+        ...(byId.get(track.id) ?? {}),
+        id: track.id,
+        kind: track.kind,
+        label: track.label,
+      }));
       return { songId: input.songId, tracks: merged };
-    }
+    },
   );
 }

@@ -42,7 +42,7 @@ export function LearnMySound({ projectId }: { projectId: string }) {
     } catch {
       /* profile is best-effort */
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+
   }, []);
 
   useEffect(() => { void loadProfile(); }, [loadProfile]);

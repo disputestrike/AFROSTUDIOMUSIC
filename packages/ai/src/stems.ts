@@ -82,7 +82,7 @@ export async function separateStems(opts: {
 
 /** Demucs output shape varies by model build — handle object OR array. */
 function mapOutput(output: unknown, mode: 'instrumental' | 'full'): StemSeparationResult {
-  let stems: Array<{ role: string; url: string }> = [];
+  const stems: Array<{ role: string; url: string }> = [];
 
   const classify = (key: string): string => {
     const k = key.toLowerCase();

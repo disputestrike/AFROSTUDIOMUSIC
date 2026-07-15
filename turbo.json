@@ -21,8 +21,6 @@
     "S3_ACCESS_KEY",
     "S3_SECRET_KEY",
     "ELEVEN_API_KEY",
-    "STABILITY_API_KEY",
-    "MUBERT_API_KEY",
     "VEO_API_KEY",
     "API_URL",
     "WORKER_URL",

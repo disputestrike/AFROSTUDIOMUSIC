@@ -40,7 +40,7 @@ export function FlagshipBridge({ songId, projectId, onClose, onDone }: Props) {
 
   useEffect(() => {
     api.get<Export>(`/songs/${songId}/bridge-export`).then(setData).catch(() => setErr('Could not load the bridge pack (admin key required).'));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+
   }, [songId]);
 
   const brand = data?.brandName ?? 'the flagship studio';

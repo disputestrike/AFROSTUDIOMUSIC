@@ -13,6 +13,7 @@
     "build": "prisma generate && tsc -p tsconfig.json",
     "migrate": "prisma migrate dev",
     "migrate:deploy": "prisma migrate deploy",
+    "migrate:safe": "node scripts/migrate-deploy.mjs",
     "push": "prisma db push",
     "push:deploy": "prisma db push --skip-generate",
     "studio": "prisma studio",
@@ -23,6 +24,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@afrohit/shared": "workspace:*",
     "@prisma/client": "^5.22.0"
   },
   "devDependencies": {

@@ -12,6 +12,7 @@
  *  - melodic-contour matching,
  *  - lyric vector search against licensed lyrics corpora.
  */
+import { canonicalJson } from '@afrohit/shared';
 import { generateJson } from './generate';
 import { RIGHTS_CHECK_SYSTEM } from './prompts/rights';
 
@@ -120,8 +121,8 @@ function rollupRisk(
  * Use this when persisting RightsReceipt.hash so the receipt can be verified later.
  */
 export function canonicalReceiptHash(receipt: Record<string, unknown>): Promise<string> {
-  const canonical = JSON.stringify(receipt, Object.keys(receipt).sort());
-  // dynamic import keeps the package node-only here
+  const canonical = canonicalJson(receipt);
+  // Dynamic import keeps the package node-only here.
   return import('node:crypto').then(({ createHash }) =>
     createHash('sha256').update(canonical).digest('hex')
   );

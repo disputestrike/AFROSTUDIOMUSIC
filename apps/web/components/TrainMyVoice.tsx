@@ -22,7 +22,8 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useApi } from '@/lib/api';
-import { Loader2, Check, X, UploadCloud, Mic2, ShieldCheck, Music4 } from 'lucide-react';
+import { VOICE_CONSENT_TEXT, VOICE_CONSENT_VERSION } from '@afrohit/shared';
+import { Loader2, Check, X, UploadCloud, Mic2, ShieldCheck, Music4, Trash2 } from 'lucide-react';
 
 interface Artist {
   id: string;
@@ -31,15 +32,23 @@ interface Artist {
 interface VoiceProfile {
   id: string;
   name: string;
-  status: 'PENDING' | 'TRAINING' | 'READY' | 'FAILED';
+  status: 'PENDING' | 'TRAINING' | 'READY' | 'FAILED' | 'REVOKED';
   artist?: { id: string; stageName: string } | null;
   createdAt?: string;
+  capabilities?: {
+    speechPreview: boolean;
+    singingConversion: boolean;
+    scoreSinging: boolean;
+  };
+}
+interface SongOption {
+  id: string;
+  title: string;
+  artist: string;
+  audioUrl: string | null;
 }
 
 type Phase = 'idle' | 'consent' | 'uploading' | 'dataset' | 'training' | 'done' | 'error';
-
-const DEFAULT_CONSENT =
-  'I am the owner of this voice, or I have written permission from its owner. I consent to AfroHit Studio using these recordings to train a voice model that reproduces this voice. I understand I can revoke this consent at any time.';
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -59,11 +68,16 @@ export function TrainMyVoice() {
   const [artists, setArtists] = useState<Artist[]>([]);
   const [artistId, setArtistId] = useState('');
   const [voices, setVoices] = useState<VoiceProfile[]>([]);
+  const [songs, setSongs] = useState<SongOption[]>([]);
+  const [convertVoiceId, setConvertVoiceId] = useState('');
+  const [convertSongId, setConvertSongId] = useState('');
+  const [convertStatus, setConvertStatus] = useState<'idle' | 'working' | 'done' | 'error'>('idle');
+  const [convertMessage, setConvertMessage] = useState('');
+  const [convertUrl, setConvertUrl] = useState<string | null>(null);
 
   const [name, setName] = useState('My Voice');
   const [legalName, setLegalName] = useState('');
   const [email, setEmail] = useState('');
-  const [consentText, setConsentText] = useState(DEFAULT_CONSENT);
   const [agreed, setAgreed] = useState(false);
   const [files, setFiles] = useState<File[]>([]);
 
@@ -73,17 +87,21 @@ export function TrainMyVoice() {
   const [upIdx, setUpIdx] = useState(0);
   const [upPct, setUpPct] = useState(0);
   const [dsInfo, setDsInfo] = useState<{ segments?: number; minutes?: number } | null>(null);
+  const [revokingId, setRevokingId] = useState<string | null>(null);
 
   const say = (m: string) => setLog((l) => [...l, m]);
   const busy = phase !== 'idle' && phase !== 'done' && phase !== 'error';
 
   const loadVoices = useCallback(async () => {
     try {
-      setVoices(await api.get<VoiceProfile[]>('/voices'));
+      const list = await api.get<VoiceProfile[]>('/voices');
+      setVoices(list);
+      const convertible = list.find((voice) => voice.status === 'READY' && voice.capabilities?.singingConversion);
+      setConvertVoiceId((current) => current || convertible?.id || '');
     } catch {
       /* best-effort */
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+
   }, []);
 
   useEffect(() => {
@@ -99,8 +117,16 @@ export function TrainMyVoice() {
         /* no artist yet */
       }
       void loadVoices();
+      try {
+        const catalog = await api.get<SongOption[]>('/songs');
+        const playable = catalog.filter((song) => !!song.audioUrl);
+        setSongs(playable);
+        setConvertSongId((current) => current || playable[0]?.id || '');
+      } catch {
+        /* conversion remains unavailable until the catalog can load */
+      }
     })();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+
   }, []);
 
   function onFiles(list: FileList | null) {
@@ -111,17 +137,17 @@ export function TrainMyVoice() {
 
   const totalMb = (files.reduce((s, f) => s + f.size, 0) / (1024 * 1024)).toFixed(1);
 
-  async function pollJob(jobId: string): Promise<Record<string, unknown>> {
-    for (let i = 0; i < 90; i++) {
+  async function pollJob(jobId: string, maxPolls = 90): Promise<Record<string, unknown>> {
+    for (let i = 0; i < maxPolls; i++) {
       await sleep(4000);
       const j = await api.get<{ status: string; outputJson?: Record<string, unknown> | null; errorJson?: unknown }>(`/jobs/${jobId}`);
       if (j.status === 'SUCCEEDED') return j.outputJson ?? {};
       if (j.status === 'FAILED') {
         const e = j.errorJson;
-        throw new Error(typeof e === 'string' ? e : ((e as { message?: string })?.message ?? 'dataset build failed'));
+        throw new Error(typeof e === 'string' ? e : ((e as { message?: string })?.message ?? 'job failed'));
       }
     }
-    throw new Error('dataset build timed out — try fewer/shorter takes');
+    throw new Error('The job is still running. You can leave this page and check again later.');
   }
 
   async function pollTraining(voiceId: string): Promise<void> {
@@ -141,7 +167,6 @@ export function TrainMyVoice() {
     setDsInfo(null);
     if (!artistId) { setError('Create your artist first (Settings → Artist), then come back.'); return; }
     if (!legalName.trim() || !email.trim()) { setError('Add your legal name and email for the consent record.'); return; }
-    if (consentText.trim().length < 20) { setError('The consent statement is too short.'); return; }
     if (!agreed) { setError('Tick the box to confirm you own this voice.'); return; }
     if (files.length === 0) { setError('Add at least one clean, solo vocal take.'); return; }
 
@@ -149,9 +174,12 @@ export function TrainMyVoice() {
       setPhase('consent');
       say('Recording your consent…');
       const consent = await api.post<{ id: string }>('/voices/consents', {
+        artistId,
         legalName: legalName.trim(),
         email: email.trim(),
-        consentText: consentText.trim(),
+        consentText: VOICE_CONSENT_TEXT,
+        consentVersion: VOICE_CONSENT_VERSION,
+        accepted: true,
       });
 
       setPhase('uploading');
@@ -166,10 +194,15 @@ export function TrainMyVoice() {
 
       setPhase('dataset');
       say('Building the training dataset (48k mono, split into clean segments)…');
-      const ds = await api.post<{ jobId: string }>('/voices/dataset', { name: name.trim() || 'My Voice', sampleUrls: urls });
+      const ds = await api.post<{ jobId: string }>('/voices/dataset', {
+        name: name.trim() || 'My Voice',
+        sampleUrls: urls,
+        isolationConfirmed: true,
+        purgeSourceSamples: true,
+      });
       const out = await pollJob(ds.jobId);
-      const datasetZipUrl = out.datasetZipUrl as string | undefined;
-      if (!datasetZipUrl) throw new Error('dataset built but returned no zip');
+      const datasetZipRef = out.datasetZipRef as string | undefined;
+      if (!datasetZipRef) throw new Error('dataset built but returned no private asset reference');
       const segments = Number(out.segments ?? 0);
       const minutes = Math.round(Number(out.totalSeconds ?? 0) / 60);
       setDsInfo({ segments, minutes });
@@ -181,18 +214,53 @@ export function TrainMyVoice() {
         artistId,
         consentId: consent.id,
         name: name.trim() || 'My Voice',
-        datasetZipUrl,
+        datasetZipUrl: datasetZipRef,
       });
       void loadVoices();
       await pollTraining(t.profile.id);
 
       setPhase('done');
-      say('Your voice is trained and READY. It can now sing your songs.');
+      say('Your voice is trained and READY for performance conversion.');
       void loadVoices();
     } catch (e) {
       setError(prettyError((e as Error).message));
       setPhase('error');
       void loadVoices();
+    }
+  }
+
+  async function revokeVoice(voice: VoiceProfile) {
+    if (!confirm(`Revoke "${voice.name}"? Its consent will be revoked and owned samples, dataset, and model files will be deleted. This cannot be undone.`)) return;
+    setRevokingId(voice.id);
+    setError(null);
+    try {
+      await api.del(`/voices/${voice.id}`);
+      await loadVoices();
+    } catch (cause) {
+      setError(prettyError((cause as Error).message));
+    } finally {
+      setRevokingId(null);
+    }
+  }
+
+  async function convertPerformance() {
+    if (!convertVoiceId || !convertSongId || convertStatus === 'working') return;
+    setConvertStatus('working');
+    setConvertMessage('Converting the existing performance and isolating the new vocal...');
+    setConvertUrl(null);
+    try {
+      const queued = await api.post<{ jobId: string }>(`/voices/${convertVoiceId}/sing`, {
+        songId: convertSongId,
+        pitchChange: 'no-change',
+      });
+      const output = await pollJob(queued.jobId, 450);
+      const url = typeof output.url === 'string' ? output.url : null;
+      setConvertUrl(url);
+      setConvertStatus('done');
+      setConvertMessage('Conversion passed mix and vocal QC. The full version is in the catalog and the isolated lead is on the mixer.');
+    } catch (cause) {
+      setConvertStatus('error');
+      setConvertMessage(prettyError((cause as Error).message));
     }
   }
 
@@ -202,6 +270,7 @@ export function TrainMyVoice() {
       TRAINING: 'bg-amber-500/15 text-amber-300',
       PENDING: 'bg-slate-500/15 text-slate-300',
       FAILED: 'bg-red-500/15 text-red-300',
+      REVOKED: 'bg-slate-700/40 text-slate-400',
     };
     return <span className={`rounded-full px-2 py-0.5 text-[11px] ${map[s]}`}>{s.toLowerCase()}</span>;
   };
@@ -212,8 +281,8 @@ export function TrainMyVoice() {
         <Mic2 className="h-7 w-7 text-afrobrand-400" /> Train <span className="text-gradient">my</span> voice
       </h1>
       <p className="mt-2 max-w-2xl text-sm text-slate-400">
-        Clone <span className="text-slate-200">your own voice</span> so the studio can sing in it. Upload clean, solo vocal takes
-        (no beat underneath) — <span className="text-slate-200">10–20 minutes is ideal</span>. We build the dataset and train an
+        Train <span className="text-slate-200">your own vocal timbre</span>, then convert an existing sung performance into it. Upload clean, solo vocal takes
+        (no beat underneath) — <span className="text-slate-200">2 minutes minimum; 10–20 minutes is ideal</span>. We build the dataset and train an
         RVC model that&apos;s yours. This clones your <span className="text-slate-200">timbre</span>; it doesn&apos;t change songwriting
         &quot;flow&quot; (that&apos;s <a className="text-afrobrand-300 underline" href="/create">Learn my sound</a>). Training uses voice-clone credits.
       </p>
@@ -229,11 +298,64 @@ export function TrainMyVoice() {
                 <span className="truncate text-slate-200">{v.name}</span>
                 {v.artist?.stageName && <span className="text-xs text-slate-500">· {v.artist.stageName}</span>}
                 <span className="ml-auto">{statusBadge(v.status)}</span>
+                {v.status === 'READY' && v.capabilities?.singingConversion && (
+                  <span className="text-[11px] text-emerald-300">performance conversion</span>
+                )}
+                {v.status === 'READY' && v.capabilities?.speechPreview && (
+                  <span className="text-[11px] text-sky-300">speech preview</span>
+                )}
+                {v.status !== 'REVOKED' && (
+                  <button
+                    type="button"
+                    onClick={() => void revokeVoice(v)}
+                    disabled={revokingId === v.id}
+                    title="Revoke consent and delete this voice model"
+                    className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-slate-500 hover:bg-red-500/10 hover:text-red-300 disabled:opacity-50"
+                  >
+                    {revokingId === v.id ? <Loader2 className="h-4 w-4 animate-spin" /> : <Trash2 className="h-4 w-4" />}
+                  </button>
+                )}
               </li>
             ))}
           </ul>
         </div>
       )}
+
+      <section className="mt-6 border-y border-white/10 py-5">
+        <h2 className="flex items-center gap-2 font-display text-lg">
+          <Music4 className="h-5 w-5 text-afrobrand-400" /> Convert a sung performance
+        </h2>
+        <p className="mt-1 text-xs text-slate-500">
+          The source supplies melody, timing, pronunciation, and emotion. Your trained model changes the vocal timbre; it does not invent a performance from text.
+        </p>
+        <div className="mt-3 grid gap-3 sm:grid-cols-[1fr_1fr_auto]">
+          <select className="input" value={convertVoiceId} onChange={(event) => setConvertVoiceId(event.target.value)} disabled={convertStatus === 'working'}>
+            <option value="">Choose trained voice</option>
+            {voices.filter((voice) => voice.status === 'READY' && voice.capabilities?.singingConversion).map((voice) => (
+              <option key={voice.id} value={voice.id}>{voice.name}</option>
+            ))}
+          </select>
+          <select className="input" value={convertSongId} onChange={(event) => setConvertSongId(event.target.value)} disabled={convertStatus === 'working'}>
+            <option value="">Choose source performance</option>
+            {songs.map((song) => <option key={song.id} value={song.id}>{song.title} - {song.artist}</option>)}
+          </select>
+          <button
+            type="button"
+            onClick={() => void convertPerformance()}
+            disabled={!convertVoiceId || !convertSongId || convertStatus === 'working'}
+            className="inline-flex items-center justify-center gap-2 rounded-lg bg-afrobrand-500 px-4 py-2 text-sm font-medium text-ink disabled:opacity-50"
+          >
+            {convertStatus === 'working' ? <Loader2 className="h-4 w-4 animate-spin" /> : <Music4 className="h-4 w-4" />}
+            Convert
+          </button>
+        </div>
+        {convertMessage && (
+          <p className={`mt-3 text-sm ${convertStatus === 'error' ? 'text-red-300' : convertStatus === 'done' ? 'text-emerald-300' : 'text-slate-400'}`}>
+            {convertMessage}
+          </p>
+        )}
+        {convertUrl && <audio controls className="mt-3 w-full" src={convertUrl} />}
+      </section>
 
       {artists.length === 0 && (
         <div className="mt-6 rounded-2xl border border-amber-500/30 bg-amber-500/10 p-4 text-sm text-amber-200">
@@ -261,11 +383,11 @@ export function TrainMyVoice() {
           </label>
         </div>
         <label className="mt-3 block text-xs text-slate-400">Consent statement
-          <textarea className="input mt-1 h-24 w-full" value={consentText} onChange={(e) => setConsentText(e.target.value)} disabled={busy} />
+          <textarea className="input mt-1 h-32 w-full" value={VOICE_CONSENT_TEXT} readOnly aria-readonly="true" />
         </label>
         <label className="mt-3 flex items-start gap-2 text-sm text-slate-300">
           <input type="checkbox" className="mt-1" checked={agreed} onChange={(e) => setAgreed(e.target.checked)} disabled={busy} />
-          I confirm I own this voice (or have written permission) and consent to cloning it.
+          I have read and accept this voice-model consent statement.
         </label>
       </section>
 
@@ -323,7 +445,7 @@ export function TrainMyVoice() {
           {dsInfo && <div className="mt-1 text-xs text-slate-500">Dataset: {dsInfo.segments} segments · ~{dsInfo.minutes} min of voice</div>}
           {phase === 'done' && (
             <div className="mt-2 flex items-center gap-2 rounded-lg bg-emerald-500/10 px-3 py-2 text-emerald-300">
-              <Check className="h-4 w-4" /> Your voice is READY — it can now sing your songs.
+              <Check className="h-4 w-4" /> Your voice is READY for performance conversion.
             </div>
           )}
           {error && (

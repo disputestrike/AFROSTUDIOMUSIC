@@ -1,5 +1,5 @@
-import { prisma, JobStatus } from '@afrohit/db';
-import { costOf } from '@afrohit/shared';
+import { prisma, JobStatus, refundWorkspaceCharge } from '@afrohit/db';
+import { costOf, redactSensitiveText } from '@afrohit/shared';
 
 export async function markRunning(jobId: string) {
   await prisma.providerJob.update({
@@ -31,7 +31,7 @@ function wallSafe(message: string): string {
 }
 
 export async function markFailed(jobId: string, err: unknown) {
-  const real = String((err as Error)?.message ?? err ?? '').trim() || 'unknown failure (no message)';
+  const real = redactSensitiveText((err as Error)?.message ?? err ?? '', 800).trim() || 'unknown failure (no message)';
   console.warn(`[job ${jobId}] failed — internal reason: ${real.slice(0, 300)}`);
   const job = await prisma.providerJob.update({
     where: { id: jobId },
@@ -40,16 +40,32 @@ export async function markFailed(jobId: string, err: unknown) {
       finishedAt: new Date(),
       errorJson: { message: wallSafe(real).slice(0, 800) } as never,
     },
-    select: { id: true, workspaceId: true, inputJson: true },
+    select: { id: true, workspaceId: true, inputJson: true, chargeLedgerId: true },
   });
   // REFUND ON FAILURE (audit DEAD: charge-before-enqueue never refunded). If the
   // route stamped a `_charge` on the job, credit it back — atomically and once
-  // (deterministic ledger id). Skipped in internal/owner mode (no real balance).
+  // using the same lock as charging. Owner mode restores cap units without changing balance.
   await refundJobCharge(job).catch((e) => console.warn(`[job ${jobId}] refund skipped:`, (e as Error)?.message));
 }
 
-async function refundJobCharge(job: { id: string; workspaceId: string; inputJson: unknown }) {
-  if ((process.env.AUTH_MODE ?? 'internal').toLowerCase() === 'internal') return; // owner pays providers directly
+async function refundJobCharge(job: { id: string; workspaceId: string; inputJson: unknown; chargeLedgerId?: string | null }) {
+  const internalMode = (process.env.AUTH_MODE ?? 'internal').toLowerCase() === 'internal';
+  if (job.chargeLedgerId) {
+    const refund = await refundWorkspaceCharge(prisma, {
+      workspaceId: job.workspaceId,
+      chargeId: job.chargeLedgerId,
+      internalMode,
+      refTable: 'ProviderJob',
+      refId: job.id,
+    });
+    if (refund.refunded) {
+      console.log("[job " + job.id + "] reversed charge " + job.chargeLedgerId + " on failure");
+    }
+    return;
+  }
+
+  if (internalMode) return;
+  // Compatibility for jobs created before chargeLedgerId existed.
   const charge = (job.inputJson as { _charge?: { key?: string; multiplier?: number } } | null)?._charge;
   if (!charge?.key) return;
   const amount = costOf(charge.key as never) * (charge.multiplier ?? 1);

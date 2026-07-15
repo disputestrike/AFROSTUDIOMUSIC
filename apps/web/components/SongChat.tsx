@@ -28,7 +28,7 @@ export function SongChat({ songId, onNewVersion }: { songId: string; onNewVersio
   useEffect(() => {
     api.get<{ sections: typeof sections }>(`/songs/${songId}/sections`).then((r) => setSections(r.sections)).catch(() => {});
     api.get<{ audioVersions: Array<{ index: number; label: string; isCurrent?: boolean }> }>(`/songs/${songId}/versions`).then((r) => setVersions(r.audioVersions ?? [])).catch(() => {});
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+
   }, [songId]);
   function tellSong(text: string) { void send(text); }
 

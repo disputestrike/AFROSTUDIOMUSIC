@@ -3,8 +3,8 @@
 /**
  * SIGN IN / SIGN UP — the multi-tenant front door (T1).
  *
- * Email + password against /auth/login and /auth/signup; the returned JWT is
- * stored as afrohit.token and rides every API call as a Bearer header. Signup
+ * Email + password against /auth/login and /auth/signup. The API stores the
+ * short-lived session in an HttpOnly cookie that browser JavaScript cannot read. Signup
  * provisions the whole tenant (workspace + artist), so a new user lands in
  * Create ready to make a song. In internal (single-owner) mode this page still
  * works for preparing accounts before AUTH_MODE=jwt goes live.
@@ -27,11 +27,11 @@ export default function SignInPage() {
     setErr('');
     setBusy(true);
     try {
-      const r =
-        mode === 'signup'
-          ? await api.post<{ token: string }>('/auth/signup', { email: email.trim(), password, stageName: stageName.trim() || undefined })
-          : await api.post<{ token: string }>('/auth/login', { email: email.trim(), password });
-      localStorage.setItem('afrohit.token', r.token);
+      if (mode === 'signup') {
+        await api.post('/auth/signup', { email: email.trim(), password, stageName: stageName.trim() || undefined });
+      } else {
+        await api.post('/auth/login', { email: email.trim(), password });
+      }
       router.push('/create');
     } catch (e) {
       const m = (e as Error).message || '';
@@ -61,7 +61,7 @@ export default function SignInPage() {
           )}
           <input value={email} onChange={(e) => setEmail(e.target.value)} placeholder="Email" type="email" autoComplete="email"
             className="w-full rounded-xl border border-slate-700 bg-slate-950 px-4 py-3 text-slate-100 placeholder:text-slate-600" />
-          <input value={password} onChange={(e) => setPassword(e.target.value)} placeholder={mode === 'signup' ? 'Password (8+ characters)' : 'Password'} type="password"
+          <input value={password} onChange={(e) => setPassword(e.target.value)} placeholder={mode === 'signup' ? 'Password (12+ characters)' : 'Password'} type="password"
             autoComplete={mode === 'signup' ? 'new-password' : 'current-password'}
             onKeyDown={(e) => { if (e.key === 'Enter' && !busy) void submit(); }}
             className="w-full rounded-xl border border-slate-700 bg-slate-950 px-4 py-3 text-slate-100 placeholder:text-slate-600" />
@@ -69,7 +69,7 @@ export default function SignInPage() {
 
         {err && <p className="mt-3 text-sm text-red-400">{err}</p>}
 
-        <button disabled={busy || !email.trim() || password.length < (mode === 'signup' ? 8 : 1)} onClick={() => void submit()}
+        <button disabled={busy || !email.trim() || password.length < (mode === 'signup' ? 12 : 1)} onClick={() => void submit()}
           className="mt-5 w-full rounded-full bg-brand-gradient px-5 py-3 font-medium text-ink shadow-glow disabled:opacity-40">
           {busy ? 'One moment…' : mode === 'signup' ? '🎤 Create my studio' : 'Sign in'}
         </button>

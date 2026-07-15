@@ -27,16 +27,22 @@ const genreMatches = (a?: string | null, b?: string | null) => {
 export async function laneGrounding(workspaceId: string, genre?: string | null): Promise<LaneGrounding> {
   if (!genre) return { external: 0, factsOnly: 0, self: 0, grounded: false };
   const rows = await prisma.soundReference.findMany({
-    where: { workspaceId, NOT: [{ sourceUrl: { startsWith: 'lyric:' } }, { sourceUrl: { startsWith: 'trend:' } }] },
+    where: {
+      workspaceId,
+      active: true,
+      analysisState: { not: 'failed' },
+      rightsBasis: { not: 'unknown' },
+      NOT: [{ sourceUrl: { startsWith: 'lyric:' } }, { sourceUrl: { startsWith: 'trend:' } }],
+    },
     orderBy: { createdAt: 'desc' },
     take: 300,
-    select: { genre: true, sourceUrl: true, recipe: true },
+    select: { genre: true, sourceUrl: true, recipe: true, rightsBasis: true },
   });
   const origins: Array<{ origin: ReturnType<typeof referenceOrigin> }> = [];
   for (const r of rows) {
     if (!genreMatches(r.genre, genre)) continue;
     const rec = (r.recipe ?? {}) as { measured?: MeasuredAnalysis; source?: string };
-    if (rec.measured?.engineOk) origins.push({ origin: referenceOrigin(r.sourceUrl, rec) });
+    if (rec.measured?.engineOk) origins.push({ origin: referenceOrigin(r.sourceUrl, rec, r.rightsBasis) });
   }
   return groundingOf(origins);
 }
@@ -44,10 +50,16 @@ export async function laneGrounding(workspaceId: string, genre?: string | null):
 export async function loadLaneProfile(workspaceId: string, genre?: string | null): Promise<LaneProfile | null> {
   if (!genre) return null;
   const rows = await prisma.soundReference.findMany({
-    where: { workspaceId, NOT: [{ sourceUrl: { startsWith: 'lyric:' } }, { sourceUrl: { startsWith: 'trend:' } }] },
+    where: {
+      workspaceId,
+      active: true,
+      analysisState: { not: 'failed' },
+      rightsBasis: { not: 'unknown' },
+      NOT: [{ sourceUrl: { startsWith: 'lyric:' } }, { sourceUrl: { startsWith: 'trend:' } }],
+    },
     orderBy: { createdAt: 'desc' },
     take: 300,
-    select: { genre: true, sourceUrl: true, recipe: true },
+    select: { genre: true, sourceUrl: true, recipe: true, rightsBasis: true },
   });
   // C-2 — GROUNDING RULE: a lane's profile counts NON-SELF refs as grounding.
   // Self-generated measurements join only once the lane is grounded (≥3 non-self)
@@ -59,7 +71,9 @@ export async function loadLaneProfile(workspaceId: string, genre?: string | null
     if (!genreMatches(r.genre, genre)) continue;
     const rec = (r.recipe ?? {}) as { measured?: MeasuredAnalysis; source?: string };
     if (!rec.measured?.engineOk) continue;
-    (referenceOrigin(r.sourceUrl, rec) === 'self-generated' ? self : nonSelf).push(rec.measured);
+    const origin = referenceOrigin(r.sourceUrl, rec, r.rightsBasis);
+    if (origin === 'self-generated') self.push(rec.measured);
+    else if (origin === 'owned-upload' || origin === 'facts-only') nonSelf.push(rec.measured);
   }
   if (nonSelf.length >= 3) {
     const profile = buildLaneProfile(genre, 'genre', [...nonSelf, ...self], { minRefs: 3 });

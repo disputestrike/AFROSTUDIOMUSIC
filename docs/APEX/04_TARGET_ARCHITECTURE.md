@@ -1,3 +1,7 @@
+> **Historical snapshot (2026-07-06).** This document is retained for provenance
+> and does not describe current production readiness. Use
+> `docs/PRODUCTION_READINESS_2026-07-14.md` for current evidence and blockers.
+
 # 04 — TARGET ARCHITECTURE (Apex Phase 3)
 
 _The perfect version, concretely — and the diff from reality. Order of law applied:

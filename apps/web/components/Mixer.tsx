@@ -57,7 +57,21 @@ function RecordVocalButton({ projectId, onDone }: { projectId: string; onDone: (
         try {
           const blob = new Blob(chunks, { type: 'audio/webm' });
           const { key } = await api.uploadAudioDirect(blob, 'vocal');
-          await api.post(`/projects/${projectId}/vocals/upload`, { key, role: 'lead', durationS: dur });
+          const queued = await api.post<{ jobId: string }>(`/projects/${projectId}/vocals/upload`, {
+            key,
+            role: 'lead',
+            durationS: dur,
+            isolationConfirmed: true,
+          });
+          setStatus('Checking the vocal take...');
+          let passed = false;
+          for (let attempt = 0; attempt < 40; attempt += 1) {
+            await new Promise((resolve) => setTimeout(resolve, 1_500));
+            const job = await api.get<{ status: string; errorJson?: { message?: string } }>(`/jobs/${queued.jobId}`);
+            if (job.status === 'SUCCEEDED') { passed = true; break; }
+            if (job.status === 'FAILED') throw new Error(job.errorJson?.message ?? 'Vocal QC failed.');
+          }
+          if (!passed) throw new Error('Vocal QC is still running. Refresh the mixer shortly.');
           setStatus('Vocal on the desk — it is now the lead on your latest song.');
           onDone();
         } catch (e) { setStatus((e as Error).message); }

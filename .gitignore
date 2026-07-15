@@ -23,6 +23,7 @@ coverage
 prisma/.env
 storage/
 tmp/
+artifacts/acceptance/
 .idea
 .vscode/*
 !.vscode/settings.json

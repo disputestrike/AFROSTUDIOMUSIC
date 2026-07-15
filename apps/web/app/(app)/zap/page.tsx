@@ -59,7 +59,7 @@ export default function ZapPage() {
   async function loadHistory() {
     try { setHistory(await api.get<ZapHist[]>('/zap/history')); } catch { /* ignore */ }
   }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+
   useEffect(() => { void loadHistory(); }, []);
 
   /** Make a FRESH song in the lane of something you Zapped — everything pre-picked

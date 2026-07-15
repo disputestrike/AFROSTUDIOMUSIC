@@ -1,3 +1,7 @@
+> **Historical snapshot (2026-07-06).** This document is retained for provenance
+> and does not describe current production readiness. Use
+> `docs/PRODUCTION_READINESS_2026-07-14.md` for current evidence and blockers.
+
 # 09 — THE COMPOUNDING ROADMAP (Apex Phase 6)
 
 ## The three highest-leverage next builds

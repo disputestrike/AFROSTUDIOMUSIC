@@ -4,6 +4,7 @@ import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { useEffect, useState } from 'react';
 import { Menu, X } from 'lucide-react';
+import { useApi } from '@/lib/api';
 
 const LINKS = [
   { href: '/create', label: 'Create' },
@@ -25,14 +26,16 @@ const LINKS = [
 ];
 
 export function NavBar() {
+  const api = useApi();
   const path = usePathname();
   const [open, setOpen] = useState(false);
-  // null = unknown (matches the server-rendered markup, so no hydration
-  // mismatch); the token check is client-only by nature.
+  // null = unknown, matching the server-rendered markup until /auth/me resolves.
   const [signedIn, setSignedIn] = useState<boolean | null>(null);
   useEffect(() => {
-    try { setSignedIn(!!localStorage.getItem('afrohit.token')); } catch { setSignedIn(true); }
-  }, []);
+    let active = true;
+    api.get('/auth/me').then(() => { if (active) setSignedIn(true); }).catch(() => { if (active) setSignedIn(false); });
+    return () => { active = false; };
+  }, [api]);
   const isActive = (href: string) => path === href || path.startsWith(href + '/');
 
   const linkClass = (href: string, mobile = false) =>

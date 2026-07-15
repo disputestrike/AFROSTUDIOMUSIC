@@ -1,43 +1,24 @@
 /**
- * Worker-side credit debit — mirrors the API's chargeCredits (atomic,
- * refuses when short). Used by autonomous jobs (Morning Drop) that spend
- * credits without an HTTP request in the loop.
+ * Worker-side credit charge for autonomous jobs. It uses the same locked,
+ * unit-aware service as HTTP requests so background work cannot bypass caps.
  */
-import { prisma } from '@afrohit/db';
-import { costOf, type CreditKey } from '@afrohit/shared';
-
-// Interactive-transaction client — same shape as Prisma.TransactionClient
-// (Omit<PrismaClient, ITXClientDenyList>), spelled via typeof so it also
-// resolves under the sandbox db-shim where prisma is `any`.
-type Tx = Omit<typeof prisma, '$connect' | '$disconnect' | '$on' | '$transaction' | '$use' | '$extends'>;
+import { chargeWorkspaceCredits, prisma } from "@afrohit/db";
+import type { CreditKey } from "@afrohit/shared";
 
 export async function debitCredits(opts: {
   workspaceId: string;
   key: CreditKey;
   multiplier?: number;
+  planUnits?: number;
   reasonSuffix?: string;
-}): Promise<{ ok: true; balance: number } | { ok: false; needed: number; balance: number }> {
-  const cost = costOf(opts.key) * (opts.multiplier ?? 1);
-  return prisma.$transaction(async (tx: Tx) => {
-    const ws = await tx.workspace.findUnique({
-      where: { id: opts.workspaceId },
-      select: { creditsCents: true },
-    });
-    if (!ws) throw new Error('workspace missing');
-    if (ws.creditsCents < cost) {
-      return { ok: false as const, needed: cost, balance: ws.creditsCents };
-    }
-    const updated = await tx.workspace.update({
-      where: { id: opts.workspaceId },
-      data: { creditsCents: { decrement: cost } },
-    });
-    await tx.creditLedger.create({
-      data: {
-        workspaceId: opts.workspaceId,
-        delta: -cost,
-        reason: `${opts.key}${opts.reasonSuffix ? `_${opts.reasonSuffix}` : ''}`,
-      },
-    });
-    return { ok: true as const, balance: updated.creditsCents };
+  idempotencyKey: string;
+}) {
+  return chargeWorkspaceCredits(prisma, {
+    ...opts,
+    internalMode:
+      (process.env.AUTH_MODE ?? "internal").toLowerCase() === "internal",
+    enforceGenerationCap: process.env.ENFORCE_GENERATION_CAP !== "0",
+    dailyCap: Number(process.env.MAX_DAILY_GENERATIONS ?? 100),
+    monthlyCap: Number(process.env.MAX_MONTHLY_GENERATIONS ?? 2_000),
   });
 }

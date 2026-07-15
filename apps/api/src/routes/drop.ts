@@ -5,6 +5,7 @@ import { dropBatchSchema } from '@afrohit/shared';
 import { requireAuth } from '../middleware/auth';
 import { runChatTool } from '../services/chat-tools';
 import { willItBlowGate } from '../lib/will-it-blow';
+import { createQueuedProviderJob } from '../lib/queued-job';
 
 /**
  * The Drop Machine — batch song factory.
@@ -25,15 +26,16 @@ export default async function drop(app: FastifyInstance) {
       const project = await prisma.project.findFirstOrThrow({
         where: { id: req.params.projectId, workspaceId },
       });
-      const ctx = { app, workspaceId, userId, projectId: project.id };
 
       // IDEMPOTENT START: the client retries a network-dead POST (redeploy
       // window) with the SAME Idempotency-Key — a duplicate key returns the
       // drop already running instead of double-creating (and double-charging).
-      const idem = (req.headers['idempotency-key'] as string) || undefined;
+      const rawIdem = req.headers['idempotency-key'];
+      const idem = typeof rawIdem === 'string' && rawIdem.trim() ? rawIdem.trim() : undefined;
+      if (idem && idem.length > 128) return reply.code(400).send({ error: 'invalid_idempotency_key' });
       if (idem) {
         const existing = await prisma.providerJob.findFirst({
-          where: { workspaceId, kind: 'drop', inputJson: { path: ['_idem'], equals: idem } },
+          where: { workspaceId, kind: 'drop', idempotencyKey: idem },
           orderBy: { createdAt: 'desc' },
         });
         if (existing) {
@@ -42,34 +44,23 @@ export default async function drop(app: FastifyInstance) {
         }
       }
 
-      // ASYNC BY DESIGN: the pipeline takes 1–3 minutes of LLM work. Holding one
-      // HTTP request open that long dies on real-world networks/proxies (browser
-      // click-through proved it: ECONNRESET mid-drop → user sees a dead button).
-      // So: 202 + a job id IMMEDIATELY; the pipeline runs detached and writes its
-      // result to the ProviderJob row; clients poll /jobs/:id.
-      const dropJob = await prisma.providerJob.create({
-        data: {
-          workspaceId,
-          projectId: project.id,
-          kind: 'drop',
-          provider: 'internal',
-          status: 'RUNNING',
-          startedAt: new Date(),
-          inputJson: { ...input, ...(idem ? { _idem: idem } : {}) } as never,
-        },
-      });
-
-      void runDropPipeline(app, ctx, input, dropJob.id).catch(async (err) => {
-        app.log.error({ err, dropJobId: dropJob.id }, 'drop pipeline crashed');
-        await prisma.providerJob
-          // { message } shape — the web reads j.errorJson?.message; a bare string
-          // here rendered as nothing and the user saw a blank failure.
-          .update({ where: { id: dropJob.id }, data: { status: 'FAILED', finishedAt: new Date(), errorJson: { message: 'drop pipeline failed — try again' } as never } })
-          .catch(() => {});
+      // The request returns immediately, while BullMQ owns execution and retry.
+      // A restart releases the queue lock instead of losing an in-process promise.
+      const dropJob = await createQueuedProviderJob({
+        app,
+        queue: app.queues.orchestration,
+        jobName: 'run-drop',
+        workspaceId,
+        projectId: project.id,
+        kind: 'drop',
+        provider: 'internal',
+        inputJson: { ...input, ...(idem ? { _idem: idem } : {}) },
+        idempotencyKey: idem,
+        payload: (jobId) => ({ jobId, workspaceId, userId, projectId: project.id, input }),
       });
 
       reply.code(202);
-      return { jobId: dropJob.id, status: 'queued', theme: input.theme };
+      return { jobId: dropJob.jobId, status: 'queued', theme: input.theme, replayed: dropJob.replayed };
     }
   );
 }
@@ -77,7 +68,7 @@ export default async function drop(app: FastifyInstance) {
 export type DropCtx = { app: FastifyInstance; workspaceId: string; userId: string; projectId: string };
 export type DropInput = ReturnType<typeof dropBatchSchema.parse>;
 
-/** The actual Drop Machine pipeline — runs detached; result lands on the job row.
+/** The actual Drop Machine pipeline; the orchestration worker owns its retry.
  *  Exported so Albums can generate "the next track in this album's style". */
 export async function runDropPipeline(app: FastifyInstance, ctx: DropCtx, input: DropInput, dropJobId: string) {
   // COST RECEIPT: the whole pipeline runs inside a metered brain context — every
@@ -100,7 +91,7 @@ async function runDropPipelineInner(app: FastifyInstance, ctx: DropCtx, input: D
   // vibe, mood, fusion, influence — silently never reached a single prompt. Now a
   // failed polish falls back to a brief built VERBATIM from the structured input.
   try {
-    const polished = (await runChatTool({ ...ctx, name: 'polish_brief', args: { rawIdea: input.theme } })) as { error?: string } | null;
+    const polished = (await runChatTool({ ...ctx, operationKey: `drop:${dropJobId}:brief`, name: 'polish_brief', args: { rawIdea: input.theme } })) as { error?: string } | null;
     if (polished && (polished as { error?: string }).error) throw new Error((polished as { error: string }).error);
     app.log.info({ dropJobId }, `[drop] brief polished @${secs()}s`);
   } catch (err) {
@@ -140,7 +131,7 @@ async function runDropPipelineInner(app: FastifyInstance, ctx: DropCtx, input: D
           // polish-brief LLM re-extracting them from the theme prose was the
           // only carrier before, so a polish hiccup dropped mood/fusion/influence.
           const sel = { mood: input.mood, fusionGenres: input.fusionGenres, influence: input.influence, songTitle: input.songTitle };
-          const hk = (await runChatTool({ ...ctx, name: 'generate_hooks', args: { count: 3, languages: input.languages, ...sel } })) as {
+          const hk = (await runChatTool({ ...ctx, operationKey: `drop:${dropJobId}:take:${i}:hooks:1`, name: 'generate_hooks', args: { count: 3, languages: input.languages, ...sel } })) as {
             hooks?: Array<{ id: string; text: string; score: number | null }>;
           };
           let hooks = hk?.hooks ?? [];
@@ -158,7 +149,7 @@ async function runDropPipelineInner(app: FastifyInstance, ctx: DropCtx, input: D
           // the hooks unscored (ranked by generation order) rather than failing.
           if (hooks.every((h) => h.score == null)) {
             try {
-              const sc = (await runChatTool({ ...ctx, name: 'score_hooks', args: { hookIds: hooks.map((h) => h.id) } })) as { scores?: Array<{ id: string; overall: number }> };
+              const sc = (await runChatTool({ ...ctx, operationKey: `drop:${dropJobId}:take:${i}:score:1`, name: 'score_hooks', args: { hookIds: hooks.map((h) => h.id) } })) as { scores?: Array<{ id: string; overall: number }> };
               const m = new Map((sc?.scores ?? []).map((s) => [s.id, s.overall]));
               hooks = hooks.map((h) => ({ ...h, score: m.get(h.id) ?? h.score }));
             } catch { /* scoring unavailable — keep the hooks, pick the first */ }
@@ -170,13 +161,13 @@ async function runDropPipelineInner(app: FastifyInstance, ctx: DropCtx, input: D
           // hard-failing the drop (a strong hook is what carries an Afrobeats record).
           const MIN_HOOK_SCORE = Number(process.env.MIN_HOOK_SCORE ?? 6.5);
           if ((best.score ?? 0) < MIN_HOOK_SCORE) {
-            const hk2 = (await runChatTool({ ...ctx, name: 'generate_hooks', args: { count: 3, languages: input.languages, ...sel } })) as {
+            const hk2 = (await runChatTool({ ...ctx, operationKey: `drop:${dropJobId}:take:${i}:hooks:2`, name: 'generate_hooks', args: { count: 3, languages: input.languages, ...sel } })) as {
               hooks?: Array<{ id: string; text: string; score: number | null }>;
             };
             let hooks2 = hk2?.hooks ?? [];
             if (hooks2.length && hooks2.every((h) => h.score == null)) {
               try {
-                const sc2 = (await runChatTool({ ...ctx, name: 'score_hooks', args: { hookIds: hooks2.map((h) => h.id) } })) as { scores?: Array<{ id: string; overall: number }> };
+                const sc2 = (await runChatTool({ ...ctx, operationKey: `drop:${dropJobId}:take:${i}:score:2`, name: 'score_hooks', args: { hookIds: hooks2.map((h) => h.id) } })) as { scores?: Array<{ id: string; overall: number }> };
                 const m2 = new Map((sc2?.scores ?? []).map((s) => [s.id, s.overall]));
                 hooks2 = hooks2.map((h) => ({ ...h, score: m2.get(h.id) ?? h.score }));
               } catch { /* scoring unavailable — keep hooks2 as-is */ }
@@ -186,13 +177,14 @@ async function runDropPipelineInner(app: FastifyInstance, ctx: DropCtx, input: D
           }
 
           app.log.info({ dropJobId }, `[drop] take ${i + 1}: hook picked @${secs()}s`);
-          const ap = (await runChatTool({ ...ctx, name: 'approve_hook', args: { hookId: best.id } })) as {
+          const ap = (await runChatTool({ ...ctx, operationKey: `drop:${dropJobId}:take:${i}:approve`, name: 'approve_hook', args: { hookId: best.id } })) as {
             songId?: string;
           };
-          await runChatTool({ ...ctx, name: 'generate_lyrics', args: { hookId: best.id, cleanVersion: true, languages: input.languages, ...sel } });
+          await runChatTool({ ...ctx, operationKey: `drop:${dropJobId}:take:${i}:lyrics`, name: 'generate_lyrics', args: { hookId: best.id, cleanVersion: true, languages: input.languages, ...sel } });
           app.log.info({ dropJobId }, `[drop] take ${i + 1}: lyrics written (draft+polish) @${secs()}s`);
           const beat = (await runChatTool({
             ...ctx,
+            operationKey: `drop:${dropJobId}:take:${i}:beat`,
             name: 'create_beat_job',
             // THE CREATE-PAGE PATH: this is the render users actually hit. It must
             // carry the SAME brief the chat path (runDropTool) carries — voice and
@@ -264,8 +256,10 @@ async function runDropPipelineInner(app: FastifyInstance, ctx: DropCtx, input: D
 
   // THE WILL-IT-BLOW GATE — no song ships until it's run through Will-it-hit, and
   // if it won't blow the studio AUTO-APPLIES the A&R's own recommendations (rewrite
-  // + re-sing + re-master), re-scores, and KEEPS THE BEST version. Detached; waits
+  // + re-sing + re-master), re-scores, and KEEPS THE BEST version. It waits
   // for each render, scores, improves below the bar. (WILL_IT_BLOW_MAX_PASSES=0
   // reverts to score-only.)
-  void willItBlowGate(app, ctx.workspaceId, drops).catch(() => {});
+  await willItBlowGate(app, ctx.workspaceId, drops).catch((error) => {
+    app.log.warn({ err: error, dropJobId }, 'post-drop quality gate failed');
+  });
 }

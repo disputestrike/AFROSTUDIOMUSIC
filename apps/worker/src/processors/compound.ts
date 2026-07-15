@@ -63,6 +63,7 @@ export async function processMeasureBackfill(opts?: { refLimit?: number; beatLim
   const beatLimit = opts?.beatLimit ?? 4;
   try {
     const refs = await prisma.soundReference.findMany({
+      where: { active: true, rightsBasis: 'user-attested' },
       orderBy: { createdAt: 'desc' },
       take: 300,
       select: { id: true, workspaceId: true, sourceUrl: true, recipe: true },
@@ -71,8 +72,8 @@ export async function processMeasureBackfill(opts?: { refLimit?: number; beatLim
     for (const r of refs) {
       if (queued >= refLimit) break;
       if (skipSource(r.sourceUrl)) continue;
-      const rec = (r.recipe ?? {}) as { measured?: { engineOk?: boolean }; deepMeasured?: boolean; audioMissing?: boolean };
-      if (rec.audioMissing) continue; // source audio 404'd — tombstoned, never retry
+      const rec = (r.recipe ?? {}) as { measured?: { engineOk?: boolean }; deepMeasured?: boolean; audioMissing?: boolean; deepMeasureExhausted?: boolean };
+      if (rec.audioMissing || rec.deepMeasureExhausted) continue; // unavailable/exhausted — never spin nightly
       if (rec.measured?.engineOk && rec.deepMeasured) continue;
       if (rec.measured?.engineOk && process.env.DSP_STEMS === '0') continue; // nothing to add
       await enqueueJob('lake', 'deep-measure', { referenceId: r.id, url: r.sourceUrl, workspaceId: r.workspaceId });
@@ -116,7 +117,11 @@ export async function processRefileReferences(opts?: { limit?: number }): Promis
   const limit = opts?.limit ?? 25;
   try {
     const rows = await prisma.soundReference.findMany({
-      where: { NOT: [{ sourceUrl: { startsWith: 'lyric:' } }, { sourceUrl: { startsWith: 'trend:' } }, { sourceUrl: { startsWith: 'zap:' } }, { sourceUrl: { startsWith: 'facts:' } }] },
+      where: {
+        active: true,
+        rightsBasis: 'user-attested',
+        NOT: [{ sourceUrl: { startsWith: 'lyric:' } }, { sourceUrl: { startsWith: 'trend:' } }, { sourceUrl: { startsWith: 'zap:' } }, { sourceUrl: { startsWith: 'facts:' } }],
+      },
       orderBy: { createdAt: 'asc' }, // oldest first — the misfiled era predates the picker
       take: 400,
       select: { id: true, workspaceId: true, genre: true, sourceUrl: true, recipe: true },
@@ -326,6 +331,8 @@ export async function processListenBack(opts?: { limit?: number }): Promise<void
             title: `generated · ${genre} · retro-promoted`,
             recipe: { source: 'generated', retroPromoted: true, laneScore: s.laneScore, measured: s.measuredAnalysis } as never,
             summary: `Retro-promoted ${genre} take (lane ${s.laneScore}/100) — passed the promotion law after the lane became grounded.`,
+            analysisState: 'measured',
+            rightsBasis: 'self-generated',
           },
         }).catch(() => undefined);
         promoted++;
@@ -369,9 +376,16 @@ export async function processLearnBackfill(opts?: { limit?: number }): Promise<v
       if (queued >= limit) break;
       if (!u.url || learned.has(u.url) || !u.project?.workspaceId) continue;
       const job = await prisma.providerJob.create({
-        data: { workspaceId: u.project.workspaceId, projectId: u.projectId, kind: 'analyze', provider: 'replicate', status: 'QUEUED', inputJson: { url: u.url, source: 'learn-backfill' } as never },
+        data: { workspaceId: u.project.workspaceId, projectId: u.projectId, kind: 'analyze', provider: 'replicate', status: 'QUEUED', inputJson: { url: u.url, source: 'learn-backfill', rightsBasis: 'user-attested' } as never },
       });
-      await enqueueJob('lake', 'analyze-audio', { jobId: job.id, workspaceId: u.project.workspaceId, projectId: u.projectId, url: u.url }, { delayMs: queued * 30_000 });
+      await enqueueJob('lake', 'analyze-audio', {
+        jobId: job.id,
+        workspaceId: u.project.workspaceId,
+        projectId: u.projectId,
+        url: u.url,
+        source: 'learn-backfill',
+        rightsBasis: 'user-attested',
+      }, { delayMs: queued * 30_000 });
       queued++;
     }
     console.log(`[learn-backfill] queued=${queued} of ${uploads.length} uploaded songs (${learned.size} already learned)`);
@@ -389,6 +403,7 @@ export async function processMineLexicon(opts?: { refLimit?: number }): Promise<
   if (!(await backgroundLlmBudgetOk('mine-lexicon'))) return;
   try {
     const refs = await prisma.soundReference.findMany({
+      where: { active: true, rightsBasis: 'user-attested', analysisState: { not: 'failed' } },
       orderBy: { createdAt: 'desc' },
       take: 60,
       select: { id: true, sourceUrl: true, recipe: true },
@@ -654,7 +669,16 @@ export async function ensureSignatureKits(): Promise<void> {
       // Per-role COUNTS (not just coverage) — the variant tier below needs to know
       // how deep each role already is, not merely that it exists.
       const counts = new Map<string, number>();
-      for (const m of await prisma.materialAsset.findMany({ where: { workspaceId: pr.workspaceId, genre: pr.genre }, select: { role: true } })) {
+      for (const m of await prisma.materialAsset.findMany({
+        where: {
+          workspaceId: pr.workspaceId,
+          genre: pr.genre,
+          readiness: { not: 'rejected' },
+          qualityState: { notIn: ['failed', 'duplicate'] },
+          rightsBasis: { not: 'unknown' },
+        },
+        select: { role: true },
+      })) {
         counts.set(m.role, (counts.get(m.role) ?? 0) + 1);
       }
       const have = new Set(counts.keys());

@@ -2,7 +2,7 @@
   "name": "afrohit-studio",
   "version": "0.1.0",
   "private": true,
-  "description": "AfroHit Studio \u2014 AI production house for African and diaspora artists",
+  "description": "AfroHit Studio — AI production house for African and diaspora artists",
   "packageManager": "pnpm@9.12.0",
   "engines": {
     "node": ">=20.10.0",
@@ -11,9 +11,11 @@
   "scripts": {
     "build": "turbo run build",
     "dev": "turbo run dev --parallel",
-    "lint": "turbo run lint",
+    "lint": "eslint . --max-warnings 0",
     "typecheck": "turbo run typecheck",
     "test": "turbo run test",
+    "security:audit": "node --test scripts/security-audit.test.mjs && node scripts/security-audit.mjs",
+    "ci": "pnpm run lint && pnpm run verify && pnpm run build && pnpm run security:audit",
     "db:generate": "pnpm --filter @afrohit/db generate",
     "db:migrate": "pnpm --filter @afrohit/db migrate",
     "db:push": "pnpm --filter @afrohit/db push",
@@ -25,12 +27,31 @@
     "infra:up": "docker compose -f docker-compose.dev.yml up -d",
     "infra:down": "docker compose -f docker-compose.dev.yml down",
     "format": "prettier --write \"**/*.{ts,tsx,md,json}\"",
-    "verify": "pnpm --filter @afrohit/shared build && pnpm --filter @afrohit/ai build && pnpm --filter @afrohit/web typecheck && pnpm --filter @afrohit/api typecheck:shim && pnpm --filter @afrohit/worker typecheck:shim && pnpm --filter @afrohit/worker test"
+    "verify": "pnpm --filter @afrohit/shared build && pnpm --filter @afrohit/db build && pnpm --filter @afrohit/ai build && pnpm --filter @afrohit/web typecheck && pnpm --filter @afrohit/api typecheck:shim && pnpm --filter @afrohit/worker typecheck:shim && pnpm --filter @afrohit/worker test && node scripts/test-benchmark-corpus.mjs",
+    "acceptance:production": "node scripts/live-test.mjs",
+    "acceptance:benchmark": "node scripts/benchmark-corpus.mjs",
+    "acceptance:benchmark:test": "node scripts/test-benchmark-corpus.mjs"
   },
   "devDependencies": {
+    "@eslint/js": "^9.39.4",
+    "@next/eslint-plugin-next": "^15.5.18",
     "turbo": "^2.3.0",
     "typescript": "^5.6.3",
+    "typescript-eslint": "^8.63.0",
+    "eslint": "^9.39.4",
+    "eslint-plugin-react-hooks": "^7.1.1",
+    "globals": "^16.4.0",
     "prettier": "^3.3.3",
+    "semver": "7.8.1",
+    "yaml": "2.9.0",
     "@types/node": "^22.9.0"
+  },
+  "pnpm": {
+    "overrides": {
+      "esbuild@>=0.27.3 <0.28.1": "0.28.1",
+      "form-data@>=4.0.0 <4.0.6": "4.0.6",
+      "js-yaml@>=4.0.0 <4.2.0": "4.2.0",
+      "postcss@<8.5.10": "8.5.10"
+    }
   }
 }

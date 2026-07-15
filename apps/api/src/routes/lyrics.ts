@@ -1,8 +1,9 @@
 import type { FastifyInstance } from 'fastify';
+import { createHash } from 'node:crypto';
 import { z } from 'zod';
 import { prisma } from '@afrohit/db';
 import { generateLyricsInputSchema, GENRES, pickLawfulTitle, lyricQaCheck, normalizeLyricBody } from '@afrohit/shared';
-import { joinBriefs, prompts, generateJson } from '@afrohit/ai';
+import { prompts, generateJson } from '@afrohit/ai';
 import { laneDnaBrief } from '../lib/lane-pipeline';
 import { requireAuth } from '../middleware/auth';
 import { learnLyricCraft, findLearnedLyric } from '../lib/lyric-learn';
@@ -10,6 +11,8 @@ import { learnedReferenceBrief, learnedLyricCraftBrief, freshnessBrief } from '.
 import { lexiconPalette } from '../lib/lexicon';
 import { laneContext } from '../lib/lane-context';
 import { fuseSoundDna } from '../lib/fuse';
+import { scopedRequestKey } from '../lib/queued-job';
+import { operationErrorBody, runIdempotentOperation } from '../lib/idempotent-operation';
 
 export default async function lyrics(app: FastifyInstance) {
   app.get<{ Params: { projectId: string } }>(
@@ -38,14 +41,26 @@ export default async function lyrics(app: FastifyInstance) {
         where: { id: input.hookId, projectId: project.id },
       });
 
+      const idempotencyKey = scopedRequestKey(req.headers as Record<string, unknown>, `lyrics-generate:${hook.id}`);
       const charge = await app.chargeCredits({
         workspaceId,
         key: 'lyrics_full',
         refTable: 'Hook',
         refId: hook.id,
+        idempotencyKey,
       });
       if (!charge.ok) return reply.code(402).send({ error: 'insufficient_credits', ...charge });
 
+      const operation = await runIdempotentOperation({
+        workspaceId,
+        projectId: project.id,
+        kind: 'lyrics-generate',
+        provider: 'text',
+        idempotencyKey,
+        chargeLedgerId: charge.chargeId,
+        inputJson: { projectId: project.id, input },
+        execute: async () => {
+      try {
       type LyricOut = { title: string; body: string; cleanVersion?: string; explicit?: boolean; structure?: unknown; languageMix?: Record<string, number>; needsNativeReview?: string[] };
       const lmood = (project.briefs?.[0] as { mood?: string } | undefined)?.mood;
       // Requested languages for THIS song, primary first: the per-song mix wins over
@@ -101,7 +116,13 @@ export default async function lyrics(app: FastifyInstance) {
 
       // GUARD: after 3 tries still empty → honest error (rare now).
       let body = typeof output.body === 'string' ? output.body.trim() : '';
-      if (body.length < 20) return reply.code(503).send({ error: 'lyric_incomplete', message: 'The lyric came back empty after retries — try again.' });
+      if (body.length < 20) {
+        await app.refundCredits({ workspaceId, key: 'lyrics_full', refTable: 'Hook', refId: hook.id, chargeId: charge.chargeId });
+        return {
+          statusCode: 503,
+          body: { error: 'lyric_incomplete', message: 'The lyric came back empty after retries - try again.' },
+        };
+      }
 
       // A&R HARD GATE (owner 2026-07-13, the "Pepper Kiss" report). The Create path
       // shipped lyrics with NO gate — the exact hole that let a food-seller/
@@ -148,9 +169,10 @@ export default async function lyrics(app: FastifyInstance) {
       if (!qa.ok) {
         // A rejection is a successful output (owner doctrine). Refund the charge —
         // no usable lyric shipped — and do NOT save or flip the song to DEMO.
-        await app.refundCredits({ workspaceId, key: 'lyrics_full', refTable: 'Hook', refId: hook.id }).catch(() => {});
-        reply.code(200);
+        await app.refundCredits({ workspaceId, key: 'lyrics_full', refTable: 'Hook', refId: hook.id, chargeId: charge.chargeId }).catch(() => {});
         return {
+          statusCode: 200,
+          body: {
           rejected: true,
           decision: qa.contamination?.decision ?? 'REJECT_AND_RESTART',
           reason: qa.blocks,
@@ -164,6 +186,7 @@ export default async function lyrics(app: FastifyInstance) {
               }
             : undefined,
           note: 'This came back as scenery/screenplay, not a record. Restart from the emotion — a rejection is the correct output here.',
+          },
         };
       }
 
@@ -212,8 +235,18 @@ export default async function lyrics(app: FastifyInstance) {
         reviewTaskId = task.id;
       }
 
-      reply.code(201);
-      return { lyric, needsNativeReview: flags, reviewTaskId };
+      return { statusCode: 201, body: { lyric, needsNativeReview: flags, reviewTaskId } };
+      } catch (error) {
+        await app.refundCredits({ workspaceId, key: 'lyrics_full', refTable: 'Hook', refId: hook.id, chargeId: charge.chargeId });
+        throw error;
+      }
+        },
+      });
+      if (operation.state !== 'completed') {
+        const failure = operationErrorBody(operation);
+        return reply.code(failure.statusCode).send(failure.body);
+      }
+      return reply.code(operation.value.statusCode).send(operation.value.body);
     }
   );
 
@@ -229,11 +262,22 @@ export default async function lyrics(app: FastifyInstance) {
     { schema: { body: deconstructSchema } },
     async (req, reply) => {
       const { workspaceId } = requireAuth(req);
-      await prisma.project.findFirstOrThrow({ where: { id: req.params.projectId, workspaceId } });
+      const project = await prisma.project.findFirstOrThrow({ where: { id: req.params.projectId, workspaceId } });
       const { lyrics: raw } = deconstructSchema.parse(req.body);
-      const charge = await app.chargeCredits({ workspaceId, key: 'brief_polish', refTable: 'Project', refId: req.params.projectId });
+      const idempotencyKey = scopedRequestKey(req.headers as Record<string, unknown>, `lyrics-deconstruct:${project.id}`);
+      const charge = await app.chargeCredits({ workspaceId, key: 'brief_polish', refTable: 'Project', refId: project.id, idempotencyKey });
       if (!charge.ok) return reply.code(402).send({ error: 'insufficient_credits', ...charge });
 
+      const operation = await runIdempotentOperation({
+        workspaceId,
+        projectId: project.id,
+        kind: 'lyrics-deconstruct',
+        provider: 'text',
+        idempotencyKey,
+        chargeLedgerId: charge.chargeId,
+        inputJson: { projectId: project.id, lyrics: raw },
+        execute: async () => {
+      try {
       const modes = prompts.lyricModes().map((m) => `${m.id}: ${m.whenToUse}`).join('\n');
       const out = await generateJson<{
         title: string;
@@ -271,13 +315,54 @@ export default async function lyrics(app: FastifyInstance) {
       // the craft lands in the data lake and feeds future hooks/lyrics).
       // Deduped by lyric hash and charged like any other LLM call, so
       // re-deconstructing while iterating never double-studies or dodges caps.
-      void (async () => {
-        if (await findLearnedLyric(workspaceId, raw)) return;
-        const learnCharge = await app.chargeCredits({ workspaceId, key: 'brief_polish', refTable: 'Project', refId: req.params.projectId });
-        if (!learnCharge.ok) return;
-        await learnLyricCraft({ workspaceId, raw, genreHint: genre });
-      })().catch(() => {});
-      return { ...out, suggestedGenre: genre, suggestedBpm: Math.min(Math.max(Math.round(out.suggestedBpm || 103), 60), 180) };
+      let learning: 'already_learned' | 'learned' | 'skipped_insufficient_credits' | 'failed_refunded' = 'already_learned';
+      if (!(await findLearnedLyric(workspaceId, raw))) {
+        const learnIdempotencyKey = scopedRequestKey(req.headers as Record<string, unknown>, `lyrics-deconstruct-learn:${project.id}`);
+        const learnCharge = await app.chargeCredits({
+          workspaceId,
+          key: 'brief_polish',
+          refTable: 'Project',
+          refId: project.id,
+          idempotencyKey: learnIdempotencyKey,
+        });
+        if (!learnCharge.ok) {
+          learning = 'skipped_insufficient_credits';
+        } else {
+          try {
+            await learnLyricCraft({ workspaceId, raw, genreHint: genre });
+            learning = 'learned';
+          } catch {
+            await app.refundCredits({
+              workspaceId,
+              key: 'brief_polish',
+              refTable: 'Project',
+              refId: project.id,
+              chargeId: learnCharge.chargeId,
+            });
+            learning = 'failed_refunded';
+          }
+        }
+      }
+      return {
+        statusCode: 200,
+        body: {
+          ...out,
+          suggestedGenre: genre,
+          suggestedBpm: Math.min(Math.max(Math.round(out.suggestedBpm || 103), 60), 180),
+          learning,
+        },
+      };
+      } catch (error) {
+        await app.refundCredits({ workspaceId, key: 'brief_polish', refTable: 'Project', refId: project.id, chargeId: charge.chargeId });
+        throw error;
+      }
+        },
+      });
+      if (operation.state !== 'completed') {
+        const failure = operationErrorBody(operation);
+        return reply.code(failure.statusCode).send(failure.body);
+      }
+      return reply.code(operation.value.statusCode).send(operation.value.body);
     }
   );
 
@@ -296,16 +381,56 @@ export default async function lyrics(app: FastifyInstance) {
       const { workspaceId } = requireAuth(req);
       await prisma.project.findFirstOrThrow({ where: { id: req.params.projectId, workspaceId } });
       const input = learnSchema.parse(req.body);
+      const idempotencyKey = scopedRequestKey(req.headers as Record<string, unknown>, `lyrics-learn:${req.params.projectId}`);
       // Already studied? Return the existing lesson free — no charge, no dup row.
       const existing = await findLearnedLyric(workspaceId, input.lyrics);
+      let chargeId: string | undefined;
       if (!existing) {
-        const charge = await app.chargeCredits({ workspaceId, key: 'brief_polish', refTable: 'Project', refId: req.params.projectId });
+        const charge = await app.chargeCredits({
+          workspaceId,
+          key: 'brief_polish',
+          refTable: 'Project',
+          refId: req.params.projectId,
+          idempotencyKey,
+        });
         if (!charge.ok) return reply.code(402).send({ error: 'insufficient_credits', ...charge });
+        chargeId = charge.chargeId;
       }
-      const { referenceId, craft, alreadyLearned } = await learnLyricCraft({ workspaceId, raw: input.lyrics, genreHint: input.genreHint });
-      const learned = await prisma.soundReference.count({ where: { workspaceId, sourceUrl: { startsWith: 'lyric:' } } });
-      reply.code(201);
-      return { referenceId, craft, alreadyLearned: alreadyLearned ?? false, lyricCraftInLibrary: learned };
+      const operation = await runIdempotentOperation({
+        workspaceId,
+        projectId: req.params.projectId,
+        kind: 'lyrics-learn',
+        provider: 'text',
+        idempotencyKey,
+        chargeLedgerId: chargeId,
+        inputJson: { projectId: req.params.projectId, input },
+        execute: async () => {
+      try {
+        const { referenceId, craft, alreadyLearned } = await learnLyricCraft({ workspaceId, raw: input.lyrics, genreHint: input.genreHint });
+        const learned = await prisma.soundReference.count({ where: { workspaceId, sourceUrl: { startsWith: 'lyric:' } } });
+        return {
+          statusCode: existing ? 200 as const : 201 as const,
+          body: { referenceId, craft, alreadyLearned: alreadyLearned ?? false, lyricCraftInLibrary: learned },
+        };
+      } catch (error) {
+        if (chargeId) {
+          await app.refundCredits({
+            workspaceId,
+            key: 'brief_polish',
+            refTable: 'Project',
+            refId: req.params.projectId,
+            chargeId,
+          });
+        }
+        throw error;
+      }
+        },
+      });
+      if (operation.state !== 'completed') {
+        const failure = operationErrorBody(operation);
+        return reply.code(failure.statusCode).send(failure.body);
+      }
+      return reply.code(operation.value.statusCode).send(operation.value.body);
     }
   );
 
@@ -325,7 +450,10 @@ export default async function lyrics(app: FastifyInstance) {
       const { workspaceId } = requireAuth(req);
       await prisma.project.findFirstOrThrow({ where: { id: req.params.projectId, workspaceId } });
       const { analyzeJobId } = lfaSchema.parse(req.body);
-      const job = await prisma.providerJob.findFirst({ where: { id: analyzeJobId, workspaceId }, select: { status: true, outputJson: true } });
+      const job = await prisma.providerJob.findFirst({
+        where: { id: analyzeJobId, workspaceId, projectId: req.params.projectId },
+        select: { status: true, outputJson: true },
+      });
       if (!job || job.status !== 'SUCCEEDED') return reply.code(400).send({ error: 'analyze_not_ready' });
       const profile = (job.outputJson as { profile?: { raw?: string; genre?: string } } | null)?.profile;
       const transcript = /Transcript \(lyrics heard\):\n([\s\S]*?)(?=\nProducer's ear \(audio model description\):|$)/.exec(profile?.raw ?? '')?.[1]?.trim() ?? '';
@@ -334,10 +462,47 @@ export default async function lyrics(app: FastifyInstance) {
       }
       const existing = await findLearnedLyric(workspaceId, transcript);
       if (existing) return { learned: true, alreadyLearned: true, referenceId: existing.id };
-      const charge = await app.chargeCredits({ workspaceId, key: 'brief_polish', refTable: 'Project', refId: req.params.projectId });
+      const idempotencyKey = scopedRequestKey(req.headers as Record<string, unknown>, `lyrics-learn-analysis:${analyzeJobId}`);
+      const charge = await app.chargeCredits({
+        workspaceId,
+        key: 'brief_polish',
+        refTable: 'ProviderJob',
+        refId: analyzeJobId,
+        idempotencyKey,
+      });
       if (!charge.ok) return reply.code(402).send({ error: 'insufficient_credits', ...charge });
-      const { referenceId, craft } = await learnLyricCraft({ workspaceId, raw: transcript, genreHint: profile?.genre });
-      return { learned: true, referenceId, craftTitle: craft.craftTitle, mode: craft.mode, genre: craft.genre, lessons: craft.craftLessons.slice(0, 2) };
+      const operation = await runIdempotentOperation({
+        workspaceId,
+        projectId: req.params.projectId,
+        kind: 'lyrics-learn-analysis',
+        provider: 'text',
+        idempotencyKey,
+        chargeLedgerId: charge.chargeId,
+        inputJson: { projectId: req.params.projectId, analyzeJobId },
+        execute: async () => {
+      try {
+        const { referenceId, craft } = await learnLyricCraft({ workspaceId, raw: transcript, genreHint: profile?.genre });
+        return {
+          statusCode: 200,
+          body: { learned: true, referenceId, craftTitle: craft.craftTitle, mode: craft.mode, genre: craft.genre, lessons: craft.craftLessons.slice(0, 2) },
+        };
+      } catch (error) {
+        await app.refundCredits({
+          workspaceId,
+          key: 'brief_polish',
+          refTable: 'ProviderJob',
+          refId: analyzeJobId,
+          chargeId: charge.chargeId,
+        });
+        throw error;
+      }
+        },
+      });
+      if (operation.state !== 'completed') {
+        const failure = operationErrorBody(operation);
+        return reply.code(failure.statusCode).send(failure.body);
+      }
+      return reply.code(operation.value.statusCode).send(operation.value.body);
     }
   );
 
@@ -357,7 +522,10 @@ export default async function lyrics(app: FastifyInstance) {
       const { workspaceId } = requireAuth(req);
       await prisma.project.findFirstOrThrow({ where: { id: req.params.projectId, workspaceId } });
       const { analyzeJobId } = mumbleSchema.parse(req.body);
-      const job = await prisma.providerJob.findFirst({ where: { id: analyzeJobId, workspaceId }, select: { status: true, outputJson: true } });
+      const job = await prisma.providerJob.findFirst({
+        where: { id: analyzeJobId, workspaceId, projectId: req.params.projectId },
+        select: { status: true, outputJson: true },
+      });
       if (!job || job.status !== 'SUCCEEDED') return reply.code(400).send({ error: 'analyze_not_ready', message: 'The listen job has not finished — poll it first.' });
       const profile = (job.outputJson as { profile?: { raw?: string; bpm?: number; mood?: string; genre?: string; language?: string | null } } | null)?.profile;
       if (!profile) return reply.code(400).send({ error: 'no_profile', message: 'That job has no audio profile.' });
@@ -371,9 +539,26 @@ export default async function lyrics(app: FastifyInstance) {
         return reply.code(400).send({ error: 'no_vocal_heard', message: 'Could not hear a voice in that take — hum or mumble a bit louder/longer (10s+) and try again.' });
       }
 
-      const charge = await app.chargeCredits({ workspaceId, key: 'lyrics_full', refTable: 'Project', refId: req.params.projectId });
+      const idempotencyKey = scopedRequestKey(req.headers as Record<string, unknown>, `lyrics-from-mumble:${analyzeJobId}`);
+      const charge = await app.chargeCredits({
+        workspaceId,
+        key: 'lyrics_full',
+        refTable: 'ProviderJob',
+        refId: analyzeJobId,
+        idempotencyKey,
+      });
       if (!charge.ok) return reply.code(402).send({ error: 'insufficient_credits', ...charge });
 
+      const operation = await runIdempotentOperation({
+        workspaceId,
+        projectId: req.params.projectId,
+        kind: 'lyrics-from-mumble',
+        provider: 'text',
+        idempotencyKey,
+        chargeLedgerId: charge.chargeId,
+        inputJson: { projectId: req.params.projectId, analyzeJobId },
+        execute: async () => {
+      try {
       const out = await generateJson<{
         candidates: Array<{ title: string; hookLine: string; lyric: string; flowNotes: string }>;
       }>({
@@ -395,11 +580,43 @@ export default async function lyrics(app: FastifyInstance) {
         maxTokens: 2500,
       });
       const candidates = (out?.candidates ?? []).filter((c) => c?.lyric).slice(0, 3);
-      if (!candidates.length) return reply.code(503).send({ error: 'conversion_failed', message: 'Could not convert this take — try a longer mumble.' });
+      if (!candidates.length) {
+        await app.refundCredits({
+          workspaceId,
+          key: 'lyrics_full',
+          refTable: 'ProviderJob',
+          refId: analyzeJobId,
+          chargeId: charge.chargeId,
+        });
+        return {
+          statusCode: 503,
+          body: { error: 'conversion_failed', message: 'Could not convert this take - try a longer mumble.' },
+        };
+      }
       return {
-        heard: { transcript: transcript.slice(0, 500), bpm: profile.bpm ?? null, mood: profile.mood ?? null, genre: profile.genre ?? null },
-        candidates,
+        statusCode: 200,
+        body: {
+          heard: { transcript: transcript.slice(0, 500), bpm: profile.bpm ?? null, mood: profile.mood ?? null, genre: profile.genre ?? null },
+          candidates,
+        },
       };
+      } catch (error) {
+        await app.refundCredits({
+          workspaceId,
+          key: 'lyrics_full',
+          refTable: 'ProviderJob',
+          refId: analyzeJobId,
+          chargeId: charge.chargeId,
+        });
+        throw error;
+      }
+        },
+      });
+      if (operation.state !== 'completed') {
+        const failure = operationErrorBody(operation);
+        return reply.code(failure.statusCode).send(failure.body);
+      }
+      return reply.code(operation.value.statusCode).send(operation.value.body);
     }
   );
 
@@ -416,15 +633,37 @@ export default async function lyrics(app: FastifyInstance) {
       const { workspaceId } = requireAuth(req);
       const project = await prisma.project.findFirstOrThrow({ where: { id: req.params.projectId, workspaceId } });
       const { title, body } = attachSchema.parse(req.body);
-      const song = await prisma.song.create({
-        data: { workspaceId, projectId: project.id, title, status: 'SKETCH' },
+      const operationKey = scopedRequestKey(req.headers as Record<string, unknown>, `lyrics-attach:${project.id}`);
+      const suffix = operationKey
+        ? createHash('sha256').update(`${workspaceId}|${operationKey}`).digest('hex').slice(0, 24)
+        : undefined;
+      const result = await prisma.$transaction(async (tx) => {
+        if (suffix) {
+          const existing = await tx.song.findFirst({
+            where: { id: `idem_song_${suffix}`, workspaceId, projectId: project.id },
+            include: { lyric: { select: { id: true } } },
+          });
+          if (existing?.lyric) return { songId: existing.id, lyricId: existing.lyric.id, replayed: true };
+        }
+        const song = await tx.song.create({
+          data: { ...(suffix ? { id: `idem_song_${suffix}` } : {}), workspaceId, projectId: project.id, title, status: 'SKETCH' },
+        });
+        const lyric = await tx.lyricDraft.create({
+          data: {
+            ...(suffix ? { id: `idem_lyric_${suffix}` } : {}),
+            projectId: project.id,
+            songId: song.id,
+            title,
+            body,
+            approved: true,
+            artistAuthored: true,
+          },
+        });
+        await tx.song.update({ where: { id: song.id }, data: { lyricId: lyric.id } });
+        return { songId: song.id, lyricId: lyric.id, replayed: false };
       });
-      const lyric = await prisma.lyricDraft.create({
-        data: { projectId: project.id, songId: song.id, title, body, approved: true, artistAuthored: true },
-      });
-      await prisma.song.update({ where: { id: song.id }, data: { lyricId: lyric.id } });
       reply.code(201);
-      return { songId: song.id, lyricId: lyric.id };
+      return result;
     }
   );
 
@@ -432,23 +671,31 @@ export default async function lyrics(app: FastifyInstance) {
     '/:lyricId/approve',
     async (req, reply) => {
       const { userId, workspaceId } = requireAuth(req);
-      // Scope by workspace — never approve another workspace's lyric by id.
-      const updated = await prisma.lyricDraft.updateMany({
-        where: { id: req.params.lyricId, project: { workspaceId } },
-        data: { approved: true },
+      const lyric = await prisma.lyricDraft.findFirst({
+        where: { id: req.params.lyricId, projectId: req.params.projectId, project: { workspaceId } },
       });
-      if (updated.count === 0) return reply.code(404).send({ error: 'lyric_not_found' });
-      const lyric = await prisma.lyricDraft.findUniqueOrThrow({ where: { id: req.params.lyricId } });
-      await prisma.approval.create({
-        data: {
-          workspaceId,
-          projectId: req.params.projectId,
-          userId,
-          gate: 'lyrics',
-          decision: 'approved',
-        },
+      if (!lyric) return reply.code(404).send({ error: 'lyric_not_found' });
+      if (lyric.approved) return { ...lyric, alreadyApproved: true };
+      const approved = await prisma.$transaction(async (tx) => {
+        const updated = await tx.lyricDraft.updateMany({
+          where: { id: lyric.id, projectId: req.params.projectId, approved: false },
+          data: { approved: true },
+        });
+        if (updated.count === 0) {
+          return { ...(await tx.lyricDraft.findUniqueOrThrow({ where: { id: lyric.id } })), alreadyApproved: true };
+        }
+        await tx.approval.create({
+          data: {
+            workspaceId,
+            projectId: lyric.projectId,
+            userId,
+            gate: 'lyrics',
+            decision: 'approved',
+          },
+        });
+        return tx.lyricDraft.findUniqueOrThrow({ where: { id: lyric.id } });
       });
-      return lyric;
+      return approved;
     }
   );
 }

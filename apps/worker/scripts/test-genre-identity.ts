@@ -16,18 +16,35 @@ function check(cond: boolean, msg: string): void {
   if (!cond) { console.error(`FAIL: ${msg}`); failures++; }
 }
 
-// Each Afro lane must get its OWN correct origin anchor — NOT a blanket
-// "Nigerian/Ghanaian Afrobeats" (that mislabels amapiano, which is South African).
-const AFRO_EXPECT: Record<string, RegExp> = {
-  afrobeats: /west african/i,
-  afro_fusion: /west african/i,
-  afro_pop: /west african/i,
-  street_pop: /west african/i,
-  amapiano: /south african amapiano/i,
-  afro_dancehall: /afro-dancehall/i,
-  afro_rnb: /afro-r&b|afrosoul/i,
-  highlife: /highlife \(ghana/i,
-  afro_gospel: /afro-gospel/i,
+// Every advertised African lane must get its OWN origin anchor and at least one
+// defining sound. This list intentionally excludes African-American gospel,
+// Jamaican reggae and US hip-hop: those global genres keep their own kits.
+const AFRO_EXPECT: Record<string, { anchor: RegExp; signature: RegExp }> = {
+  afrobeats: { anchor: /west african afrobeats/i, signature: /shekere|talking drum/i },
+  afro_fusion: { anchor: /west african afro-fusion/i, signature: /organic brass|melodic live bass/i },
+  afro_pop: { anchor: /west african afropop/i, signature: /melody-first|highlife guitar/i },
+  street_pop: { anchor: /lagos nigerian street-pop/i, signature: /gang chants|zanku/i },
+  amapiano: { anchor: /south african amapiano/i, signature: /log-drum|log drum/i },
+  afro_house: { anchor: /south african afro house/i, signature: /four-on-the-floor|congas/i },
+  afro_dancehall: { anchor: /afro-dancehall/i, signature: /dancehall riddim|rolling bass/i },
+  afro_rnb: { anchor: /west african afro-r&b/i, signature: /rhodes|layered r&b/i },
+  afro_soul: { anchor: /pan-african afro-soul/i, signature: /live-band soul|fingered live bass/i },
+  highlife: { anchor: /highlife \(ghana/i, signature: /interlocking clean highlife guitars/i },
+  afro_gospel: { anchor: /west african afro-gospel/i, signature: /gospel piano|hammond organ/i },
+  alte: { anchor: /nigerian alté/i, signature: /lo-fi afro-fusion|rhodes/i },
+  gqom: { anchor: /durban south african gqom/i, signature: /broken kick|tribal toms/i },
+  kwaito: { anchor: /soweto south african kwaito/i, signature: /township-house|tsotsitaal/i },
+  bongo_flava: { anchor: /tanzanian bongo flava/i, signature: /swahili afropop|marimba/i },
+  azonto: { anchor: /accra ghanaian azonto/i, signature: /kpanlogo|cowbell/i },
+  coupe_decale: { anchor: /ivorian coupé-décalé/i, signature: /sebene guitar|tom rolls/i },
+  ndombolo: { anchor: /congolese ndombolo/i, signature: /sebene|atalaku/i },
+  soukous: { anchor: /congolese soukous/i, signature: /cavacha|sebene/i },
+  fuji: { anchor: /yoruba nigerian fuji/i, signature: /sakara|talking drum/i },
+  juju: { anchor: /yoruba nigerian juju/i, signature: /palm-wine electric guitars|pedal steel/i },
+  apala: { anchor: /yoruba nigerian apala/i, signature: /agidigbo|thumb-piano/i },
+  worship: { anchor: /african gospel worship/i, signature: /hammond organ|choir/i },
+  praise: { anchor: /nigerian and ghanaian church praise/i, signature: /shekere|congas/i },
+  spiritual: { anchor: /african spiritual music/i, signature: /kalimba|mbira/i },
 };
 // Highlife and gospel must NOT be anchored with a log drum (they are guitar-band
 // and piano/organ/choir respectively).
@@ -38,7 +55,7 @@ const AFRO_EXPECT: Record<string, RegExp> = {
 }
 // GLOBAL genres must be LEFT UNTOUCHED — the loose-regex bug relabeled rnb/soul/
 // dancehall as Afro. They must get NO Afro anchor and NO anti-Latin exclusion.
-for (const g of ['rnb', 'soul', 'dancehall', 'reggae', 'reggaeton', 'pop', 'house']) {
+for (const g of ['gospel', 'hip_hop', 'rnb', 'soul', 'dancehall', 'reggae', 'reggaeton', 'pop', 'house']) {
   const tags = composeStyleTags({ genre: g, bpm: 100, dnaTags: ['clave groove'] } as never, { fallbackLiteral: 'x' }).join(' , ');
   check(!/afro-r&b|afrosoul|afro-dancehall|west african|south african/i.test(tags), `[${g}] GLOBAL genre wrongly relabeled as Afro`);
   check(!/NOT reggaeton/i.test(tags), `[${g}] GLOBAL genre wrongly got the Afro exclusion clause`);
@@ -46,7 +63,7 @@ for (const g of ['rnb', 'soul', 'dancehall', 'reggae', 'reggaeton', 'pop', 'hous
 // Latin-signifier tokens the DNA carries — must be scrubbed before the engine.
 const LATIN_POISON = /\bclave\b|woodblock\s*\/\s*clave|\btresillo\b|\breggaeton\b|\bdembow\b|\bperreo\b/i;
 
-for (const [genre, anchorRe] of Object.entries(AFRO_EXPECT)) {
+for (const [genre, expected] of Object.entries(AFRO_EXPECT)) {
   const tags = composeStyleTags(
     {
       genre,
@@ -63,7 +80,8 @@ for (const [genre, anchorRe] of Object.entries(AFRO_EXPECT)) {
   const positive = tags.filter((t) => !/^NOT /i.test(t.trim()) && !/\bNOT\b/.test(t)).join(' , ');
 
   check(!LATIN_POISON.test(positive), `[${genre}] Latin-signifier token leaked to engine tags: "${positive.match(LATIN_POISON)?.[0]}"`);
-  check(anchorRe.test(joined), `[${genre}] missing/incorrect origin anchor (want ${anchorRe})`);
+  check(expected.anchor.test(joined), `[${genre}] missing/incorrect origin anchor (want ${expected.anchor})`);
+  check(expected.signature.test(joined), `[${genre}] missing defining sound (want ${expected.signature})`);
   check(/not reggaeton/i.test(joined), `[${genre}] missing explicit NOT-reggaeton exclusion`);
 }
 // Amapiano must NOT be mislabelled as Nigerian/Ghanaian Afrobeats (the bug).
@@ -98,4 +116,4 @@ if (failures > 0) {
   console.error(`genre-identity: ${failures} failure(s)`);
   process.exit(1);
 }
-console.log(`genre-identity: each Afro lane ships its OWN origin anchor (amapiano=South African, afrobeats=West African), reggaeton-excluded, clave-free (${Object.keys(AFRO_EXPECT).length} genres); non-Afro untouched`);
+console.log(`genre-identity: every advertised African lane ships its own origin + defining sound, reggaeton-excluded and clave-free (${Object.keys(AFRO_EXPECT).length} genres); global genres untouched`);

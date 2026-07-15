@@ -143,7 +143,7 @@ function DataLakeCard({ o }: { o: { totalReferences?: number; byKind?: Record<st
   return (
     <div className="text-sm">
       <div className="mb-1 flex items-center gap-2 font-medium text-slate-200"><FileText className="h-4 w-4 text-afrobrand-400" /> Data lake — {o.totalReferences ?? 0} references</div>
-      <div className="text-xs text-slate-400">{k.heardSongs ?? 0} heard · {k.lyricCraft ?? 0} lyric-craft · {k.trendSnapshots ?? 0} trends · {k.selfTraining ?? 0} self-training{k.zapped ? ` · ${k.zapped} zapped` : ''}</div>
+      <div className="text-xs text-slate-400">{k.heardSongs ?? 0} heard · {k.lyricCraft ?? 0} lyric-craft · {k.trendSnapshots ?? 0} trends · {k.selfTraining ?? 0} self-training{k.zapped ? ` · ${k.zapped} zapped` : ''}{k.referenceFacts ? ` · ${k.referenceFacts} measured facts` : ''}{k.unclassified ? ` · ${k.unclassified} unclassified` : ''}{k.failed ? ` · ${k.failed} failed` : ''}</div>
     </div>
   );
 }
@@ -182,7 +182,7 @@ function HookList({ hooks, projectId, onAction }: { hooks: HookItem[]; projectId
     } catch { /* keep the old text */ } finally { setEditId(null); setBusy(''); }
   }
 
-  async function useHook(h: HookItem) {
+  async function selectHook(h: HookItem) {
     setBusy(`${h.id}:use`);
     try {
       if (projectId) await api.post(`/projects/${projectId}/hooks/${h.id}/approve`, {});
@@ -240,7 +240,7 @@ function HookList({ hooks, projectId, onAction }: { hooks: HookItem[]; projectId
                     <Pencil className="mr-0.5 inline h-3 w-3" />Edit
                   </button>
                   <button
-                    onClick={() => void useHook(h)}
+                    onClick={() => void selectHook(h)}
                     disabled={busy === `${h.id}:use` || usedId === h.id}
                     className="rounded-full border border-afrobrand-500/40 bg-afrobrand-500/10 px-2.5 py-0.5 text-xs text-afrobrand-300 hover:bg-afrobrand-500/20 disabled:opacity-50"
                   >

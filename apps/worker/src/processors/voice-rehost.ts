@@ -15,8 +15,10 @@
  */
 import { prisma } from '@afrohit/db';
 import { ingestRemoteFile } from '../lib/storage';
+import { markFailed, markRunning, markSucceeded } from '../lib/jobs';
 
 interface VoiceRehostPayload {
+  jobId: string;
   workspaceId: string;
   voiceProfileId: string;
   modelUrl: string; // the ephemeral provider URL to re-host
@@ -26,27 +28,43 @@ interface VoiceRehostPayload {
 const PROVIDER_HOST = /replicate\.delivery|\.blob\.core\.windows|oaidalleapi|fal\.media/i;
 
 export async function processVoiceRehost(p: VoiceRehostPayload) {
-  const profile = await prisma.voiceProfile.findUnique({ where: { id: p.voiceProfileId } });
-  if (!profile) return;
-  // Idempotent — if trainedVersion is already off the provider host, it's re-hosted.
-  if (typeof profile.trainedVersion === 'string' && profile.trainedVersion && !PROVIDER_HOST.test(profile.trainedVersion)) return;
-  if (!PROVIDER_HOST.test(p.modelUrl)) return; // nothing ephemeral to re-host
+  await markRunning(p.jobId);
+  try {
+    const profile = await prisma.voiceProfile.findFirst({ where: { id: p.voiceProfileId, workspaceId: p.workspaceId } });
+    if (!profile) {
+      await markSucceeded(p.jobId, { rehost: 'profile_absent' });
+      return;
+    }
+    // Idempotent — if trainedVersion is already off the provider host, it is re-hosted.
+    if (typeof profile.trainedVersion === 'string' && profile.trainedVersion && !PROVIDER_HOST.test(profile.trainedVersion)) {
+      await markSucceeded(p.jobId, { rehost: 'already_durable', url: profile.trainedVersion });
+      return;
+    }
+    if (!PROVIDER_HOST.test(p.modelUrl)) {
+      await markSucceeded(p.jobId, { rehost: 'not_required' });
+      return;
+    }
 
-  const ext = /\.pth(\?|$)/i.test(p.modelUrl) ? 'pth' : 'zip';
-  const durableUrl = await ingestRemoteFile({
-    workspaceId: p.workspaceId,
-    url: p.modelUrl,
-    kind: 'voice-model',
-    ext,
-    contentType: ext === 'pth' ? 'application/octet-stream' : 'application/zip',
-  });
+    const ext = /\.pth(\?|$)/i.test(p.modelUrl) ? 'pth' : 'zip';
+    const durableUrl = await ingestRemoteFile({
+      workspaceId: p.workspaceId,
+      url: p.modelUrl,
+      kind: 'voice-model',
+      ext,
+      contentType: ext === 'pth' ? 'application/octet-stream' : 'application/zip',
+    });
 
-  const meta = (profile.trainingMeta ?? {}) as Record<string, unknown>;
-  await prisma.voiceProfile.update({
-    where: { id: profile.id },
-    data: {
-      trainedVersion: durableUrl,
-      trainingMeta: { ...meta, output: durableUrl, providerOutput: p.modelUrl, rehostedAt: new Date().toISOString() } as never,
-    },
-  });
+    const meta = (profile.trainingMeta ?? {}) as Record<string, unknown>;
+    await prisma.voiceProfile.update({
+      where: { id: profile.id },
+      data: {
+        trainedVersion: durableUrl,
+        trainingMeta: { ...meta, output: durableUrl, providerOutput: p.modelUrl, rehostedAt: new Date().toISOString() } as never,
+      },
+    });
+    await markSucceeded(p.jobId, { rehost: 'complete', url: durableUrl });
+  } catch (error) {
+    await markFailed(p.jobId, error);
+    throw error;
+  }
 }

@@ -4,6 +4,7 @@
  * PostHog uses the plain /capture HTTP endpoint (no SDK dependency).
  */
 import * as Sentry from '@sentry/node';
+import { redactSensitiveText } from '@afrohit/shared';
 
 let sentryEnabled = false;
 
@@ -15,6 +16,27 @@ export function initObservability(service: string) {
       environment: process.env.NODE_ENV ?? 'development',
       tracesSampleRate: 0.1,
       initialScope: { tags: { service } },
+      sendDefaultPii: false,
+      beforeSend(event) {
+        if (event.request?.headers) {
+          for (const name of Object.keys(event.request.headers)) {
+            if (['authorization', 'cookie', 'x-internal-secret'].includes(name.toLowerCase())) {
+              delete event.request.headers[name];
+            }
+          }
+        }
+        if (event.request?.url) event.request.url = redactSensitiveText(event.request.url, 1_000);
+        if (event.message) event.message = redactSensitiveText(event.message, 1_000);
+        for (const value of event.exception?.values ?? []) {
+          if (value.value) value.value = redactSensitiveText(value.value, 1_000);
+          if (value.stacktrace?.frames) {
+            for (const frame of value.stacktrace.frames) {
+              if (frame.filename) frame.filename = redactSensitiveText(frame.filename, 500);
+            }
+          }
+        }
+        return event;
+      },
     });
     sentryEnabled = true;
   }

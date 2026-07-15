@@ -60,7 +60,7 @@ export function ReferenceListen({ projectId }: { projectId: string }) {
   const fileRef = useRef<HTMLInputElement>(null);
   const [status, setStatus] = useState<string>('');
   const [busy, setBusy] = useState(false);
-  const [factsOnly, setFactsOnly] = useState(false);
+  const [fullRightsConfirmed, setFullRightsConfirmed] = useState(false);
   const [profile, setProfile] = useState<Profile | null>(null);
   // Visible production state — creating from a listen takes 2-4 minutes and MUST
   // look alive the whole time (a quiet status line reads as a dead button).
@@ -131,8 +131,12 @@ export function ReferenceListen({ projectId }: { projectId: string }) {
     try {
       // Proxy through our API (no R2 CORS needed) for the recording/reference.
       const { publicUrl } = await api.uploadAudioDirect(src, 'reference');
-      setStatus(factsOnly ? '📐 Measuring the numbers…' : '🎧 The AI is listening…');
-      const { jobId } = await api.post<{ jobId: string }>(`/projects/${projectId}/analyze`, { url: publicUrl, factsOnly: factsOnly || undefined });
+      setStatus(fullRightsConfirmed ? '🎧 The AI is listening…' : '📐 Measuring the numbers…');
+      const { jobId } = await api.post<{ jobId: string }>(`/projects/${projectId}/analyze`, {
+        url: publicUrl,
+        factsOnly: fullRightsConfirmed ? undefined : true,
+        rightsConfirmed: fullRightsConfirmed ? true : undefined,
+      });
       const p = await poll(jobId);
       if (!p) {
         setStatus('📐 Measured into the lane profile — tempo, groove, log-drum, arrangement. Numbers only: no words learned, audio deleted after measuring.');
@@ -270,7 +274,6 @@ export function ReferenceListen({ projectId }: { projectId: string }) {
       );
       let item: { jobId?: string; error?: string } | undefined;
       let dropErr: string | undefined;
-      let lastStatus = 'RUNNING';
       let netFails = 0;
       // The writer now drafts + runs a full critic-polish pass + arranges vocals
       // BEFORE the render is queued — a real record takes minutes. Wait up to ~11
@@ -281,7 +284,6 @@ export function ReferenceListen({ projectId }: { projectId: string }) {
         let j: { status: string; outputJson?: { drop?: Array<typeof item>; error?: string } };
         try { j = await api.get(`/jobs/${started.jobId}`); netFails = 0; }
         catch { if (++netFails >= 24) break; continue; }
-        lastStatus = j.status;
         // Read the TOP-LEVEL reason too: when no take rendered, the drop carries
         // WHY (brain down, no hooks) there — not on a per-take item.
         if (j.status === 'SUCCEEDED') { item = j.outputJson?.drop?.[0]; dropErr = j.outputJson?.error; break; }
@@ -362,14 +364,14 @@ export function ReferenceListen({ projectId }: { projectId: string }) {
         <label className="mt-3 flex cursor-pointer items-start gap-2 text-xs text-slate-400">
           <input
             type="checkbox"
-            checked={factsOnly}
-            onChange={(e) => setFactsOnly(e.target.checked)}
+            checked={fullRightsConfirmed}
+            onChange={(e) => setFullRightsConfirmed(e.target.checked)}
             className="mt-0.5 accent-amber-400"
           />
           <span>
-            <span className="text-slate-200">📐 Facts-only reference</span> — a record you own but didn’t make. The ear measures the
-            NUMBERS (tempo, groove, log-drum, arrangement) into this lane’s profile so your songs hit the real target sound. No lyrics
-            transcribed, no recipe copied, audio deleted after measuring — facts, never someone else’s expression.
+            <span className="text-slate-200">I own or control this recording</span> — enable full production-craft learning only for
+            audio you are authorized to train on. Leave this off for other references: the studio measures tempo, key, groove, and
+            arrangement only, learns no expression or lyrics, and deletes uploaded audio after measuring.
           </span>
         </label>
         {status && <div className="mt-3 text-xs text-slate-400">{status}</div>}

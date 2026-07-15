@@ -8,7 +8,8 @@
  * that define Afro genres; a family-template fallback makes EVERY taxonomy role
  * forgeable so a genre kit can always self-provision (no manual gaps).
  */
-import { familyOf, isMaterialRole, type MaterialRole } from '@afrohit/shared';
+import { familyOf, isKeyedRole, isMaterialRole, type MaterialRole } from '@afrohit/shared';
+export { isKeyedRole } from '@afrohit/shared';
 
 const ISO = 'no other instruments, no vocals, seamless loop';
 const g2 = (g: string) => g.replace(/_/g, ' ');
@@ -85,7 +86,7 @@ const DESCRIPTORS: Partial<Record<MaterialRole, (g: string, b: number, k?: strin
   // --- fx / transitions ---
   riser: (g, b) => `solo riser FX, ${b} bpm — tension-building white-noise and pitch riser sweeping up into a drop; FX only, one riser, ${ISO}`,
   downlifter: (g, b) => `solo downlifter FX, ${b} bpm — falling sweep releasing tension after a drop; FX only, ${ISO}`,
-  impact: (g, b) => `solo impact hit FX — deep cinematic boom impact with short tail; one hit, ${ISO}`,
+  impact: () => `solo impact hit FX — deep cinematic boom impact with short tail; one hit, ${ISO}`,
   reverse_cymbal: (g, b) => `solo reverse cymbal swell, ${b} bpm — rising reversed crash into a downbeat; one swell, ${ISO}`,
   sweep: (g, b) => `solo noise sweep FX, ${b} bpm — smooth filtered noise sweep; FX only, ${ISO}`,
 };
@@ -104,13 +105,6 @@ const FAMILY_FALLBACK: Record<string, (role: string, g: string, b: number, k?: s
 };
 
 /** Families whose roles are pitched — forged IN KEY so loops fit together. */
-const KEYED_FAMILIES = new Set(['bass', 'harmony', 'melody', 'mallets']);
-
-export function isKeyedRole(role: string): boolean {
-  if (role === 'log_drum') return true;
-  return isMaterialRole(role) ? KEYED_FAMILIES.has(familyOf(role)) : ['bass', 'chords'].includes(role);
-}
-
 /**
  * The prompt for forging one isolated loop of `role`. Covers the ENTIRE
  * taxonomy: curated descriptor first, family template as fallback. Legacy

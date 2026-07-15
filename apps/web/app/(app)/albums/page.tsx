@@ -23,7 +23,7 @@ export default function AlbumsPage() {
 
   const load = useCallback(async () => {
     try { setAlbums(await api.get<Album[]>('/albums')); } catch { setAlbums('error'); }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+
   }, []);
   useEffect(() => { void load(); }, [load]);
 

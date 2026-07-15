@@ -1,13 +1,15 @@
-import { prisma, Prisma } from '@afrohit/db';
-import { musicAdapter, sunoKey, defaultInstrumentalEngine } from '@afrohit/ai';
+import { createHash } from 'node:crypto';
+import { openSecret, prisma, Prisma } from '@afrohit/db';
+import { musicAdapter, defaultInstrumentalEngine, transcribeAudio } from '@afrohit/ai';
 import type { MusicGenerationInput } from '@afrohit/ai';
 import { markFailed, markRunning, markSucceeded } from '../lib/jobs';
-import { ingestRemoteFile, downloadToBuffer, uploadBytes } from '../lib/storage';
-import { probeDurationS, measureAudioQuality, ffmpegAvailable, master as ffmpegMaster, MASTER_TARGETS, type AudioQuality } from '../lib/ffmpeg';
+import { deleteObjectByUrl, ingestRemoteFile, downloadToBuffer, resolveAssetForProvider, uploadBytes } from '../lib/storage';
+import { probeDurationS, measureAudioQuality, encodeMp3320, ffmpegAvailable, master as ffmpegMaster, MASTER_TARGETS, transformAudio, type AudioQuality } from '../lib/ffmpeg';
 import { assessLaneCompliance, loadLaneProfile, laneGrounding } from '../lib/lane-assess';
 import { overlayFills } from '../lib/fills';
 import { measureAudio, dspAvailable } from '../lib/dsp';
-import { genreSignature, planFills, scoreLaneCompliance, engineAdequacy, structureMatch, blueprintFromMeasured, isFirstPartyWorkspace, resolveEngineForWorkspace, promotionEligible, type LaneComplianceScore, type MeasuredAnalysis, type SongBlueprint } from '@afrohit/shared';
+import { credentialForEngine, elevenMusicRouteApproved, resolveMusicCredentials, workspaceProviderEngine } from '../lib/music-routing';
+import { genreSignature, planFills, scoreLaneCompliance, scoreLyricAudioAlignment, engineAdequacy, structureMatch, blueprintFromMeasured, isFirstPartyWorkspace, resolveEngineForWorkspace, promotionEligible, selectMaterialRows, type LaneComplianceScore, type LyricAudioAlignmentScore, type MeasuredAnalysis, type SongBlueprint } from '@afrohit/shared';
 
 /** Minimum measured coverage before a lane score is allowed to influence ranking. */
 const MIN_COVERAGE_FOR_RANKING = 0.5;
@@ -31,16 +33,69 @@ const MIN_COVERAGE_FOR_RANKING = 0.5;
  * deadbands survive as BUCKETS (quantize before weighting) so noise still can't
  * flip near-ties, but the ordering is now consistent.
  */
-function takeScore(x: { qc: AudioQuality | null; lane: LaneComplianceScore | null; bp?: number | null }): number {
+function takeScore(x: { qc: AudioQuality | null; lane: LaneComplianceScore | null; bp?: number | null; alignment?: LyricAlignmentEvidence | null }): number {
   const mix = qcScore(x.qc);
+  // A measured matching lyric outranks an unmeasured take, which outranks a
+  // measured wrong song. This band is deliberately above every production-
+  // quality term: a beautiful performance of the wrong words is still wrong.
+  const alignmentBand = x.alignment ? (x.alignment.pass ? 2 : 0) : 1;
   const usable = x.lane != null && x.lane.coverage >= MIN_COVERAGE_FOR_RANKING;
-  if (!usable) return mix; // unmeasured: mix only (as before)
+  if (!usable) return alignmentBand * 1e12 + mix;
   const crit = x.lane!.failedCritical.length > 0 ? 1 : 0;
   const bpBucket = x.bp != null ? Math.round(x.bp / 0.07) : 0; // 0.07 deadband → bucket
   const laneBucket = Math.round(x.lane!.overall / 2); // 2pt deadband → bucket
   // A critical-failed take sinks below everything (even unmeasured); otherwise
   // blueprint dominates, then lane, then mix as the tiebreak.
-  return (crit ? -1e9 : 0) + bpBucket * 1e6 + laneBucket * 1e3 + mix;
+  return alignmentBand * 1e12 + (crit ? -1e9 : 0) + bpBucket * 1e6 + laneBucket * 1e3 + mix;
+}
+
+interface LyricAlignmentEvidence extends LyricAudioAlignmentScore {
+  state: 'passed' | 'failed';
+  provider: 'openai' | 'replicate';
+  model: string;
+  language: string | null;
+  expectedHash: string;
+  transcriptHash: string;
+  measuredAt: string;
+}
+
+async function measureLyricAlignment(opts: {
+  audioUrl: string;
+  format: string;
+  expectedLyric: string;
+  replicateApiKey?: string;
+}): Promise<LyricAlignmentEvidence | null> {
+  try {
+    const providerUrl = await resolveAssetForProvider(opts.audioUrl).catch(() => opts.audioUrl);
+    let bytes = process.env.OPENAI_API_KEY
+      ? await downloadToBuffer(opts.audioUrl, { maxBytes: 256 * 1024 * 1024 })
+      : undefined;
+    let filename = `render.${opts.format || 'mp3'}`;
+    if (bytes && bytes.byteLength > 20 * 1024 * 1024 && await ffmpegAvailable()) {
+      bytes = await encodeMp3320(bytes);
+      filename = 'render.mp3';
+    }
+    const transcription = await transcribeAudio({
+      url: providerUrl,
+      bytes,
+      filename,
+      replicateApiKey: opts.replicateApiKey,
+    });
+    if (!transcription?.text) return null;
+    const score = scoreLyricAudioAlignment(opts.expectedLyric, transcription.text);
+    return {
+      ...score,
+      state: score.pass ? 'passed' : 'failed',
+      provider: transcription.provider,
+      model: transcription.model,
+      language: transcription.language,
+      expectedHash: createHash('sha256').update(opts.expectedLyric.normalize('NFC')).digest('hex'),
+      transcriptHash: createHash('sha256').update(transcription.text.normalize('NFC')).digest('hex'),
+      measuredAt: new Date().toISOString(),
+    };
+  } catch {
+    return null;
+  }
 }
 
 interface MusicPayload {
@@ -49,6 +104,13 @@ interface MusicPayload {
   projectId: string;
   songId?: string;
   input: MusicGenerationInput;
+}
+
+interface TrainingReferenceRow {
+  id: string;
+  title: string | null;
+  analysisState: string;
+  rightsBasis: string;
 }
 
 /**
@@ -73,6 +135,9 @@ function qcScore(q: AudioQuality | null): number {
 
 export async function processMusic(p: MusicPayload) {
   await markRunning(p.jobId);
+  const temporaryCandidateUrls: string[] = [];
+  let uncommittedBeatUrl: string | null = null;
+  let supersededBeatUrl: string | null = null;
   try {
     // Provider + key are set IN-APP (Settings → Music engine), stored per
     // workspace. Falls back to env (MUSIC_PROVIDER / *_API_KEY) then stub.
@@ -92,38 +157,47 @@ export async function processMusic(p: MusicPayload) {
       await markFailed(p.jobId, 'music_generation_failed: the lyrics were not written (the writer may be unavailable) — try again.');
       return;
     }
-    // FULL-SONG ENGINE: prefer Suno V5 (the strongest full-production model) when a
-    // Engine ladder for SUNG songs: Suno (best, needs SUNO_API_KEY) → MiniMax
-    // (strong, on the workspace Replicate key) → ACE-Step (last resort). MiniMax
-    // is the default fallback because ACE-Step's vocals were the "whack singing"
-    // — MiniMax music-2.6 is markedly better for Afrobeats vocals.
+    // Resolve the sung-song route from the explicit request, workspace provider,
+    // legal route wall and connected credentials. Quality rankings belong to the
+    // measured bake-off rather than hardcoded vendor claims.
     // W-2 THE WALL: the bridge is not a customer render path — a non-first-party
-    // workspace requesting 'suno' is hard-substituted to the best resellable
+    // workspace requesting 'suno' is hard-substituted to an approved customer
     // engine, in CODE, so misconfiguration cannot leak bridge output.
     const firstParty = isFirstPartyWorkspace(p.workspaceId);
-    const resolved = resolveEngineForWorkspace(p.input.songEngine ?? (sunoKey() && firstParty ? 'suno' : 'minimax'), { firstParty, sunoAvailable: !!sunoKey() });
-    if (resolved.wallSubstituted) console.log(`[wall] bridge blocked for customer workspace ${p.workspaceId} — rendering on ${resolved.engine}`);
-    let engine = resolved.engine as 'suno' | 'minimax' | 'ace_step';
-    if (engine === 'suno' && !sunoKey()) engine = 'minimax';
-    // Suno uses its OWN key (SUNO_API_KEY), never the workspace's Replicate key.
-    const engineKey = engine === 'suno' ? undefined : ws?.musicApiKey ?? undefined;
-    let adapter = wantsVocals
-      ? musicAdapter(engine, engineKey)
-      // INSTRUMENTAL: route to a REAL engine on the key that exists. A
-      // Replicate-only operator (no Suno) got the stub here because the
-      // instrumental path ignored their Replicate key — now it falls to
-      // Replicate MusicGen instead of a dead stub.
-      : musicAdapter(ws?.musicProvider ?? defaultInstrumentalEngine(), ws?.musicApiKey ?? undefined);
-    // A3-2 — REFERENCE-AUDIO ADJUST: when the job carries the song's own audio,
-    // condition the render on it (audio in, repaired audio out) instead of
-    // re-rolling from tags. The reference id is logged so every Adjust run is
-    // traceable to its source sound (internal log — wall-safe).
+    const workspaceApiKey = openSecret(ws?.musicApiKey);
+    const credentials = resolveMusicCredentials(ws?.musicProvider, workspaceApiKey);
+    const elevenRouteApproved = elevenMusicRouteApproved(firstParty);
+    const workspaceDefault = workspaceProviderEngine(ws?.musicProvider);
+    const songOverride = process.env.SONG_ENGINE?.toLowerCase();
+    const requestedEngine = p.input.songEngine
+      ?? workspaceDefault
+      ?? (wantsVocals
+        ? (songOverride === 'replicate' ? 'minimax' : songOverride)
+        : defaultInstrumentalEngine());
+    const resolved = resolveEngineForWorkspace(requestedEngine, {
+      firstParty,
+      sunoAvailable: !!credentials.suno,
+      elevenAvailable: !!credentials.eleven && elevenRouteApproved,
+      replicateAvailable: !!credentials.replicate,
+    });
+    if (resolved.wallSubstituted) {
+      console.log(`[wall] flagship route blocked for customer workspace ${p.workspaceId}; rendering on ${resolved.engine}`);
+    }
+    const engine = resolved.engine;
+    const engineKey = credentialForEngine(engine, credentials);
+    const adapter = musicAdapter(engine, engineKey);
+    await prisma.providerJob.updateMany({
+      where: { id: p.jobId, workspaceId: p.workspaceId },
+      data: { provider: adapter.name },
+    });
+    if (resolved.unavailableReason) {
+      console.warn(`[music] engine unavailable: ${resolved.unavailableReason}`);
+    }
+
+    // Reference audio currently steers the measured brief and repair prompt. Keep
+    // the selected engine intact until a verified audio-conditioned route exists.
     if (p.input.referenceAudioUrl && wantsVocals) {
-      adapter = musicAdapter('minimax_ref', engineKey);
-      // HONESTY: no conditioning engine is configured (fal removed by owner
-      // directive) — the render is UNCONDITIONED; the reference steers only
-      // through the brief/lane repair. Never claim conditioning that didn't run.
-      console.log(`[adjust] steered re-render (unconditioned — no conditioning engine) — reference-input=${String(p.input.referenceAudioUrl).slice(0, 80)}`);
+      console.log(`[adjust] steered re-render (unconditioned) - reference-input=${String(p.input.referenceAudioUrl).slice(0, 80)}`);
     }
     type GenResult = Awaited<ReturnType<typeof adapter.generate>>;
 
@@ -132,7 +206,7 @@ export async function processMusic(p: MusicPayload) {
     // finished engine light-touch (loudness + true-peak only) instead of running
     // the full EQ/glue-comp chain on top, and the self-training gate treats their
     // always-hot ("clipping") raw QC differently from a genuinely broken take.
-    const finished = adapter.name === 'minimax' || adapter.name === 'suno';
+    const finished = adapter.name === 'minimax' || adapter.name === 'suno' || adapter.name === 'eleven';
 
     // Run generate + poll-to-terminal for ONE candidate. Cap polling by ELAPSED
     // TIME, not a fixed attempt count: at minimax's 5s poll interval a "25 attempts"
@@ -205,26 +279,45 @@ export async function processMusic(p: MusicPayload) {
         })()
       )
     );
-    const ok = settled.filter((r) => r.status === 'succeeded' && r.output);
+    const expandedSettled: GenResult[] = settled.flatMap((result) => {
+      if (result.status !== 'succeeded' || !result.output?.alternates?.length) return [result];
+      const { alternates, ...primary } = result.output;
+      return [
+        { ...result, output: primary },
+        ...alternates.map((alternate) => ({ ...result, output: alternate } as GenResult)),
+      ];
+    });
+    const materialized = await Promise.all(
+      expandedSettled.map(async (r): Promise<GenResult> => {
+        if (r.status !== 'succeeded' || !r.output?.audioBytes) return r;
+        try {
+          const mainAudioUrl = await uploadBytes({
+            workspaceId: p.workspaceId,
+            kind: 'provider-candidates',
+            bytes: r.output.audioBytes,
+            contentType: r.output.format === 'mp3' ? 'audio/mpeg' : r.output.format === 'flac' ? 'audio/flac' : 'audio/wav',
+            ext: r.output.format,
+          });
+          temporaryCandidateUrls.push(mainAudioUrl);
+          return { ...r, output: { ...r.output, mainAudioUrl, audioBytes: undefined } };
+        } catch (error) {
+          return { status: 'failed', error: `candidate storage failed: ${(error as Error).message}` } as GenResult;
+        }
+      })
+    );
+    const ok = materialized.filter((r) => r.status === 'succeeded' && r.output?.mainAudioUrl);
 
-    // STUB GUARD (audit CRITICAL). The stub adapter SUCCEEDS with a SoundHelix
-    // placeholder mp3, so the all-fail guard below never caught it — it was
-    // stored as an APPROVED, genre-labelled "song" (this is the "embarrassing,
-    // non-Afro audio"). voice.ts/image.ts already guard this; the music path did
-    // not. Detect the stub by adapter name AND by the placeholder host in the
-    // winning URL, and FAIL LOUDLY in production (unless a dev opts in) instead
-    // of shipping a rock sample as an Afro beat.
-    const placeholder =
-      adapter.name === 'stub' ||
-      ok.some((r) => /soundhelix\.com/i.test((r.status === 'succeeded' && r.output?.mainAudioUrl) || ''));
+    // Defense in depth: a provider response may never smuggle the historical
+    // placeholder host into a successful song, even in local development.
+    const placeholder = ok.some((r) => /soundhelix\.com/i.test((r.status === 'succeeded' && r.output?.mainAudioUrl) || ''));
     const fallbackReason: string | undefined = undefined;
-    if (placeholder && process.env.ALLOW_STUB_AUDIO !== '1') {
-      console.warn(`[music] stub/placeholder audio blocked (adapter=${adapter.name}) — no real music engine configured`);
-      await markFailed(p.jobId, 'music_generation_failed: no music engine configured — set a real engine (MUSIC_PROVIDER / SUNO_API_KEY / a workspace engine in Settings), then retry.');
+    if (placeholder) {
+      console.warn(`[music] placeholder audio blocked (adapter=${adapter.name})`);
+      await markFailed(p.jobId, 'music_generation_failed: the engine returned disallowed placeholder audio; retry or switch engine in Settings.');
       return;
     }
     if (!ok.length) {
-      const reason = settled.find((r) => r.error)?.error ?? 'provider_failed';
+      const reason = materialized.find((r) => r.error)?.error ?? 'provider_failed';
       // §1.11 THE WALL: errorJson reaches the user's screen — vendor/route names
       // are INTERNAL. Log the real reason here; ship the class-level one.
       console.warn(`[music] all candidates failed — internal reason: ${reason}`);
@@ -246,10 +339,23 @@ export async function processMusic(p: MusicPayload) {
     // only engages once a profile exists.
     const dspUp = process.env.LANE_ASSESS !== '0' && (await dspAvailable());
     const srcBlueprint = ((p.input as { blueprint?: SongBlueprint }).blueprint) ?? null;
+    const alignmentRequired = wantsVocals && (
+      process.env.VOCAL_ALIGNMENT_REQUIRED ?? (process.env.NODE_ENV === 'production' ? '1' : '0')
+    ) !== '0';
     const scored = await Promise.all(
       ok.map(async (r) => {
         const url = r.output?.mainAudioUrl;
-        const qc = url ? await measureAudioQuality(url).catch(() => null) : null;
+        const [qc, alignment] = await Promise.all([
+          url ? measureAudioQuality(url).catch(() => null) : Promise.resolve(null),
+          wantsVocals && url && p.input.lyrics
+            ? measureLyricAlignment({
+                audioUrl: url,
+                format: r.output?.format ?? 'mp3',
+                expectedLyric: p.input.lyrics,
+                replicateApiKey: credentials.replicate,
+              })
+            : Promise.resolve(null),
+        ]);
         let measured: MeasuredAnalysis | null = null;
         let lane: LaneComplianceScore | null = null;
         if (dspUp && url) {
@@ -257,18 +363,36 @@ export async function processMusic(p: MusicPayload) {
           if (m?.engineOk) { measured = m; if (laneProfile) lane = scoreLaneCompliance(m, laneProfile); }
         }
         const bp = srcBlueprint && measured ? structureMatch(blueprintFromMeasured(measured), srcBlueprint) : null;
-        return { r, qc, lane, measured, bp };
+        return { r, qc, lane, measured, bp, alignment };
       })
     );
     scored.sort((a, b) => takeScore(b) - takeScore(a));
     const winner = scored[0]!;
     const result = winner.r;
     const out = result.output!;
+    if (!out.mainAudioUrl) throw new Error('provider succeeded without playable audio');
+    if (wantsVocals && winner.alignment && !winner.alignment.pass) {
+      await markFailed(
+        p.jobId,
+        `music_generation_failed: rendered vocals did not match the approved lyrics (${winner.alignment.failures.join(', ')})`,
+      );
+      return;
+    }
+    if (alignmentRequired && !winner.alignment) {
+      await markFailed(
+        p.jobId,
+        'music_generation_failed: vocal lyric verification was unavailable; no unverified song was approved',
+      );
+      return;
+    }
     let quality: AudioQuality | null = winner.qc;
     const winnerLane = winner.lane;
-    const rankedBy = winner.bp != null
+    const productionRank = winner.bp != null
       ? `blueprint-structure (${Math.round(winner.bp * 100)}% skeleton match)`
       : winnerLane && winnerLane.coverage >= MIN_COVERAGE_FOR_RANKING ? 'lane-compliance' : 'mix-quality (ear blind or coverage thin)';
+    const rankedBy = winner.alignment
+      ? `lyric-alignment (${Math.round(winner.alignment.overall * 100)}%) + ${productionRank}`
+      : productionRank;
     console.log(`[music] best-of-${ok.length} ranked by ${rankedBy}${winnerLane ? ` — lane ${winnerLane.overall}/100 cov ${(winnerLane.coverage * 100) | 0}% failedCritical=[${winnerLane.failedCritical.join(',')}]` : ''}`);
 
     // Re-host ONLY the winning take (survives provider URL expiry; stable CDN path).
@@ -279,6 +403,7 @@ export async function processMusic(p: MusicPayload) {
       ext: out.format,
       contentType: out.format === 'mp3' ? 'audio/mpeg' : out.format === 'flac' ? 'audio/flac' : 'audio/wav',
     });
+    uncommittedBeatUrl = ingestedMain;
 
     // Winner QC measured the provider URL (same bytes). Re-probe duration if unknown;
     // if QC didn't run at all, measure the ingested file now. Never fatal.
@@ -291,27 +416,74 @@ export async function processMusic(p: MusicPayload) {
       const probed = await probeDurationS(ingestedMain);
       if (probed > 0) durationS = probed;
     }
+    const rawClipOnlyFinished =
+      wantsVocals &&
+      finished &&
+      quality?.verdict === 'fail' &&
+      quality.flags.length === 1 &&
+      quality.flags[0] === 'clipping';
+    if (!quality) {
+      throw new Error('music_generation_failed: rendered audio could not be measured; no unverified audio was approved');
+    }
+    if (quality.verdict !== 'pass' && !rawClipOnlyFinished) {
+      throw new Error(`music_generation_failed: rendered audio failed quality control (${quality.flags.join(', ') || quality.verdict})`);
+    }
 
     // PHASE 5 — insert drum fills into the section transitions (the fills Benjamin
     // keeps missing). Gated FILL_OVERLAY=1 (quality-sensitive) and only when a fill
     // material for the genre exists. Best-effort: any failure keeps the clean render.
     const beatBpm = out.bpm ?? p.input.bpm ?? 0;
+    let appliedFill: {
+      materialId: string;
+      sourceBpm: number;
+      targetBpm: number;
+      stretchRatio: number;
+      placementsS: number[];
+    } | null = null;
     // FILLS ARE DECORATION: any failure here degrades to a fill-less take with a
     // logged reason — it must NEVER fail the song (first prod run of this path
     // happened when the kit-forge stocked fills; Benjamin's failed render).
     try {
       if (process.env.FILL_OVERLAY !== '0' && !placeholder && beatBpm > 0 && durationS > 12) {
         try {
-          const fillMat = await prisma.materialAsset.findFirst({
-            where: { workspaceId: p.workspaceId, role: 'fill', OR: [{ genre: p.input.genre ?? undefined }, { genre: null }] },
+          const fillRows = await prisma.materialAsset.findMany({
+            where: {
+              workspaceId: p.workspaceId,
+              role: 'fill',
+              OR: [{ genre: p.input.genre ?? undefined }, { genre: null }],
+            },
             orderBy: { createdAt: 'desc' },
+            take: 20,
           });
+          const fillMat = selectMaterialRows(fillRows, ['fill'], beatBpm)[0];
           const placements = fillMat ? planFills(beatBpm, durationS, null, genreSignature(p.input.genre).fillBars) : [];
           if (fillMat && placements.length) {
-            const [songBytes, fillBytes] = await Promise.all([downloadToBuffer(ingestedMain), downloadToBuffer(fillMat.url)]);
+            const [songBytes, rawFillBytes] = await Promise.all([downloadToBuffer(ingestedMain), downloadToBuffer(fillMat.url)]);
+            const stretchRatio = beatBpm / (fillMat.sourceBpm || beatBpm);
+            const fillBytes = Math.abs(stretchRatio - 1) > 0.001
+              ? await transformAudio(rawFillBytes, { tempo: stretchRatio })
+              : rawFillBytes;
             const mixed = await overlayFills(songBytes, fillBytes, placements.map((f) => f.atS));
-            ingestedMain = await uploadBytes({ workspaceId: p.workspaceId, kind: 'beats', bytes: mixed, contentType: 'audio/wav', ext: 'wav' });
-            console.log(`[fills] overlaid ${placements.length} fills @ ${placements.map((f) => Math.round(f.atS) + 's').join(',')}`);
+            const mixedUrl = await uploadBytes({ workspaceId: p.workspaceId, kind: 'beats', bytes: mixed, contentType: 'audio/wav', ext: 'wav' });
+            const mixedQc = await measureAudioQuality(mixedUrl).catch(() => null);
+            if (!mixedQc || mixedQc.verdict !== 'pass') {
+              await deleteObjectByUrl(mixedUrl).catch(() => {});
+              console.warn(`[fills] mixed take rejected by QC (${(mixedQc?.flags ?? []).join(', ') || 'unmeasured'})`);
+            } else {
+              const cleanUrl = ingestedMain;
+              ingestedMain = mixedUrl;
+              quality = mixedQc;
+              appliedFill = {
+                materialId: fillMat.id,
+                sourceBpm: fillMat.sourceBpm,
+                targetBpm: beatBpm,
+                stretchRatio: +stretchRatio.toFixed(4),
+                placementsS: placements.map((placement) => placement.atS),
+              };
+              supersededBeatUrl = cleanUrl;
+              uncommittedBeatUrl = mixedUrl;
+              console.log(`[fills] overlaid ${placements.length} fills @ ${placements.map((f) => Math.round(f.atS) + 's').join(',')}`);
+            }
           }
         } catch (err) {
           console.warn('[fills] overlay failed (clean render kept):', (err as Error)?.message);
@@ -321,23 +493,47 @@ export async function processMusic(p: MusicPayload) {
       console.warn('[fills] overlay skipped (render continues):', (fillErr as Error)?.message);
     }
 
-    const beat = await prisma.beatAsset.create({
-      data: {
+    // Certify the exact bytes persisted after any fill overlay. This hash is the
+    // identity shared by the BeatAsset, source Mix, master receipt and export.
+    const sourceBytes = await downloadToBuffer(ingestedMain, { maxBytes: 640 * 1024 * 1024 });
+    const sourceContentHash = createHash('sha256').update(sourceBytes).digest('hex');
+    const vocalIdentityAccepted = !wantsVocals || !!winner.alignment?.pass || !alignmentRequired;
+
+    const trainingUsage = (p.input as {
+      trainingUsage?: {
+        referenceIds?: string[];
+        pinnedReferenceId?: string | null;
+        genre?: string;
+        measured?: number;
+        inferredOnly?: number;
+      };
+    }).trainingUsage;
+    const beat = await prisma.$transaction(async (tx) => {
+      const created = await tx.beatAsset.create({
+        data: {
         projectId: p.projectId,
         songId: p.songId,
         url: ingestedMain,
-        format: out.format,
+        format: appliedFill ? 'wav' : out.format,
         bpm: out.bpm ?? p.input.bpm,
         keySignature: out.keySignature ?? p.input.keySignature,
         duration: durationS,
         provider: adapter.name,
+        assetKind: wantsVocals ? 'full_mix' : 'instrumental',
+        qualityState: quality.verdict === 'pass' ? 'passed' : quality.verdict,
+        contentHash: sourceContentHash,
+        verifiedAt: new Date(),
         // Generated by an explicit user action → usable immediately (mix/master/
         // export/reuse all gate on approved). Placeholder fallbacks are excluded.
-        approved: !placeholder,
+        approved: !placeholder && vocalIdentityAccepted && !wantsVocals && quality.verdict === 'pass',
         meta: {
           externalId: result.externalId,
           placeholder,
           fallbackReason,
+          contentHash: sourceContentHash,
+          vocalAlignment: wantsVocals
+            ? winner.alignment ?? { state: 'unmeasured', required: alignmentRequired }
+            : { state: 'not_applicable' },
           // Best-of-N provenance + measured QC of the WINNING take.
           // §2.3 — persist WHY it won, in lane terms. rankedBy tells the user whether
           // the machine chose with its ears or its ears were shut (non-negotiable).
@@ -350,6 +546,9 @@ export async function processMusic(p: MusicPayload) {
             failedCritical: winnerLane?.failedCritical ?? [],
             rankedBy,
             blueprintMatch: winner.bp ?? null,
+            lyricAlignment: winner.alignment
+              ? { state: winner.alignment.state, overall: winner.alignment.overall }
+              : { state: wantsVocals ? 'unmeasured' : 'not_applicable' },
             // §11 — if a DRAFT engine produced a low-lane take, name the ENGINE as the
             // limit so the user never thinks they wrote a bad brief.
             engineNote: (!engineAdequacy(adapter.name, p.input.genre ?? '').adequate && (winnerLane?.overall ?? 100) < 60)
@@ -360,12 +559,75 @@ export async function processMusic(p: MusicPayload) {
           // TRACEABILITY: which of the artist's trained references shaped this beat
           // (proves "my beats were used" — and measured/total flags backfill need).
           trainingUsage: (p.input as { trainingUsage?: unknown }).trainingUsage ?? undefined,
+          fillOverlay: appliedFill ?? undefined,
           qc: quality
             ? { ...quality, durationS: durationS || quality.durationS }
             : { durationS: durationS || null, verdict: durationS >= 12 ? 'pass' : 'fail', ok: durationS >= 12, flags: [] },
         } as never,
-      },
+        },
+      });
+      const referenceIds = [...new Set((trainingUsage?.referenceIds ?? []).filter(Boolean))];
+      if (referenceIds.length) {
+        const references: TrainingReferenceRow[] = await tx.soundReference.findMany({
+          where: {
+            workspaceId: p.workspaceId,
+            id: { in: referenceIds },
+            active: true,
+            analysisState: { not: 'failed' },
+            rightsBasis: { not: 'unknown' },
+          },
+          select: { id: true, title: true, analysisState: true, rightsBasis: true },
+        });
+        const byId = new Map(references.map((reference) => [reference.id, reference]));
+        await tx.referenceUsage.createMany({
+          data: referenceIds.flatMap((referenceId, position) => {
+            const reference = byId.get(referenceId);
+            if (!reference) return [];
+            return [{
+              workspaceId: p.workspaceId,
+              referenceId,
+              providerJobId: p.jobId,
+              beatId: created.id,
+              songId: p.songId ?? null,
+              genre: trainingUsage?.genre || p.input.genre || 'unknown',
+              position,
+              pinned: trainingUsage?.pinnedReferenceId === referenceId,
+              influence: {
+                path: 'production-brief+style-tags+measured-tags',
+                title: reference.title,
+                analysisState: reference.analysisState,
+                rightsBasis: reference.rightsBasis,
+              } as never,
+            }];
+          }),
+          skipDuplicates: true,
+        });
+      }
+      if (appliedFill) {
+        await tx.materialUsage.create({
+          data: {
+            workspaceId: p.workspaceId,
+            materialId: appliedFill.materialId,
+            providerJobId: p.jobId,
+            beatId: created.id,
+            songId: p.songId ?? null,
+            role: 'fill',
+            sourceBpm: appliedFill.sourceBpm,
+            targetBpm: appliedFill.targetBpm,
+            stretchRatio: appliedFill.stretchRatio,
+            gain: 0.5,
+            pan: 0,
+            sections: { placementsS: appliedFill.placementsS } as never,
+          },
+        });
+      }
+      return created;
     });
+    uncommittedBeatUrl = null;
+    if (supersededBeatUrl) {
+      await deleteObjectByUrl(supersededBeatUrl).catch(() => {});
+      supersededBeatUrl = null;
+    }
 
     // SELF-TRAINING (legal — our own output, zero third-party material): every
     // full sung song whose measured QC PASSES becomes a SoundReference, so the
@@ -410,7 +672,13 @@ export async function processMusic(p: MusicPayload) {
       // uploads at retrieval.
       const since = new Date(Date.now() - 24 * 60 * 60 * 1000);
       const recentGenerated = await prisma.soundReference.count({
-        where: { workspaceId: p.workspaceId, genre: p.input.genre ?? undefined, createdAt: { gte: since }, title: { startsWith: 'generated' } },
+        where: {
+          workspaceId: p.workspaceId,
+          genre: p.input.genre ?? undefined,
+          active: true,
+          createdAt: { gte: since },
+          title: { startsWith: 'generated' },
+        },
       });
       if (recentGenerated > 0) {
         // Already learned from today's renders in this genre — skip quietly.
@@ -436,6 +704,8 @@ export async function processMusic(p: MusicPayload) {
               measured: winner.measured ?? undefined,
             } as never,
             summary: `Generated ${p.input.genre ?? ''} record (${Math.round(quality?.loudnessRangeLra ?? 0)}LU range, crest ${quality?.crestFactorDb ?? '—'}dB) on ${adapter.name}: ${(p.input.dnaTags ?? []).slice(0, 6).join(', ')}`,
+            analysisState: winner.measured?.engineOk ? 'measured' : 'inferred',
+            rightsBasis: 'self-generated',
           },
         })
         .catch((err: unknown) => console.warn('[music] self-training reference write failed:', (err as Error)?.message));
@@ -470,12 +740,13 @@ export async function processMusic(p: MusicPayload) {
     // A&R read itself was flagging "not mastered"). Master inline right here
     // (same host, same ffmpeg): wrap the render as the source Mix, run the
     // streaming chain, shelve an approved Master. The catalog serves the
-    // MASTERED file from now on. Best-effort: a master hiccup never kills the
-    // render — the raw take stays playable and Re-master still exists.
+    // MASTERED file from now on. A full-song job only succeeds after this exact
+    // artifact passes QC; the raw source remains unapproved audit evidence.
     let masteredUrl: string | null = null;
     if (wantsVocals && !placeholder && p.songId) {
+      let uncommittedMasterUrls: string[] = [];
       try {
-        if (await ffmpegAvailable()) {
+        if (!(await ffmpegAvailable())) throw new Error('master_qc_failed: ffmpeg is unavailable');
           // LOUDNESS LAW v2: the old HEADROOM LAW parked every default master at
           // -16.5/-14 LUFS while commercial Afrobeats ships at -8.5..-11 — THAT
           // gap is the "masters sound weak" complaint, and the old one-pass
@@ -485,34 +756,77 @@ export async function processMusic(p: MusicPayload) {
           // light-touch conform vs full EQ/glue chain inside master()).
           // 'breathe_-16.5' remains the honest dynamics-first OPT-IN, not the default.
           const preset = 'afro_stream_-9';
-          const mixRow = await prisma.mix.create({
-            data: { projectId: p.projectId, songId: p.songId, preset: 'source', url: ingestedMain, notes: 'Master source (auto, from render)', approved: true },
-          });
-          const srcBytes = await downloadToBuffer(ingestedMain);
-          const { wav, mp3 } = await ffmpegMaster({ mix: srcBytes, preset, finished });
+          const { wav, mp3 } = await ffmpegMaster({ mix: sourceBytes, preset, finished });
           const [wavUrl, mp3Url] = await Promise.all([
             uploadBytes({ workspaceId: p.workspaceId, kind: 'masters', bytes: wav, contentType: 'audio/wav', ext: 'wav' }),
             uploadBytes({ workspaceId: p.workspaceId, kind: 'masters', bytes: mp3, contentType: 'audio/mpeg', ext: 'mp3' }),
           ]);
+          uncommittedMasterUrls = [wavUrl, mp3Url];
           const target = MASTER_TARGETS[preset]!;
           // Certify what actually SHIPPED (same rule as the re-master worker):
           // measure the mastered artifact and store the MEASURED loudness — the
           // target is only the fallback, never the claim.
           const masterQc = await measureAudioQuality(wavUrl).catch(() => null);
+          if (!masterQc || masterQc.verdict !== 'pass') {
+            throw new Error(`master_qc_failed: ${masterQc?.flags.join(', ') || masterQc?.verdict || 'unmeasured'}`);
+          }
           const measuredLufs = masterQc?.integratedLufs ?? null;
           if (measuredLufs !== null && measuredLufs < target.lufs - 1.5) {
             console.warn(`[music] auto-master undershot target: measured ${measuredLufs.toFixed(1)} LUFS vs ${target.lufs} (${preset}) — the two-pass trim should not do this, check the chain`);
           }
-          await prisma.master.create({
-            data: { projectId: p.projectId, songId: p.songId, mixId: mixRow.id, preset, url: wavUrl, loudness: measuredLufs ?? target.lufs, approved: true },
-          });
+          const masterVerifiedAt = new Date();
+          const wavHash = createHash('sha256').update(wav).digest('hex');
+          const mp3Hash = createHash('sha256').update(mp3).digest('hex');
+          await prisma.$transaction(async (tx) => {
+            const mixRow = await tx.mix.create({
+              data: {
+                projectId: p.projectId,
+                songId: p.songId,
+                preset: 'source',
+                url: ingestedMain,
+                notes: 'Full-song source for automatic mastering',
+                qualityState: quality?.verdict === 'pass' ? 'passed' : quality?.verdict ?? 'unmeasured',
+                contentHash: sourceContentHash,
+                verifiedAt: new Date(),
+                meta: {
+                  qc: quality,
+                  assetKind: 'full_mix',
+                  vocalAlignment: winner.alignment ?? { state: 'unmeasured', required: alignmentRequired },
+                } as never,
+                approved: quality?.verdict === 'pass' && vocalIdentityAccepted,
+              },
+            });
+            await tx.master.create({
+              data: {
+                projectId: p.projectId,
+                songId: p.songId,
+                mixId: mixRow.id,
+                preset,
+                url: wavUrl,
+                loudness: measuredLufs ?? target.lufs,
+                qualityState: 'passed',
+                contentHash: wavHash,
+                verifiedAt: masterVerifiedAt,
+                approved: true,
+                meta: {
+                  qc: masterQc,
+                  verifiedAt: masterVerifiedAt.toISOString(),
+                  contentHash: wavHash,
+                  deliveryMp3: { url: mp3Url, contentHash: mp3Hash },
+                  sourceContentHash,
+                  vocalAlignment: winner.alignment ?? { state: 'unmeasured', required: alignmentRequired },
+                } as never,
+              },
+            });
           // A fresh render just became the current audio (re-sing lands here) —
           // clear any instrumental/acapella split from the PREVIOUS take.
-          await prisma.song.update({ where: { id: p.songId }, data: { status: 'MASTERED', instrumentalUrl: null, acapellaUrl: null, instrumentalMeta: Prisma.DbNull } });
+            await tx.song.update({ where: { id: p.songId }, data: { status: 'MASTERED', releaseReady: false, instrumentalUrl: null, acapellaUrl: null, instrumentalMeta: Prisma.DbNull } });
+          });
+          uncommittedMasterUrls = [];
           masteredUrl = mp3Url;
-        }
       } catch (err) {
-        console.warn('[music] auto-master failed (render still usable):', (err as Error)?.message);
+        await Promise.allSettled(uncommittedMasterUrls.map((url) => deleteObjectByUrl(url)));
+        throw new Error(`music_generation_failed: ${(err as Error)?.message || 'automatic mastering failed'}`);
       }
     }
 
@@ -525,10 +839,26 @@ export async function processMusic(p: MusicPayload) {
 
     await markSucceeded(
       p.jobId,
-      { beatId: beat.id, stems: out.stems?.length ?? 0, placeholder, fallbackReason, autoMastered: !!masteredUrl, masterUrl: masteredUrl, bestOf: { tried: N, rendered: ok.length, laneScore: winnerLane?.overall ?? null, rankedBy } },
+      {
+        beatId: beat.id,
+        stems: out.stems?.length ?? 0,
+        placeholder,
+        fallbackReason,
+        autoMastered: !!masteredUrl,
+        masterUrl: masteredUrl,
+        contentHash: sourceContentHash,
+        vocalAlignment: wantsVocals
+          ? winner.alignment ?? { state: 'unmeasured', required: alignmentRequired }
+          : { state: 'not_applicable' },
+        bestOf: { tried: N, rendered: ok.length, laneScore: winnerLane?.overall ?? null, rankedBy },
+      },
       result.estimatedCostUsd
     );
   } catch (err) {
+    if (uncommittedBeatUrl) await deleteObjectByUrl(uncommittedBeatUrl).catch(() => {});
+    if (supersededBeatUrl) await deleteObjectByUrl(supersededBeatUrl).catch(() => {});
     await markFailed(p.jobId, err);
+  } finally {
+    await Promise.allSettled(temporaryCandidateUrls.map((url) => deleteObjectByUrl(url)));
   }
 }

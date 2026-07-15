@@ -107,7 +107,9 @@ interface AuddResp {
  * our own storage). Returns the match (or null = no match), or a clear error.
  */
 export async function recognizeSong(opts: {
-  url: string;
+  url?: string;
+  audio?: Uint8Array;
+  filename?: string;
   apiKey?: string;
 }): Promise<{ ok: true; match: SongMatch | null } | { ok: false; error: string; hint?: string }> {
   const token = opts.apiKey || auddToken();
@@ -118,12 +120,32 @@ export async function recognizeSong(opts: {
       hint: 'Zap needs a music-recognition key — set AUDD_API_TOKEN (from audd.io) on the API + worker.',
     };
   }
-  const body = new URLSearchParams({ api_token: token, url: opts.url, return: 'apple_music,spotify,deezer' });
+  if (!opts.url && !opts.audio?.byteLength) {
+    return { ok: false, error: 'recognition_audio_required' };
+  }
+
+  let body: URLSearchParams | FormData;
+  let headers: Record<string, string> | undefined;
+  if (opts.audio?.byteLength) {
+    const form = new FormData();
+    form.set('api_token', token);
+    form.set('return', 'apple_music,spotify,deezer');
+    form.set('file', new Blob([opts.audio], { type: 'audio/mpeg' }), opts.filename ?? 'recognition.mp3');
+    body = form;
+  } else {
+    body = new URLSearchParams({
+      api_token: token,
+      url: opts.url!,
+      return: 'apple_music,spotify,deezer',
+    });
+    headers = { 'content-type': 'application/x-www-form-urlencoded' };
+  }
+
   let data: AuddResp;
   try {
     const res = await fetch('https://api.audd.io/', {
       method: 'POST',
-      headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      ...(headers ? { headers } : {}),
       body,
     });
     if (!res.ok) return { ok: false, error: `recognition_provider_${res.status}` };

@@ -1,6 +1,10 @@
 import type { FastifyInstance } from 'fastify';
-import { prisma } from '@afrohit/db';
-import { enqueue } from './queue';
+import { createHash } from 'node:crypto';
+import { createQueuedProviderJob } from './queued-job';
+
+function harvestKey(prefix: string, parts: Array<string | undefined>): string {
+  return `${prefix}:${createHash('sha256').update(parts.filter(Boolean).join('|')).digest('hex').slice(0, 24)}`;
+}
 
 /**
  * AUTO-HARVEST (audit PARTIAL → REAL): turn an OWNED beat/instrumental the artist
@@ -22,21 +26,19 @@ export async function enqueueHarvest(
   p: { workspaceId: string; projectId: string; beatId?: string; songId?: string; sourceUrl?: string; owned?: boolean },
 ): Promise<void> {
   try {
-    if (!p.beatId && !p.songId) throw new Error('harvest needs a beatId or songId');
-    const job = await prisma.providerJob.create({
-      data: {
-        workspaceId: p.workspaceId,
-        projectId: p.projectId,
-        kind: 'stems',
-        provider: 'replicate',
-        status: 'QUEUED',
-        inputJson: { beatId: p.beatId, songId: p.songId, mode: 'stems', sourceUrl: p.sourceUrl, owned: p.owned, harvest: true } as never,
-      },
-    });
-    await enqueue({
+    if (!p.beatId && !p.songId && !p.sourceUrl) throw new Error('harvest needs an owned source');
+    const idempotencyKey = harvestKey('owned-harvest', [p.projectId, p.beatId, p.songId, p.sourceUrl]);
+    await createQueuedProviderJob({
+      app,
       queue: app.queues.music,
-      name: 'stems',
-      payload: { jobId: job.id, workspaceId: p.workspaceId, projectId: p.projectId, beatId: p.beatId, songId: p.songId, mode: 'stems', sourceUrl: p.sourceUrl, owned: p.owned },
+      jobName: 'stems',
+      workspaceId: p.workspaceId,
+      projectId: p.projectId,
+      kind: 'stems',
+      provider: 'replicate',
+      inputJson: { beatId: p.beatId, songId: p.songId, mode: 'stems', sourceUrl: p.sourceUrl, owned: p.owned, harvest: true },
+      idempotencyKey,
+      payload: (jobId) => ({ jobId, workspaceId: p.workspaceId, projectId: p.projectId, beatId: p.beatId, songId: p.songId, mode: 'stems', sourceUrl: p.sourceUrl, owned: p.owned }),
     });
     app.log.info({ beatId: p.beatId, songId: p.songId, workspaceId: p.workspaceId }, '[harvest] owned upload → stem harvest queued');
   } catch (e) {
@@ -58,25 +60,31 @@ export async function enqueueLearn(
   p: { workspaceId: string; projectId: string; url: string; source: string },
 ): Promise<void> {
   try {
-    const charge = await app.chargeCredits({ workspaceId: p.workspaceId, key: 'analyze_audio', refTable: 'Project', refId: p.projectId });
+    const idempotencyKey = harvestKey('owned-learn', [p.projectId, p.url]);
+    const charge = await app.chargeCredits({ workspaceId: p.workspaceId, key: 'analyze_audio', refTable: 'Project', refId: p.projectId, idempotencyKey });
     if (!charge.ok) {
       app.log.warn({ workspaceId: p.workspaceId, source: p.source }, '[learn] analyze charge refused (insufficient credits) — owned upload NOT learned');
       return;
     }
-    const job = await prisma.providerJob.create({
-      data: {
+    await createQueuedProviderJob({
+      app,
+      queue: app.queues.music,
+      jobName: 'analyze-audio',
+      workspaceId: p.workspaceId,
+      projectId: p.projectId,
+      kind: 'analyze',
+      provider: 'replicate',
+      inputJson: { url: p.url, source: p.source },
+      charge,
+      idempotencyKey,
+      payload: (jobId) => ({
+        jobId,
         workspaceId: p.workspaceId,
         projectId: p.projectId,
-        kind: 'analyze',
-        provider: 'replicate',
-        status: 'QUEUED',
-        inputJson: { url: p.url, source: p.source } as never,
-      },
-    });
-    await enqueue({
-      queue: app.queues.music,
-      name: 'analyze-audio',
-      payload: { jobId: job.id, workspaceId: p.workspaceId, projectId: p.projectId, url: p.url },
+        url: p.url,
+        source: p.source,
+        rightsBasis: 'user-attested',
+      }),
     });
     app.log.info({ workspaceId: p.workspaceId, source: p.source }, '[learn] owned upload → analyze-audio queued');
   } catch (e) {

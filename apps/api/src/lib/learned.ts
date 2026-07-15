@@ -55,9 +55,12 @@ async function fetchRefs(workspaceId: string, genre: string, pinnedId?: string |
   const rows = await prisma.soundReference.findMany({
     where: {
       workspaceId,
+      active: true,
+      analysisState: { not: 'failed' },
+      rightsBasis: { in: ['user-attested', 'self-generated'] },
       // facts: rows are NUMBERS for the lane profile only — they carry no prose
       // and must never occupy a brief slot (and never could leak expression).
-      NOT: [{ sourceUrl: { startsWith: 'lyric:' } }, { sourceUrl: { startsWith: 'trend:' } }, { sourceUrl: { startsWith: 'facts:' } }],
+      NOT: [{ sourceUrl: { startsWith: 'lyric:' } }, { sourceUrl: { startsWith: 'trend:' } }, { sourceUrl: { startsWith: 'facts:' } }, { sourceUrl: { startsWith: 'zap:' } }],
     },
     orderBy: { createdAt: 'desc' },
     take: 60,
@@ -209,7 +212,13 @@ export async function learnedMeasuredTags(workspaceId: string, genre?: string | 
  */
 export async function learnedLyricCraftBrief(workspaceId: string, genre?: string | null): Promise<string> {
   const rows: Array<{ title: string | null; summary: string | null; genre: string | null }> = await prisma.soundReference.findMany({
-    where: { workspaceId, sourceUrl: { startsWith: 'lyric:' } },
+    where: {
+      workspaceId,
+      active: true,
+      analysisState: { not: 'failed' },
+      rightsBasis: { not: 'unknown' },
+      sourceUrl: { startsWith: 'lyric:' },
+    },
     orderBy: { createdAt: 'desc' },
     take: 24,
     select: { title: true, summary: true, genre: true },
@@ -257,6 +266,8 @@ export async function snapshotTrend(
         title,
         summary: trend.digest.slice(0, 2000),
         recipe: { source: 'trend', provider: trend.source, charts: (trend.sources ?? []).slice(0, 12) } as never,
+        analysisState: 'inferred',
+        rightsBasis: 'facts-only',
       },
       update: {},
     });

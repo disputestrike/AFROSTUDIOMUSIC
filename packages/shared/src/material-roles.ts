@@ -88,6 +88,23 @@ export function familyOf(role: MaterialRole): MaterialFamily {
   return FAMILY_OF[role]!;
 }
 
+/** Every pitched role must be key-matched during selection and forging. Keeping
+ * this beside the taxonomy prevents the API and worker from quietly disagreeing
+ * about guitars, pianos, flutes, mallets, basses, and legacy coarse roles. */
+const KEYED_FAMILIES = new Set<MaterialFamily>(['bass', 'harmony', 'melody', 'mallets']);
+export function isKeyedRole(role: string): boolean {
+  if (role === 'log_drum') return true;
+  return isMaterialRole(role) ? KEYED_FAMILIES.has(familyOf(role)) : role === 'bass' || role === 'chords';
+}
+
+/** Honest coarse roles produced by broad stem separators. They may supplement a
+ * precise genre kit, but must never be relabeled as a specific instrument. */
+export const COARSE_MATERIAL_ROLES = ['drums', 'percussion', 'bass', 'chords'] as const;
+
+export function withCoarseMaterialRoles(roles: readonly string[]): string[] {
+  return [...new Set([...roles, ...COARSE_MATERIAL_ROLES])];
+}
+
 /**
  * The subset the owned Python synth (synth_material.py) can render TODAY. Roles
  * outside this set are steer/verify-only until sample packs or synth routines

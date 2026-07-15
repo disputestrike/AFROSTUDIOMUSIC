@@ -1,33 +1,16 @@
-import { FastifyInstance } from 'fastify';
-import fp from 'fastify-plugin';
-import { createHmac, timingSafeEqual } from 'node:crypto';
-import { prisma } from '@afrohit/db';
+import type { FastifyInstance, FastifyRequest } from "fastify";
+import fp from "fastify-plugin";
+import { prisma } from "@afrohit/db";
+import { runWithLlmUsageContext, setLlmUsageContext } from "@afrohit/ai";
+import {
+  assertSessionConfiguration,
+  constantTimeSecretEqual,
+  originAllowed,
+  requestSession,
+  verifySession,
+} from "../lib/session";
 
-/**
- * Verify a compact HS256 JWT signed with JWT_SECRET. Returns the claims when the
- * signature + expiry are valid, else null. No external dependency — enough for
- * the jwt AUTH_MODE (issue tokens from your own login/session service with the
- * same secret + { sub, workspaceId }).
- */
-function verifyJwt(token: string): Record<string, unknown> | null {
-  const secret = process.env.JWT_SECRET;
-  if (!secret || !token) return null;
-  const parts = token.split('.');
-  if (parts.length !== 3) return null;
-  const h = parts[0]!, p = parts[1]!, sig = parts[2]!;
-  const expected = createHmac('sha256', secret).update(`${h}.${p}`).digest('base64url');
-  const a = Buffer.from(sig); const b = Buffer.from(expected);
-  if (a.length !== b.length || !timingSafeEqual(a, b)) return null;
-  try {
-    const claims = JSON.parse(Buffer.from(p, 'base64url').toString('utf8')) as Record<string, unknown>;
-    if (typeof claims.exp === 'number' && claims.exp * 1000 < Date.now()) return null; // expired
-    return claims;
-  } catch {
-    return null;
-  }
-}
-
-declare module 'fastify' {
+declare module "fastify" {
   interface FastifyRequest {
     auth?: {
       userId: string;
@@ -38,145 +21,237 @@ declare module 'fastify' {
   }
 }
 
-/**
- * Auth modes (env AUTH_MODE):
- *   - "internal" (default) — NO external auth. Every request resolves a single
- *     default workspace + owner (lazily created on first request). This is for
- *     internal / single-tenant use right now. NOT safe to expose publicly.
- *   - future: "google" — build your own Google OAuth here (the seam is this hook).
- *
- * Service-to-service calls (worker → API) always authenticate via
- * x-internal-secret regardless of mode.
- */
-const AUTH_MODE = (): string => (process.env.AUTH_MODE ?? 'internal').toLowerCase();
+const AUTH_MODE = (): string =>
+  (process.env.AUTH_MODE ?? "internal").toLowerCase();
 
 export function isInternalMode(): boolean {
-  return AUTH_MODE() === 'internal';
+  return AUTH_MODE() === "internal";
 }
 
-// Cache the default identity so we don't re-resolve it on every request.
-let cachedIdentity: { userId: string; workspaceId: string } | null = null;
+type DefaultIdentity = { userId: string; workspaceId: string };
 
-async function getOrCreateDefaultIdentity(): Promise<{ userId: string; workspaceId: string }> {
-  if (cachedIdentity) return cachedIdentity;
-  const slug = process.env.INTERNAL_WORKSPACE_SLUG ?? 'studio';
-  const email = process.env.INTERNAL_OWNER_EMAIL ?? 'owner@afrohit.local';
+let cachedIdentity: DefaultIdentity | null = null;
+let identityPromise: Promise<DefaultIdentity> | null = null;
 
-  let user = await prisma.user.findUnique({ where: { email } });
-  if (!user) {
-    user = await prisma.user.create({
-      data: { clerkId: `internal_${email}`, email, fullName: 'Studio Owner' },
-    });
-  }
-  let ws = await prisma.workspace.findUnique({ where: { slug } });
-  if (!ws) {
-    ws = await prisma.workspace.create({
-      data: { name: 'Studio', slug, plan: 'PRO', creditsCents: 10_000_00 /* $100 to start */ },
-    });
-  }
-  const membership = await prisma.workspaceMember.findFirst({
-    where: { workspaceId: ws.id, userId: user.id },
+async function createDefaultIdentity(): Promise<DefaultIdentity> {
+  const slug = process.env.INTERNAL_WORKSPACE_SLUG ?? "studio";
+  const email = process.env.INTERNAL_OWNER_EMAIL ?? "owner@afrohit.local";
+  const [user, workspace] = await Promise.all([
+    prisma.user.upsert({
+      where: { email },
+      create: {
+        clerkId: "internal_" + email,
+        email,
+        fullName: "Studio Owner",
+      },
+      update: {},
+    }),
+    prisma.workspace.upsert({
+      where: { slug },
+      create: {
+        name: "Studio",
+        slug,
+        plan: "PRO",
+        creditsCents: 1_000_000,
+      },
+      update: {},
+    }),
+  ]);
+  await prisma.workspaceMember.upsert({
+    where: {
+      workspaceId_userId: { workspaceId: workspace.id, userId: user.id },
+    },
+    create: { workspaceId: workspace.id, userId: user.id, role: "OWNER" },
+    update: {},
   });
-  if (!membership) {
-    await prisma.workspaceMember.create({
-      data: { workspaceId: ws.id, userId: user.id, role: 'OWNER' },
-    });
-  }
-  cachedIdentity = { userId: user.id, workspaceId: ws.id };
-  return cachedIdentity;
+  return { userId: user.id, workspaceId: workspace.id };
 }
 
-export const authPlugin = fp(async function (app: FastifyInstance) {
-  app.decorateRequest('auth', undefined);
+async function getOrCreateDefaultIdentity(): Promise<DefaultIdentity> {
+  if (cachedIdentity) return cachedIdentity;
+  if (!identityPromise) {
+    identityPromise = createDefaultIdentity()
+      .then(identity => {
+        cachedIdentity = identity;
+        return identity;
+      })
+      .finally(() => {
+        identityPromise = null;
+      });
+  }
+  return identityPromise;
+}
+function isPublicPath(url: string): boolean {
+  const path = url.split("?")[0] ?? url;
+  const atOrBelow = (prefix: string) =>
+    path === prefix || path.startsWith(`${prefix}/`);
+  return (
+    atOrBelow("/health") ||
+    atOrBelow("/docs") ||
+    atOrBelow("/webhooks") ||
+    path === "/api/v1/share/events" ||
+    atOrBelow("/api/v1/share/redirect") ||
+    atOrBelow("/api/v1/public") ||
+    atOrBelow("/api/v1/billing/return") ||
+    path === "/api/v1/auth/signup" ||
+    path === "/api/v1/auth/login"
+  );
+}
 
-  // Internal mode NEVER rejects a request, so if this instance is reachable from
-  // the public internet, anyone gets the owner's workspace + spends the owner's
-  // provider budget. Benjamin runs single-owner internal mode in production ON
-  // PURPOSE, so this WARNS by default (never crashes his own deploy). Only when
-  // he opts INTO multi-tenant hardening (REQUIRE_AUTH=1) do we refuse to boot in
-  // the unsafe internal+prod combination.
-  if (isInternalMode() && process.env.NODE_ENV === 'production') {
-    if (process.env.REQUIRE_AUTH === '1') {
-      throw new Error(
-        'REFUSING TO BOOT: REQUIRE_AUTH=1 but AUTH_MODE=internal authenticates no one. Set AUTH_MODE to a real auth provider or unset REQUIRE_AUTH for single-owner mode.'
-      );
-    }
-    app.log.warn(
-      '⚠️  AUTH_MODE=internal in production — the API does NOT authenticate. Safe only behind a network gate/allowlist. Before public multi-tenant use: implement real auth + set ENFORCE_GENERATION_CAP=1.'
+async function resolveMembership(userId: string, workspaceId: string) {
+  const [workspace, membership] = await Promise.all([
+    prisma.workspace.findUnique({
+      where: { id: workspaceId },
+      select: { suspendedAt: true },
+    }),
+    prisma.workspaceMember.findFirst({
+      where: { workspaceId, userId },
+      select: { role: true },
+    }),
+  ]);
+  return { workspace, membership };
+}
+
+export const authPlugin = fp(async function auth(app: FastifyInstance) {
+  app.decorateRequest("auth", undefined);
+
+  app.addHook("onRequest", (req, _reply, done) => {
+    runWithLlmUsageContext({ requestId: String(req.id) }, done);
+  });
+
+  if (isInternalMode() && process.env.NODE_ENV === "production") {
+    throw new Error("REFUSING TO BOOT: production requires AUTH_MODE=jwt");
+  } else if (AUTH_MODE() === "jwt") {
+    assertSessionConfiguration();
+  } else if (!isInternalMode()) {
+    throw new Error(`unsupported AUTH_MODE=${AUTH_MODE()}`);
+  }
+
+  if (
+    process.env.NODE_ENV === "production" &&
+    Buffer.byteLength(process.env.INTERNAL_API_SECRET ?? "") < 32
+  ) {
+    throw new Error(
+      "INTERNAL_API_SECRET must contain at least 32 bytes in production"
     );
   }
 
-  app.addHook('preValidation', async (req, reply) => {
-    const url = req.routeOptions?.url ?? req.url ?? '';
-    if (url.startsWith('/health')) return;
-    if (url.startsWith('/docs')) return;
-    if (url.startsWith('/webhooks')) return;
-    // Public anon endpoints (share ingest + public redirect)
-    if (url.startsWith('/api/v1/share/events')) return;
-    if (url.startsWith('/api/v1/share/redirect')) return;
-    // Account creation/login are definitionally unauthenticated (/auth/me is NOT
-    // exempt — it requires the resolved identity).
-    if (url.startsWith('/api/v1/auth/signup') || url.startsWith('/api/v1/auth/login')) return;
-
-    // Service-to-service (worker → API)
-    const svc = req.headers['x-internal-secret'];
-    if (svc && svc === process.env.INTERNAL_API_SECRET) {
-      const workspaceId = String(req.headers['x-workspace-id'] ?? '');
-      const userId = String(req.headers['x-user-id'] ?? '');
-      if (workspaceId && userId) {
-        req.auth = { userId, workspaceId, role: 'OWNER', isService: true };
-        return;
+  app.addHook("preValidation", async (req, reply) => {
+    const url = req.routeOptions?.url ?? req.url ?? "";
+    if (req.method === "OPTIONS") return;
+    const unsafe = ["POST", "PUT", "PATCH", "DELETE"].includes(req.method);
+    const publicPath = isPublicPath(url);
+    if (publicPath) {
+      if (
+        unsafe &&
+        (url.startsWith("/api/v1/auth/signup") ||
+          url.startsWith("/api/v1/auth/login"))
+      ) {
+        if (
+          !originAllowed(
+            typeof req.headers.origin === "string"
+              ? req.headers.origin
+              : undefined
+          ) ||
+          req.headers["x-afrohit-request"] !== "1"
+        ) {
+          return reply.forbidden("browser request verification failed");
+        }
       }
-    }
-
-    // Internal mode (default) — resolve the single default workspace, no token.
-    if (isInternalMode()) {
-      try {
-        const id = await getOrCreateDefaultIdentity();
-        const ws = await prisma.workspace.findUnique({
-          where: { id: id.workspaceId },
-          select: { suspendedAt: true },
-        });
-        if (ws?.suspendedAt) return reply.forbidden('workspace suspended');
-        req.auth = { userId: id.userId, workspaceId: id.workspaceId, role: 'OWNER', isService: false };
-        return;
-      } catch (err) {
-        req.log.error({ err }, 'internal auth bootstrap failed');
-        return reply.internalServerError('auth bootstrap failed');
-      }
-    }
-
-    // JWT mode — real multi-tenant auth. A Bearer HS256 token signed with
-    // JWT_SECRET, carrying { sub|userId, workspaceId, role }. Unauthenticated or
-    // invalid → 401. Membership is verified against the DB so a token can't claim
-    // a workspace the user isn't a member of.
-    if (AUTH_MODE() === 'jwt') {
-      const auth = String(req.headers['authorization'] ?? '');
-      const token = auth.startsWith('Bearer ') ? auth.slice(7) : '';
-      const claims = verifyJwt(token);
-      if (!claims) return reply.unauthorized('invalid or missing token');
-      const userId = String(claims.sub ?? claims.userId ?? '');
-      const workspaceId = String(claims.workspaceId ?? '');
-      if (!userId || !workspaceId) return reply.unauthorized('token missing userId/workspaceId');
-      // Verify the user actually belongs to the workspace (membership table).
-      const [ws, member] = await Promise.all([
-        prisma.workspace.findUnique({ where: { id: workspaceId }, select: { suspendedAt: true } }),
-        prisma.workspaceMember.findFirst({ where: { workspaceId, userId }, select: { role: true } }),
-      ]);
-      if (!ws) return reply.unauthorized('unknown workspace');
-      if (ws.suspendedAt) return reply.forbidden('workspace suspended');
-      if (!member) return reply.forbidden('not a member of this workspace');
-      req.auth = { userId, workspaceId, role: member.role as never, isService: false };
       return;
     }
 
-    // No other auth mode is implemented. Fail explicitly rather than silently
-    // letting requests through.
-    return reply.unauthorized(`auth mode "${AUTH_MODE()}" not implemented — set AUTH_MODE=internal or jwt`);
+    const serviceSecret = req.headers["x-internal-secret"];
+    if (
+      constantTimeSecretEqual(serviceSecret, process.env.INTERNAL_API_SECRET)
+    ) {
+      const workspaceId = String(req.headers["x-workspace-id"] ?? "");
+      const userId = String(req.headers["x-user-id"] ?? "");
+      if (!workspaceId || !userId)
+        return reply.unauthorized("service identity missing");
+      const { workspace, membership } = await resolveMembership(
+        userId,
+        workspaceId
+      );
+      if (!workspace || !membership)
+        return reply.unauthorized("invalid service identity");
+      if (workspace.suspendedAt) return reply.forbidden("workspace suspended");
+      if (unsafe && membership.role === "VIEWER")
+        return reply.forbidden("viewer role is read-only");
+      req.auth = {
+        userId,
+        workspaceId,
+        role: membership.role,
+        isService: true,
+      };
+      setLlmUsageContext({ userId, workspaceId });
+      return;
+    }
+
+    if (isInternalMode()) {
+      try {
+        const identity = await getOrCreateDefaultIdentity();
+        const workspace = await prisma.workspace.findUnique({
+          where: { id: identity.workspaceId },
+          select: { suspendedAt: true },
+        });
+        if (workspace?.suspendedAt)
+          return reply.forbidden("workspace suspended");
+        req.auth = { ...identity, role: "OWNER", isService: false };
+        setLlmUsageContext(identity);
+        return;
+      } catch (error) {
+        req.log.error({ error }, "internal auth bootstrap failed");
+        return reply.internalServerError("auth bootstrap failed");
+      }
+    }
+
+    const session = requestSession(req);
+    if (!session) return reply.unauthorized("missing session");
+    const claims = verifySession(session.token);
+    if (!claims) return reply.unauthorized("invalid or expired session");
+    if (session.source === "cookie" && unsafe) {
+      if (
+        !originAllowed(
+          typeof req.headers.origin === "string"
+            ? req.headers.origin
+            : undefined
+        ) ||
+        req.headers["x-afrohit-request"] !== "1"
+      ) {
+        return reply.forbidden("browser request verification failed");
+      }
+    }
+    const { workspace, membership } = await resolveMembership(
+      claims.sub,
+      claims.workspaceId
+    );
+    if (!workspace) return reply.unauthorized("unknown workspace");
+    if (workspace.suspendedAt) return reply.forbidden("workspace suspended");
+    if (!membership) return reply.forbidden("not a workspace member");
+    if (unsafe && membership.role === "VIEWER")
+      return reply.forbidden("viewer role is read-only");
+    req.auth = {
+      userId: claims.sub,
+      workspaceId: claims.workspaceId,
+      role: membership.role,
+      isService: false,
+    };
+    setLlmUsageContext({ userId: claims.sub, workspaceId: claims.workspaceId });
   });
 });
 
-export function requireAuth(req: import('fastify').FastifyRequest) {
-  if (!req.auth) throw new Error('auth missing — did the preValidation hook run?');
+export function requireAuth(req: FastifyRequest) {
+  if (!req.auth) throw new Error("auth missing");
   return req.auth;
+}
+
+export function requireRole(req: FastifyRequest, allowed: readonly string[]) {
+  const auth = requireAuth(req);
+  if (!allowed.includes(auth.role)) {
+    throw Object.assign(new Error("insufficient workspace role"), {
+      statusCode: 403,
+    });
+  }
+  return auth;
 }

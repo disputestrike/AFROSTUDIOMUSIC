@@ -16,7 +16,7 @@
 import type { FastifyInstance } from 'fastify';
 import { generateJson } from '@afrohit/ai';
 import { snapshotLyricVersion } from '../lib/lyric-versions';
-import { enqueue } from '../lib/queue';
+import { createQueuedProviderJob, scopedRequestKey, type SuccessfulCharge } from '../lib/queued-job';
 import { z } from 'zod';
 import { prisma } from '@afrohit/db';
 import { requireAuth } from '../middleware/auth';
@@ -77,7 +77,12 @@ export default async function adjust(app: FastifyInstance) {
       await prisma.project.update({ where: { id: song.projectId }, data: { genre: body.targetLane } });
     }
 
-    const headers = { authorization: (req.headers.authorization as string) ?? '', 'content-type': 'application/json', cookie: (req.headers.cookie as string) ?? '' };
+    const headers = {
+      authorization: (req.headers.authorization as string) ?? '',
+      'content-type': 'application/json',
+      cookie: (req.headers.cookie as string) ?? '',
+      ...(typeof req.headers['idempotency-key'] === 'string' ? { 'idempotency-key': req.headers['idempotency-key'] } : {}),
+    };
     const dispatch: Record<AdjustRoute['route'], { method: 'POST'; url: string; payload: unknown }> = {
       rebuild_beat_material: { method: 'POST', url: '/api/v1/materials/auto', payload: { projectId: song.projectId, genre, bpm: song.project.bpm ?? undefined, songId: song.id } },
       // A3-2: steered re-renders are CONDITIONED on the song's current audio.
@@ -202,6 +207,7 @@ If nothing fits, op:null and coach them in reply (mixer, versions, adjust exist)
     for (const h of ['authorization', 'x-workspace-id', 'cookie']) {
       const v = req.headers[h]; if (typeof v === 'string') headers[h] = v;
     }
+    if (typeof req.headers['idempotency-key'] === 'string') headers['idempotency-key'] = req.headers['idempotency-key'];
     headers['content-type'] = 'application/json';
 
     if (op.kind === 'rename') {
@@ -265,12 +271,29 @@ ${song.lyric.body.slice(0, 4000)}`,
     }
 
     // timeline ops -> the song-edit job
-    const job = await prisma.providerJob.create({
-      data: { workspaceId, projectId: song.projectId, kind: 'music', provider: 'song-chat', status: 'QUEUED', inputJson: { songId: song.id, op } as never },
+    const idempotencyKey = scopedRequestKey(req.headers as Record<string, unknown>, `song-edit:${op.kind}`);
+    const providerBacked = ['add_layer', 'stem_fx', 'vocal_drop', 'resing_section'].includes(op.kind);
+    let charge: SuccessfulCharge | undefined;
+    if (providerBacked) {
+      const charged = await app.chargeCredits({ workspaceId, key: 'beat_idea_short_30s', refTable: 'Song', refId: song.id, idempotencyKey });
+      if (!charged.ok) return reply.code(402).send({ error: 'insufficient_credits', ...charged });
+      charge = charged;
+    }
+    const job = await createQueuedProviderJob({
+      app,
+      queue: app.queues.music,
+      jobName: 'song-edit',
+      workspaceId,
+      projectId: song.projectId,
+      kind: 'music',
+      provider: 'song-chat',
+      inputJson: { songId: song.id, op },
+      charge,
+      idempotencyKey,
+      payload: (jobId) => ({ jobId, workspaceId, projectId: song.projectId, songId: song.id, sourceUrl, genre: song.project?.genre, durationS, bpm, boundaries: bounds, op }),
     });
-    await enqueue({ queue: app.queues.music, name: 'song-edit', payload: { jobId: job.id, workspaceId, projectId: song.projectId, songId: song.id, sourceUrl, genre: song.project?.genre, durationS, bpm, boundaries: bounds, op } });
     reply.code(202);
-    return { reply: plan.reply, dispatched: op.kind, jobId: job.id, talkingTo };
+    return { reply: plan.reply, dispatched: op.kind, jobId: job.jobId, replayed: job.replayed, talkingTo };
   });
 
 }

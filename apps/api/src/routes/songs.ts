@@ -2,18 +2,24 @@ import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import { z } from 'zod';
 import { blueprintFromMeasured, structureBrief, genreSignature, type MeasuredAnalysis, type SongBlueprint } from '@afrohit/shared';
 import { prisma, Prisma } from '@afrohit/db';
-import { predictHit, researchTrends, enrichLyricsForVocals, generateJson, prompts, cleanLyricsForMinimax, defaultSongEngine } from '@afrohit/ai';
+import { predictHit, researchTrends, enrichLyricsForVocals, cleanLyricsForMinimax } from '@afrohit/ai';
 import { laneDna, laneDnaBrief } from '../lib/lane-pipeline';
 import { requireAuth } from '../middleware/auth';
-import { enqueue } from '../lib/queue';
+import { createQueuedProviderJob, scopedRequestKey } from '../lib/queued-job';
+import { musicRouteCapabilities, validateMusicRoute } from '../lib/music-capabilities';
 import { learnedReferenceBrief } from '../lib/learned';
 import { laneContext } from '../lib/lane-context';
-import { arReadSong, arReadAfterRender } from '../lib/ar-read';
+import { arReadAfterRender } from '../lib/ar-read';
 import { improveSongOnce } from '../lib/will-it-blow';
 import { snapshotLyricVersion, readVersions } from '../lib/lyric-versions';
 import { recordFeedback } from '../services/artist-memory';
 import { languageVocalTag } from '../services/chat-tools';
 import { requireAdmin } from './admin';
+import { presignAssetRef } from '../lib/storage';
+import { safeFetch } from '../lib/url-guard';
+import { queueAssetDeletion, songAssetRefs } from '../lib/asset-lifecycle';
+import { operationErrorBody, runIdempotentOperation } from '../lib/idempotent-operation';
+import { registerBeatForInspection } from '../lib/beat-ingest';
 
 /** Freshest playable audio for a song: the most RECENT of master/mix/beat by
  *  createdAt — so a re-sing (new beat) or a re-master (new master) both become
@@ -362,24 +368,69 @@ export default async function songs(app: FastifyInstance) {
   // and the revert is itself reversible (newest take is always "current").
   app.post<{ Params: { id: string }; Body: { index?: number } }>('/:id/versions/revert', async (req, reply) => {
     const { workspaceId } = requireAuth(req);
-    const idx = Math.max(0, Number(req.body?.index ?? 0));
+    const index = Math.max(0, Number(req.body?.index ?? 0));
     const song = await prisma.song.findFirst({
       where: { id: req.params.id, workspaceId },
-      include: { masters: { orderBy: { createdAt: 'asc' } }, beats: { orderBy: { createdAt: 'asc' } } },
+      include: {
+        masters: { orderBy: { createdAt: 'asc' } },
+        beats: { orderBy: { createdAt: 'asc' } },
+      },
     });
     if (!song) return reply.code(404).send({ error: 'song_not_found' });
-    const rows = (song.masters.length ? song.masters : song.beats).map((m: { url: string }) => ({ url: m.url }));
-    const audio = rows.filter((r: { url: string }, i: number) => i === 0 || r.url !== rows[i - 1]!.url);
-    const target = audio[idx];
+    type RevertSource = {
+      id: string;
+      url: string;
+      approved: boolean;
+      qualityState: string;
+      contentHash: string | null;
+      verifiedAt: Date | null;
+      meta: unknown;
+    };
+    const sourceRows = (song.masters.length ? song.masters : song.beats) as RevertSource[];
+    const audio = sourceRows.filter((row, rowIndex) =>
+      rowIndex === 0 || row.url !== sourceRows[rowIndex - 1]!.url
+    );
+    const target = audio[index];
     if (!target) return reply.code(400).send({ error: 'no_such_version', have: audio.length });
-    if (idx === audio.length - 1) return { ok: true, alreadyCurrent: true };
-    const label = idx === 0 ? 'Original' : `Take ${idx + 1}`;
-    const master = await prisma.master.create({
-      data: { projectId: song.projectId, songId: song.id, preset: 'reverted', url: target.url, approved: true },
+    if (index === audio.length - 1) return { ok: true, alreadyCurrent: true };
+    if (
+      !target.approved
+      || target.qualityState !== 'passed'
+      || !target.contentHash
+      || !target.verifiedAt
+    ) {
+      return reply.code(409).send({
+        error: 'version_not_certified',
+        message: 'Only an approved, hashed, QC-passed version can become the current master.',
+      });
+    }
+    const label = index === 0 ? 'Original' : 'Take ' + String(index + 1);
+    const master = await prisma.$transaction(async (tx) => {
+      const created = await tx.master.create({
+        data: {
+          projectId: song.projectId,
+          songId: song.id,
+          preset: 'reverted',
+          url: target.url,
+          qualityState: target.qualityState,
+          contentHash: target.contentHash,
+          verifiedAt: target.verifiedAt,
+          approved: true,
+          meta: target.meta == null ? undefined : target.meta as never,
+        },
+      });
+      await tx.song.update({
+        where: { id: song.id },
+        data: {
+          status: 'MASTERED',
+          releaseReady: false,
+          instrumentalUrl: null,
+          acapellaUrl: null,
+          instrumentalMeta: Prisma.DbNull,
+        },
+      });
+      return created;
     });
-    // The reverted take is now the current audio — a stale instrumental/acapella
-    // from the previous take must never be served for it.
-    await prisma.song.update({ where: { id: song.id }, data: { instrumentalUrl: null, acapellaUrl: null, instrumentalMeta: Prisma.DbNull } }).catch(() => undefined);
     return { ok: true, revertedTo: label, masterId: master.id, url: target.url };
   });
 
@@ -397,14 +448,24 @@ export default async function songs(app: FastifyInstance) {
     const target = ded[idx] ?? ded[ded.length - 1];
     const beat = song.beats[0];
     if (!target || !beat) return reply.code(400).send({ error: 'no_audio_to_separate' });
-    const charge = await app.chargeCredits({ workspaceId, key: 'beat_idea_short_30s', refTable: 'Song', refId: song.id });
+    const idempotencyKey = scopedRequestKey(req.headers as Record<string, unknown>, `song-instrumental-version:${idx}`);
+    const charge = await app.chargeCredits({ workspaceId, key: 'beat_idea_short_30s', refTable: 'Song', refId: song.id, idempotencyKey });
     if (!charge.ok) return reply.code(402).send({ error: 'insufficient_credits', ...charge });
-    const job = await prisma.providerJob.create({
-      data: { workspaceId, projectId: song.projectId, kind: 'stems', provider: 'replicate', status: 'QUEUED', inputJson: { songId: song.id, beatId: beat.id, mode: 'instrumental', sourceUrl: target.url } as never },
+    const job = await createQueuedProviderJob({
+      app,
+      queue: app.queues.music,
+      jobName: 'stems',
+      workspaceId,
+      projectId: song.projectId,
+      kind: 'stems',
+      provider: 'replicate',
+      inputJson: { songId: song.id, beatId: beat.id, mode: 'instrumental', sourceUrl: target.url },
+      charge,
+      idempotencyKey,
+      payload: (jobId) => ({ jobId, workspaceId, projectId: song.projectId, songId: song.id, beatId: beat.id, mode: 'instrumental', sourceUrl: target.url }),
     });
-    await enqueue({ queue: app.queues.music, name: 'stems', payload: { jobId: job.id, workspaceId, projectId: song.projectId, songId: song.id, beatId: beat.id, mode: 'instrumental', sourceUrl: target.url } });
     reply.code(202);
-    return { jobId: job.id, status: 'queued', versionIndex: idx, note: 'Instrumental is separating — download it from this version when the job completes.' };
+    return { jobId: job.jobId, status: 'queued', replayed: job.replayed, versionIndex: idx, note: 'Instrumental is separating — download it from this version when the job completes.' };
   });
 
   // ---- Download manifest (audio + stems + cover + lyrics) ----
@@ -484,7 +545,7 @@ export default async function songs(app: FastifyInstance) {
     else if (beat) { url = beat.url; ext = beat.format ?? 'mp3'; }
     if (!url) return reply.code(404).send({ error: 'no_such_asset' });
 
-    const res = await fetch(url);
+    const res = await safeFetch(await presignAssetRef(url, 900), { blockMediaHosts: false });
     if (!res.ok || !res.body) return reply.code(502).send({ error: 'source_unavailable' });
     // STREAM, never buffer — a WAV master can be 50MB+; buffering N concurrent
     // downloads OOMs the API. Cap at 250MB as a sanity ceiling.
@@ -517,12 +578,21 @@ export default async function songs(app: FastifyInstance) {
     if (!song) return reply.code(404).send({ error: 'song_not_found' });
     const sourceUrl = song.masters[0]?.url ?? song.beats[0]?.url;
     if (!sourceUrl) return reply.code(400).send({ error: 'no_audio_yet', message: 'Render the song first, then transform it.' });
-    const job = await prisma.providerJob.create({
-      data: { workspaceId, projectId: song.projectId, kind: 'music', provider: 'internal', status: 'QUEUED', inputJson: { transform: true, songId: song.id, ...input } as never },
+    const idempotencyKey = scopedRequestKey(req.headers as Record<string, unknown>, `song-transform:${input.tempo ?? 1}:${input.semitones ?? 0}`);
+    const job = await createQueuedProviderJob({
+      app,
+      queue: app.queues.music,
+      jobName: 'transform',
+      workspaceId,
+      projectId: song.projectId,
+      kind: 'music',
+      provider: 'internal',
+      inputJson: { transform: true, songId: song.id, ...input },
+      idempotencyKey,
+      payload: (jobId) => ({ jobId, workspaceId, projectId: song.projectId, songId: song.id, sourceUrl, ...input }),
     });
-    await enqueue({ queue: app.queues.music, name: 'transform', payload: { jobId: job.id, workspaceId, projectId: song.projectId, songId: song.id, sourceUrl, ...input } });
     reply.code(202);
-    return { jobId: job.id, status: 'queued', note: 'New version lands in Compare Versions in seconds; revert anytime.' };
+    return { jobId: job.jobId, status: 'queued', replayed: job.replayed, note: 'New version lands in Compare Versions in seconds; revert anytime.' };
   });
 
   app.post<{ Params: { id: string }; Body: { preset?: string } }>('/:id/master', async (req, reply) => {
@@ -544,23 +614,71 @@ export default async function songs(app: FastifyInstance) {
     // re-master never silently masters stale audio.
     const latestMix = song.mixes[0];
     const latestBeat = song.beats[0];
-    const realMix =
-      latestMix && latestMix.preset !== 'source' && (!latestBeat || latestMix.createdAt >= latestBeat.createdAt)
-        ? latestMix
-        : null;
+    const latestMaster = song.masters[0];
+    const candidates = [
+      latestMix ? { kind: 'mix' as const, row: latestMix } : null,
+      latestBeat ? { kind: 'beat' as const, row: latestBeat } : null,
+      latestMaster ? { kind: 'master' as const, row: latestMaster } : null,
+    ].filter(Boolean) as Array<{
+      kind: 'mix' | 'beat' | 'master';
+      row: NonNullable<typeof latestMix | typeof latestBeat | typeof latestMaster>;
+    }>;
+    candidates.sort((left, right) =>
+      right.row.createdAt.getTime() - left.row.createdAt.getTime()
+    );
+    const current = candidates[0];
+    if (!current) return reply.code(400).send({ error: 'nothing_to_master' });
+    if (
+      !current.row.approved
+      || current.row.qualityState !== 'passed'
+      || !current.row.contentHash
+      || !current.row.verifiedAt
+    ) {
+      return reply.code(409).send({
+        error: 'master_source_not_certified',
+        message: 'Inspect and approve the current audio before mastering it.',
+      });
+    }
+
+    const realMix = current.kind === 'mix' && latestMix?.preset !== 'source'
+      ? latestMix
+      : null;
     let mixId: string;
     if (realMix) {
       mixId = realMix.id;
     } else {
-      const sourceUrl = latestBeat?.url ?? latestMix?.url ?? song.masters[0]?.url;
-      if (!sourceUrl) return reply.code(400).send({ error: 'nothing_to_master — no audio on this song yet' });
-      const mix = await prisma.mix.create({
-        data: { projectId: song.projectId, songId: song.id, preset: 'source', url: sourceUrl, notes: 'Master source (current rendered audio)', approved: true },
+      const sourceUrl = current.row.url;
+      const existing = await prisma.mix.findFirst({
+        where: {
+          projectId: song.projectId,
+          songId: song.id,
+          preset: 'source',
+          url: sourceUrl,
+          approved: true,
+          qualityState: 'passed',
+          contentHash: current.row.contentHash,
+          verifiedAt: { not: null },
+        },
+      });
+      const mix = existing ?? await prisma.mix.create({
+        data: {
+          projectId: song.projectId,
+          songId: song.id,
+          preset: 'source',
+          url: sourceUrl,
+          notes: 'Master source copied from current certified audio',
+          qualityState: 'passed',
+          contentHash: current.row.contentHash,
+          verifiedAt: current.row.verifiedAt,
+          meta: current.row.meta == null ? undefined : current.row.meta as never,
+          approved: true,
+        },
       });
       mixId = mix.id;
     }
 
-    const charge = await app.chargeCredits({ workspaceId, key: 'master_preset', refTable: 'Song', refId: song.id });
+    const idempotencyKey = scopedRequestKey(req.headers as Record<string, unknown>, `song-master:${requestedPreset ?? 'default'}`);
+    const charge = await app.chargeCredits({ workspaceId, key: 'master_preset', refTable: 'Song', refId: song.id, idempotencyKey });
     if (!charge.ok) return reply.code(402).send({ error: 'insufficient_credits', ...charge });
 
     // 'finished' routes the CHAIN, not the target: a MiniMax/Suno render (or a
@@ -568,18 +686,28 @@ export default async function songs(app: FastifyInstance) {
     // conform, never the full EQ+comp chain that was "mastering a master" into
     // dullness. Raw engines keep the full chain.
     const finished =
-      (!realMix && (['minimax', 'suno'].includes(latestBeat?.provider ?? '') || (!latestBeat?.url && !latestMix?.url && !!song.masters[0]?.url))) ||
-      realMix?.preset === 'uploaded';
+      current.kind === 'master'
+      || (current.kind === 'beat' && ['minimax', 'suno'].includes(latestBeat?.provider ?? ''))
+      || realMix?.preset === 'uploaded';
     // LOUDNESS LAW v2: default = commercial Afro loudness (-9 LUFS / -1.0 dBTP,
     // two-pass driven) for every path; 'breathe_-16.5' is the dynamics opt-in.
     const preset = requestedPreset || 'afro_stream_-9';
 
-    const job = await prisma.providerJob.create({
-      data: { workspaceId, projectId: song.projectId, kind: 'master', provider: 'internal', status: 'QUEUED', inputJson: { songId: song.id, mixId, preset, finished } as never },
+    const job = await createQueuedProviderJob({
+      app,
+      queue: app.queues.master,
+      jobName: 'create-master',
+      workspaceId,
+      projectId: song.projectId,
+      kind: 'master',
+      provider: 'internal',
+      inputJson: { songId: song.id, mixId, preset, finished },
+      charge,
+      idempotencyKey,
+      payload: (jobId) => ({ jobId, workspaceId, projectId: song.projectId, songId: song.id, mixId, preset, finished }),
     });
-    await enqueue({ queue: app.queues.master, name: 'create-master', payload: { jobId: job.id, workspaceId, projectId: song.projectId, songId: song.id, mixId, preset, finished } });
     reply.code(202);
-    return { jobId: job.id, mixId };
+    return { jobId: job.jobId, mixId, replayed: job.replayed };
   });
 
   // ---- Reuse the beat in a NEW song (optionally a different project) ----
@@ -587,31 +715,70 @@ export default async function songs(app: FastifyInstance) {
     const { workspaceId } = requireAuth(req);
     const song = await prisma.song.findFirst({
       where: { id: req.params.id, workspaceId },
-      include: { beats: { orderBy: { createdAt: 'desc' }, take: 1, include: { stems: true } }, project: true },
+      include: { beats: { orderBy: { createdAt: 'desc' }, take: 20, include: { stems: true } }, project: true },
     });
     if (!song) return reply.code(404).send({ error: 'song_not_found' });
-    const beat = song.beats[0];
+    const beat = song.beats.find((candidate: { assetKind: string; qualityState: string; approved: boolean; stems: Array<{ role: string }> }) =>
+      candidate.stems.some((stem: { role: string }) => stem.role === 'instrumental')
+      || (candidate.assetKind === 'instrumental' && candidate.qualityState === 'passed' && candidate.approved),
+    );
     if (!beat) return reply.code(400).send({ error: 'no_beat_to_reuse', message: 'This song has no beat yet.' });
 
     const targetProjectId = (req.body?.targetProjectId as string) || song.projectId;
     const project = await prisma.project.findFirst({ where: { id: targetProjectId, workspaceId }, select: { id: true } });
     if (!project) return reply.code(404).send({ error: 'target_project_not_found' });
 
-    // "Reuse the BEAT" should reuse a clean INSTRUMENTAL when we have one (from a
-    // prior stem separation) — not the full song with baked-in vocals. Fall back
-    // to the beat audio otherwise (and tell the user so they can run stems first).
+    // "Reuse the BEAT" means a measured instrumental, never a full song with
+    // baked-in vocals. A separated stem is re-certified before the mixer sees it.
     const instrumental = beat.stems.find((s: { role: string; url: string }) => s.role === 'instrumental');
+    const sourceIsCertifiedInstrumental = beat.assetKind === 'instrumental'
+      && beat.qualityState === 'passed'
+      && !!beat.contentHash
+      && !!beat.verifiedAt
+      && beat.approved;
+    if (!instrumental && !sourceIsCertifiedInstrumental) {
+      return reply.code(409).send({
+        error: 'verified_instrumental_required',
+        message: 'Extract the instrumental first; a complete song cannot be reused as a backing beat.',
+      });
+    }
     const reuseUrl = instrumental?.url ?? beat.url;
-    const cleanInstrumental = !!instrumental;
 
     const newSong = await prisma.song.create({
       data: { workspaceId, projectId: project.id, title: (req.body?.title as string) || `${song.title} (reuse beat)`, status: 'SKETCH' },
     });
-    const newBeat = await prisma.beatAsset.create({
+    const pendingCertification = !!instrumental;
+    const registered = pendingCertification
+      ? await registerBeatForInspection({
+          app,
+          workspaceId,
+          projectId: project.id,
+          songId: newSong.id,
+          url: reuseUrl,
+          format: instrumental!.format ?? 'wav',
+          provider: 'instrumental-reuse',
+          bpm: beat.bpm,
+          keySignature: beat.keySignature,
+          claimedDurationS: instrumental!.duration ?? beat.duration,
+          sourceMeta: { reusedFromBeat: beat.id, instrumentalStemId: instrumental!.id },
+        })
+      : null;
+    const newBeat = registered?.beat ?? await prisma.beatAsset.create({
       data: {
-        projectId: project.id, songId: newSong.id, url: reuseUrl, format: cleanInstrumental ? 'mp3' : beat.format,
-        bpm: beat.bpm, keySignature: beat.keySignature, duration: beat.duration,
-        provider: beat.provider, meta: { reusedFromBeat: beat.id, cleanInstrumental } as never, approved: true,
+        projectId: project.id,
+        songId: newSong.id,
+        url: reuseUrl,
+        format: beat.format,
+        bpm: beat.bpm,
+        keySignature: beat.keySignature,
+        duration: beat.duration,
+        provider: beat.provider,
+        assetKind: 'instrumental',
+        qualityState: 'passed',
+        contentHash: beat.contentHash,
+        verifiedAt: beat.verifiedAt,
+        meta: { reusedFromBeat: beat.id, cleanInstrumental: true } as never,
+        approved: true,
       },
     });
     // Carry over the non-vocal stems so the reused beat is remixable.
@@ -619,15 +786,17 @@ export default async function songs(app: FastifyInstance) {
     if (carry.length) {
       await prisma.$transaction(carry.map((st: { role: string; url: string; format: string; duration: number | null }) => prisma.stem.create({ data: { beatId: newBeat.id, role: st.role, url: st.url, format: st.format, duration: st.duration } })));
     }
-    reply.code(201);
+    reply.code(pendingCertification ? 202 : 201);
     return {
       songId: newSong.id,
       projectId: project.id,
       beatId: newBeat.id,
-      cleanInstrumental,
-      message: cleanInstrumental
-        ? 'Clean instrumental reused in a new song — write a fresh topline over it.'
-        : 'Beat reused (full track — run "Instrumental" on the original first for a vocals-free version).',
+      cleanInstrumental: true,
+      jobId: registered?.job.jobId,
+      qualityState: pendingCertification ? 'pending' : 'passed',
+      message: pendingCertification
+        ? 'Instrumental copied and queued for QC before it enters the mixer.'
+        : 'Verified instrumental reused in a new song — write a fresh topline over it.',
     };
   });
 
@@ -669,10 +838,12 @@ export default async function songs(app: FastifyInstance) {
     const { workspaceId } = requireAuth(req);
     const song = await prisma.song.findFirst({
       where: { id: req.params.id, workspaceId },
-      include: { beats: { orderBy: { createdAt: 'desc' }, take: 1, include: { stems: true } } },
+      include: { beats: { orderBy: { createdAt: 'desc' }, take: 20, include: { stems: true } } },
     });
     if (!song) return reply.code(404).send({ error: 'song_not_found' });
-    const beat = song.beats[0];
+    const beat = song.beats.find((candidate: { stems: Array<{ role: string }> }) =>
+      candidate.stems.some((stem: { role: string }) => stem.role === 'instrumental'),
+    );
     const instrumental = beat?.stems.find((s: { role: string; url: string; format: string; duration: number | null }) => s.role === 'instrumental');
     if (!instrumental) {
       return reply.code(400).send({ error: 'no_instrumental_stem', message: 'Run "Instrumental" on this song first to extract the clean instrumental, then reuse it.' });
@@ -685,21 +856,27 @@ export default async function songs(app: FastifyInstance) {
     const newSong = await prisma.song.create({
       data: { workspaceId, projectId: project.id, title: (req.body?.title as string) || `${song.title} (instrumental)`, status: 'SKETCH' },
     });
-    const newBeat = await prisma.beatAsset.create({
-      data: {
-        projectId: project.id, songId: newSong.id, url: instrumental.url, format: instrumental.format ?? 'mp3',
-        bpm: beat!.bpm, keySignature: beat!.keySignature, duration: instrumental.duration ?? beat!.duration,
-        provider: beat!.provider, meta: { reusedInstrumentalFromBeat: beat!.id, instrumental: true } as never, approved: true,
-      },
+    const { beat: newBeat, job } = await registerBeatForInspection({
+      app,
+      workspaceId,
+      projectId: project.id,
+      songId: newSong.id,
+      url: instrumental.url,
+      format: instrumental.format ?? 'wav',
+      bpm: beat!.bpm,
+      keySignature: beat!.keySignature,
+      claimedDurationS: instrumental.duration ?? beat!.duration,
+      provider: 'instrumental-reuse',
+      sourceMeta: { reusedInstrumentalFromBeat: beat!.id, instrumental: true },
     });
-    reply.code(201);
-    return { songId: newSong.id, projectId: project.id, beatId: newBeat.id, message: 'Clean instrumental reused in a new song — write fresh lyrics/vocals over it.' };
+    reply.code(202);
+    return { songId: newSong.id, projectId: project.id, beatId: newBeat.id, jobId: job.jobId, qualityState: 'pending', message: 'Instrumental copied and queued for QC before it enters the mixer.' };
   });
 
   // ---- Re-sing the song with the CURRENT (edited) lyrics — the surgical edit ----
   // Edit lyrics → save → re-sing: renders a fresh vocal over the same lane, and
   // because the new beat is the freshest audio it becomes the song's current take.
-  app.post<{ Params: { id: string }; Body: { songEngine?: 'suno' | 'ace_step' | 'minimax'; conditionOnCurrent?: boolean } }>('/:id/regenerate-beat', async (req, reply) => {
+  app.post<{ Params: { id: string }; Body: { songEngine?: 'suno' | 'eleven' | 'ace_step' | 'minimax'; conditionOnCurrent?: boolean } }>('/:id/regenerate-beat', async (req, reply) => {
     const { workspaceId } = requireAuth(req);
     const song = await prisma.song.findFirst({
       where: { id: req.params.id, workspaceId },
@@ -709,6 +886,15 @@ export default async function songs(app: FastifyInstance) {
     const lyric = song.lyric ?? (await prisma.lyricDraft.findFirst({ where: { projectId: song.projectId }, orderBy: { createdAt: 'desc' } }));
     const lyrics = lyric?.cleanVersion ?? lyric?.body ?? undefined;
     if (!lyrics) return reply.code(400).send({ error: 'no_lyrics', message: 'Write or edit lyrics first, then re-sing.' });
+
+    // Preserve an explicit or previous vocal route only when it remains legal
+    // and connected. Validate before lyric enrichment or credit reservation.
+    const prev = song.beats[0]?.provider ?? '';
+    const songEngine =
+      (req.body?.songEngine as 'suno' | 'eleven' | 'ace_step' | 'minimax' | undefined) ??
+      (['suno', 'eleven', 'minimax', 'ace_step'].includes(prev) ? (prev as 'suno' | 'eleven' | 'ace_step' | 'minimax') : undefined);
+    const route = validateMusicRoute(songEngine, await musicRouteCapabilities(workspaceId), true);
+    if (!route.ok) return reply.code(route.statusCode).send({ error: route.error, message: route.message });
 
     const genre = song.project.genre;
     const dna = laneDna(genre);
@@ -731,14 +917,7 @@ export default async function songs(app: FastifyInstance) {
     }
 
     // Keep the previous engine if it was a vocal engine; else let the worker
-    // auto-pick the best (Suno V5 when a Suno key is set, ACE-Step otherwise).
-    const prev = song.beats[0]?.provider ?? '';
-    const songEngine =
-      (req.body?.songEngine as 'suno' | 'ace_step' | 'minimax' | undefined) ??
-      (['suno', 'minimax', 'ace_step'].includes(prev) ? (prev as 'suno' | 'ace_step' | 'minimax') : undefined);
-    const charge = await app.chargeCredits({ workspaceId, key: 'full_song_demo', refTable: 'Song', refId: song.id });
-    if (!charge.ok) return reply.code(402).send({ error: 'insufficient_credits', ...charge });
-
+    // Omit the override to use the workspace's connected automatic route.
     // PHASE 4 loop — this IS a regen, so inject the repair steering stored on the
     // song's last measured take (from laneContext) as concrete style directives, the
     // same as createBeatJob. This is where a drifted take gets pushed back in-lane.
@@ -747,15 +926,23 @@ export default async function songs(app: FastifyInstance) {
       ? lane.repair.split('\n').filter((l) => l.startsWith('- ')).map((l) => l.slice(2).trim()).slice(0, 3)
       : [];
 
+    const idempotencyKey = scopedRequestKey(req.headers as Record<string, unknown>, 'song-regenerate');
+    const charge = await app.chargeCredits({ workspaceId, key: 'full_song_demo', refTable: 'Song', refId: song.id, idempotencyKey });
+    if (!charge.ok) return reply.code(402).send({ error: 'insufficient_credits', ...charge });
 
-    const job = await prisma.providerJob.create({
-      data: { workspaceId, projectId: song.projectId, kind: 'music', provider: songEngine ?? defaultSongEngine(), status: 'QUEUED', inputJson: { regenerate: true, songId: song.id } as never },
-    });
-    await enqueue({
+    const job = await createQueuedProviderJob({
+      app,
       queue: app.queues.music,
-      name: 'generate-music',
-      payload: {
-        jobId: job.id, workspaceId, projectId: song.projectId, songId: song.id,
+      jobName: 'generate-music',
+      workspaceId,
+      projectId: song.projectId,
+      kind: 'music',
+      provider: songEngine ?? 'auto',
+      inputJson: { regenerate: true, songId: song.id },
+      charge,
+      idempotencyKey,
+      payload: (jobId) => ({
+        jobId, workspaceId, projectId: song.projectId, songId: song.id,
         input: {
           genre, bpm: song.project.bpm ?? 103, withVocals: true, withStems: false, songEngine,
           // A3-2: Adjust passes conditionOnCurrent — the song's own audio goes IN
@@ -771,10 +958,10 @@ export default async function songs(app: FastifyInstance) {
           dnaTags: [languageVocalTag(song.project.artist.languages), ...(dna.tags ?? []), ...styleHints.slice(0, 3), ...laneSteer, ...(selfBp ? [`structure ${selfBp.sections.length} sections`] : [])].slice(0, 12),
           blueprint: selfBp ?? undefined,
         },
-      },
+      }),
     });
     reply.code(202);
-    return { jobId: job.id, status: 'queued', message: "Re-singing with your edited lyrics — it becomes the song's current audio when it finishes." };
+    return { jobId: job.jobId, status: 'queued', replayed: job.replayed, message: "Re-singing with your edited lyrics — it becomes the song's current audio when it finishes." };
   });
 
   // ---- Duplicate a song (deep copy: song + lyric + latest beat + stems) ----
@@ -841,15 +1028,25 @@ export default async function songs(app: FastifyInstance) {
     // finished song minus the voice. Resolved server-side; the worker gets a URL.
     const sourceUrl = freshestAudioUrl(song) ?? beat.url;
 
-    const charge = await app.chargeCredits({ workspaceId, key: 'beat_idea_short_30s', refTable: 'Song', refId: song.id });
+    const idempotencyKey = scopedRequestKey(req.headers as Record<string, unknown>, `song-stems:${mode}`);
+    const charge = await app.chargeCredits({ workspaceId, key: 'beat_idea_short_30s', refTable: 'Song', refId: song.id, idempotencyKey });
     if (!charge.ok) return reply.code(402).send({ error: 'insufficient_credits', ...charge });
 
-    const job = await prisma.providerJob.create({
-      data: { workspaceId, projectId: song.projectId, kind: 'stems', provider: 'replicate', status: 'QUEUED', inputJson: { songId: song.id, beatId: beat.id, mode, sourceUrl } as never },
+    const job = await createQueuedProviderJob({
+      app,
+      queue: app.queues.music,
+      jobName: 'stems',
+      workspaceId,
+      projectId: song.projectId,
+      kind: 'stems',
+      provider: 'replicate',
+      inputJson: { songId: song.id, beatId: beat.id, mode, sourceUrl },
+      charge,
+      idempotencyKey,
+      payload: (jobId) => ({ jobId, workspaceId, projectId: song.projectId, songId: song.id, beatId: beat.id, mode, sourceUrl }),
     });
-    await enqueue({ queue: app.queues.music, name: 'stems', payload: { jobId: job.id, workspaceId, projectId: song.projectId, songId: song.id, beatId: beat.id, mode, sourceUrl } });
     reply.code(202);
-    return { jobId: job.id, status: 'queued', mode };
+    return { jobId: job.jobId, status: 'queued', replayed: job.replayed, mode };
   });
 
   // ---- A&R hit predictor: will it hit / go viral, and how to make it bigger ----
@@ -866,24 +1063,66 @@ export default async function songs(app: FastifyInstance) {
     });
     if (!song) return reply.code(404).send({ error: 'song_not_found' });
 
-    const charge = await app.chargeCredits({ workspaceId, key: 'hit_predict', refTable: 'Song', refId: song.id });
+    const idempotencyKey = scopedRequestKey(req.headers as Record<string, unknown>, 'song-hit-score');
+    const charge = await app.chargeCredits({ workspaceId, key: 'hit_predict', refTable: 'Song', refId: song.id, idempotencyKey });
     if (!charge.ok) return reply.code(402).send({ error: 'insufficient_credits', ...charge });
+
+    if (charge.replayed) {
+      const prior = await prisma.providerJob.findUnique({ where: { chargeLedgerId: charge.chargeId }, select: { status: true, outputJson: true } });
+      if (prior?.status === 'SUCCEEDED' && prior.outputJson) return prior.outputJson;
+      if (prior?.status === 'RUNNING' || prior?.status === 'QUEUED') {
+        return reply.code(409).send({ error: 'hit_score_in_progress' });
+      }
+      if (prior?.status === 'FAILED') {
+        return reply.code(503).send({ error: 'a&r_unavailable', message: 'The prior hit-scout attempt failed. Start a new request to retry.' });
+      }
+    }
+
+    let auditJob: { id: string };
+    try {
+      auditJob = await prisma.providerJob.create({
+        data: {
+          workspaceId,
+          projectId: song.projectId,
+          kind: 'hit-score',
+          provider: 'anthropic',
+          status: 'RUNNING',
+          inputJson: { songId: song.id } as never,
+          chargeLedgerId: charge.chargeId,
+          idempotencyKey,
+          startedAt: new Date(),
+        },
+        select: { id: true },
+      });
+    } catch (error) {
+      if ((error as { code?: string }).code !== 'P2002') throw error;
+      return reply.code(409).send({ error: 'hit_score_in_progress' });
+    }
 
     const genre = song.project.genre;
     const trends = (await researchTrends({ genre }).catch(() => null))?.digest;
     const hook = song.hooks[0]?.text ?? undefined;
-    const prediction = await predictHit({
-      title: song.lyric?.title || song.title,
-      genre,
-      bpm: song.project.bpm ?? undefined,
-      hook,
-      lyrics: song.lyric?.body ?? undefined,
-      soundDna: laneDnaBrief(genre),
-      trends,
-      hasMaster: song.masters.length > 0,
-      languages: song.project.artist.languages,
-    });
-    if (!prediction) return reply.code(503).send({ error: 'a&r_unavailable', message: 'Hit scout needs a Claude/OpenAI key. Add ANTHROPIC_API_KEY.' });
+    let prediction: Awaited<ReturnType<typeof predictHit>>;
+    try {
+      prediction = await predictHit({
+        title: song.lyric?.title || song.title,
+        genre,
+        bpm: song.project.bpm ?? undefined,
+        hook,
+        lyrics: song.lyric?.body ?? undefined,
+        soundDna: laneDnaBrief(genre),
+        trends,
+        hasMaster: song.masters.length > 0,
+        languages: song.project.artist.languages,
+      });
+      if (!prediction) throw new Error('hit predictor unavailable');
+    } catch (error) {
+      await Promise.all([
+        prisma.providerJob.update({ where: { id: auditJob.id }, data: { status: 'FAILED', finishedAt: new Date(), errorJson: { message: error instanceof Error ? error.message : 'hit predictor failed' } as never } }),
+        app.refundCredits({ workspaceId, key: 'hit_predict', refTable: 'Song', refId: song.id, chargeId: charge.chargeId }),
+      ]);
+      return reply.code(503).send({ error: 'a&r_unavailable', message: 'Hit scout needs a configured AI provider and a healthy provider connection.' });
+    }
 
     // Compounding library: a genuine hit signal teaches the artist's taste graph,
     // so future hooks/lyrics pull toward what actually scores. Real feedback loop.
@@ -895,7 +1134,9 @@ export default async function songs(app: FastifyInstance) {
     await prisma.song
       .update({ where: { id: song.id }, data: { hitScore: prediction.hitScore, viralScore: prediction.viralScore, hitRead: prediction as never } })
       .catch(() => {});
-    return { songId: song.id, ...prediction };
+    const result = { songId: song.id, ...prediction };
+    await prisma.providerJob.update({ where: { id: auditJob.id }, data: { status: 'SUCCEEDED', finishedAt: new Date(), outputJson: result as never } });
+    return result;
   });
 
   /**
@@ -909,7 +1150,20 @@ export default async function songs(app: FastifyInstance) {
     const { workspaceId } = requireAuth(req);
     // Shared core with the automatic Will-it-blow gate: rewrite the lyric executing
     // the A&R notes → re-sing (auto-masters + re-scores when it lands).
-    const res = await improveSongOnce(app, workspaceId, req.params.id);
+    const operationKey = scopedRequestKey(req.headers as Record<string, unknown>, 'make-it-bigger');
+    const operation = await runIdempotentOperation({
+      workspaceId,
+      kind: 'make-it-bigger',
+      provider: 'internal',
+      idempotencyKey: operationKey,
+      inputJson: { songId: req.params.id },
+      execute: () => improveSongOnce(app, workspaceId, req.params.id, { operationKey }),
+    });
+    if (operation.state !== 'completed') {
+      const failure = operationErrorBody(operation);
+      return reply.code(failure.statusCode).send(failure.body);
+    }
+    const res = operation.value;
     if ('error' in res) {
       const status: Record<string, number> = { song_not_found: 404, no_lyrics: 400, 'a&r_unavailable': 503, insufficient_credits: 402, rewrite_failed: 503 };
       const message: Record<string, string> = {
@@ -918,14 +1172,31 @@ export default async function songs(app: FastifyInstance) {
       };
       return reply.code(status[res.error] ?? 400).send({ error: res.error, ...(message[res.error] ? { message: message[res.error] } : {}) });
     }
-    void arReadAfterRender(app, workspaceId, [{ songId: req.params.id, jobId: res.jobId }]).catch(() => {});
+    await arReadAfterRender(app, workspaceId, [{ songId: req.params.id, jobId: res.jobId }]);
     reply.code(202);
     return { jobId: res.jobId, status: 'queued', whatChanged: res.whatChanged, message: 'A&R notes implemented — re-singing the bigger version. It auto-masters and re-scores when done.' };
   });
 
   app.delete<{ Params: { id: string } }>('/:id', async (req, reply) => {
     const { workspaceId } = requireAuth(req);
-    await prisma.song.deleteMany({ where: { id: req.params.id, workspaceId } });
+    const song = await prisma.song.findFirst({
+      where: { id: req.params.id, workspaceId },
+      include: {
+        beats: { select: { url: true, stems: { select: { url: true } } } },
+        vocalRenders: { select: { url: true } },
+        mixes: { select: { url: true } },
+        masters: { select: { url: true } },
+        exports: { select: { bundle: true } },
+      },
+    });
+    if (song) {
+      const refs = songAssetRefs(song);
+      await prisma.$transaction(async (tx) => {
+        await queueAssetDeletion(tx, { workspaceId, refs, reason: `song:${song.id}` });
+        await tx.song.delete({ where: { id: song.id } });
+      });
+      void app.dispatchPendingJobs().catch((error) => req.log.error({ err: error }, 'asset cleanup dispatch failed'));
+    }
     reply.code(204);
     return null;
   });

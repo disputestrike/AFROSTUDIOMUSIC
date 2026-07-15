@@ -18,11 +18,13 @@ import {
   engineAdequacy,
   recommendEngine,
   engineClass,
+  referenceOrigin,
   laneReleaseGate,
   type MeasuredAnalysis,
   type LaneComplianceScore,
   type RepairPlan,
 } from '@afrohit/shared';
+import { musicRouteCapabilities } from './music-capabilities';
 
 // ---------- lane reference fetch (same contract as routes/lanes.ts) ----------
 const norm = (g?: string | null) => (g ?? '').toLowerCase().trim().replace(/[\s/-]+/g, '_');
@@ -31,24 +33,29 @@ const genreMatches = (a?: string | null, b?: string | null) => {
   return !!x && !!y && (x === y || x.includes(y) || y.includes(x));
 };
 
-async function fetchGenreMeasured(workspaceId: string, genre: string): Promise<MeasuredAnalysis[]> {
-  return (await fetchGenreMeasuredDetailed(workspaceId, genre)).map((m) => m.analysis);
-}
-
 /** Same fetch, but keep PROVENANCE: recipe.source==='generated' marks the machine's
  *  own output. Self refs may steer/repair; only AUTHENTIC refs certify (anti-mirror). */
 async function fetchGenreMeasuredDetailed(workspaceId: string, genre: string): Promise<Array<{ analysis: MeasuredAnalysis; authentic: boolean }>> {
   const rows = await prisma.soundReference.findMany({
-    where: { workspaceId, NOT: [{ sourceUrl: { startsWith: 'lyric:' } }, { sourceUrl: { startsWith: 'trend:' } }] },
+    where: {
+      workspaceId,
+      active: true,
+      analysisState: 'measured',
+      rightsBasis: { not: 'unknown' },
+      NOT: [{ sourceUrl: { startsWith: 'lyric:' } }, { sourceUrl: { startsWith: 'trend:' } }],
+    },
     orderBy: { createdAt: 'desc' },
     take: 300,
-    select: { genre: true, recipe: true },
+    select: { genre: true, sourceUrl: true, recipe: true, rightsBasis: true },
   });
   const out: Array<{ analysis: MeasuredAnalysis; authentic: boolean }> = [];
   for (const r of rows) {
     if (!genreMatches(r.genre, genre)) continue;
     const rec = (r.recipe ?? {}) as { measured?: MeasuredAnalysis; source?: string };
-    if (rec.measured && rec.measured.engineOk) out.push({ analysis: rec.measured, authentic: rec.source !== 'generated' });
+    if (!rec.measured?.engineOk) continue;
+    const origin = referenceOrigin(r.sourceUrl, rec, r.rightsBasis);
+    if (origin === 'unknown') continue;
+    out.push({ analysis: rec.measured, authentic: origin === 'owned-upload' || origin === 'facts-only' });
   }
   return out;
 }
@@ -197,6 +204,13 @@ export async function buildLaneReport(workspaceId: string, songId: string): Prom
   }
 
   const { profile, refs, authenticRefs } = await loadProfileFor(workspaceId, targetLane);
+  const capabilities = await musicRouteCapabilities(workspaceId);
+  const recommendation = recommendEngine(targetLane, {
+    firstParty: capabilities.firstParty,
+    sunoAvailable: capabilities.flagship,
+    elevenAvailable: capabilities.advanced,
+    replicateAvailable: capabilities.standard,
+  });
   const [{ distribution, unprofiled }, freshScore] = await Promise.all([
     classifyAllLanes(workspaceId, meta.measured),
     Promise.resolve(profile ? scoreLaneCompliance(meta.measured, profile) : null),
@@ -239,7 +253,7 @@ export async function buildLaneReport(workspaceId: string, songId: string): Prom
       name: engineClass(beat.provider ?? 'stub'),
       adequate: adequacy.adequate,
       note: adequacy.note ?? meta.bestOf?.engineNote,
-      recommended: engineClass(recommendEngine(targetLane, { sunoAvailable: !!process.env.SUNO_API_KEY }).engine),
+      recommended: engineClass(recommendation.engine),
     },
     strongest,
     weakest,

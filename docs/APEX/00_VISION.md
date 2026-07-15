@@ -1,3 +1,7 @@
+> **Historical snapshot (2026-07-06).** This document is retained for provenance
+> and does not describe current production readiness. Use
+> `docs/PRODUCTION_READINESS_2026-07-14.md` for current evidence and blockers.
+
 # 00 — VISION (Apex Protocol, Phase 0)
 
 _Author: Apex run, 2026-07-06. Sources: docs/STRATEGY.md, README.md, landing copy

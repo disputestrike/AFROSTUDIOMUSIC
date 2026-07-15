@@ -5,7 +5,7 @@
  */
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { z } from 'zod';
-import { prisma } from '@afrohit/db';
+import { prisma, Prisma } from '@afrohit/db';
 import * as db from '@afrohit/db';
 
 /** The sandbox compile shim (tools/shim/db-shim.d.ts) only declares the prisma
@@ -17,35 +17,36 @@ const { allAutonomyFlags, setAutonomyEnabled } = db as unknown as {
   setAutonomyEnabled(job: AutonomyJob, enabled: boolean): Promise<void>;
 };
 import { isInternalMode, requireAuth } from '../middleware/auth';
+import { validAdminGrant } from '../lib/session';
 import { isFirstPartyWorkspace, resolveEngineForWorkspace } from '@afrohit/shared';
-import { enqueue, QUEUES, type QueueName } from '../lib/queue';
+import { createQueuedProviderJob, scopedRequestKey } from '../lib/queued-job';
+import { operationErrorBody, runIdempotentOperation } from '../lib/idempotent-operation';
 
-export async function requireAdmin(req: FastifyRequest): Promise<void> {
-  const { userId } = requireAuth(req);
+export async function hasAdminAccess(req: FastifyRequest): Promise<boolean> {
+  const { userId, workspaceId } = requireAuth(req);
   // WO-1 SAFETY RAIL: the API is publicly reachable, and in internal mode
   // requireAuth never rejects — so "the one resolved user IS the operator" made
   // every admin/trigger route (spend triggers included) open to the internet.
-  // Internal mode now requires the ADMIN_SECRET header. No secret configured =
-  // 401 for everyone (set ADMIN_SECRET on the API service; send x-admin-secret).
+  // Internal mode exchanges ADMIN_SECRET for a bounded HttpOnly grant. The raw
+  // operator secret is never persisted by browser JavaScript.
   if (isInternalMode()) {
-    const secret = process.env.ADMIN_SECRET ?? '';
-    const given = String(req.headers['x-admin-secret'] ?? '');
-    if (!secret) {
-      throw Object.assign(new Error('admin locked: set ADMIN_SECRET on the API service and send the x-admin-secret header'), { statusCode: 401 });
-    }
-    if (given !== secret) throw Object.assign(new Error('unauthorized'), { statusCode: 401 });
-    return;
+    return validAdminGrant(req, userId, workspaceId);
   }
   // Multi-user modes: gate by ADMIN_EMAILS allowlist.
   const allow = (process.env.ADMIN_EMAILS ?? '')
     .split(',')
     .map((s) => s.trim().toLowerCase())
     .filter(Boolean);
-  if (allow.length === 0) throw Object.assign(new Error('admin not configured'), { statusCode: 403 });
+  if (allow.length === 0) return false;
   const user = await prisma.user.findUnique({ where: { id: userId }, select: { email: true } });
-  if (!user || !allow.includes(user.email.toLowerCase())) {
-    throw Object.assign(new Error('forbidden'), { statusCode: 403 });
-  }
+  return !!user && allow.includes(user.email.toLowerCase());
+}
+
+export async function requireAdmin(req: FastifyRequest): Promise<void> {
+  if (await hasAdminAccess(req)) return;
+  const statusCode = isInternalMode() ? 401 : 403;
+  const message = isInternalMode() ? 'admin locked: unlock this browser session' : 'forbidden';
+  throw Object.assign(new Error(message), { statusCode });
 }
 
 const grantSchema = z.object({
@@ -54,15 +55,29 @@ const grantSchema = z.object({
 });
 
 export default async function admin(app: FastifyInstance) {
+  app.get('/status', async (req) => ({ admin: await hasAdminAccess(req) }));
+
   // One-tap compounding: run the lake jobs NOW instead of waiting for tonight.
   const runSchema = z.object({ task: z.enum(['nightly-compound', 'measure-backfill', 'learn-backfill', 'listen-back', 'refile-references', 'mine-lexicon', 'lexicon-research', 'wiktionary-harvest', 'wiktionary-burst', 'lexicon-gloss', 'lexicon-verify']) });
   app.post('/run', { schema: { body: runSchema } }, async (req, reply) => {
     await requireAdmin(req);
+    const { workspaceId } = requireAuth(req);
     const { task } = runSchema.parse(req.body);
     // Background tasks run on the LAKE queue — they never contend with renders.
-    await enqueue({ queue: app.queues.lake, name: task, payload: {} });
+    const idempotencyKey = scopedRequestKey(req.headers as Record<string, unknown>, `admin-lake:${task}`);
+    const job = await createQueuedProviderJob({
+      app,
+      queue: app.queues.lake,
+      jobName: task,
+      workspaceId,
+      kind: 'lake',
+      provider: 'internal',
+      inputJson: { task },
+      idempotencyKey,
+      payload: (jobId) => ({ jobId, workspaceId }),
+    });
     reply.code(202);
-    return { queued: task, note: 'Running on the worker now — watch worker logs; results land in /lanes/inventory.' };
+    return { queued: task, jobId: job.jobId, replayed: job.replayed, note: 'Running on the worker now; results land in /lanes/inventory.' };
   });
 
   // WRITER A/B — blind bench: same hook/brief/polish, Claude vs OpenAI writer
@@ -79,21 +94,63 @@ export default async function admin(app: FastifyInstance) {
     await requireAdmin(req);
     const { workspaceId } = requireAuth(req);
     const input = abSchema.parse(req.body);
-    const charge = await app.chargeCredits({ workspaceId, key: 'lyrics_full', multiplier: 2, refTable: 'WriterAb' });
+    const idempotencyKey = scopedRequestKey(req.headers as Record<string, unknown>, 'admin-writer-ab');
+    const charge = await app.chargeCredits({ workspaceId, key: 'lyrics_full', multiplier: 2, refTable: 'WriterAb', idempotencyKey });
     if (!charge.ok) return reply.code(402).send({ error: 'insufficient_credits', ...charge });
-    const { runWriterAb } = await import('../lib/writer-ab');
-    const out = await runWriterAb({ workspaceId, ...input });
-    if ('error' in out) return reply.code(503).send(out);
-    return { ...out, note: 'Judge blind, pick A or B, THEN decode reveal (base64). Same hook, same brief, same polish — the model is the only variable.' };
+    const operation = await runIdempotentOperation({
+      workspaceId,
+      kind: 'admin-writer-ab',
+      provider: 'text',
+      idempotencyKey,
+      chargeLedgerId: charge.chargeId,
+      inputJson: input,
+      execute: async () => {
+        const { runWriterAb } = await import('../lib/writer-ab');
+        try {
+          const out = await runWriterAb({ workspaceId, ...input });
+          if ('error' in out) {
+            await app.refundCredits({ workspaceId, key: 'lyrics_full', multiplier: 2, refTable: 'WriterAb', chargeId: charge.chargeId });
+            return { statusCode: 503 as const, body: out };
+          }
+          return {
+            statusCode: 200 as const,
+            body: { ...out, note: 'Judge blind, pick A or B, THEN decode reveal (base64). Same hook, same brief, same polish - the model is the only variable.' },
+          };
+        } catch (error) {
+          await app.refundCredits({ workspaceId, key: 'lyrics_full', multiplier: 2, refTable: 'WriterAb', chargeId: charge.chargeId });
+          throw error;
+        }
+      },
+    });
+    if (operation.state !== 'completed') {
+      const failure = operationErrorBody(operation);
+      return reply.code(failure.statusCode).send(failure.body);
+    }
+    return reply.code(operation.value.statusCode).send(operation.value.body);
   });
 
   // A3-3 — ENGINE STATUS CARD: "which engine is being used" answered at a
   // glance, live. Admin-only (real vendor names live here — §1.11).
   app.get('/engines', async (req) => {
     await requireAdmin(req);
-    const sunoAvailable = !!process.env.SUNO_API_KEY;
-    const firstParty = isFirstPartyWorkspace('(internal)');
-    const vocal = resolveEngineForWorkspace(undefined, { firstParty, sunoAvailable });
+    const { workspaceId } = requireAuth(req);
+    const workspace = await prisma.workspace.findUnique({
+      where: { id: workspaceId },
+      select: { musicProvider: true, musicApiKey: true },
+    });
+    const workspaceKey = !!workspace?.musicApiKey;
+    const sunoAvailable = (workspace?.musicProvider === 'suno' && workspaceKey) || !!(process.env.SUNO_API_KEY || process.env.SUNOAPI_KEY);
+    const elevenAvailable = (workspace?.musicProvider === 'eleven' && workspaceKey) ||
+      !!(process.env.ELEVEN_API_KEY || process.env.ELEVENLABS_API_KEY || process.env.ELEVEN_LABS_API_KEY || process.env.XI_API_KEY);
+    const replicateAvailable = (workspace?.musicProvider === 'replicate' && workspaceKey) ||
+      !!(process.env.REPLICATE_API_TOKEN || process.env.REPLICATE_TOKEN);
+    const firstParty = isFirstPartyWorkspace(workspaceId);
+    const vocal = resolveEngineForWorkspace(undefined, {
+      firstParty,
+      sunoAvailable,
+      elevenAvailable: elevenAvailable && (firstParty || process.env.ELEVEN_MUSIC_CUSTOMER_ROUTE_APPROVED === '1'),
+      replicateAvailable,
+    });
     const since = new Date(Date.now() - 24 * 60 * 60 * 1000);
     const spend = await prisma.providerJob.groupBy({
       by: ['provider'],
@@ -120,7 +177,7 @@ export default async function admin(app: FastifyInstance) {
       resolved: {
         vocalDefault: vocal.engine,
         draftFallback: 'ace_step',
-        instrumental: process.env.MUSIC_PROVIDER ?? 'stub',
+        instrumental: process.env.MUSIC_PROVIDER ?? 'unavailable',
         stemsMode: (process.env.DEMUCS_MODE ?? '').toLowerCase() || 'default (measure=local, user=replicate)',
         firstParty,
         bridgeAvailable: sunoAvailable && firstParty,
@@ -131,6 +188,7 @@ export default async function admin(app: FastifyInstance) {
           minimax: 'minimax/music-2.6 via Replicate',
           ace_step: 'lucataco/ace-step via Replicate',
           musicgen: 'MusicGen via Replicate',
+          eleven: 'Eleven Music v2 when the approved route is enabled',
           suno: 'bridge/gateway when SUNO_API_KEY set (first-party only)',
         },
       },
@@ -143,8 +201,8 @@ export default async function admin(app: FastifyInstance) {
     };
   });
 
-  // WO-15 — ECONOMICS: marginal cost per render and RENDERS-PER-KEPT-SONG (the
-  // margin number; the ear's success metric — quality structurally lowers cost).
+  // ECONOMICS: operational render efficiency and unreconciled cost telemetry.
+  // Gross margin requires settlement and invoice reconciliation outside this view.
   app.get<{ Querystring: { days?: string } }>('/economics', async (req) => {
     await requireAdmin(req);
     const days = Math.min(Math.max(Number(req.query.days ?? 30), 1), 365);
@@ -173,17 +231,15 @@ export default async function admin(app: FastifyInstance) {
     }
     const totalCost = Number(costAgg._sum.cost ?? 0);
 
-    // A3-6 — LLM spend by tier/task + stems by mode + projected savings vs the
-    // OLD routing (assumptions stated in the payload; costs are estimates).
+    // LLM and stem telemetry is operational evidence, not reconciled billing.
     const [llmEvents, stemEvents] = await Promise.all([
       prisma.analyticsEvent.findMany({ where: { name: 'llm.call', createdAt: { gte: since } }, select: { properties: true }, take: 10_000 }),
       prisma.analyticsEvent.findMany({ where: { name: 'stems.run', createdAt: { gte: since } }, select: { properties: true }, take: 10_000 }),
     ]);
     const llmByTier = new Map<string, { calls: number; estCostUsd: number }>();
     const llmByTask = new Map<string, { calls: number; estCostUsd: number; tier: string }>();
-    let bulkCalls = 0;
     for (const e of llmEvents) {
-      const p = (e.properties ?? {}) as { tier?: string; task?: string; brain?: string; estCostUsd?: number | null };
+      const p = (e.properties ?? {}) as { tier?: string; task?: string; estCostUsd?: number | null };
       const tier = p.tier ?? 'judgment';
       const t = llmByTier.get(tier) ?? { calls: 0, estCostUsd: 0 };
       t.calls++; t.estCostUsd += p.estCostUsd ?? 0;
@@ -192,7 +248,6 @@ export default async function admin(app: FastifyInstance) {
       const tk = llmByTask.get(taskKey) ?? { calls: 0, estCostUsd: 0, tier };
       tk.calls++; tk.estCostUsd += p.estCostUsd ?? 0;
       llmByTask.set(taskKey, tk);
-      if (tier === 'bulk' && p.brain === 'cerebras') bulkCalls++;
     }
     const stemsByMode = new Map<string, { runs: number; estCostUsd: number; avgWallS: number }>();
     for (const e of stemEvents) {
@@ -203,21 +258,6 @@ export default async function admin(app: FastifyInstance) {
       cur.runs++; cur.estCostUsd += p.estCostUsd ?? 0;
       stemsByMode.set(m, cur);
     }
-    // Projected savings vs the OLD routing. ASSUMPTIONS (stated, not billing truth):
-    // local stems would have cost ~$0.10/run on Replicate; a bulk-tier call would
-    // have run on the judgment brain at ~$0.01/call; per-engine render savings =
-    // assumed old Replicate price minus the recorded cost, floored at 0.
-    const OLD_RENDER_PRICE: Record<string, number> = { ace_step: 0.1, minimax: 0.12, replicate: 0.05 };
-    let renderSavings = 0;
-    for (const [k, v] of byEngine) {
-      const old = OLD_RENDER_PRICE[k];
-      if (old) renderSavings += Math.max(0, v.renders * old - v.costUsd);
-    }
-    const localStemRuns = stemsByMode.get('local')?.runs ?? 0;
-    const stemsSavings = localStemRuns * 0.1;
-    const llmSavings = Math.max(0, bulkCalls * 0.01 - (llmByTier.get('bulk')?.estCostUsd ?? 0));
-    const projectedSavingsUsd = Math.round((renderSavings + stemsSavings + llmSavings) * 100) / 100;
-
     return {
       windowDays: days,
       renders: { succeeded: renders.length, failed, candidatesRendered },
@@ -230,12 +270,11 @@ export default async function admin(app: FastifyInstance) {
         byTask: [...llmByTask].map(([task, v]) => ({ task, ...v, estCostUsd: Math.round(v.estCostUsd * 1000) / 1000 })).sort((a, b) => b.calls - a.calls).slice(0, 12),
       },
       stems: { byMode: Object.fromEntries([...stemsByMode].map(([k, v]) => [k, { ...v, estCostUsd: Math.round(v.estCostUsd * 100) / 100, avgWallS: Math.round(v.avgWallS) }])) },
-      projectedSavings: {
-        usd: projectedSavingsUsd,
-        window: `${days}d`,
-        assumptions: 'old routing = Replicate renders (ace $0.10 / minimax $0.12 / musicgen $0.05), paid stems $0.10/run, bulk LLM calls on the judgment brain ~$0.01/call. Estimates for pricing sign-off (§7.4), not billing truth.',
+      costEvidence: {
+        classification: 'mixed_unreconciled',
+        basis: 'ProviderJob cost fields and analytics estimates; not provider invoices or payment-settlement truth.',
       },
-      note: 'rendersPerKeptSong is THE margin number — the ear lowering it is the moat (§E2). Costs are provider estimates recorded per job.',
+      note: 'rendersPerKeptSong is a production-efficiency signal only. Gross margin requires reconciled provider invoices, refunds, payment fees, storage, egress, and operating costs.',
     };
   });
 
@@ -417,31 +456,21 @@ export default async function admin(app: FastifyInstance) {
   /** Re-enqueue a failed job from its persisted inputJson. */
   app.post<{ Params: { id: string } }>('/jobs/:id/retry', async (req, reply) => {
     await requireAdmin(req);
-    const job = await prisma.providerJob.findUniqueOrThrow({ where: { id: req.params.id } });
+    const job = await prisma.providerJob.findUniqueOrThrow({ where: { id: req.params.id }, include: { outbox: true } });
     if (job.status !== 'FAILED') return reply.code(400).send({ error: 'only_failed_jobs' });
+    if (!job.outbox) return reply.code(409).send({ error: 'legacy_job_payload_unavailable', message: 'This pre-outbox job cannot be replayed safely; start the action again.' });
 
-    const queueForKind: Record<string, QueueName> = {
-      music: QUEUES.music,
-      voice: QUEUES.voice,
-      voice_profile: QUEUES.voice,
-      mix: QUEUES.mix,
-      master: QUEUES.master,
-      image: QUEUES.image,
-      video: QUEUES.video,
-      export: QUEUES.exportBundle,
-    };
-    const queueName = queueForKind[job.kind];
-    if (!queueName) return reply.code(400).send({ error: `no_queue_for_kind:${job.kind}` });
-
-    await prisma.providerJob.update({
-      where: { id: job.id },
-      data: { status: 'QUEUED', errorJson: undefined, startedAt: null, finishedAt: null },
-    });
-    await enqueue({
-      queue: app.queues[queueName],
-      name: job.kind === 'voice_profile' ? 'setup-voice-profile' : `retry-${job.kind}`,
-      payload: { jobId: job.id, workspaceId: job.workspaceId, projectId: job.projectId, ...(job.inputJson as Record<string, unknown>) },
-    });
+    await prisma.$transaction([
+      prisma.providerJob.update({
+        where: { id: job.id },
+        data: { status: 'QUEUED', errorJson: Prisma.DbNull, startedAt: null, finishedAt: null },
+      }),
+      prisma.jobOutbox.update({
+        where: { id: job.outbox.id },
+        data: { status: 'PENDING', attempts: 0, nextAttemptAt: new Date(), dispatchedAt: null, lastError: null },
+      }),
+    ]);
+    await app.dispatchPendingJobs();
     return { id: job.id, status: 'requeued' };
   });
 

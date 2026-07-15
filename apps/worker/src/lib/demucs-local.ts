@@ -20,7 +20,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { prisma } from '@afrohit/db';
 import { separateStems, type StemSeparationResult } from '@afrohit/ai';
-import { downloadToBuffer, uploadBytes } from './storage';
+import { downloadToBuffer, resolveAssetForProvider, uploadBytes } from './storage';
 
 const PYTHON = process.env.PYTHON_BIN ?? 'python3';
 // Replicate demucs ≈ $0.10/track (T4, ~1-2 min). Local = electricity.
@@ -47,7 +47,11 @@ async function logStemsRun(workspaceId: string | undefined, mode: string, purpos
 }
 
 /** Run htdemucs locally; returns the SAME shape as the paid separateStems. */
-export async function separateStemsLocal(opts: { audioUrl: string; mode?: 'instrumental' | 'full' }): Promise<StemSeparationResult> {
+export async function separateStemsLocal(opts: {
+  audioUrl: string;
+  mode?: 'instrumental' | 'full';
+  workspaceId?: string;
+}): Promise<StemSeparationResult> {
   const dir = await mkdtemp(join(tmpdir(), 'demucs-'));
   try {
     const src = join(dir, 'input.wav');
@@ -64,7 +68,11 @@ export async function separateStemsLocal(opts: { audioUrl: string; mode?: 'instr
       p.on('error', reject);
       // CPU separation of a 3-min track ≈ 2-6 min on a modest box — cap at 20.
       const timer = setTimeout(() => { p.kill('SIGKILL'); reject(new Error('local demucs timed out (20 min)')); }, 20 * 60_000);
-      p.on('exit', (code) => { clearTimeout(timer); code === 0 ? resolve() : reject(new Error(`demucs exit ${code}: ${err.slice(-300)}`)); });
+      p.on('exit', (code) => {
+        clearTimeout(timer);
+        if (code === 0) resolve();
+        else reject(new Error(`demucs exit ${code}: ${err.slice(-300)}`));
+      });
     });
     // Output lands in <dir>/htdemucs/<stem>.wav (per --filename).
     const outDir = join(dir, 'htdemucs');
@@ -77,7 +85,13 @@ export async function separateStemsLocal(opts: { audioUrl: string; mode?: 'instr
       // non-vocals stem IS the instrumental.
       const role = stemName === 'no_vocals' ? 'instrumental' : stemName;
       const bytes = await readFile(join(outDir, f));
-      const url = await uploadBytes({ workspaceId: 'local-stems', kind: 'stems', bytes, contentType: 'audio/wav', ext: 'wav' });
+      const url = await uploadBytes({
+        workspaceId: opts.workspaceId ?? 'system',
+        kind: 'stems',
+        bytes,
+        contentType: 'audio/wav',
+        ext: 'wav',
+      });
       stems.push({ role, url });
     }
     if (!stems.length) throw new Error('local demucs produced no stems');
@@ -111,7 +125,11 @@ export async function separateStemsRouted(opts: {
   const started = Date.now();
   if (wantLocal && (await localDemucsAvailable())) {
     try {
-      const res = await separateStemsLocal({ audioUrl: opts.audioUrl, mode: opts.mode });
+      const res = await separateStemsLocal({
+        audioUrl: opts.audioUrl,
+        mode: opts.mode,
+        workspaceId: opts.workspaceId,
+      });
       await logStemsRun(opts.workspaceId, 'local', opts.purpose, Date.now() - started, 0, true);
       return { ...res, engine: 'local' };
     } catch (err) {
@@ -121,7 +139,11 @@ export async function separateStemsRouted(opts: {
     console.warn('[stems] DEMUCS_MODE wants local but torch/demucs not importable in this image — paid path');
   }
   const paidStart = Date.now();
-  const res = await separateStems({ audioUrl: opts.audioUrl, apiKey: opts.apiKey, mode: opts.mode });
+  const res = await separateStems({
+    audioUrl: await resolveAssetForProvider(opts.audioUrl),
+    apiKey: opts.apiKey,
+    mode: opts.mode,
+  });
   await logStemsRun(opts.workspaceId, 'replicate', opts.purpose, Date.now() - paidStart, REPLICATE_STEM_COST, true);
   return { ...res, engine: 'replicate' };
 }

@@ -155,7 +155,7 @@ export function BringYourOwn({ onChorusText }: { onChorusText: (lyrics: string) 
     try {
       const pid = await ensureProjectA();
       const { key } = await api.uploadToStorage(file, 'beat', (f) => setABeat({ kind: 'uploading', pct: Math.round(f * 100) }));
-      const res = await api.post<{ songId: string }>(`/projects/${pid}/beats/upload`, {
+      const res = await api.post<{ songId: string; jobId: string }>(`/projects/${pid}/beats/upload`, {
         key,
         format: guessFormat(file.name),
         title: baseName(file.name),
@@ -164,7 +164,12 @@ export function BringYourOwn({ onChorusText }: { onChorusText: (lyrics: string) 
         ...(aKey ? { keySignature: aKey } : {}),
       });
       setASong(res.songId);
-      setABeat({ kind: 'done', msg: 'Your beat is in — authentic, auto-approved, used verbatim.' });
+      setABeat({ kind: 'uploading', msg: 'Checking the exact beat file before it enters the mixer…' });
+      const qcJob = await pollJob(res.jobId, 24);
+      if (!qcJob || qcJob.status !== 'SUCCEEDED') {
+        throw new Error(qcJob ? jobErr(qcJob) : 'Beat QC is still running. Try again shortly.');
+      }
+      setABeat({ kind: 'done', msg: 'Your beat passed QC and will be used verbatim.' });
     } catch (e) {
       setABeat({ kind: 'error', msg: (e as Error).message });
     }
@@ -178,12 +183,17 @@ export function BringYourOwn({ onChorusText }: { onChorusText: (lyrics: string) 
         src instanceof File
           ? await api.uploadToStorage(src, 'vocal', (f) => setAVocal({ kind: 'uploading', pct: Math.round(f * 100) }))
           : await api.uploadAudioDirect(src, 'vocal');
-      const res = await api.post<{ songId: string }>(`/projects/${pid}/vocals/upload`, {
+      const res = await api.post<{ songId: string; jobId: string }>(`/projects/${pid}/vocals/upload`, {
         key,
         role: 'lead',
+        isolationConfirmed: true,
         ...(aSong ? { songId: aSong } : {}),
       });
       setASong(res.songId);
+      const qcJob = await pollJob(res.jobId, 24);
+      if (!qcJob || qcJob.status !== 'SUCCEEDED') {
+        throw new Error(qcJob ? jobErr(qcJob) : 'Vocal QC is still running. Try again shortly.');
+      }
       setAVocal({ kind: 'done', msg: `${label} is in as the lead vocal — mixed verbatim, never cloned.` });
     } catch (e) {
       setAVocal({ kind: 'error', msg: (e as Error).message });
@@ -242,16 +252,21 @@ export function BringYourOwn({ onChorusText }: { onChorusText: (lyrics: string) 
         pid = p.id;
         setBProject(pid);
       }
-      const { key, publicUrl } = await api.uploadToStorage(file, 'beat', (f) => setBBeat({ kind: 'uploading', pct: Math.round(f * 100) }));
-      await api.post(`/projects/${pid}/beats/upload`, {
+      const { key, publicUrl, playbackUrl } = await api.uploadToStorage(file, 'beat', (f) => setBBeat({ kind: 'uploading', pct: Math.round(f * 100) }));
+      const attached = await api.post<{ jobId: string }>(`/projects/${pid}/beats/upload`, {
         key,
         format: guessFormat(file.name),
         title: baseName(file.name),
         ...(bBpm ? { bpm: clampAttachBpm(Number(bBpm)) } : {}),
         ...(bKey ? { keySignature: bKey } : {}),
       });
-      setBBeatUrl(publicUrl);
-      setBBeat({ kind: 'done', msg: 'Beat attached to your project — authentic, auto-approved. It stays yours whatever happens next.' });
+      setBBeat({ kind: 'uploading', msg: 'Checking the exact beat file before the studio uses it…' });
+      const qcJob = await pollJob(attached.jobId, 24);
+      if (!qcJob || qcJob.status !== 'SUCCEEDED') {
+        throw new Error(qcJob ? jobErr(qcJob) : 'Beat QC is still running. Try again shortly.');
+      }
+      setBBeatUrl(playbackUrl);
+      setBBeat({ kind: 'done', msg: 'Beat passed QC and is attached to your project. It stays yours whatever happens next.' });
       void analyzeB(pid, publicUrl);
     } catch (e) {
       setBBeat({ kind: 'error', msg: (e as Error).message });
@@ -385,12 +400,17 @@ export function BringYourOwn({ onChorusText }: { onChorusText: (lyrics: string) 
         src instanceof File
           ? await api.uploadToStorage(src, 'vocal', (f) => setCVocal({ kind: 'uploading', pct: Math.round(f * 100) }))
           : await api.uploadAudioDirect(src, 'vocal');
-      const res = await api.post<{ songId: string }>(`/projects/${pid}/vocals/upload`, {
+      const res = await api.post<{ songId: string; jobId: string }>(`/projects/${pid}/vocals/upload`, {
         key,
         role: 'lead',
+        isolationConfirmed: true,
         ...(cSong ? { songId: cSong } : {}),
       });
       setCSong(res.songId);
+      const qcJob = await pollJob(res.jobId, 24);
+      if (!qcJob || qcJob.status !== 'SUCCEEDED') {
+        throw new Error(qcJob ? jobErr(qcJob) : 'Vocal QC is still running. Try again shortly.');
+      }
       setCVocal({ kind: 'done', msg: `${label} is in as the lead vocal — used verbatim.` });
     } catch (e) {
       setCVocal({ kind: 'error', msg: (e as Error).message });

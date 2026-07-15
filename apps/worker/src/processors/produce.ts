@@ -19,7 +19,7 @@ import {
 import {
   composeMelody, lyricQaCheck, normalizeLyricBody, pickLawfulTitle,
   newSongState, advanceState, rejectToStage, toplineProven,
-  type SongState, type CreativeBrief, type LyricMode, type CatalogueSimilarity,
+  type SongState, type CreativeBrief, type CatalogueSimilarity,
   type MelodyRhythmMap, type MelodyScore, type ToplineProof, type LyricQaResult,
 } from '@afrohit/shared';
 import { renderMelodyGuide } from '../lib/melody-guide';
@@ -40,11 +40,6 @@ interface ProducePayload {
 }
 
 const OVERUSED = ['shine', 'hustle', 'street', 'grind', 'gbedu', 'log', 'night', 'rise', 'throne', 'haters', 'vibe', 'fire'];
-const LYRIC_MODES: LyricMode[] = ['chant', 'flirtation', 'image_collage', 'confession', 'snapshot', 'narrative', 'testimony', 'brag'];
-
-const BRIEF_SYSTEM = `You are the EXECUTIVE PRODUCER of an Afro record studio. From a raw idea, define ONE record's creative identity. Do NOT write lyrics. Choose the lyric MODE honestly — most dance/party records are "chant" or "image_collage", not "narrative".
-Return STRICT JSON: {"primaryEmotion":"one sentence","listenerMoment":"club|drive|street celebration|intimate room|...","artistIdentity":"age, attitude, vocal character, POV","corePremise":"ONE sentence","tension":"one contradiction OR empty","borrowedQualities":["3 market qualities to borrow, never copy"],"lyricMode":"chant|flirtation|image_collage|confession|snapshot|narrative|testimony|brag"}`;
-
 async function cataloguePrecheck(workspaceId: string): Promise<CatalogueSimilarity> {
   const rows = await prisma.song.findMany({
     where: { workspaceId, quarantined: false, lyric: { isNot: null } },
@@ -94,20 +89,6 @@ function melodyRhythmMap(score: MelodyScore): MelodyRhythmMap {
 const scat = (n: number) => Array.from({ length: n }, () => 'la').join(' ');
 function hookScore(genre: string, bpm: number, key: string, seed: number): MelodyScore {
   return composeMelody({ genre, bpm, key, seed, sections: [{ name: 'Hook', kind: 'hook', lines: [scat(6), scat(6)], contour: 'arch', density: 'sparse' }] });
-}
-
-const HOOKCELL_SYSTEM = `You are an Afrobeats hook-cell writer. From the brief, output ONE HOOK CELL: a 1-3 word CHANTABLE phrase that owns the whole record (the canon: Essence, Calm Down, Water, Soso, Dami Duro, Kpokpokpo, Unavailable). It must be FUN TO SAY at tempo, survive with any setting/place/food word removed, and work as the song's TITLE. Pidgin/Yoruba welcome. It is NOT a sentence, NOT a description, and contains NO place/food/transport noun. Return STRICT JSON: {"hookCell":"1-3 words"}.`;
-
-/** A real chantable hook cell (bulk/Cerebras) — replaces the old "first 3 words
- *  of the premise" hack that leaked weak titles like "Man Keeps". */
-async function makeHookCell(brief: CreativeBrief): Promise<string> {
-  const r = await generateJson<{ hookCell?: string }>({
-    tier: 'bulk', task: 'hook-cell', system: HOOKCELL_SYSTEM,
-    user: JSON.stringify({ emotion: brief.primaryEmotion, premise: brief.corePremise, mode: brief.lyricMode, genre: brief.genre, listenerMoment: brief.listenerMoment }),
-    maxTokens: 120,
-  }).catch(() => ({} as { hookCell?: string }));
-  const c = (r.hookCell ?? '').trim().replace(/^["']|["']$/g, '');
-  return c && c.split(/\s+/).length <= 4 && c.length <= 28 ? c : brief.corePremise.split(/\s+/).slice(0, 3).join(' ');
 }
 
 const FIT_SYSTEM = `${prompts.LYRIC_SYSTEM}

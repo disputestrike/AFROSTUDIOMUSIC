@@ -29,6 +29,7 @@ export function TrainingSession({ projectId }: { projectId: string }) {
   const [chunks, setChunks] = useState<ChunkRow[]>([]);
   const [sounds, setSounds] = useState(0);
   const [words, setWords] = useState(0);
+  const [ownedCatalog, setOwnedCatalog] = useState(false);
   const [elapsed, setElapsed] = useState(0);
   const recRef = useRef<MediaRecorder | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
@@ -36,7 +37,7 @@ export function TrainingSession({ projectId }: { projectId: string }) {
   const chunkNoRef = useRef(0);
   const tickRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  useEffect(() => () => stop(), []); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => () => stop(), []);
 
   function setChunk(n: number, patch: Partial<ChunkRow>) {
     setChunks((c) => c.map((x) => (x.n === n ? { ...x, ...patch } : x)));
@@ -47,14 +48,25 @@ export function TrainingSession({ projectId }: { projectId: string }) {
       const file = new File([blob], `training-${n}.webm`, { type: blob.type || 'audio/webm' });
       const { publicUrl } = await api.uploadAudioDirect(file, 'reference');
       // purgeAfter: the worker deletes this recording once the recipe is out.
-      const { jobId } = await api.post<{ jobId: string }>(`/projects/${projectId}/analyze`, { url: publicUrl, purgeAfter: true });
+      const { jobId } = await api.post<{ jobId: string }>(`/projects/${projectId}/analyze`, {
+        url: publicUrl,
+        purgeAfter: true,
+        factsOnly: ownedCatalog ? undefined : true,
+        rightsConfirmed: ownedCatalog ? true : undefined,
+      });
+      let succeeded = false;
       for (let i = 0; i < 90; i++) {
         await new Promise((r) => setTimeout(r, 5000));
         const job = await api.get<{ status: string }>(`/jobs/${jobId}`);
-        if (job.status === 'SUCCEEDED') break;
+        if (job.status === 'SUCCEEDED') { succeeded = true; break; }
         if (job.status === 'FAILED') throw new Error('listen failed');
       }
+      if (!succeeded) throw new Error('listen timed out');
       setSounds((v) => v + 1);
+      if (!ownedCatalog) {
+        setChunk(n, { status: 'done', note: 'tempo, key, groove + arrangement measured' });
+        return;
+      }
       setChunk(n, { status: 'learning' });
       const lfa = await api.post<{ learned: boolean; reason?: string; craftTitle?: string }>(`/projects/${projectId}/lyrics/learn-from-analysis`, { analyzeJobId: jobId });
       if (lfa.learned) {
@@ -128,9 +140,9 @@ export function TrainingSession({ projectId }: { projectId: string }) {
       </h2>
       <p className="mt-1 max-w-xl text-sm text-slate-400">
         Press start and <span className="text-slate-200">play songs out loud for an hour or two</span> — a playlist, a DJ set, your crates.
-        The studio listens in ~3½-minute stretches and learns BOTH sides of every record: the <span className="text-slate-200">sound</span> (drums,
-        groove, bass, vocal) and the <span className="text-slate-200">words</span> (storytelling shape, vocabulary, hook craft — patterns only, never the lines).
-        Recordings are <span className="text-slate-200">deleted right after learning</span>; only the lessons stay.
+        By default the studio keeps only measured facts: tempo, key, groove, and arrangement. For music you own or control, enable
+        owned-catalog mode to also study production and lyric craft. Recordings are <span className="text-slate-200">deleted right after learning</span>;
+        only the authorized lessons stay.
       </p>
 
       <div className="mt-4 rounded-2xl glass p-4">
@@ -153,6 +165,17 @@ export function TrainingSession({ projectId }: { projectId: string }) {
           )}
         </div>
 
+        <label className="mt-3 flex items-start gap-2 text-xs text-slate-400">
+          <input
+            type="checkbox"
+            checked={ownedCatalog}
+            onChange={(event) => setOwnedCatalog(event.target.checked)}
+            disabled={running}
+            className="mt-0.5 accent-afrobrand-400"
+          />
+          <span><span className="text-slate-200">Owned-catalog mode</span> — I own or control every recording played during this session and authorize full craft learning.</span>
+        </label>
+
         {chunks.length > 0 && (
           <ul className="mt-4 max-h-56 space-y-1.5 overflow-y-auto">
             {[...chunks].reverse().map((c) => (
@@ -169,7 +192,7 @@ export function TrainingSession({ projectId }: { projectId: string }) {
             ))}
           </ul>
         )}
-        <p className="mt-3 text-[11px] text-slate-500">Runs up to 2 hours (≈34 stretches). Each stretch costs a listen + a study (~$0.05). Check the Data Lake page after — everything lands there.</p>
+        <p className="mt-3 text-[11px] text-slate-500">Runs up to 2 hours (≈34 stretches). Each stretch uses one analysis; owned-catalog mode also runs lyric-craft study. Check the Data Lake page for measured results and usage receipts.</p>
       </div>
     </section>
   );

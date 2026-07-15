@@ -36,7 +36,7 @@ export const LAKE_ORCHESTRATION = {
 
 export interface DataLakeSummary {
   totalReferences: number;
-  byKind: { heardSongs: number; lyricCraft: number; trendSnapshots: number; selfTraining: number; zapped: number; referenceFacts: number };
+  byKind: { heardSongs: number; lyricCraft: number; trendSnapshots: number; selfTraining: number; zapped: number; referenceFacts: number; unclassified: number; failed: number };
   /** Top genres among the artist's HEARD/trained sound (not lyric/trend rows). */
   topGenres: Array<{ genre: string; count: number }>;
   /** A few real trait lines so the chat can quote what it actually learned. */
@@ -49,17 +49,20 @@ export interface DataLakeSummary {
  * cheap (4 counts + one small read) so it doesn't slow the chat down.
  */
 export async function dataLakeSummary(workspaceId: string): Promise<DataLakeSummary> {
-  const [total, lyricCraftN, trendN, zapN, factsN, generatedN, recent] = await Promise.all([
-    prisma.soundReference.count({ where: { workspaceId } }),
-    prisma.soundReference.count({ where: { workspaceId, sourceUrl: { startsWith: 'lyric:' } } }),
-    prisma.soundReference.count({ where: { workspaceId, sourceUrl: { startsWith: 'trend:' } } }),
-    prisma.soundReference.count({ where: { workspaceId, sourceUrl: { startsWith: 'zap:' } } }),
-    prisma.soundReference.count({ where: { workspaceId, sourceUrl: { startsWith: 'facts:' } } }),
-    prisma.soundReference.count({ where: { workspaceId, recipe: { path: ['source'], equals: 'generated' } } }),
+  const usable = { active: true, rightsBasis: { not: 'unknown' }, analysisState: { not: 'failed' } } as const;
+  const [total, unclassifiedN, failedN, lyricCraftN, trendN, zapN, factsN, generatedN, recent] = await Promise.all([
+    prisma.soundReference.count({ where: { workspaceId, active: true } }),
+    prisma.soundReference.count({ where: { workspaceId, active: true, rightsBasis: 'unknown' } }),
+    prisma.soundReference.count({ where: { workspaceId, active: true, rightsBasis: { not: 'unknown' }, analysisState: 'failed' } }),
+    prisma.soundReference.count({ where: { workspaceId, ...usable, sourceUrl: { startsWith: 'lyric:' } } }),
+    prisma.soundReference.count({ where: { workspaceId, ...usable, sourceUrl: { startsWith: 'trend:' } } }),
+    prisma.soundReference.count({ where: { workspaceId, ...usable, sourceUrl: { startsWith: 'zap:' } } }),
+    prisma.soundReference.count({ where: { workspaceId, ...usable, sourceUrl: { startsWith: 'facts:' } } }),
+    prisma.soundReference.count({ where: { workspaceId, ...usable, recipe: { path: ['source'], equals: 'generated' } } }),
     prisma.soundReference.findMany({
       // "MY sound" = heard/trained rows only. Lyric-craft, trends, and Zap'd
       // reference-lanes live in the same table but aren't the artist's own sound.
-      where: { workspaceId, NOT: [{ sourceUrl: { startsWith: 'lyric:' } }, { sourceUrl: { startsWith: 'trend:' } }, { sourceUrl: { startsWith: 'zap:' } }, { sourceUrl: { startsWith: 'facts:' } }] },
+      where: { workspaceId, ...usable, NOT: [{ sourceUrl: { startsWith: 'lyric:' } }, { sourceUrl: { startsWith: 'trend:' } }, { sourceUrl: { startsWith: 'zap:' } }, { sourceUrl: { startsWith: 'facts:' } }] },
       orderBy: { createdAt: 'desc' },
       take: 50,
       select: { genre: true, summary: true, recipe: true, createdAt: true },
@@ -88,13 +91,15 @@ export async function dataLakeSummary(workspaceId: string): Promise<DataLakeSumm
   return {
     totalReferences: total,
     byKind: {
-      heardSongs: Math.max(0, total - lyricCraftN - trendN - zapN - factsN - generatedN),
+      heardSongs: Math.max(0, total - unclassifiedN - failedN - lyricCraftN - trendN - zapN - factsN - generatedN),
       lyricCraft: lyricCraftN,
       trendSnapshots: trendN,
       selfTraining: generatedN,
       zapped: zapN,
       // facts-only reference records (numbers for lane profiles; no expression)
       referenceFacts: factsN,
+      unclassified: unclassifiedN,
+      failed: failedN,
     },
     topGenres,
     sampleTraits,
@@ -111,14 +116,18 @@ export async function dataLakeReport(workspaceId: string) {
   const [summary, recent] = await Promise.all([
     dataLakeSummary(workspaceId),
     prisma.soundReference.findMany({
-      where: { workspaceId },
+      where: { workspaceId, active: true },
       orderBy: { createdAt: 'desc' },
       take: 20,
-      select: { genre: true, sourceUrl: true, title: true, summary: true, createdAt: true, recipe: true },
+      select: { genre: true, sourceUrl: true, title: true, summary: true, createdAt: true, recipe: true, analysisState: true, rightsBasis: true },
     }),
   ]);
-  const kindOf = (r: { sourceUrl: string; recipe: unknown }) =>
-    r.sourceUrl.startsWith('lyric:')
+  const kindOf = (r: { sourceUrl: string; recipe: unknown; analysisState: string; rightsBasis: string }) =>
+    r.rightsBasis === 'unknown'
+      ? 'unclassified'
+      : r.analysisState === 'failed'
+        ? 'failed'
+        : r.sourceUrl.startsWith('lyric:')
       ? 'lyricCraft'
       : r.sourceUrl.startsWith('trend:')
         ? 'trendSnapshots'
@@ -131,13 +140,15 @@ export async function dataLakeReport(workspaceId: string) {
             : 'heardSongs';
   return {
     ...summary,
-    recentLearnings: recent.map((r: { genre: string | null; sourceUrl: string; title: string | null; summary: string | null; createdAt: Date; recipe: unknown }) => ({
+    recentLearnings: recent.map((r: { genre: string | null; sourceUrl: string; title: string | null; summary: string | null; createdAt: Date; recipe: unknown; analysisState: string; rightsBasis: string }) => ({
       kind: kindOf(r),
       genre: normGenre(r.genre),
       what: String(r.title || r.summary || '').slice(0, 120),
+      analysisState: r.analysisState,
+      rightsBasis: r.rightsBasis,
       at: r.createdAt,
     })),
     howItsUsed: LAKE_ORCHESTRATION,
-    note: 'This lake feeds EVERY generation automatically — the artist does NOT need to do anything to "apply" it. The next song in a learned genre already pulls these references into both the writers and the music model.',
+    note: 'Active, rights-classified references feed generation automatically. Unclassified, failed, and inactive rows stay visible for audit but cannot steer a song.',
   };
 }

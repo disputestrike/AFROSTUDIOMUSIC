@@ -2,7 +2,8 @@
  * Zod schemas — the single source of truth for API contracts.
  * Used by Fastify for validation and by the web app for typed clients.
  */
-import { z } from 'zod';
+import { z } from "zod";
+import { VOICE_CONSENT_TEXT, VOICE_CONSENT_VERSION } from "./voice-consent";
 import {
   GENRES,
   LANGUAGES,
@@ -11,11 +12,14 @@ import {
   TASTE_DIMENSIONS,
   MIX_PRESETS,
   MASTER_PRESETS,
-} from './constants';
+} from "./constants";
 
 export const genreSchema = z.enum(GENRES);
 export const langSchema = z.enum(
-  Object.keys(LANGUAGES) as [keyof typeof LANGUAGES, ...Array<keyof typeof LANGUAGES>]
+  Object.keys(LANGUAGES) as [
+    keyof typeof LANGUAGES,
+    ...Array<keyof typeof LANGUAGES>,
+  ]
 );
 
 // ---------- Artist DNA ------------------------------------------------------
@@ -43,12 +47,17 @@ export const artistDnaSchema = z.object({
     .optional(),
   forbiddenStyles: z.array(z.string()).max(20).default([]),
   slang: z
-    .array(z.object({ phrase: z.string(), meaning: z.string(), language: z.string() }))
+    .array(
+      z.object({
+        phrase: z.string(),
+        meaning: z.string(),
+        language: z.string(),
+      })
+    )
     .optional(),
   cornyBanned: z.array(z.string()).default([]),
   // Automation flags
   morningDrop: z.boolean().optional(),
-  autoPilot: z.boolean().optional(),
 });
 export type ArtistDna = z.infer<typeof artistDnaSchema>;
 
@@ -60,7 +69,9 @@ export const briefSchema = z.object({
   language: z.array(langSchema).default([]),
   audience: z.string().max(120).optional(),
   bpm: z.number().int().min(40).max(220).optional(),
-  references: z.array(z.object({ name: z.string(), lane: z.string() })).optional(),
+  references: z
+    .array(z.object({ name: z.string(), lane: z.string() }))
+    .optional(),
   notes: z.string().max(2000).optional(),
 });
 export type Brief = z.infer<typeof briefSchema>;
@@ -130,7 +141,7 @@ export const generateBeatInputSchema = z.object({
   vibePrompt: z.string().max(1000).optional(),
   /** HARD language constraint — outranks the artist profile's defaults. */
   languages: z.array(z.string().min(2).max(12)).max(5).optional(),
-  voice: z.enum(['auto', 'female', 'male', 'duet', 'group']).optional(),
+  voice: z.enum(["auto", "female", "male", "duet", "group"]).optional(),
   /** WO-5: takes rendered for THIS request (draft default 1; Hit-Maker flows pass 2). */
   candidates: z.number().int().min(1).max(4).optional(),
   withStems: z.boolean().default(true),
@@ -142,7 +153,9 @@ export const generateBeatInputSchema = z.object({
   // call-and-response — before generation. On by default for vocal songs.
   richVocals: z.boolean().default(true),
   // Which vocal/song model: 'ace_step' (default) or 'minimax' (higher realism).
-  songEngine: z.enum(['suno', 'ace_step', 'minimax', 'own']).optional(),
+  songEngine: z
+    .enum(["suno", "eleven", "ace_step", "minimax", "own"])
+    .optional(),
   /** Artist LANE to vibe toward (energy/tempo/production feel) — never a copy,
    *  never named in the song. Same semantics as dropBatchSchema.influence. */
   influence: z.string().max(120).optional(),
@@ -153,44 +166,60 @@ export const generateBeatInputSchema = z.object({
 
 // ---------- Voice -----------------------------------------------------------
 
-export const voiceConsentInputSchema = z.object({
-  legalName: z.string().min(2),
-  email: z.string().email(),
-  consentText: z.string().min(20),
-  signatureUrl: z.string().url().optional(),
-  consentAudioUrl: z.string().url().optional(),
-});
+export const voiceConsentInputSchema = z
+  .object({
+    artistId: z.string().cuid(),
+    legalName: z.string().trim().min(2).max(120),
+    email: z.string().trim().email().max(200),
+    consentText: z.literal(VOICE_CONSENT_TEXT),
+    consentVersion: z.literal(VOICE_CONSENT_VERSION),
+    accepted: z.literal(true),
+    signatureUrl: z.string().url().optional(),
+    consentAudioUrl: z.string().url().optional(),
+  })
+  .strict();
 
-export const voiceProfileInputSchema = z.object({
-  artistId: z.string().cuid(),
-  consentId: z.string().cuid(),
-  name: z.string().min(1).max(80),
-  sampleUrls: z.array(z.string().url()).min(1),
-  language: langSchema.optional(),
-});
+export const voiceProfileInputSchema = z
+  .object({
+    artistId: z.string().cuid(),
+    consentId: z.string().cuid(),
+    name: z.string().min(1).max(80),
+    sampleUrls: z.array(z.string().url()).min(1).max(20),
+    language: langSchema.optional(),
+  })
+  .strict();
 
 /** OWN-VOICE TRAINING kickoff: consent-gated, dataset is ONE zip of the
  *  artist's own recordings, destination is a "user/model" path in the ARTIST's
  *  Replicate account (falls back to VOICE_TRAINER_DESTINATION when omitted). */
-export const voiceTrainInputSchema = z.object({
-  artistId: z.string().cuid(),
-  consentId: z.string().cuid(),
-  name: z.string().min(1).max(80),
-  datasetZipUrl: z.string().url(),
-  destination: z
-    .string()
-    .regex(/^[a-z0-9][a-z0-9-]*\/[a-zA-Z0-9][a-zA-Z0-9._-]*$/, 'destination must be "user/model"')
-    .optional(),
-});
+export const voiceTrainInputSchema = z
+  .object({
+    artistId: z.string().cuid(),
+    consentId: z.string().cuid(),
+    name: z.string().min(1).max(80),
+    datasetZipUrl: z.string().url(),
+    destination: z
+      .string()
+      .regex(
+        /^[a-z0-9][a-z0-9-]*\/[a-zA-Z0-9][a-zA-Z0-9._-]*$/,
+        'destination must be "user/model"'
+      )
+      .optional(),
+  })
+  .strict();
 
 /** DATASET BUILDER: raw recordings → a trainer-ready zip (layout
  *  `dataset/<name>/split_<i>.wav`, 48k mono, ~10s segments) — exactly what the
- *  default trainer (replicate/train-rvc-model) expects. 10–20 minutes of clean
- *  solo vocals make the best voice. */
-export const voiceDatasetInputSchema = z.object({
-  name: z.string().min(1).max(60),
-  sampleUrls: z.array(z.string().url()).min(1).max(50),
-});
+ *  default trainer (replicate/train-rvc-model) expects. Two minutes is the
+ *  measured minimum; 10–20 minutes of clean solo vocals is the quality target. */
+export const voiceDatasetInputSchema = z
+  .object({
+    name: z.string().min(1).max(60),
+    sampleUrls: z.array(z.string().url()).min(1).max(20),
+    isolationConfirmed: z.literal(true),
+    purgeSourceSamples: z.boolean().default(false),
+  })
+  .strict();
 
 /** SING WITH MY VOICE: the trained voice performs an existing track. HONEST:
  *  RVC converts the performance in the input (full song or bare vocal) — the
@@ -200,14 +229,17 @@ export const voiceDatasetInputSchema = z.object({
 export const voiceSingInputSchema = z.object({
   songId: z.string().cuid().optional(),
   songUrl: z.string().url().optional(),
-  pitchChange: z.enum(['no-change', 'male-to-female', 'female-to-male']).default('no-change'),
+  rightsConfirmed: z.boolean().optional(),
+  pitchChange: z
+    .enum(["no-change", "male-to-female", "female-to-male"])
+    .default("no-change"),
   // Realism knobs (all optional — studio realism defaults apply when omitted).
   tuning: z
     .object({
       indexRate: z.number().min(0).max(1).optional(),
       rmsMixRate: z.number().min(0).max(1).optional(),
       protect: z.number().min(0).max(0.5).optional(),
-      pitchAlgo: z.enum(['rmvpe', 'mangio-crepe']).optional(),
+      pitchAlgo: z.enum(["rmvpe", "mangio-crepe"]).optional(),
       reverbWetness: z.number().min(0).max(1).optional(),
       reverbSize: z.number().min(0).max(1).optional(),
       reverbDryness: z.number().min(0).max(1).optional(),
@@ -220,9 +252,12 @@ export const renderVocalInputSchema = z.object({
   songId: z.string().cuid().optional(),
   voiceProfileId: z.string().cuid(),
   lyricId: z.string().cuid(),
-  role: z.enum(['lead', 'double', 'ad-lib', 'harmony']).default('lead'),
+  role: z.enum(["lead", "double", "ad-lib", "harmony"]).default("lead"),
   pitchCorrection: z
-    .object({ strength: z.number().min(0).max(1), retune: z.number().min(0).max(1) })
+    .object({
+      strength: z.number().min(0).max(1),
+      retune: z.number().min(0).max(1),
+    })
     .optional(),
   effects: z.record(z.any()).optional(),
 });
@@ -248,14 +283,14 @@ export const generateCoverArtInputSchema = z.object({
   projectId: z.string().cuid().optional(),
   brandKitId: z.string().cuid().optional(),
   prompt: z.string().min(5).max(2000),
-  quality: z.enum(['low', 'medium', 'high']).default('medium'),
-  size: z.enum(['1024x1024', '1024x1792', '1792x1024']).default('1024x1024'),
+  quality: z.enum(["low", "medium", "high"]).default("medium"),
+  size: z.enum(["1024x1024", "1024x1792", "1792x1024"]).default("1024x1024"),
 });
 
 export const generateStoryboardInputSchema = z.object({
   projectId: z.string().cuid(),
   durationS: z.number().int().min(8).max(60).default(15),
-  format: z.enum(['vertical', 'square', 'landscape']).default('vertical'),
+  format: z.enum(["vertical", "square", "landscape"]).default("vertical"),
   prompt: z.string().max(2000).optional(),
 });
 
@@ -278,25 +313,47 @@ export const tasteScoreSchema = z.object({
 export const approvalInputSchema = z.object({
   projectId: z.string().cuid(),
   gate: z.enum(APPROVAL_GATES),
-  decision: z.enum(['approved', 'rejected', 'changes_requested']),
+  decision: z.enum(["approved", "rejected", "changes_requested"]),
   notes: z.string().max(2000).optional(),
 });
 
 export const rightsCheckInputSchema = z.object({
   projectId: z.string().cuid(),
   songId: z.string().cuid(),
+  audioRightsAttestation: z
+    .object({
+      confirmed: z.literal(true),
+      basis: z.enum(["owner", "licensed", "public_domain"]),
+      note: z.string().trim().min(3).max(500).optional(),
+    })
+    .optional(),
 });
 
 // ---------- Sharing / PostGIS ----------------------------------------------
 
 export const createShareLinkSchema = z.object({
   songId: z.string().cuid(),
-  targetUrl: z.string().url(),
+  targetUrl: z
+    .string()
+    .url()
+    .max(2048)
+    .refine(value => {
+      try {
+        const parsed = new URL(value);
+        return (
+          ["http:", "https:"].includes(parsed.protocol) &&
+          !parsed.username &&
+          !parsed.password
+        );
+      } catch {
+        return false;
+      }
+    }, "targetUrl must be an http(s) URL without embedded credentials"),
 });
 
 export const logShareEventSchema = z.object({
   shareLinkCode: z.string().min(4).max(32),
-  eventType: z.enum(['click', 'play', 'download', 'share', 'conversion']),
+  eventType: z.enum(["click", "play", "download", "share", "conversion"]),
   sourcePlatform: z.string().max(40).optional(),
   // Optional lat/lng — typically derived server-side from IP geolocation.
   lat: z.number().min(-90).max(90).optional(),
@@ -310,15 +367,36 @@ export const logShareEventSchema = z.object({
 // ---------- Uploads (bring-your-own beat / instrumental / vocal) ------------
 // The artist uploads their OWN authentic audio. We never invent or replace it.
 
-export const UPLOAD_KINDS = ['beat', 'instrumental', 'vocal', 'reference', 'stem'] as const;
+export const UPLOAD_KINDS = [
+  "beat",
+  "instrumental",
+  "vocal",
+  "reference",
+  "stem",
+] as const;
+const AUDIO_FORMATS = [
+  "wav",
+  "mp3",
+  "flac",
+  "aiff",
+  "m4a",
+  "ogg",
+  "webm",
+] as const;
 
 export const presignUploadSchema = z.object({
   kind: z.enum(UPLOAD_KINDS),
-  contentType: z.string().min(3).max(120),
-  ext: z.string().min(1).max(8),
+  contentType: z
+    .string()
+    .regex(/^audio\/[a-z0-9.+-]+$/i)
+    .max(120),
+  ext: z.enum(AUDIO_FORMATS),
+  sizeBytes: z
+    .number()
+    .int()
+    .min(1_000)
+    .max(250 * 1024 * 1024),
 });
-
-const AUDIO_FORMATS = ['wav', 'mp3', 'flac', 'aiff', 'm4a', 'ogg', 'webm'] as const;
 
 export const attachBeatUploadSchema = z.object({
   key: z.string().min(4), // R2 object key returned by /uploads/presign
@@ -326,7 +404,7 @@ export const attachBeatUploadSchema = z.object({
   bpm: z.number().int().min(40).max(220).optional(),
   keySignature: z.string().max(12).optional(),
   durationS: z.number().min(1).max(1200).optional(),
-  format: z.enum(AUDIO_FORMATS).default('wav'),
+  format: z.enum(AUDIO_FORMATS).default("wav"),
   title: z.string().max(120).optional(),
   instrumental: z.boolean().optional(), // full instrumental vs a loop/beat
 });
@@ -334,9 +412,10 @@ export const attachBeatUploadSchema = z.object({
 export const attachVocalUploadSchema = z.object({
   key: z.string().min(4),
   songId: z.string().cuid().optional(),
-  role: z.enum(['lead', 'double', 'ad-lib', 'harmony']).default('lead'),
+  role: z.enum(["lead", "double", "ad-lib", "harmony"]).default("lead"),
   durationS: z.number().min(1).max(1200).optional(),
   language: langSchema.optional(),
+  isolationConfirmed: z.literal(true),
 });
 
 // Upload a FINISHED song / full mix — stored as a mix and (by default) sent
@@ -350,7 +429,7 @@ export const attachSongUploadSchema = z.object({
   // drives with a MEASURED gain and lands linearly on target — the old "-9
   // crusher" was the one-pass dynamic loudnorm, not the number. Artists who
   // want the record to breathe opt in to 'breathe_-16.5'.
-  masterPreset: z.enum(MASTER_PRESETS).default('afro_stream_-9'),
+  masterPreset: z.enum(MASTER_PRESETS).default("afro_stream_-9"),
   autoMaster: z.boolean().default(true),
 });
 
@@ -360,11 +439,12 @@ export const attachSongUploadSchema = z.object({
 export const importUrlSchema = z.object({
   projectId: z.string().cuid(),
   url: z.string().url(),
-  kind: z.enum(['beat', 'instrumental', 'vocal', 'song', 'reference']),
+  kind: z.enum(["beat", "instrumental", "vocal", "song", "reference"]),
   songId: z.string().cuid().optional(),
   bpm: z.number().int().min(40).max(220).optional(),
   keySignature: z.string().max(12).optional(),
-  role: z.enum(['lead', 'double', 'ad-lib', 'harmony']).optional(),
+  role: z.enum(["lead", "double", "ad-lib", "harmony"]).optional(),
+  isolationConfirmed: z.boolean().optional(),
   title: z.string().max(120).optional(),
   /** kind 'song' only: learn + harvest WITHOUT filing a catalog Song — training
    *  uploads must never appear in the artist's working catalog. */
@@ -389,7 +469,7 @@ export const mixerCompSchema = z.object({
 
 export const mixerTrackSchema = z.object({
   id: z.string(),
-  kind: z.enum(['beat', 'vocal']),
+  kind: z.enum(["beat", "vocal"]),
   label: z.string().max(60).optional(),
   gainDb: z.number().min(-24).max(12).default(0),
   pan: z.number().min(-1).max(1).default(0),
@@ -421,22 +501,44 @@ export const analyzeAudioSchema = z.object({
   /** Training session: delete the uploaded audio after learning from it. */
   purgeAfter: z.boolean().optional(),
   factsOnly: z.boolean().optional(),
-  url: z.string().url(), // an uploaded/imported track url the artist has rights to
+  /** Required for expression-level learning. Omit for the safe facts-only path. */
+  rightsConfirmed: z.boolean().optional(),
+  url: z.string().url(), // uploaded reference; full learning additionally requires rightsConfirmed
 });
 
 // ---------- Rights spine (split-sheet + ISRC/UPC + green-light) -------------
 
 export const splitEntrySchema = z.object({
   name: z.string().min(1).max(120),
-  role: z.enum(['writer', 'composer', 'producer', 'performer', 'featured', 'other']).default('writer'),
+  role: z
+    .enum(["writer", "composer", "producer", "performer", "featured", "other"])
+    .default("writer"),
   share: z.number().min(0).max(100),
 });
 
 export const rightsInputSchema = z.object({
-  splitSheet: z.array(splitEntrySchema).max(20).optional(),
-  isrc: z.string().max(20).optional(),
-  upc: z.string().max(20).optional(),
-  nativeReviewOk: z.boolean().optional(), // a native speaker signed off on YO/IG/HA delivery
+  splitSheet: z.array(splitEntrySchema).min(1).max(20).optional(),
+  acceptSplits: z.boolean().optional(),
+  isrc: z
+    .string()
+    .trim()
+    .toUpperCase()
+    .regex(/^[A-Z]{2}-?[A-Z0-9]{3}-?[0-9]{2}-?[0-9]{5}$/)
+    .optional(),
+  upc: z
+    .string()
+    .trim()
+    .regex(/^[0-9]{12,14}$/)
+    .optional(),
+  nativeReview: z
+    .object({
+      reviewerName: z.string().trim().min(2).max(120),
+      languages: z.array(z.string().trim().min(2).max(12)).min(1).max(8),
+      attested: z.literal(true),
+      notes: z.string().trim().max(1000).optional(),
+    })
+    .optional(),
+  revokeNativeReview: z.literal(true).optional(),
 });
 
 // ---------- Drop Machine (batch generate → rank → shortlist) ---------------
@@ -450,11 +552,11 @@ export const dropBatchSchema = z.object({
    *  what reaches the music engine's style prompt. theme = the writers' brief. */
   vibe: z.string().max(500).optional(),
   songTitle: z.string().max(80).optional(),
-  voice: z.enum(['auto', 'female', 'male', 'duet', 'group']).optional(),
+  voice: z.enum(["auto", "female", "male", "duet", "group"]).optional(),
   /** WO-5: takes rendered per song (draft default 1; Hit-Maker flows pass 2). */
   candidates: z.number().int().min(1).max(4).optional(),
   count: z.number().int().min(1).max(6).default(3),
-  genre: z.string().max(40).default('afrobeats'),
+  genre: z.string().max(40).default("afrobeats"),
   // FUSION: extra genres blended into the primary (e.g. amapiano × drill) —
   // the primary is the backbone; these inject their signature sounds.
   fusionGenres: z.array(genreSchema).max(2).optional(),
@@ -466,7 +568,9 @@ export const dropBatchSchema = z.object({
   pinnedReferenceId: z.string().cuid().optional(),
   bpm: z.number().int().min(60).max(180).default(103),
   withVocals: z.boolean().default(true),
-  songEngine: z.enum(['suno', 'ace_step', 'minimax', 'own']).optional(),
+  songEngine: z
+    .enum(["suno", "eleven", "ace_step", "minimax", "own"])
+    .optional(),
   // Artist LANE to steer the vibe toward (e.g. "Davido, Wizkid"). Captures the
   // energy/production feel — never copies songs, never named in the output.
   influence: z.string().max(200).optional(),
@@ -477,10 +581,17 @@ export const dropBatchSchema = z.object({
 // ---------- Proxied audio upload (browser → API → R2, no R2 CORS) ----------
 
 export const audioUploadSchema = z.object({
-  kind: z.string().max(20).default('reference'),
-  contentType: z.string().max(60).default('audio/webm'),
-  ext: z.string().max(8).default('webm'),
-  dataBase64: z.string().min(16), // raw base64 or a data: URL
+  kind: z.enum(UPLOAD_KINDS).default("reference"),
+  contentType: z
+    .string()
+    .regex(/^audio\/[a-z0-9.+-]+$/i)
+    .max(60)
+    .default("audio/webm"),
+  ext: z.enum(AUDIO_FORMATS).default("webm"),
+  dataBase64: z
+    .string()
+    .min(16)
+    .max(42 * 1024 * 1024), // ~30 MB decoded
 });
 
 // ---------- Snippet (vertical shareable clip) ------------------------------
@@ -493,7 +604,7 @@ export const snippetInputSchema = z.object({
 // ---------- Integrations (in-app music engine key) -------------------------
 
 export const integrationsInputSchema = z.object({
-  musicProvider: z.enum(['replicate', 'suno', 'stub']).nullable().optional(),
+  musicProvider: z.enum(["replicate", "eleven", "suno"]).nullable().optional(),
   musicApiKey: z.string().max(400).nullable().optional(), // '' = keep existing
 });
 

@@ -41,12 +41,12 @@ MATERIAL BEATS = LET AI RUN IT: when the user wants "the exact beat", a beat fro
 
 You will receive the user's workspace, current project, artist DNA, recent artifacts, credit balance, and a DATA LAKE summary in WORKSPACE_CONTEXT. Use them.
 
-DATA LAKE — YOU ARE CONNECTED TO EVERYTHING THE ARTIST HAS TAUGHT YOU. WORKSPACE_CONTEXT.dataLake shows it: totalReferences, byKind {heardSongs, lyricCraft, trendSnapshots, selfTraining}, topGenres, sampleTraits, lastLearnedAt. This is workspace-wide and REAL — it persists across sessions and projects. So even in a brand-new chat, if dataLake.totalReferences > 0 the artist HAS trained you.
+DATA LAKE — YOU ARE CONNECTED TO THE USABLE THINGS THE ARTIST HAS TAUGHT YOU. WORKSPACE_CONTEXT.dataLake shows totalReferences plus byKind {heardSongs, lyricCraft, trendSnapshots, selfTraining, zapped, referenceFacts, unclassified, failed}, topGenres, sampleTraits, and lastLearnedAt. This is workspace-wide and persists across sessions and projects. Never infer usable training from totalReferences alone: unclassified and failed rows are visible audit records but are blocked from generation.
 - NEVER say "no learning has happened", "I can't see the data lake", or "nothing has been stored". If dataLake shows references, speak to them by number and genre (e.g. "you've trained me on 30 heard songs — 23 afrobeats, 4 amapiano — plus 22 lyric-craft studies").
 - This lake is NOT passive notes: it AUTOMATICALLY feeds every song you make. Heard/trained songs go into learnedReferenceBrief (the hook/lyric/arranger prompts) AND learnedStyleTags (the MUSIC MODEL itself — the actual drums/groove/bass). Lyric-craft studies feed the writers (patterns only, never words). So when the artist asks "what happens now / how does my training help", the honest answer is: the NEXT song you make in a trained genre already rebuilds that sound — they don't have to do anything to "apply" it.
 - To answer "what have I taught you?" or "show my data lake" in detail, call show_data_lake — it returns the counts, recent learnings, and exactly where each kind feeds generation.
 
-IMPORTANT — cross-turn IDs: WORKSPACE_CONTEXT contains real IDs — hooks[] (each with id, text, score, approved), latestLyric.id, latestSong.id. When you call score_hooks, approve_hook, generate_lyrics, render_demo_vocal, run_rights_check, etc., ALWAYS pass the actual IDs from WORKSPACE_CONTEXT. Never invent IDs. If hooks already have scores, you don't need to score them again — just pick the best by score.
+IMPORTANT — cross-turn IDs: WORKSPACE_CONTEXT contains real IDs — hooks[] (each with id, text, score, approved), latestLyric.id, latestSong.id. When you call score_hooks, approve_hook, generate_lyrics, run_rights_check, etc., ALWAYS pass the actual IDs from WORKSPACE_CONTEXT. Never invent IDs. If hooks already have scores, you don't need to score them again — just pick the best by score.
 
 BREVITY LAW — artists want moves, not memos. Default to 1–2 short sentences. No greetings, no recaps of what you just did, no "I will now…", no restating their request, no option menus unless asked. After a tool runs, say the ONE thing that matters and stop.`;
 
@@ -187,24 +187,10 @@ export const STUDIO_CHAT_TOOLS = [
           enum: ['suno', 'ace_step', 'minimax'],
           // §1.11 THE WALL: the model repeats these words to users — class
           // language only (values stay internal identifiers).
-          description: 'Vocal/song engine when withVocals=true. suno = the flagship engine (first-party releases, default when available); minimax = standard, high vocal realism; ace_step = fast draft fallback. Omit to auto-pick the best. When talking to the user, call them "flagship engine" / "standard engine" / "draft engine" — never internal engine ids.',
+          description: 'Vocal/song route when withVocals=true. The flagship route is first-party only; minimax and ace_step are standard routes. Omit to use the connected automatic route. When talking to the user, say "flagship engine", "standard engine", or "draft engine" and never expose internal engine ids.',
         },
       },
       required: ['genre', 'bpm'],
-    },
-  },
-  {
-    type: 'function' as const,
-    name: 'render_demo_vocal',
-    description: 'Queue a vocal render job using the artist\'s consented voice profile.',
-    parameters: {
-      type: 'object',
-      properties: {
-        voiceProfileId: { type: 'string' },
-        lyricId: { type: 'string' },
-        role: { type: 'string', enum: ['lead', 'double', 'ad-lib', 'harmony'], default: 'lead' },
-      },
-      required: ['voiceProfileId', 'lyricId'],
     },
   },
   {
@@ -250,7 +236,7 @@ export const STUDIO_CHAT_TOOLS = [
   {
     type: 'function' as const,
     name: 'run_rights_check',
-    description: 'Run a rights/similarity check on the song.',
+    description: 'Queue the fail-closed audio-recognition and lyric-rights scan for a certified song.',
     parameters: {
       type: 'object',
       properties: { songId: { type: 'string' } },
@@ -261,7 +247,7 @@ export const STUDIO_CHAT_TOOLS = [
     type: 'function' as const,
     name: 'create_release_kit',
     description:
-      'Bundle mp3 + wav + stems + cover + lyrics + video + release captions into one zip with a rights receipt.',
+      'Build a verified downloadable release ZIP from the current certified audio, cover, lyrics, splits, and rights receipt.',
     parameters: {
       type: 'object',
       properties: { songId: { type: 'string' } },
@@ -365,7 +351,7 @@ export const STUDIO_CHAT_TOOLS = [
     type: 'function' as const,
     name: 'make_material_beat',
     description:
-      "AI-AUTOMATIC 'exact beat' from real owned loops: it FORGES whatever the genre's kit is missing (drums, talking drum, log drum, bass, African percussion, chords) AND then ASSEMBLES the beat — all by itself, no manual forge-then-assemble. Use this whenever the user wants a beat from real material / 'the exact beat' / the material layer (instead of a hallucinated text-to-audio beat). ALWAYS prefer this over calling forge_materials and assemble_beat separately.",
+      "AI-AUTOMATIC 'exact beat' from real, rights-classified loops: it FORGES whatever the genre's kit is missing (drums, talking drum, log drum, bass, African percussion, chords) under the connected provider's terms AND then ASSEMBLES the beat — all by itself, no manual forge-then-assemble. Use this whenever the user wants a beat from real material / 'the exact beat' / the material layer. ALWAYS prefer this over calling forge_materials and assemble_beat separately.",
     parameters: {
       type: 'object',
       properties: {
@@ -379,7 +365,7 @@ export const STUDIO_CHAT_TOOLS = [
     type: 'function' as const,
     name: 'forge_materials',
     description:
-      "MATERIAL LAYER step 1: forge ISOLATED, owned loops (solo drums / log drum / bass / percussion / chord bed) for a genre into the material library — melodic loops in key. Use when the user wants 'the exact beat' or real arranged material and the library is empty for that genre.",
+      "MATERIAL LAYER step 1: forge ISOLATED loops (solo drums / log drum / bass / percussion / chord bed) under the connected provider's terms for a genre into the material library — melodic loops in key. Use when the user wants 'the exact beat' or real arranged material and the library is empty for that genre.",
     parameters: {
       type: 'object',
       properties: { genre: { type: 'string' }, bpm: { type: 'integer', default: 108 }, keySignature: { type: 'string', description: "e.g. 'B minor' — defaults to the genre's home key" } },
@@ -422,13 +408,12 @@ export const STUDIO_CHAT_TOOLS = [
     type: 'function' as const,
     name: 'set_release_rights',
     description:
-      'Set the split-sheet + rights on a song and (if splits sum to 100) auto-assign ISRC/UPC and recompute the release green-light.',
+      'Save a draft split-sheet. Human acceptance and native-language review must be completed by a named workspace owner on the Release screen.',
     parameters: {
       type: 'object',
       properties: {
         songId: { type: 'string' },
         splitSheet: { type: 'array', items: { type: 'object', properties: { name: { type: 'string' }, role: { type: 'string' }, share: { type: 'number' } } } },
-        nativeReviewOk: { type: 'boolean' },
       },
       required: ['songId'],
     },

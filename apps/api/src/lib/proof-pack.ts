@@ -62,18 +62,70 @@ export async function assembleProofPack(workspaceId: string, songId: string): Pr
   // assembler writes the full transform log onto the beat (material.ts); a
   // provider render simply has none, and we say so rather than imply shelf use.
   const assembly = Array.isArray(bm.assemblyLog) ? bm.assemblyLog : [];
+  type MaterialReceipt = {
+    materialId: string;
+    role: string;
+    sourceBpm: number | null;
+    targetBpm: number | null;
+    stretchRatio: number | null;
+    gain: number | null;
+    pan: number | null;
+    sections: unknown;
+  };
+  type ReferenceReceipt = {
+    referenceId: string;
+    position: number;
+    pinned: boolean;
+    influence: unknown;
+    reference: { title: string | null; analysisState: string; rightsBasis: string };
+  };
+  const [materialReceipts, referenceReceipts]: [MaterialReceipt[], ReferenceReceipt[]] = beat
+    ? await Promise.all([
+        prisma.materialUsage.findMany({
+          where: { workspaceId, beatId: beat.id },
+          orderBy: { createdAt: 'asc' },
+          select: {
+            materialId: true,
+            role: true,
+            sourceBpm: true,
+            targetBpm: true,
+            stretchRatio: true,
+            gain: true,
+            pan: true,
+            sections: true,
+          },
+        }),
+        prisma.referenceUsage.findMany({
+          where: { workspaceId, beatId: beat.id },
+          orderBy: { position: 'asc' },
+          select: {
+            referenceId: true,
+            position: true,
+            pinned: true,
+            influence: true,
+            reference: { select: { title: true, analysisState: true, rightsBasis: true } },
+          },
+        }),
+      ])
+    : [[], []];
 
   // Lane grounding at proof time — WHO the profile that judged this song was.
   const refs = await prisma.soundReference.findMany({
-    where: { workspaceId, NOT: [{ sourceUrl: { startsWith: 'lyric:' } }, { sourceUrl: { startsWith: 'trend:' } }] },
+    where: {
+      workspaceId,
+      active: true,
+      analysisState: 'measured',
+      rightsBasis: { not: 'unknown' },
+      NOT: [{ sourceUrl: { startsWith: 'lyric:' } }, { sourceUrl: { startsWith: 'trend:' } }],
+    },
     take: 300,
-    select: { genre: true, sourceUrl: true, recipe: true },
+    select: { genre: true, sourceUrl: true, recipe: true, rightsBasis: true },
   });
-  type RefRow = { genre: string | null; sourceUrl: string; recipe: unknown };
+  type RefRow = { genre: string | null; sourceUrl: string; recipe: unknown; rightsBasis: string };
   const origins = refs
     .filter((r: RefRow) => norm(r.genre) === norm(song.project?.genre))
     .filter((r: RefRow) => ((r.recipe ?? {}) as { measured?: { engineOk?: boolean } }).measured?.engineOk)
-    .map((r: RefRow) => ({ origin: referenceOrigin(r.sourceUrl, (r.recipe ?? {}) as { source?: string }) }));
+    .map((r: RefRow) => ({ origin: referenceOrigin(r.sourceUrl, (r.recipe ?? {}) as { source?: string }, r.rightsBasis) }));
   const grounding = groundingOf(origins);
 
   // Credits actually ledgered against this song (renders charged to the project
@@ -85,7 +137,7 @@ export async function assembleProofPack(workspaceId: string, songId: string): Pr
 
   const gaps = (song.laneGaps ?? {}) as Record<string, unknown>;
   return {
-    proofPackVersion: 2,
+    proofPackVersion: 3,
     assembledAt: new Date().toISOString(),
     song: { id: song.id, title: song.lyric?.title || song.title, lane: song.project?.genre ?? null, bpm: song.project?.bpm ?? null },
     // What the artist ASKED for vs what actually judged it — selected genre from
@@ -106,10 +158,28 @@ export async function assembleProofPack(workspaceId: string, songId: string): Pr
           at: renderJob.createdAt,
         }
       : { note: 'no render job stored — request facts unavailable, not reconstructed' },
-    // Which of the artist's references shaped this render — copied verbatim from
-    // the trainingUsage the route stamped on the job at render time.
-    training: rj.trainingUsage
+    // Which references shaped this render. New takes read the append-only usage
+    // ledger; pre-ledger takes fall back to their stored job metadata.
+    training: referenceReceipts.length
       ? {
+          evidence: 'durable-ledger',
+          usedReferenceIds: referenceReceipts.map((receipt) => receipt.referenceId),
+          measuredCount: referenceReceipts.filter((receipt) => receipt.reference.analysisState === 'measured').length,
+          totalCount: referenceReceipts.length,
+          pinnedReferenceId: referenceReceipts.find((receipt) => receipt.pinned)?.referenceId ?? null,
+          receipts: referenceReceipts.map((receipt) => ({
+            referenceId: receipt.referenceId,
+            title: receipt.reference.title,
+            position: receipt.position,
+            pinned: receipt.pinned,
+            analysisState: receipt.reference.analysisState,
+            rightsBasis: receipt.reference.rightsBasis,
+            influence: receipt.influence,
+          })),
+        }
+      : rj.trainingUsage
+      ? {
+          evidence: 'historical-job-metadata',
           usedReferenceIds: rj.trainingUsage.referenceIds ?? [],
           measuredCount: rj.trainingUsage.measured ?? 0,
           totalCount: rj.trainingUsage.total ?? 0,
@@ -126,11 +196,22 @@ export async function assembleProofPack(workspaceId: string, songId: string): Pr
     singing: (rj as { sungForm?: { scorecard?: unknown; alignmentCount?: number; applied?: boolean; skipped?: string; retries?: number } }).sungForm
       ? (rj as { sungForm: Record<string, unknown> }).sungForm
       : { note: renderJob ? 'no sung-form record — render predates the Singing Brain, or artist-authored lyrics rode verbatim' : 'no render job stored' },
-    // Shelf materials IN this take (own-engine/material assemblies log every
-    // loop ID + role). Provider renders carry no shelf audio — said plainly.
+    // Shelf materials in this take. New assemblies read transactional receipts;
+    // historical takes may only have the immutable-at-render assembly metadata.
     materials: beat
-      ? assembly.length
-        ? { usedMaterialIds: assembly.map((x) => x.materialId ?? null), roles: assembly.map((x) => x.role ?? null) }
+      ? materialReceipts.length
+        ? {
+            evidence: 'durable-ledger',
+            usedMaterialIds: materialReceipts.map((receipt) => receipt.materialId),
+            roles: materialReceipts.map((receipt) => receipt.role),
+            receipts: materialReceipts,
+          }
+        : assembly.length
+          ? {
+              evidence: 'historical-beat-metadata',
+              usedMaterialIds: assembly.map((x) => x.materialId ?? null),
+              roles: assembly.map((x) => x.role ?? null),
+            }
         : { usedMaterialIds: [], note: 'provider render — no shelf material in this take' }
       : { usedMaterialIds: [], note: 'no rendered take stored' },
     lane: {

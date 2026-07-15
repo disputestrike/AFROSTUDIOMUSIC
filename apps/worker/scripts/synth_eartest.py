@@ -21,6 +21,9 @@ import sys
 import json
 import tempfile
 import subprocess
+import hashlib
+import hmac
+import shutil
 import numpy as np
 
 try:
@@ -107,54 +110,130 @@ EXPECT_4OTF = {"amapiano": True, "house": True, "afrobeats": False}
 EXPECT_TEMPO = {"amapiano": 112, "house": 124, "afrobeats": 105}
 
 
-def main():
-    d = tempfile.mkdtemp(prefix="synth-ear-")
-    logdr = {}; ok = True
-    print("genre      tempo(exp)   4OTF(exp)     logDrL")
-    for name, spec in SPECS.items():
-        mix, drums, bass = render(**spec)
-        mp = os.path.join(d, f"{name}.wav"); dp = os.path.join(d, f"{name}_d.wav"); bp = os.path.join(d, f"{name}_b.wav")
-        sf.write(mp, mix, SR); sf.write(dp, drums, SR); sf.write(bp, bass, SR)
-        out = subprocess.run([sys.executable, ANALYZER, mp, "--drums", dp, "--bass", bp], capture_output=True, text=True, timeout=600)
-        res = json.loads(out.stdout.strip().splitlines()[-1])
-        tempo = res["tempoBpm"].get("value")
-        fof = res["fourOnFloor"].get("value")
-        ld = res["logDrumLikelihood"].get("value")
-        logdr[name] = ld if isinstance(ld, (int, float)) else -1
-        tempo_ok = tempo is not None and abs(tempo - EXPECT_TEMPO[name]) <= 3
-        fof_ok = fof == EXPECT_4OTF[name]
-        ok = ok and tempo_ok and fof_ok
-        print(f"{name:10} {str(tempo):>5}({EXPECT_TEMPO[name]})  {str(fof):>5}({EXPECT_4OTF[name]})   {ld}   {'' if tempo_ok and fof_ok else '<-- FAIL'}")
-    sep = logdr["amapiano"] - max(logdr["house"], logdr["afrobeats"])
-    sep_ok = sep > 0
-    ok = ok and sep_ok
-    print(f"\nlog-drum separation: amapiano({logdr['amapiano']}) - max(others) = {sep:.3f}  {'OK' if sep_ok else 'FAIL (should be > 0)'}")
-    print("\n" + ("PASS: synthetic ear regression OK (direction). Real calibration -> eval-ear.ts." if ok else "FAIL: detector regression."))
+def _sign_artifact(artifact, key):
+    unsigned = dict(artifact)
+    unsigned.pop("signature", None)
+    unsigned["signatureAlgorithm"] = "hmac-sha256"
+    unsigned["signatureKeyId"] = hashlib.sha256(key.encode("utf-8")).hexdigest()[:16]
+    canonical = json.dumps(unsigned, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False)
+    unsigned["signature"] = hmac.new(key.encode("utf-8"), canonical.encode("utf-8"), hashlib.sha256).hexdigest()
+    return unsigned
 
-    # When all 3 gates pass, write a TRUTH-GATE calibration artifact so the log drum
-    # ships 'measured'. Clearly labelled calibratedOn:'synthetic' — the constants are
-    # validated to SEPARATE the genres on controlled audio; 9 real tracks via
-    # eval-ear.ts overwrite this for full accuracy on real records. This is data
-    # earning the gate open, not a human flag.
-    if ok:
-        import datetime
-        artifact = {
-            "schemaVersion": 3,
-            "gatesPassed": True,
-            "separationMargin": round(float(sep), 3),
-            "fittedOn": datetime.date.today().isoformat(),
-            "calibratedOn": "synthetic-archetypes",
-            "trackCount": 3,
-            "note": "Calibrated on SYNTHETIC amapiano/house/afrobeats archetypes (controlled DSP, known ground truth) — proves the constants SEPARATE the genres. Drop 9 real rights-clean tracks + run eval-ear.ts to overwrite with real-audio calibration for full accuracy on real records.",
-            "params": {"r0": 0.45, "s": 0.12, "w1": 1.2, "w2": 0.15, "glideFloor": 0.30},
-        }
-        path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "py", "fixtures", "logdrum_calibration.json")
-        with open(path, "w") as f:
-            json.dump(artifact, f, indent=2)
-            f.write("\n")
-        print(f"Wrote calibration artifact (synthetic, margin {sep:.3f}) -> {path}")
-        print("log-drum now ships 'measured'. Commit logdrum_calibration.json; real tracks refine it.")
-    sys.exit(0 if ok else 1)
+
+def _calibration_status(path, key):
+    env = os.environ.copy()
+    env["LOGDRUM_CALIBRATION_PATH"] = path
+    env["LOGDRUM_CALIBRATION_SIGNING_KEY"] = key
+    run = subprocess.run(
+        [sys.executable, ANALYZER, "--calibration-status"],
+        capture_output=True,
+        text=True,
+        timeout=30,
+        env=env,
+    )
+    if run.returncode != 0 or not run.stdout.strip():
+        raise RuntimeError(f"calibration status failed: {run.stderr[-300:]}")
+    return json.loads(run.stdout.strip().splitlines()[-1])
+
+
+def _truth_gate_regression(directory):
+    key = "synthetic-test-signing-key-32-bytes-minimum"
+    artifact = {
+        "schemaVersion": 4,
+        "manifestSchemaVersion": 1,
+        "gatesPassed": True,
+        "provenance": "real-9track",
+        "rightsVerified": True,
+        "trackCount": 9,
+        "trackIds": [f"track-{index:02d}" for index in range(9)],
+        "corpusHash": "a" * 64,
+        "genreCounts": {"amapiano": 3, "afrobeats": 3, "house": 3},
+        "rightsBasisCounts": {"owned-master": 9, "licensed-evaluation": 0},
+        "separationMargin": 0.2,
+        "gates": {"tempo": True, "fourOnFloor": True, "logDrumSeparation": True},
+        "params": {"r0": 0.45, "s": 0.12, "w1": 1.2, "w2": 0.15, "glideFloor": 0.3},
+    }
+    signed = _sign_artifact(artifact, key)
+    path = os.path.join(directory, "signed-calibration.json")
+    with open(path, "w", encoding="utf-8") as handle:
+        json.dump(signed, handle, ensure_ascii=False)
+    valid = _calibration_status(path, key)
+    signed["separationMargin"] = 0.3
+    with open(path, "w", encoding="utf-8") as handle:
+        json.dump(signed, handle, ensure_ascii=False)
+    tampered = _calibration_status(path, key)
+    passed = valid.get("calibrated") is True and tampered.get("calibrated") is False and tampered.get("reason") == "invalid-signature"
+    print(f"truth-gate signature: {'OK' if passed else 'FAIL'} (valid={valid.get('calibrated')}, tampered={tampered.get('reason')})")
+    return passed
+
+
+def main():
+    directory = tempfile.mkdtemp(prefix="synth-ear-")
+    logdr = {}
+    ok = True
+    try:
+        print("genre      tempo(exp)   4OTF(exp)     logDrL")
+        for name, spec in SPECS.items():
+            mix, drums, bass = render(**spec)
+            mp = os.path.join(directory, f"{name}.wav")
+            dp = os.path.join(directory, f"{name}_d.wav")
+            bp = os.path.join(directory, f"{name}_b.wav")
+            sf.write(mp, mix, SR)
+            sf.write(dp, drums, SR)
+            sf.write(bp, bass, SR)
+            out = subprocess.run(
+                [sys.executable, ANALYZER, mp, "--drums", dp, "--bass", bp],
+                capture_output=True,
+                text=True,
+                timeout=600,
+            )
+            if out.returncode != 0 or not out.stdout.strip():
+                raise RuntimeError(f"analyzer failed for {name}: {out.stderr[-300:]}")
+            result = json.loads(out.stdout.strip().splitlines()[-1])
+            tempo = result["tempoBpm"].get("value")
+            fof = result["fourOnFloor"].get("value")
+            likelihood = result["logDrumLikelihood"].get("value")
+            logdr[name] = likelihood if isinstance(likelihood, (int, float)) else -1
+            tempo_ok = tempo is not None and abs(tempo - EXPECT_TEMPO[name]) <= 3
+            fof_ok = fof == EXPECT_4OTF[name]
+            ok = ok and tempo_ok and fof_ok
+            marker = "" if tempo_ok and fof_ok else "<-- FAIL"
+            print(f"{name:10} {str(tempo):>5}({EXPECT_TEMPO[name]})  {str(fof):>5}({EXPECT_4OTF[name]})   {likelihood}   {marker}")
+
+        separation = logdr["amapiano"] - max(logdr["house"], logdr["afrobeats"])
+        separation_ok = separation > 0
+        ok = ok and separation_ok
+        print(f"\nlog-drum separation: amapiano({logdr['amapiano']}) - max(others) = {separation:.3f}  {'OK' if separation_ok else 'FAIL (should be > 0)'}")
+        ok = ok and _truth_gate_regression(directory)
+
+        if ok:
+            import datetime
+            artifact = {
+                "schemaVersion": 4,
+                "gatesPassed": True,
+                "separationMargin": round(float(separation), 3),
+                "fittedOn": datetime.date.today().isoformat(),
+                "calibratedOn": "synthetic-archetypes",
+                "trackCount": 3,
+                "provenance": "synthetic",
+                "rightsVerified": False,
+                "manifestSchemaVersion": None,
+                "corpusHash": None,
+                "genreCounts": {"amapiano": 1, "afrobeats": 1, "house": 1},
+                "rightsBasisCounts": {"owned-master": 0, "licensed-evaluation": 0},
+                "note": "Synthetic DSP regression evidence only; it cannot open the measured gate.",
+                "params": {"r0": 0.45, "s": 0.12, "w1": 1.2, "w2": 0.15, "glideFloor": 0.3},
+            }
+            path = os.path.join(HERE, "..", "py", "fixtures", "logdrum_calibration.synthetic.json")
+            with open(path, "w", encoding="utf-8") as handle:
+                json.dump(artifact, handle, indent=2)
+                handle.write("\n")
+            print(f"Wrote synthetic diagnostic (never the truth artifact) -> {path}")
+
+        print("\n" + ("PASS: synthetic ear regression and signature gate are sound." if ok else "FAIL: detector or truth-gate regression."))
+        sys.exit(0 if ok else 1)
+    finally:
+        shutil.rmtree(directory, ignore_errors=True)
 
 
 if __name__ == "__main__":

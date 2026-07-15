@@ -1,7 +1,7 @@
 'use client';
 
 /**
- * MATERIALS — the studio's shelf of real, owned musical material.
+ * MATERIALS — the studio's shelf of real, rights-classified musical material.
  *
  * Forge a genre kit (isolated loops: drums / log drum / bass / percussion /
  * chord bed, melodic ones in key), watch them land, play each loop, then
@@ -12,6 +12,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { useApi } from '@/lib/api';
 import { Loader2, Hammer, Layers, Play } from 'lucide-react';
+import { materialCoverage } from '@afrohit/shared';
 
 const GENRES = [
   { value: 'afrobeats', label: 'Afrobeats' }, { value: 'afro_fusion', label: 'Afro-fusion' },
@@ -39,6 +40,11 @@ interface Material {
   origin?: string;
   /** ≥2 = a deliberately DIFFERENT take of the same role (variation B/C/D…). */
   variant?: number | null;
+  readiness: string;
+  qualityState: string;
+  roleEvidence: string;
+  rightsBasis: string;
+  usageCount: number;
   url: string;
 }
 
@@ -48,6 +54,9 @@ interface Integrity {
   distinctFiles: number;
   duplicates: number;
   byOrigin: Record<string, number>;
+  byReadiness: Record<string, number>;
+  usedMaterials: number;
+  totalUses: number;
 }
 
 const ORIGIN_LABEL: Record<string, string> = { forged: 'forged', synth: 'synth', artist_stem: 'your stems', provider_stem: 'provider stems' };
@@ -87,7 +96,7 @@ export default function MaterialsPage() {
       setLoadErr((e as Error).message.slice(0, 160));
       return null;
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+
   }, []);
 
   useEffect(() => {
@@ -110,7 +119,7 @@ export default function MaterialsPage() {
       setProjects(p);
       if (p[0]) setProjectId(p[0].id);
     }).catch(() => {});
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+
   }, []);
 
   function jobError(errorJson: unknown): string {
@@ -199,11 +208,15 @@ export default function MaterialsPage() {
     const g = m.genre ?? 'unknown';
     shelf.set(g, [...(shelf.get(g) ?? []), m]);
   }
-  // Can the CURRENT genre+bpm actually assemble? (≥2 roles within ±15% bpm —
-  // same rule as the API, so the button never invites a guaranteed 400.)
-  const usable = (materials ?? []).filter((m) => m.genre === genre && m.bpm && Math.abs(m.bpm - bpm) / bpm <= 0.15);
+  // Mirror the shared worker/API law so this control reflects a shippable bed.
+  const usable = (materials ?? []).filter((m) =>
+    m.genre === genre && m.readiness !== 'rejected' && !['failed', 'duplicate'].includes(m.qualityState) &&
+    !!m.rightsBasis && m.rightsBasis !== 'unknown' &&
+    (m.bpm == null || Math.abs(m.bpm - bpm) / bpm <= 0.15),
+  );
   const usableRoles = new Set(usable.map((m) => m.role));
-  const canAssemble = usableRoles.size >= 2;
+  const coverage = materialCoverage(usable);
+  const canAssemble = coverage.ready;
 
   return (
     <div className="mx-auto max-w-5xl px-6 py-10">
@@ -211,9 +224,8 @@ export default function MaterialsPage() {
         Material <span className="text-gradient">shelf</span>
       </h1>
       <p className="mt-2 max-w-2xl text-sm text-slate-400">
-        Real, owned loops — forged in isolation (and in key) or harvested from your own stems. When you assemble,
-        <span className="text-slate-200"> the studio arranges the exact beat from this shelf</span>: same loops in, same beat out. No hallucination — and the
-        assembly itself never needs the AI brain or its credits (Claude only suggests a smarter arrangement when it&apos;s reachable).
+        Workspace loops from your uploads, studio synthesis, licensed material, or connected generation providers.
+        <span className="text-slate-200"> The worker verifies each selected file and records exactly where it was used.</span>
       </p>
       {/* TRUTH RECEIPT — the shelf counted honestly: every loop, every unique file,
           every duplicate, and who made what. Duplicates flag amber, never hidden. */}
@@ -222,6 +234,7 @@ export default function MaterialsPage() {
           <span className="text-slate-300">{integrity.totalLoops} loop{integrity.totalLoops === 1 ? '' : 's'}</span>
           {' · '}{integrity.distinctFiles} distinct file{integrity.distinctFiles === 1 ? '' : 's'}
           {' · '}<span className={integrity.duplicates > 0 ? 'text-amber-400' : 'text-emerald-400'}>{integrity.duplicates} duplicate{integrity.duplicates === 1 ? '' : 's'}</span>
+          {' · '}{integrity.usedMaterials} used in {integrity.totalUses} assembly receipt{integrity.totalUses === 1 ? '' : 's'}
           {' — '}{Object.entries(integrity.byOrigin).map(([o, n]) => `${ORIGIN_LABEL[o] ?? o} ${n}`).join(' / ')}
         </p>
       )}
@@ -260,7 +273,7 @@ export default function MaterialsPage() {
             Uses the genre + bpm from the Forge card.{' '}
             {canAssemble
               ? <span className="text-emerald-400">{usableRoles.size} roles ready at {bpm}bpm: {[...usableRoles].join(', ')}</span>
-              : <span className="text-amber-400">needs 2+ roles near {bpm}bpm — forge a {genre.replace(/_/g, ' ')} kit first</span>}
+              : <span className="text-amber-400">needs 5 beds with 2 rhythm, 1 low-end, and 1 tonal role near {bpm}bpm (now {coverage.beds}/{coverage.rhythm}/{coverage.lowEnd}/{coverage.tonal})</span>}
           </div>
           {assembling && <div className="mt-2 text-xs text-afrobrand-300">{assembling}</div>}
           {assembleErr && <div className="mt-2 rounded-lg border border-red-500/30 bg-red-500/10 p-2.5 text-xs text-red-300">{assembleErr}</div>}
@@ -307,6 +320,12 @@ export default function MaterialsPage() {
                 </div>
                 <div className="mt-1 text-xs text-slate-500">
                   {m.bpm ? `${m.bpm}bpm` : ''}{m.keySignature ? ` · ${m.keySignature}` : ''}{m.bars ? ` · ${m.bars} bars` : ''}
+                </div>
+                <div className="mt-1 flex flex-wrap gap-1 text-[10px]">
+                  <span className={m.readiness === 'ready' ? 'text-emerald-300' : m.readiness === 'rejected' ? 'text-red-300' : 'text-amber-300'}>{m.readiness}</span>
+                  <span className="text-slate-500">{m.roleEvidence}</span>
+                  <span className="text-slate-500">{m.rightsBasis}</span>
+                  <span className={m.usageCount > 0 ? 'text-emerald-300' : 'text-slate-600'}>{m.usageCount} use{m.usageCount === 1 ? '' : 's'}</span>
                 </div>
                 <audio controls src={m.url} className="mt-2 w-full" preload="none" />
               </div>

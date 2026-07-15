@@ -1,107 +1,182 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
-import { createHmac, randomBytes, scryptSync, timingSafeEqual } from 'node:crypto';
+import { randomBytes, scrypt, timingSafeEqual } from 'node:crypto';
 import { prisma } from '@afrohit/db';
-import { requireAuth } from '../middleware/auth';
-
-/**
- * AUTH — signup/login for multi-tenant mode (T1).
- *
- * Email+password (scrypt, no external deps) issuing an HS256 JWT with
- * { sub, workspaceId, exp } — the exact claims the auth middleware's verifyJwt
- * checks in AUTH_MODE=jwt. Signup provisions the full tenant: User + Workspace
- * (STARTER) + OWNER membership + a starter Artist, so a new user can create
- * immediately. These routes are PUBLIC (skipped by the auth hook) but rate-
- * limited like everything else. In internal mode they still work — useful for
- * preparing accounts before flipping AUTH_MODE=jwt.
- */
+import { isInternalMode, requireAuth } from '../middleware/auth';
+import {
+  adminGrantCookie,
+  assertSessionConfiguration,
+  clearAdminGrantCookie,
+  clearSessionCookie,
+  constantTimeSecretEqual,
+  sessionCookie,
+  signAdminGrant,
+  signSession,
+} from '../lib/session';
 
 const signupSchema = z.object({
   email: z.string().email().max(200),
-  password: z.string().min(8).max(200),
+  password: z.string().min(12).max(128),
   name: z.string().min(1).max(80).optional(),
   stageName: z.string().min(1).max(80).optional(),
 });
-const loginSchema = z.object({ email: z.string().email().max(200), password: z.string().min(1).max(200) });
+const loginSchema = z.object({
+  email: z.string().email().max(200),
+  password: z.string().min(1).max(128),
+});
+const adminUnlockSchema = z.object({ secret: z.string().min(1).max(512) });
 
-function hashPassword(pw: string): string {
-  const salt = randomBytes(16).toString('hex');
-  return `${salt}:${scryptSync(pw, salt, 64).toString('hex')}`;
-}
-function verifyPassword(pw: string, stored: string | null): boolean {
-  if (!stored || !stored.includes(':')) return false;
-  const [salt, hex] = stored.split(':') as [string, string];
-  const a = scryptSync(pw, salt, 64);
-  const b = Buffer.from(hex, 'hex');
-  return a.length === b.length && timingSafeEqual(a, b);
+type PasswordVersion = 'v1' | 'v2';
+
+const PASSWORD_PARAMS: Record<PasswordVersion, { N: number; maxmem: number }> = {
+  v1: { N: 16_384, maxmem: 64 * 1024 * 1024 },
+  v2: { N: 65_536, maxmem: 96 * 1024 * 1024 },
+};
+let activePasswordDerivations = 0;
+const MAX_PASSWORD_DERIVATIONS = 4;
+
+async function derivePassword(password: string, salt: string, version: PasswordVersion): Promise<Buffer> {
+  if (activePasswordDerivations >= MAX_PASSWORD_DERIVATIONS) {
+    throw Object.assign(new Error('authentication capacity is busy'), { statusCode: 503 });
+  }
+  activePasswordDerivations += 1;
+  const params = PASSWORD_PARAMS[version];
+  try {
+    return await new Promise((resolve, reject) => {
+      scrypt(password, salt, 64, { N: params.N, r: 8, p: 1, maxmem: params.maxmem }, (error, key) => {
+        if (error) reject(error);
+        else resolve(key);
+      });
+    });
+  } finally {
+    activePasswordDerivations -= 1;
+  }
 }
 
-/** Issue a compact HS256 JWT the middleware's verifyJwt accepts. */
-export function signJwt(claims: { sub: string; workspaceId: string }, ttlSeconds = 30 * 24 * 3600): string {
-  const secret = process.env.JWT_SECRET;
-  if (!secret) throw new Error('JWT_SECRET is not set — required for signup/login tokens');
-  const enc = (o: unknown) => Buffer.from(JSON.stringify(o)).toString('base64url');
-  const h = enc({ alg: 'HS256', typ: 'JWT' });
-  const p = enc({ ...claims, iat: Math.floor(Date.now() / 1000), exp: Math.floor(Date.now() / 1000) + ttlSeconds });
-  const sig = createHmac('sha256', secret).update(`${h}.${p}`).digest('base64url');
-  return `${h}.${p}.${sig}`;
+async function hashPassword(password: string): Promise<string> {
+  const salt = randomBytes(16).toString('base64url');
+  const hash = await derivePassword(password, salt, 'v2');
+  return `scrypt:v2:${salt}:${hash.toString('hex')}`;
 }
 
-const slugify = (s: string) =>
-  s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40) || 'studio';
+async function verifyPassword(password: string, stored: string | null): Promise<{ valid: boolean; needsRehash: boolean }> {
+  let salt = 'afrohit-invalid-account';
+  let expectedHex = '';
+  let version: PasswordVersion = 'v2';
+  if (stored?.startsWith('scrypt:v1:') || stored?.startsWith('scrypt:v2:')) {
+    const parts = stored.split(':');
+    version = parts[1] === 'v1' ? 'v1' : 'v2';
+    salt = parts[2] ?? salt;
+    expectedHex = parts[3] ?? '';
+  } else if (stored?.includes(':')) {
+    version = 'v1';
+    [salt, expectedHex] = stored.split(':', 2) as [string, string];
+  }
+  const actual = await derivePassword(password, salt, version);
+  const expected = Buffer.from(expectedHex, 'hex');
+  const valid = expected.length === actual.length && timingSafeEqual(actual, expected);
+  return { valid, needsRehash: valid && version !== 'v2' };
+}
+
+const slugify = (value: string) =>
+  value.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40) || 'studio';
+
+function sessionsAvailable(): boolean {
+  try {
+    assertSessionConfiguration();
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+const limited = { config: { rateLimit: { max: 5, timeWindow: '1 minute' } } };
 
 export default async function auth(app: FastifyInstance) {
-  app.post('/signup', { schema: { body: signupSchema } }, async (req, reply) => {
-    if (!process.env.JWT_SECRET) return reply.code(503).send({ error: 'signup_disabled', hint: 'set JWT_SECRET to enable accounts' });
+  app.post('/signup', { ...limited, schema: { body: signupSchema } }, async (req, reply) => {
+    if (!sessionsAvailable()) return reply.code(503).send({ error: 'signup_disabled' });
+    if (process.env.NODE_ENV === 'production' && process.env.ALLOW_PUBLIC_SIGNUP !== '1') {
+      return reply.code(403).send({ error: 'signup_closed' });
+    }
     const input = signupSchema.parse(req.body);
     const email = input.email.toLowerCase().trim();
-    const existing = await prisma.user.findUnique({ where: { email } });
+    const existing = await prisma.user.findUnique({ where: { email }, select: { id: true } });
     if (existing) return reply.code(409).send({ error: 'email_in_use' });
 
-    // Provision the whole tenant atomically: user, workspace, membership, artist.
     const base = slugify(input.stageName || input.name || email.split('@')[0]!);
     let slug = base;
-    for (let i = 2; await prisma.workspace.findUnique({ where: { slug } }); i++) slug = `${base}-${i}`;
+    for (let suffix = 2; await prisma.workspace.findUnique({ where: { slug }, select: { id: true } }); suffix++) {
+      slug = `${base}-${suffix}`;
+    }
     const stage = input.stageName || input.name || email.split('@')[0]!;
+    const passwordHash = await hashPassword(input.password);
     type Tx = Omit<typeof prisma, '$connect' | '$disconnect' | '$on' | '$transaction' | '$use' | '$extends'>;
     const result = await prisma.$transaction(async (tx: Tx) => {
       const user = await tx.user.create({
-        data: { clerkId: `local_${randomBytes(10).toString('hex')}`, email, fullName: input.name ?? null, passwordHash: hashPassword(input.password) },
+        data: {
+          clerkId: `local_${randomBytes(10).toString('hex')}`,
+          email,
+          fullName: input.name ?? null,
+          passwordHash,
+        },
       });
-      const ws = await tx.workspace.create({ data: { name: `${stage}'s Studio`, slug } });
-      await tx.workspaceMember.create({ data: { workspaceId: ws.id, userId: user.id, role: 'OWNER' } });
+      const workspace = await tx.workspace.create({ data: { name: `${stage}'s Studio`, slug } });
+      await tx.workspaceMember.create({ data: { workspaceId: workspace.id, userId: user.id, role: 'OWNER' } });
       await tx.artist.create({
-        data: { workspaceId: ws.id, stageName: stage, languages: ['pcm', 'en'], vocalTone: ['smooth'] } as never,
+        data: { workspaceId: workspace.id, stageName: stage, languages: ['pcm', 'en'], vocalTone: ['smooth'] } as never,
       });
-      return { user, ws };
+      return { user, workspace };
     });
 
-    const token = signJwt({ sub: result.user.id, workspaceId: result.ws.id });
-    reply.code(201);
-    return { token, userId: result.user.id, workspaceId: result.ws.id, plan: 'STARTER' };
+    const token = signSession({ sub: result.user.id, workspaceId: result.workspace.id, role: 'OWNER' });
+    reply.header('set-cookie', sessionCookie(token)).code(201);
+    return { userId: result.user.id, workspaceId: result.workspace.id, plan: 'STARTER' };
   });
 
-  app.post('/login', { schema: { body: loginSchema } }, async (req, reply) => {
-    if (!process.env.JWT_SECRET) return reply.code(503).send({ error: 'login_disabled', hint: 'set JWT_SECRET to enable accounts' });
+  app.post('/login', { ...limited, schema: { body: loginSchema } }, async (req, reply) => {
+    if (!sessionsAvailable()) return reply.code(503).send({ error: 'login_disabled' });
     const input = loginSchema.parse(req.body);
     const user = await prisma.user.findUnique({ where: { email: input.email.toLowerCase().trim() } });
-    // Uniform error for wrong email OR password — never reveal which.
-    if (!user || !verifyPassword(input.password, user.passwordHash)) {
-      return reply.code(401).send({ error: 'invalid_credentials' });
+    const password = await verifyPassword(input.password, user?.passwordHash ?? null);
+    if (!user || !password.valid) return reply.code(401).send({ error: 'invalid_credentials' });
+    if (password.needsRehash) {
+      await prisma.user.update({ where: { id: user.id }, data: { passwordHash: await hashPassword(input.password) } });
     }
-    const member = await prisma.workspaceMember.findFirst({ where: { userId: user.id }, orderBy: { createdAt: 'asc' } });
-    if (!member) return reply.code(403).send({ error: 'no_workspace' });
-    const token = signJwt({ sub: user.id, workspaceId: member.workspaceId });
-    return { token, userId: user.id, workspaceId: member.workspaceId };
+    const membership = await prisma.workspaceMember.findFirst({
+      where: { userId: user.id },
+      orderBy: { createdAt: 'asc' },
+    });
+    if (!membership) return reply.code(403).send({ error: 'no_workspace' });
+    const token = signSession({ sub: user.id, workspaceId: membership.workspaceId, role: membership.role });
+    reply.header('set-cookie', sessionCookie(token));
+    return { userId: user.id, workspaceId: membership.workspaceId };
   });
 
-  // Who am I (works in both modes — internal resolves the owner identity).
+  app.post('/admin-unlock', { ...limited, schema: { body: adminUnlockSchema } }, async (req, reply) => {
+    if (!isInternalMode()) return reply.code(400).send({ error: 'admin_unlock_not_required' });
+    if (Buffer.byteLength(process.env.ADMIN_SECRET ?? '') < 32) {
+      return reply.code(503).send({ error: 'admin_unlock_not_configured' });
+    }
+    const { userId, workspaceId } = requireAuth(req);
+    const input = adminUnlockSchema.parse(req.body);
+    if (!constantTimeSecretEqual(input.secret, process.env.ADMIN_SECRET)) {
+      return reply.code(401).send({ error: 'invalid_admin_secret' });
+    }
+    const token = signAdminGrant(userId, workspaceId);
+    reply.header('set-cookie', adminGrantCookie(token));
+    return { ok: true, expiresInSeconds: 2 * 60 * 60 };
+  });
+
+  app.post('/logout', async (_req, reply) => {
+    reply.header('set-cookie', [clearSessionCookie(), clearAdminGrantCookie()]).code(204).send();
+  });
+
   app.get('/me', async (req) => {
     const { userId, workspaceId } = requireAuth(req);
-    const [user, ws] = await Promise.all([
+    const [user, workspace] = await Promise.all([
       prisma.user.findUnique({ where: { id: userId }, select: { email: true, fullName: true } }),
       prisma.workspace.findUnique({ where: { id: workspaceId }, select: { name: true, plan: true, creditsCents: true } }),
     ]);
-    return { userId, workspaceId, email: user?.email ?? null, name: user?.fullName ?? null, workspace: ws };
+    return { userId, workspaceId, email: user?.email ?? null, name: user?.fullName ?? null, workspace };
   });
 }

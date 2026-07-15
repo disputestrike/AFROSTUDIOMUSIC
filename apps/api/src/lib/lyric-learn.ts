@@ -182,6 +182,8 @@ export async function learnLyricCraft(opts: {
       title: craft.craftTitle,
       summary: summary.slice(0, 2000),
       recipe: { source: 'lyric', ...craft } as never,
+      analysisState: 'inferred',
+      rightsBasis: 'user-attested',
     },
   });
   return { referenceId: ref.id, craft };

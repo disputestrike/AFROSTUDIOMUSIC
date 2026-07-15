@@ -1,144 +1,232 @@
 /**
- * PHASE 0 ACCEPTANCE TEST — proves "the ear" measures real records, and is the
- * calibration gate for logDrumLikelihood.
+ * Real-audio acceptance gate for the AfroHit DSP ear.
  *
- * Run: pnpm --filter @afrohit/worker exec tsx scripts/eval-ear.ts
+ * The committed manifest must describe exactly nine local, rights-clean tracks:
+ * three Amapiano, three Afrobeats, and three house records. Every mix and stem is
+ * hash-pinned. A passing calibration is signed with a secret held outside Git;
+ * a failed run never overwrites the last valid artifact.
  *
- * Reads py/fixtures/manifest.json (committed) which points at LOCAL, rights-cleared
- * audio + pre-separated Demucs stems (both GITIGNORED — AfroHit HARD rule: no
- * YouTube/Spotify rips; only audio Benjamin owns or licensed). Each row carries the
- * operator's own ground truth (tempo, four-on-floor). Asserts three gates and
- * exits 1 if any fails, so it can gate CI and the calibration loop.
- *
- *   GATE 1  tempo   — tempoBpm.source==='measured' AND |value - expected| <= 2 BPM
- *   GATE 2  4-on-floor — fourOnFloor.source==='measured' AND value===expected, 9/9 exact
- *   GATE 3  log-drum sep — min(logDrL over amapiano) > max(logDrL over afrobeats+house)
- *
- * An 'unknown' where a measurement is REQUIRED counts as a FAIL (honest, but it
- * fails the gate — that is correct). Gate 3 reads logDrumLikelihood whether it is
- * 'measured' or 'inferred' (uncalibrated). When all three gates pass, this script
- * WRITES py/fixtures/logdrum_calibration.json (gatesPassed:true + the validated
- * params + margin). analyze_dsp.py loads that artifact and only THEN ships the field
- * as 'measured'. There is no LOGDRUM_CALIBRATED env var — the artifact IS the gate.
+ * Run:
+ *   LOGDRUM_CALIBRATION_SIGNING_KEY=<32+ byte secret>
+ *   pnpm --filter @afrohit/worker exec tsx scripts/eval-ear.ts
  */
-import { readFile } from 'node:fs/promises';
-import { existsSync, writeFileSync } from 'node:fs';
-import { join, resolve } from 'node:path';
-import { measureAudio, dspAvailable, type StemInputs } from '../src/lib/dsp';
+import { existsSync } from "node:fs";
+import { readFile, unlink, writeFile } from "node:fs/promises";
+import { join, resolve } from "node:path";
+import {
+  EAR_CORPUS_SCHEMA_VERSION,
+  LOGDRUM_CALIBRATION_SCHEMA_VERSION,
+  calibrationGateStatus,
+  calibrationSigningKey,
+  signCalibrationArtifact,
+  validateEarCorpusManifest,
+  type ValidatedEarCorpusTrack,
+} from "../src/lib/ear-corpus";
+import { dspAvailable, measureAudio, type StemInputs } from "../src/lib/dsp";
 
-interface Row {
-  id: string;
-  path: string;
-  genre: 'amapiano' | 'afrobeats' | 'house';
-  expectTempoBpm: number;
-  fourOnFloor: boolean;
-  bassStem?: string;
-  drumsStem?: string;
-  otherStem?: string;
-  vocalsStem?: string;
+const fixturesDir = resolve(process.cwd(), "py", "fixtures");
+const manifestPath = join(fixturesDir, "manifest.json");
+const artifactPath = join(fixturesDir, "logdrum_calibration.json");
+const failedReportPath = join(fixturesDir, "logdrum_calibration.failed.json");
+
+type Result = {
+  row: ValidatedEarCorpusTrack;
+  tempo: number | null;
+  tempoOk: boolean;
+  fourOnFloor: boolean | null;
+  fourOnFloorOk: boolean;
+  logDrumLikelihood: number | null;
+};
+
+type CalibrationLogDrumEvidence = {
+  source?: unknown;
+  value?: unknown;
+};
+
+export function logDrumScoreForCalibration(
+  evidence: CalibrationLogDrumEvidence | null | undefined
+): number | null {
+  const acceptedSource =
+    evidence?.source === "measured" || evidence?.source === "inferred";
+  if (
+    !acceptedSource ||
+    typeof evidence.value !== "number" ||
+    !Number.isFinite(evidence.value)
+  ) {
+    return null;
+  }
+  return evidence.value;
 }
 
-// Run via `pnpm --filter @afrohit/worker exec tsx scripts/eval-ear.ts` — cwd is the
-// worker package dir, so fixtures resolve without __dirname/import.meta gymnastics.
-const fixturesDir = resolve(process.cwd(), 'py', 'fixtures');
-
 async function main() {
+  if (!existsSync(manifestPath))
+    throw new Error(`No ear corpus manifest at ${manifestPath}`);
+
+  const rawManifest = JSON.parse(await readFile(manifestPath, "utf8"));
+  const corpus = await validateEarCorpusManifest(rawManifest, fixturesDir);
+  const signingKey = calibrationSigningKey(
+    process.env.LOGDRUM_CALIBRATION_SIGNING_KEY
+  );
+
   if (!(await dspAvailable())) {
-    console.error('DSP engine unavailable (python3 + librosa not importable). Cannot run acceptance test.');
-    process.exit(1);
-  }
-  const manifestPath = join(fixturesDir, 'manifest.json');
-  if (!existsSync(manifestPath)) {
-    console.error(`No manifest at ${manifestPath}. Add rights-cleared fixtures + manifest first.`);
-    process.exit(1);
-  }
-  const rows = JSON.parse(await readFile(manifestPath, 'utf8')) as Row[];
-  const real = rows.filter((r) => r.id && r.path && !r.id.startsWith('EXAMPLE'));
-  if (real.length < 9) {
-    console.error(`Manifest has ${real.length} real rows; the acceptance test needs 9 (3 amapiano + 3 afrobeats + 3 house).`);
-    process.exit(1);
-  }
-
-  const resolvePath = (p?: string) => (p ? (p.startsWith('/') || /^[A-Za-z]:/.test(p) ? p : join(fixturesDir, p)) : undefined);
-
-  const results: Array<{ row: Row; tempo: number | null; tempoOk: boolean; fof: boolean | null; fofOk: boolean; logDrL: number | null }> = [];
-  for (const row of real) {
-    const stems: StemInputs = {
-      bass: resolvePath(row.bassStem),
-      drums: resolvePath(row.drumsStem),
-      other: resolvePath(row.otherStem),
-      vocals: resolvePath(row.vocalsStem),
-    };
-    const a = await measureAudio(resolvePath(row.path)!, stems);
-    const tempo = a.tempoBpm.source === 'measured' ? (a.tempoBpm.value as number) : null;
-    const tempoOk = tempo != null && Math.abs(tempo - row.expectTempoBpm) <= 2;
-    const fof = a.fourOnFloor.source === 'measured' ? (a.fourOnFloor.value as boolean) : null;
-    const fofOk = fof != null && fof === row.fourOnFloor;
-    // Gate 3 reads the value whether measured or inferred (uncalibrated).
-    const logDrL = typeof a.logDrumLikelihood.value === 'number' ? (a.logDrumLikelihood.value as number) : null;
-    results.push({ row, tempo, tempoOk, fof, fofOk, logDrL });
-  }
-
-  // ---- table ----
-  console.log('\nid                     genre      expTempo  measTempo  Δ     4OTF exp/meas  logDrL');
-  console.log('─'.repeat(88));
-  for (const r of results) {
-    const d = r.tempo != null ? (r.tempo - r.row.expectTempoBpm).toFixed(1) : '—';
-    console.log(
-      `${r.row.id.padEnd(22)} ${r.row.genre.padEnd(10)} ${String(r.row.expectTempoBpm).padStart(7)}  ${String(r.tempo ?? 'unknown').padStart(8)}  ${d.padStart(5)} ${(r.row.fourOnFloor + '/' + (r.fof ?? 'unknown')).padStart(13)}  ${r.logDrL != null ? r.logDrL.toFixed(3) : 'unknown'}`
+    throw new Error(
+      "DSP engine unavailable (Python, librosa, and ffmpeg are required)"
     );
   }
 
-  // ---- gates ----
-  const tempoFails = results.filter((r) => !r.tempoOk);
-  const fofFails = results.filter((r) => !r.fofOk);
-  const ama = results.filter((r) => r.row.genre === 'amapiano').map((r) => r.logDrL);
-  const rest = results.filter((r) => r.row.genre !== 'amapiano').map((r) => r.logDrL);
-  const amaOk = ama.every((v) => v != null);
-  const restOk = rest.every((v) => v != null);
-  const gap = amaOk && restOk ? Math.min(...(ama as number[])) - Math.max(...(rest as number[])) : NaN;
+  const results: Result[] = [];
+  for (const row of corpus.tracks) {
+    const stems: StemInputs = {
+      bass: row.absoluteStems.bass,
+      drums: row.absoluteStems.drums,
+      other: row.absoluteStems.other,
+      vocals: row.absoluteStems.vocals,
+    };
+    const analysis = await measureAudio(row.absolutePath, stems);
+    const tempo =
+      analysis.tempoBpm.source === "measured" &&
+      typeof analysis.tempoBpm.value === "number"
+        ? analysis.tempoBpm.value
+        : null;
+    const fourOnFloor =
+      analysis.fourOnFloor.source === "measured" &&
+      typeof analysis.fourOnFloor.value === "boolean"
+        ? analysis.fourOnFloor.value
+        : null;
+    const logDrumLikelihood = logDrumScoreForCalibration(
+      analysis.logDrumLikelihood
+    );
+    results.push({
+      row,
+      tempo,
+      tempoOk: tempo !== null && Math.abs(tempo - row.expectTempoBpm) <= 2,
+      fourOnFloor,
+      fourOnFloorOk: fourOnFloor !== null && fourOnFloor === row.fourOnFloor,
+      logDrumLikelihood,
+    });
+  }
 
-  console.log('\n── GATES ──');
-  const g1 = tempoFails.length === 0;
-  const g2 = fofFails.length === 0;
-  const g3 = Number.isFinite(gap) && gap > 0;
-  console.log(`GATE 1 tempo ±2 BPM:       ${g1 ? 'PASS' : `FAIL (${tempoFails.length} off: ${tempoFails.map((r) => r.row.id).join(', ')})`}`);
-  console.log(`GATE 2 four-on-floor 9/9:  ${g2 ? 'PASS' : `FAIL (${fofFails.length} wrong: ${fofFails.map((r) => r.row.id).join(', ')})`}`);
-  console.log(`GATE 3 log-drum separation: ${g3 ? `PASS (margin ${gap.toFixed(3)})` : `FAIL (gap ${Number.isFinite(gap) ? gap.toFixed(3) : 'n/a — some logDrL unknown'}; target amapiano≈0.65 vs rest≈0.2)`}`);
+  console.log(
+    "\nid                     genre      expTempo  measTempo  delta  4OTF exp/meas  logDrL"
+  );
+  console.log("-".repeat(91));
+  for (const result of results) {
+    const delta =
+      result.tempo === null
+        ? "n/a"
+        : (result.tempo - result.row.expectTempoBpm).toFixed(1);
+    console.log(
+      `${result.row.id.padEnd(22)} ${result.row.genre.padEnd(10)} ${String(result.row.expectTempoBpm).padStart(7)}  ${String(result.tempo ?? "unknown").padStart(8)}  ${delta.padStart(5)} ${(String(result.row.fourOnFloor) + "/" + String(result.fourOnFloor ?? "unknown")).padStart(13)}  ${result.logDrumLikelihood === null ? "unknown" : result.logDrumLikelihood.toFixed(3)}`
+    );
+  }
 
-  const pass = g1 && g2 && g3;
-  console.log(`\n${pass ? '✅ PHASE 0 ACCEPTANCE PASSED' : '❌ PHASE 0 ACCEPTANCE FAILED'}\n`);
-
-  // ---- Write the calibration ARTIFACT (the TRUTH GATE). Its existence with
-  // gatesPassed:true IS the calibration — analyze_dsp.py loads it and only then ships
-  // logDrumLikelihood as 'measured'. schemaVersion must match LOGDRUM_SCHEMA. The
-  // params are the constants validated against THIS 9-track set (they separated the
-  // genres). Commit this JSON; NEVER commit the audio. ----
-  const artifact = {
-    schemaVersion: 3, // === LOGDRUM_SCHEMA in analyze_dsp.py
-    gatesPassed: pass,
-    // ADDENDUM C-1: eval-ear.ts on the REAL 9 tracks is the ONLY writer of
-    // 'real-9track' — the sole provenance that opens the truth gate. Synthetic
-    // artifacts (synth harness) validate direction only and stay 'inferred'.
-    provenance: 'real-9track',
-    separationMargin: Number.isFinite(gap) ? Math.round(gap * 1000) / 1000 : null,
-    fittedOn: new Date().toISOString().slice(0, 10),
-    trackCount: real.length,
-    gates: { tempo: g1, fourOnFloor: g2, logDrumSeparation: g3 },
-    // The constants validated on this set. (A future refit can grid-search these to
-    // widen the margin; today they are the frozen, validated defaults.)
-    params: { r0: 0.45, s: 0.12, w1: 1.2, w2: 0.15, glideFloor: 0.30 },
+  const tempoFailures = results.filter(result => !result.tempoOk);
+  const fourOnFloorFailures = results.filter(result => !result.fourOnFloorOk);
+  const amapiano = results
+    .filter(result => result.row.genre === "amapiano")
+    .map(result => result.logDrumLikelihood);
+  const comparison = results
+    .filter(result => result.row.genre !== "amapiano")
+    .map(result => result.logDrumLikelihood);
+  const completeSeparationEvidence = [...amapiano, ...comparison].every(
+    value => value !== null
+  );
+  const separationMargin = completeSeparationEvidence
+    ? Math.min(...(amapiano as number[])) -
+      Math.max(...(comparison as number[]))
+    : Number.NaN;
+  const gates = {
+    tempo: tempoFailures.length === 0,
+    fourOnFloor: fourOnFloorFailures.length === 0,
+    logDrumSeparation:
+      Number.isFinite(separationMargin) && separationMargin > 0,
   };
-  const artifactPath = join(fixturesDir, 'logdrum_calibration.json');
-  writeFileSync(artifactPath, JSON.stringify(artifact, null, 2) + '\n');
-  console.log(`Wrote ${artifactPath}`);
-  console.log(pass
-    ? `→ log-drum CALIBRATED (margin ${artifact.separationMargin}). Commit logdrum_calibration.json — the field now ships 'measured'.`
-    : `→ gatesPassed:false — log-drum stays 'inferred' (uncalibrated) until the gates pass. Not committed as calibrated.`);
-  process.exit(pass ? 0 : 1);
+  const passed = Object.values(gates).every(Boolean);
+
+  console.log("\n-- GATES --");
+  console.log(
+    `GATE 1 tempo +/-2 BPM:        ${gates.tempo ? "PASS" : `FAIL (${tempoFailures.map(result => result.row.id).join(", ")})`}`
+  );
+  console.log(
+    `GATE 2 four-on-floor 9/9:    ${gates.fourOnFloor ? "PASS" : `FAIL (${fourOnFloorFailures.map(result => result.row.id).join(", ")})`}`
+  );
+  console.log(
+    `GATE 3 log-drum separation:  ${gates.logDrumSeparation ? `PASS (margin ${separationMargin.toFixed(3)})` : "FAIL"}`
+  );
+
+  const commonEvidence = {
+    schemaVersion: LOGDRUM_CALIBRATION_SCHEMA_VERSION,
+    manifestSchemaVersion: EAR_CORPUS_SCHEMA_VERSION,
+    corpusHash: corpus.corpusHash,
+    trackCount: corpus.tracks.length,
+    trackIds: corpus.tracks.map(track => track.id).sort(),
+    genreCounts: corpus.genreCounts,
+    rightsBasisCounts: corpus.rightsBasisCounts,
+    separationMargin: Number.isFinite(separationMargin)
+      ? Math.round(separationMargin * 1000) / 1000
+      : null,
+    fittedOn: new Date().toISOString().slice(0, 10),
+    evaluatedAt: new Date().toISOString(),
+    gates,
+    params: {
+      r0: 0.45,
+      s: 0.12,
+      w1: 1.2,
+      w2: 0.15,
+      glideFloor: 0.3,
+    },
+  };
+
+  if (!passed) {
+    await writeFile(
+      failedReportPath,
+      JSON.stringify(
+        {
+          ...commonEvidence,
+          gatesPassed: false,
+          provenance: "failed-real-evaluation",
+          rightsVerified: true,
+          failures: {
+            tempo: tempoFailures.map(result => result.row.id),
+            fourOnFloor: fourOnFloorFailures.map(result => result.row.id),
+          },
+        },
+        null,
+        2
+      ) + "\n"
+    );
+    console.error(
+      `\nPHASE 0 ACCEPTANCE FAILED. Diagnostic written to ${failedReportPath}; the calibration artifact was not changed.`
+    );
+    process.exitCode = 1;
+    return;
+  }
+
+  const artifact = signCalibrationArtifact(
+    {
+      ...commonEvidence,
+      gatesPassed: true,
+      provenance: "real-9track",
+      rightsVerified: true,
+      calibratedOn: "rights-clean-9track",
+    },
+    signingKey
+  );
+  const gate = calibrationGateStatus(artifact, signingKey);
+  if (!gate.open)
+    throw new Error(`Refusing to write a closed calibration: ${gate.reason}`);
+
+  await writeFile(artifactPath, JSON.stringify(artifact, null, 2) + "\n");
+  await unlink(failedReportPath).catch(() => undefined);
+  console.log(
+    `\nPHASE 0 ACCEPTANCE PASSED. Signed calibration written to ${artifactPath}.`
+  );
+  console.log(`Corpus SHA-256: ${corpus.corpusHash}`);
 }
 
-main().catch((e) => {
-  console.error(e);
-  process.exit(1);
-});
+if (require.main === module) {
+  void main().catch(error => {
+    console.error(error instanceof Error ? error.message : error);
+    process.exitCode = 1;
+  });
+}

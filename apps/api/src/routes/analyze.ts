@@ -2,8 +2,9 @@ import type { FastifyInstance } from 'fastify';
 import { prisma } from '@afrohit/db';
 import { analyzeAudioSchema } from '@afrohit/shared';
 import { requireAuth } from '../middleware/auth';
-import { enqueue } from '../lib/queue';
+import { createQueuedProviderJob, scopedRequestKey } from '../lib/queued-job';
 import { assertSafeUrl } from '../lib/url-guard';
+import { assertWorkspaceAsset } from '../lib/storage';
 
 /**
  * "Play a song and it listens." Queues an audio-understanding job (reuses the
@@ -17,12 +18,22 @@ export default async function analyze(app: FastifyInstance) {
     { schema: { body: analyzeAudioSchema } },
     async (req, reply) => {
       const { workspaceId } = requireAuth(req);
-      const { url, purgeAfter, factsOnly } = analyzeAudioSchema.parse(req.body);
+      const { url, purgeAfter, factsOnly, rightsConfirmed } = analyzeAudioSchema.parse(req.body);
+      if (!factsOnly && rightsConfirmed !== true) {
+        return reply.code(400).send({
+          error: 'rights_confirmation_required',
+          message: 'Full learning is only available for audio you own or control. Use facts-only for other references.',
+        });
+      }
+      const rightsBasis = factsOnly ? 'facts-only' : 'user-attested';
+      const source = factsOnly ? 'external-reference-facts' : 'rights-confirmed-reference';
 
       // Same bright-line + SSRF guard as /import: no streaming-catalog hosts,
       // no private/metadata targets. The AI listens to rights-cleared audio only.
-      const chk = await assertSafeUrl(url);
-      if (!chk.ok) return reply.code(chk.code).send({ error: chk.error, message: chk.message });
+      if (!assertWorkspaceAsset(workspaceId, url)) {
+        const chk = await assertSafeUrl(url);
+        if (!chk.ok) return reply.code(chk.code).send({ error: chk.error, message: chk.message });
+      }
 
       const project = await prisma.project.findFirstOrThrow({
         where: { id: req.params.projectId, workspaceId },
@@ -30,27 +41,35 @@ export default async function analyze(app: FastifyInstance) {
 
       // Paid Replicate inference → subject to the daily cap like every other
       // generation path (was previously the one uncapped entry point).
-      const charge = await app.chargeCredits({ workspaceId, key: 'analyze_audio', refTable: 'Project', refId: project.id });
+      const idempotencyKey = scopedRequestKey(req.headers as Record<string, unknown>, 'analyze-audio');
+      const charge = await app.chargeCredits({ workspaceId, key: 'analyze_audio', refTable: 'Project', refId: project.id, idempotencyKey });
       if (!charge.ok) return reply.code(402).send({ error: 'insufficient_credits', ...charge });
 
-      const job = await prisma.providerJob.create({
-        data: {
+      const job = await createQueuedProviderJob({
+        app,
+        queue: app.queues.music,
+        jobName: 'analyze-audio',
+        workspaceId,
+        projectId: project.id,
+        kind: 'analyze',
+        provider: 'replicate',
+        inputJson: { url, factsOnly: !!factsOnly, source, rightsBasis },
+        charge,
+        idempotencyKey,
+        payload: (jobId) => ({
+          jobId,
           workspaceId,
           projectId: project.id,
-          kind: 'analyze',
-          provider: 'replicate',
-          status: 'QUEUED',
-          inputJson: { url, factsOnly } as never,
-        },
-      });
-      await enqueue({
-        queue: app.queues.music,
-        name: 'analyze-audio',
-        payload: { jobId: job.id, workspaceId, projectId: project.id, url, purgeAfter, factsOnly },
+          url,
+          purgeAfter,
+          factsOnly,
+          source,
+          rightsBasis,
+        }),
       });
 
       reply.code(202);
-      return { jobId: job.id, status: 'queued' };
+      return { jobId: job.jobId, status: 'queued', replayed: job.replayed };
     }
   );
 }

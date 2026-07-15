@@ -132,11 +132,9 @@ export const TASTE_DIMENSIONS = [
 ] as const;
 export type TasteDimension = (typeof TASTE_DIMENSIONS)[number];
 
-// Instrumental-beat providers. 'replicate' (MusicGen) is the VALIDATED default
-// for a Replicate-only operator; eleven/stable_audio/mubert are UNVERIFIED
-// scaffolds. 'beatoven' was removed (advertised with no adapter → silent stub).
-// Every string here MUST have a case in musicAdapter().
-export const MUSIC_PROVIDERS = ['replicate', 'eleven', 'stable_audio', 'mubert', 'stub'] as const;
+// User-connectable music providers. Every value must have a verified adapter
+// and a live credential test. Placeholders are deliberately excluded.
+export const MUSIC_PROVIDERS = ['replicate', 'eleven', 'suno'] as const;
 export const VOICE_PROVIDERS = ['eleven', 'openai', 'stub'] as const;
 export const VIDEO_PROVIDERS = ['veo', 'sora', 'stub'] as const;
 export const IMAGE_PROVIDERS = ['openai', 'stub'] as const;
@@ -178,10 +176,12 @@ export const PLAN_LIMITS: Record<
 
 /**
  * Monthly credit allowance (in 1/100-cent micro-cents) granted when a
- * subscription activates AND on each recurring PAYMENT.SALE.COMPLETED. Sized to
+ * each completed recurring PAYMENT.SALE.COMPLETED event. Activation changes the
+ * plan but grants nothing, preventing the first billing cycle from being counted
+ * twice. The allowance is sized to
  * the tier's promised demo-song volume at the full_song_demo price (75_000) plus
  * a cover-art base, so a paying customer actually RECEIVES the capability their
- * plan advertises (audit DANGEROUS: activation used to grant delta:0 = nothing).
+ * plan advertises.
  */
 export const PLAN_CREDIT_GRANT_CENTS: Record<PlanTier, number> = {
   STARTER: 30_000, // ~5 cover arts, no demo songs

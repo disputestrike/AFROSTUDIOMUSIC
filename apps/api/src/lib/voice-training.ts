@@ -68,6 +68,9 @@ export function voiceTrainerConfigured(): boolean {
 export interface StartTrainingResult {
   id: string;
   status: string;
+  kind: VoiceTrainerConfig['kind'];
+  model: string;
+  version: string;
 }
 
 /**
@@ -113,6 +116,7 @@ export async function startVoiceTraining(opts: {
     cfg.kind === 'training'
       ? { destination: opts.destination, input }
       : { version: cfg.version, input };
+  let usedVersion = cfg.version;
   if (cfg.kind === 'training' && !opts.destination) {
     throw Object.assign(new Error('destination required for a destination-based trainer'), { statusCode: 400 });
   }
@@ -126,30 +130,37 @@ export async function startVoiceTraining(opts: {
     if (res.status === 422 && /disabled/i.test(detail) && cfg.kind === 'prediction') {
       const latest = await resolveLatestVersion(cfg.model, token);
       if (latest && latest !== cfg.version) {
+        usedVersion = latest;
         res = await fetch(url, {
           method: 'POST',
           headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
           body: JSON.stringify({ version: latest, input }),
         });
         if (!res.ok) {
-          const retryDetail = (await res.text()).slice(0, 300);
+          await res.body?.cancel().catch(() => undefined);
           throw Object.assign(
-            new Error(`replicate training kickoff ${res.status} (after latest-version retry): ${retryDetail}`),
+            new Error(`replicate training kickoff failed (${res.status}) after latest-version retry`),
             { statusCode: 502 },
           );
         }
       } else {
-        throw Object.assign(new Error(`replicate training kickoff 422: ${detail}`), { statusCode: 502 });
+        throw Object.assign(new Error('replicate training kickoff failed (422)'), { statusCode: 502 });
       }
     } else {
-      throw Object.assign(new Error(`replicate training kickoff ${res.status}: ${detail}`), {
+      throw Object.assign(new Error(`replicate training kickoff failed (${res.status})`), {
         statusCode: 502,
       });
     }
   }
   const data = (await res.json()) as { id?: string; status?: string };
   if (!data.id) throw Object.assign(new Error('replicate training response had no id'), { statusCode: 502 });
-  return { id: data.id, status: data.status ?? 'starting' };
+  return {
+    id: data.id,
+    status: data.status ?? 'starting',
+    kind: cfg.kind,
+    model: cfg.model,
+    version: usedVersion,
+  };
 }
 
 export interface TrainingState {
@@ -159,11 +170,14 @@ export interface TrainingState {
   error: string | null;
 }
 
-export async function getVoiceTraining(id: string, apiKey?: string): Promise<TrainingState> {
+export async function getVoiceTraining(
+  id: string,
+  apiKey?: string,
+  kind: VoiceTrainerConfig['kind'] = voiceTrainerConfig()?.kind ?? 'prediction',
+): Promise<TrainingState> {
   const token = apiKey || replicateToken();
   if (!token) throw Object.assign(new Error('REPLICATE_API_TOKEN missing'), { statusCode: 501 });
-  const cfg = voiceTrainerConfig();
-  const endpoint = cfg?.kind === 'training' ? 'trainings' : 'predictions';
+  const endpoint = kind === 'training' ? 'trainings' : 'predictions';
   const res = await fetch(`https://api.replicate.com/v1/${endpoint}/${id}`, {
     headers: { authorization: `Bearer ${token}` },
   });
@@ -176,4 +190,36 @@ export async function getVoiceTraining(id: string, apiKey?: string): Promise<Tra
     output: data.output ?? null,
     error: data.error != null ? String(data.error).slice(0, 500) : null,
   };
+}
+
+export async function cancelVoiceTraining(
+  id: string,
+  kind: VoiceTrainerConfig['kind'],
+  apiKey?: string,
+): Promise<boolean> {
+  const token = apiKey || replicateToken();
+  if (!token) return false;
+  const endpoint = kind === 'training' ? 'trainings' : 'predictions';
+  const response = await fetch(`https://api.replicate.com/v1/${endpoint}/${encodeURIComponent(id)}/cancel`, {
+    method: 'POST',
+    headers: { authorization: `Bearer ${token}` },
+  });
+  return response.ok || response.status === 409;
+}
+
+export async function deleteVoiceModelVersion(
+  destination: string,
+  version: string,
+  apiKey?: string,
+): Promise<boolean> {
+  const token = apiKey || replicateToken();
+  if (!token) return false;
+  const [owner, model] = destination.split('/');
+  if (!owner || !model || !/^[a-zA-Z0-9._-]+$/.test(owner) || !/^[a-zA-Z0-9._-]+$/.test(model)) return false;
+  if (!/^[a-zA-Z0-9]{20,128}$/.test(version)) return false;
+  const response = await fetch(
+    `https://api.replicate.com/v1/models/${encodeURIComponent(owner)}/${encodeURIComponent(model)}/versions/${encodeURIComponent(version)}`,
+    { method: 'DELETE', headers: { authorization: `Bearer ${token}` } },
+  );
+  return response.ok || response.status === 404;
 }

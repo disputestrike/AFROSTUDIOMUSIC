@@ -1,7 +1,8 @@
-import { prisma } from '@afrohit/db';
 import { imageAdapter } from '@afrohit/ai';
-import { markFailed, markRunning, markSucceeded } from '../lib/jobs';
-import { ingestRemoteFile, uploadBytes } from '../lib/storage';
+import { prisma } from '@afrohit/db';
+import { inspectImageBytes } from '../lib/image-inspection';
+import { markFailed, markRunning } from '../lib/jobs';
+import { deleteObjectByUrl, downloadToBuffer, ingestRemoteFile, uploadBytes } from '../lib/storage';
 
 interface ImagePayload {
   jobId: string;
@@ -14,64 +15,103 @@ interface ImagePayload {
   kind: 'cover' | 'social' | 'lyric_card' | 'logo' | 'promo';
 }
 
-export async function processImage(p: ImagePayload) {
-  await markRunning(p.jobId);
+export async function processImage(payload: ImagePayload): Promise<void> {
+  await markRunning(payload.jobId);
+  let storedUrl: string | null = null;
   try {
     let adapter = imageAdapter();
-    let result = await adapter.generate({ prompt: p.prompt, size: p.size, quality: p.quality });
-    // NO PLACEHOLDER COVER ART in production: the stub returns a random picsum
-    // image. Only fall back when a dev opts in (ALLOW_STUB_AUDIO=1); otherwise
-    // fail loudly so a stock photo is never shipped as the artist's cover.
+    let result = await adapter.generate({
+      prompt: payload.prompt,
+      size: payload.size,
+      quality: payload.quality,
+    });
     if ((result.status !== 'succeeded' || !result.output) && adapter.name !== 'stub') {
       if (process.env.ALLOW_STUB_AUDIO === '1') {
-        const stub = imageAdapter('stub');
-        result = await stub.generate({ prompt: p.prompt, size: p.size, quality: p.quality });
-        adapter = stub;
+        adapter = imageAdapter('stub');
+        result = await adapter.generate({
+          prompt: payload.prompt,
+          size: payload.size,
+          quality: payload.quality,
+        });
       } else {
-        await markFailed(p.jobId, `image_failed: ${result.error ?? 'provider_failed'} — no image engine configured (set OPENAI_API_KEY).`);
-        return;
+        throw new Error('image_failed: ' + (result.error ?? 'no production image engine configured'));
       }
     }
     if (result.status !== 'succeeded' || !result.output) {
-      await markFailed(p.jobId, result.error ?? 'image_failed');
-      return;
+      throw new Error(result.error ?? 'image_failed');
     }
-    // gpt-image-1 → base64 (upload bytes directly); dall-e/stub → URL (re-host).
-    let url: string;
+
     if (result.output.imageBase64) {
-      url = await uploadBytes({
-        workspaceId: p.workspaceId,
-        kind: `images/${p.kind}`,
+      storedUrl = await uploadBytes({
+        workspaceId: payload.workspaceId,
+        kind: 'images/' + payload.kind,
         bytes: Buffer.from(result.output.imageBase64, 'base64'),
         contentType: 'image/png',
         ext: 'png',
       });
     } else if (result.output.imageUrl) {
-      url = await ingestRemoteFile({
-        workspaceId: p.workspaceId,
+      storedUrl = await ingestRemoteFile({
+        workspaceId: payload.workspaceId,
         url: result.output.imageUrl,
-        kind: `images/${p.kind}`,
+        kind: 'images/' + payload.kind,
         ext: 'png',
         contentType: 'image/png',
       });
     } else {
-      await markFailed(p.jobId, 'image provider returned neither url nor base64');
-      return;
+      throw new Error('image provider returned neither URL nor bytes');
     }
-    await prisma.imageAsset.create({
-      data: {
-        projectId: p.projectId,
-        brandKitId: p.brandKitId,
-        kind: p.kind,
-        prompt: p.prompt,
-        url,
-        width: result.output.width,
-        height: result.output.height,
-        provider: adapter.name,
-      },
+
+    const bytes = await downloadToBuffer(storedUrl, { maxBytes: 50 * 1024 * 1024 });
+    const inspected = await inspectImageBytes(bytes, payload.kind);
+    const verifiedAt = new Date();
+    const image = await prisma.$transaction(async (tx) => {
+      const created = await tx.imageAsset.create({
+        data: {
+          projectId: payload.projectId,
+          brandKitId: payload.brandKitId,
+          kind: payload.kind,
+          prompt: payload.prompt,
+          url: storedUrl!,
+          width: inspected.width,
+          height: inspected.height,
+          provider: adapter.name,
+          qualityState: 'passed',
+          contentHash: inspected.contentHash,
+          verifiedAt,
+          approved: false,
+        },
+      });
+      if (payload.projectId) {
+        await tx.song.updateMany({
+          where: { projectId: payload.projectId, workspaceId: payload.workspaceId },
+          data: { releaseReady: false },
+        });
+      }
+      await tx.providerJob.update({
+        where: { id: payload.jobId },
+        data: {
+          status: 'SUCCEEDED',
+          finishedAt: new Date(),
+          cost: result.estimatedCostUsd == null
+            ? undefined
+            : (result.estimatedCostUsd.toFixed(6) as never),
+          outputJson: {
+            imageId: created.id,
+            url: created.url,
+            width: created.width,
+            height: created.height,
+            qualityState: created.qualityState,
+            contentHash: created.contentHash,
+            approved: created.approved,
+          } as never,
+        },
+      });
+      return created;
     });
-    await markSucceeded(p.jobId, { url }, result.estimatedCostUsd);
-  } catch (err) {
-    await markFailed(p.jobId, err);
+    storedUrl = null;
+    void image;
+  } catch (error) {
+    if (storedUrl) await deleteObjectByUrl(storedUrl).catch(() => undefined);
+    await markFailed(payload.jobId, error);
   }
 }

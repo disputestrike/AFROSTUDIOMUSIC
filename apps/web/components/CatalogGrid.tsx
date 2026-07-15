@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { useApi } from '@/lib/api';
 import { Trash2, Download, Wand2, FileText, Copy, Recycle, Pencil, Sliders, X, Loader2, Music2, Layers, TrendingUp, RefreshCw, Mic, Disc3, Sparkles, GitCompare, ShieldCheck } from 'lucide-react';
@@ -87,9 +87,13 @@ export default function CatalogGrid({ initial }: { initial: SongRow[] }) {
   const [downloads, setDownloads] = useState<{ id: string; files: DownloadFile[] } | null>(null);
   const [hit, setHit] = useState<{ title: string; p: HitPrediction } | null>(null);
   const [bridge, setBridge] = useState<{ songId: string; projectId: string } | null>(null);
-  // §1.11 first-party unlock: the admin key (set once on /admin) reveals the
-  // internal bridge tooling; without it the wall keeps vendor tools hidden.
-  const firstParty = typeof localStorage !== 'undefined' && !!localStorage.getItem('afrohit.adminKey');
+  // Server-authorized operator sessions reveal the internal bridge tooling.
+  const [firstParty, setFirstParty] = useState(false);
+  useEffect(() => {
+    void api.get<{ admin: boolean }>('/admin/status')
+      .then((result) => setFirstParty(result.admin))
+      .catch(() => setFirstParty(false));
+  }, [api]);
   const [compare, setCompare] = useState<{ title: string; loading: boolean; data?: VersionsResp } | null>(null);
   // NOTHING IS LOST: the default list hides old lyric-only shells (failed /
   // never-ran renders). This toggle fetches EVERYTHING (?all=1) so "lost
@@ -409,7 +413,7 @@ export default function CatalogGrid({ initial }: { initial: SongRow[] }) {
             <button onClick={(e) => { e.preventDefault(); e.stopPropagation(); setChatFor(chatFor === s.id ? null : s.id); }} title="Talk to this song" className="absolute left-2 top-2 z-10 rounded-full bg-gradient-to-r from-orange-500 to-pink-500 px-2.5 py-1 text-[11px] font-semibold text-white shadow-lg">💬 Talk</button>
             <div className="aspect-square w-full bg-slate-800">
               {s.coverUrl ? (
-                // eslint-disable-next-line @next/next/no-img-element
+
                 <img src={s.coverUrl} alt={s.title} loading="lazy" decoding="async" className="h-full w-full object-cover" />
               ) : (
                 <div className="flex h-full items-center justify-center font-display text-5xl text-slate-700">♪</div>

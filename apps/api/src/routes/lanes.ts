@@ -27,10 +27,16 @@ const genreMatches = (a?: string | null, b?: string | null) => {
 /** Every measured reference in a genre lane (with the source ref id + C-2 origin). */
 async function fetchGenreMeasured(workspaceId: string, genre: string) {
   const rows = await prisma.soundReference.findMany({
-    where: { workspaceId, NOT: [{ sourceUrl: { startsWith: 'lyric:' } }, { sourceUrl: { startsWith: 'trend:' } }] },
+    where: {
+      workspaceId,
+      active: true,
+      analysisState: 'measured',
+      rightsBasis: { not: 'unknown' },
+      NOT: [{ sourceUrl: { startsWith: 'lyric:' } }, { sourceUrl: { startsWith: 'trend:' } }],
+    },
     orderBy: { createdAt: 'desc' },
     take: 300,
-    select: { id: true, genre: true, sourceUrl: true, recipe: true },
+    select: { id: true, genre: true, sourceUrl: true, recipe: true, rightsBasis: true },
   });
   let refsInGenre = 0;
   const measured: Array<{ id: string; analysis: MeasuredAnalysis; origin: ReturnType<typeof referenceOrigin> }> = [];
@@ -38,7 +44,11 @@ async function fetchGenreMeasured(workspaceId: string, genre: string) {
     if (!genreMatches(r.genre, genre)) continue;
     refsInGenre++;
     const rec = (r.recipe ?? {}) as { measured?: MeasuredAnalysis; source?: string };
-    if (rec.measured && rec.measured.engineOk) measured.push({ id: r.id, analysis: rec.measured, origin: referenceOrigin(r.sourceUrl, rec) });
+    if (rec.measured && rec.measured.engineOk) measured.push({
+      id: r.id,
+      analysis: rec.measured,
+      origin: referenceOrigin(r.sourceUrl, rec, r.rightsBasis),
+    });
   }
   return { refsInGenre, measured };
 }
@@ -53,7 +63,8 @@ export default async function lanes(app: FastifyInstance) {
     // ADDENDUM C-2 — grounding: only NON-SELF refs ground a lane; self rows join
     // the profile only once grounded (never bootstrap a lane from our own output).
     const grounding = groundingOf(measured);
-    const forProfile = grounding.grounded ? measured : measured.filter((m) => m.origin !== 'self-generated');
+    const provenanceKnown = measured.filter((item) => item.origin !== 'unknown');
+    const forProfile = grounding.grounded ? provenanceKnown : provenanceKnown.filter((item) => item.origin !== 'self-generated');
     const profile = buildLaneProfile(genre, 'genre', forProfile.map((m) => m.analysis), { minRefs: 3 });
     profile.builtAt = new Date().toISOString();
     return {
@@ -88,7 +99,11 @@ export default async function lanes(app: FastifyInstance) {
     }
     if (!subject) return reply.code(400).send({ error: 'need_referenceId_or_analysis' });
 
-    const profile = buildLaneProfile(genre, 'genre', laneRefs.map((m) => m.analysis), { minRefs: 3 });
+    const authentic = laneRefs.filter((item) => item.origin === 'owned-upload' || item.origin === 'facts-only');
+    const profileInputs = authentic.length >= 3
+      ? laneRefs.filter((item) => item.origin !== 'unknown')
+      : authentic;
+    const profile = buildLaneProfile(genre, 'genre', profileInputs.map((m) => m.analysis), { minRefs: 3 });
     if (!Object.keys(profile.features).length) {
       return reply.code(422).send({ error: 'lane_not_profiled', refsMeasured: laneRefs.length, hint: `Need at least ${profile.minRefs} measured ${genre} references to score against.` });
     }
@@ -124,7 +139,16 @@ export default async function lanes(app: FastifyInstance) {
       prisma.hookCandidate.count({ where: { project: { workspaceId } } }).catch(() => 0),
       prisma.analyticsEvent.count({ where: { workspaceId, name: { startsWith: 'taste.' } } }).catch(() => 0),
       prisma.lexiconEntry.groupBy({ by: ['language'], where: { workspaceId: null }, _count: true }).catch(() => []),
-      prisma.materialAsset.groupBy({ by: ['role'], where: { workspaceId }, _count: true }).catch(() => []),
+      prisma.materialAsset.groupBy({
+        by: ['role'],
+        where: {
+          workspaceId,
+          readiness: { not: 'rejected' },
+          qualityState: { notIn: ['failed', 'duplicate'] },
+          rightsBasis: { not: 'unknown' },
+        },
+        _count: true,
+      }).catch(() => []),
     ]);
     const recentBeats = await prisma.beatAsset.findMany({ where: { project: { workspaceId } }, orderBy: { createdAt: 'desc' }, take: 200, select: { meta: true } });
     const beatsMeasured = recentBeats.filter((b: { meta: unknown }) => ((b.meta ?? {}) as { measured?: { engineOk?: boolean } }).measured?.engineOk).length;
@@ -180,8 +204,14 @@ export default async function lanes(app: FastifyInstance) {
     // C-2 — print each lane's GROUNDING beside its scores: 'measured (5 refs:
     // 3 external + 2 self)' vs 'expert-prior (1 external ref — self-promotion locked)'.
     const refRows = await prisma.soundReference.findMany({
-      where: { workspaceId, NOT: [{ sourceUrl: { startsWith: 'lyric:' } }, { sourceUrl: { startsWith: 'trend:' } }] },
-      select: { genre: true, sourceUrl: true, recipe: true },
+      where: {
+        workspaceId,
+        active: true,
+        analysisState: 'measured',
+        rightsBasis: { not: 'unknown' },
+        NOT: [{ sourceUrl: { startsWith: 'lyric:' } }, { sourceUrl: { startsWith: 'trend:' } }],
+      },
+      select: { genre: true, sourceUrl: true, recipe: true, rightsBasis: true },
       take: 500,
     });
     const originsByLane = new Map<string, Array<{ origin: ReturnType<typeof referenceOrigin> }>>();
@@ -190,7 +220,7 @@ export default async function lanes(app: FastifyInstance) {
       if (!rec.measured?.engineOk) continue;
       const g = norm(r.genre);
       if (!g) continue;
-      originsByLane.set(g, [...(originsByLane.get(g) ?? []), { origin: referenceOrigin(r.sourceUrl, rec) }]);
+      originsByLane.set(g, [...(originsByLane.get(g) ?? []), { origin: referenceOrigin(r.sourceUrl, rec, r.rightsBasis) }]);
     }
     return {
       totals: { songs: rows.length, measured: measured.length, unmeasured: rows.length - measured.length },

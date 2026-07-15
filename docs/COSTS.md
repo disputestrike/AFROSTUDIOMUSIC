@@ -1,46 +1,108 @@
-# Unit economics — cost model
+# Cost Accounting
 
-All AI provider costs are **per-call estimates**. Real numbers will drift as providers update pricing — keep `packages/shared/src/credits.ts` as the source of truth.
+Credit prices are product configuration. They are not proof of provider cost,
+margin, or profitability.
 
-## Per-action provider cost vs price-to-user
+## Sources Of Truth
 
-| Action | Provider est. | Charged credits | Margin |
-|---|---|---|---|
-| Polish a free-form brief | $0.01 | $0.05 | 5× |
-| Generate 20 hooks | $0.04 | $0.15 | ~4× |
-| Score 50 hooks (taste) | $0.06 | $0.20 | 3.3× |
-| Full lyric draft | $0.10 | $0.30 | 3× |
-| Cover art (low quality) | $0.006 | $0.30 | 50× |
-| Cover art (high quality) | $0.21 | $2.50 | ~12× |
-| 30-sec beat idea | $0.30-$1 | $2.50 | 2.5–8× |
-| Full song (with stems) | $1-$3 | $7.50 | 2.5–7.5× |
-| Stems export | $1-$2 | $5 | 2.5–5× |
-| Voice profile setup | $0-$2 | $20 | one-time fee |
-| 30-sec voice render | $0.10-$0.30 | $3 | 10–30× |
-| Full-song voice | $0.50-$1.50 | $8 | 5–16× |
-| Mix preset (FFmpeg, our compute) | ~$0.05 | $1 | 20× |
-| Master preset | ~$0.05 | $1.50 | 30× |
-| 8-second video (Veo Fast) | ~$0.80 | $10 | 12× |
-| 20-second video | ~$2-$8 | $25 | 3–12× |
-| Release export bundle | ~$0.05 | $0.50 | 10× |
+| Question | Source |
+|---|---|
+| What the product charges | `packages/shared/src/credits.ts` |
+| Current workspace balance | `Workspace.creditsCents` |
+| Why balance changed | immutable `CreditLedger` rows |
+| Which paid job ran | `ProviderJob`, including provider and `costUsd` when reported |
+| Which language call ran | `AnalyticsEvent` named `llm.call` |
+| Which payment was approved | `BillingIntent` plus verified `BillingEvent` |
+| Provider invoice truth | provider billing export or invoice |
+| Infrastructure cost | Railway, storage, egress, email, and observability invoices |
 
-## Plan-level math
+All credit integers use 1/100 cent units: `10_000` equals USD 1.00.
+Ledger accounting separates money from usage. `delta` is the balance movement,
+`units` is the number of billed operations used by generation caps, and
+`planUnits` is the allowance quantity. For video, `units` is the number of
+provider shots billed and `planUnits` is their total normalized duration in
+seconds. Reversals use zero units and link to the original debit.
 
-Assume Pro Artist ($149/mo), heavy use:
+`AnalyticsEvent` estimates help detect direction and anomalies, but they do not
+replace invoices. A provider job with no trustworthy `costUsd` is unknown cost,
+not zero cost.
 
-- 60 demo songs × $7.50 credits = $450 of credit value covered? No — that's why credits are bought separately.
-- A Pro plan **includes** ~60 demos and 100 voice renders / month — i.e. ~$450 + $300 worth of generation at retail. We pay providers ~$120-$180 for that. So gross margin is ~80%.
-- PayPal fee ~3.49% + $0.49 per transaction (~$5.70/mo on Pro). Net contribution per Pro ~$108-$118/mo.
-- 1,000 Pros = ~$120k/mo gross. Subtract infra ($30-$300/mo until 5,000 active workspaces) and OpenAI/text/embeddings (~$1,500-$3,000/mo at that scale).
+## Required Reconciliation
 
-## Limits to bake in from day one
+At least daily during testing and monthly in production:
 
-- **Hard daily cap per workspace**: 30× monthly cap / 30. Stops a leak from burning the credit balance overnight.
-- **Per-action rate limit**: 1 video render every 30 seconds per workspace, 3 in-flight at a time. Prevents accidental loops.
-- **Free tier**: $5 onboarding credit (one-time) when the workspace is created by Clerk webhook. No recurring free credits.
+1. Export provider usage/invoices for the same UTC window.
+2. Sum successful and failed `ProviderJob` spend by provider, model, job kind,
+   and workspace.
+3. Sum `llm.call` counts and separately mark estimated versus invoice-backed cost.
+4. Reconcile PayPal captures to completed `BillingIntent` and `BillingEvent` rows.
+5. Reconcile every credit debit and reversal to its logical job or action.
+6. Include infrastructure, storage, egress, payment fees, refunds, support, and
+   taxes in the cost window.
+7. Investigate unknown-cost jobs, unmatched captures, duplicate-looking ledger
+   entries, and jobs with spend but no user-visible outcome.
 
-## When to switch the provider
+Keep the reconciliation artifact and the query/version used to produce it.
 
-- Music provider commercial-use terms change → swap in `packages/ai/src/providers/music.ts` and redeploy worker.
-- Video provider price spikes → switch `VIDEO_PROVIDER` env var. The DB schema captures provider per asset; you don't lose anything.
-- OpenAI model deprecations → update `MODELS` in `packages/ai/src/openai-client.ts`.
+## Margin Calculation
+
+Do not publish a margin percentage until all terms below are measured for the
+same period:
+
+```text
+net revenue
+- payment fees and refunds
+- provider invoices
+- compute, database, Redis, storage, and egress
+- email, observability, and other variable services
+- allocated support and moderation cost
+= contribution
+```
+
+Then:
+
+```text
+contribution margin = contribution / net revenue
+```
+
+Plan allowances and credit prices must be stress-tested against heavy but valid
+usage. An allowance is not profitable merely because a nominal credit value is
+larger than an estimated API call.
+
+## Spend Controls
+
+- Idempotent credit debits and one reversal per failed charge.
+- Daily and monthly generation caps, plus plan-specific action limits.
+- Transactional outbox dispatch so retries do not create new logical jobs.
+- Provider job IDs and idempotency keys retained across timeout recovery.
+- Operator autonomy switches for every scheduled money-spending workflow.
+- `BACKGROUND_LLM_DAILY_CAP` for background language work.
+- Progressive best-of-N: buy another take only after evidence justifies it.
+- Local CPU Demucs for eligible background stem work.
+- Production refusal of placeholder media and unconfigured providers.
+
+Recommended alerts:
+
+- provider spend without a matching `ProviderJob`
+- a job cost far above its kind/model baseline
+- repeated retries or candidate count above policy
+- failed job with no reversal after the failure handler window
+- PayPal capture without one completed billing intent
+- credit grant without a verified billing event or named admin action
+- background spend over its daily cap
+- rising cost per approved or retained song
+
+## Changing Prices Or Providers
+
+Before changing `CREDIT_COSTS`, a plan allowance, or a routing default:
+
+1. Use recent measured p50, p90, and worst-case successful cost.
+2. Include retry rate, failure rate, best-of-N expansion, and egress.
+3. Run offline quality gates and a controlled live bake-off.
+4. Confirm commercial rights, data handling, model version, and rate limits.
+5. Update tests, customer-facing price copy, and this accounting model together.
+6. Watch the first production cohort with a rollback threshold.
+
+Unknown or volatile provider pricing must stay configurable and be reviewed
+against the provider's current contract. This repository intentionally makes no
+fixed provider-cost or Suno-margin claim.

@@ -1,29 +1,27 @@
-/**
- * AI-AUTOMATIC MATERIAL BEAT — "let AI run this part."
- *
- * Benjamin's point: the artist should not have to manually Forge a kit and then
- * Assemble. The AI should look at the song, forge whatever the genre's kit is
- * missing, and assemble the exact beat — in the backend, in one action. This is
- * that orchestrator: check the shelf → forge the missing roles (staggered for the
- * Replicate throttle) → detached, wait for the loops to land → arrange + assemble.
- * Shared by the REST /materials/auto route and the make_material_beat chat tool.
- */
+import { createHash, randomUUID } from 'node:crypto';
 import type { FastifyInstance } from 'fastify';
 import { prisma } from '@afrohit/db';
 import { getSoundDNA } from '@afrohit/ai';
-import { enqueue } from './queue';
-import { kitRolesFor, homeKeyFor, pickMaterial, claudeArrangement, type MaterialRow, type MaterialPick } from './material-plan';
-import { loadLaneProfileForGenre } from './lane-context';
 import { laneMaterialNeeds } from '@afrohit/shared';
+import { createQueuedProviderJob } from './queued-job';
+import { kitRolesFor, homeKeyFor, pickMaterial, materialCoverage, claudeArrangement, type MaterialRow, type MaterialPick } from './material-plan';
+import { loadLaneProfileForGenre } from './lane-context';
 
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+function stableSeed(key: string): number {
+  return Number.parseInt(createHash('sha256').update(key).digest('hex').slice(0, 8), 16) % 100_000;
+}
 
 function loadShelf(workspaceId: string, genre: string): Promise<MaterialRow[]> {
   return prisma.materialAsset.findMany({
     where: { workspaceId, genre },
     orderBy: { createdAt: 'desc' },
     take: 200,
-    select: { id: true, url: true, role: true, bpm: true, keySignature: true, source: true },
+    select: {
+      id: true, url: true, role: true, bpm: true, keySignature: true, source: true,
+      readiness: true, qualityState: true, rightsBasis: true, roleEvidence: true,
+    },
   });
 }
 
@@ -36,14 +34,34 @@ async function assembleFrom(
   keySignature: string,
   vibe: string | undefined,
   songId: string | undefined,
-  picks: MaterialPick[]
+  picks: MaterialPick[],
+  operationKey: string
 ): Promise<string> {
-  const sections = await claudeArrangement(genre, bpm, picks.map((p) => p.role), vibe);
-  const job = await prisma.providerJob.create({
-    data: { workspaceId, projectId, kind: 'music', provider: 'material', status: 'QUEUED', inputJson: { assemble: true, genre, bpm, keySignature, vibe, songId, picks: picks.map((p) => p.role), sections } as never },
+  const sections = await claudeArrangement(genre, bpm, picks.map((pick) => pick.role), vibe);
+  const idempotencyKey = `${operationKey}:assemble`;
+  const charge = await app.chargeCredits({
+    workspaceId,
+    key: 'beat_idea_short_30s',
+    refTable: 'Project',
+    refId: projectId,
+    idempotencyKey,
   });
-  await enqueue({ queue: app.queues.music, name: 'assemble-beat', payload: { jobId: job.id, workspaceId, projectId, songId, bpm, genre, picks, sections } });
-  return job.id;
+  if (!charge.ok) throw new Error(`auto material assembly refused: ${charge.reason ?? 'insufficient credits'}`);
+
+  const job = await createQueuedProviderJob({
+    app,
+    queue: app.queues.music,
+    jobName: 'assemble-beat',
+    workspaceId,
+    projectId,
+    kind: 'music',
+    provider: 'material',
+    inputJson: { assemble: true, genre, bpm, keySignature, vibe, songId, picks: picks.map((pick) => pick.role), sections },
+    charge,
+    idempotencyKey,
+    payload: (jobId) => ({ jobId, workspaceId, projectId, songId, bpm, genre, picks, sections }),
+  });
+  return job.jobId;
 }
 
 export interface AutoMaterialOpts {
@@ -53,79 +71,142 @@ export interface AutoMaterialOpts {
   keySignature?: string;
   vibe?: string;
   songId?: string;
+  operationKey?: string;
+}
+
+export interface FinishAutoMaterialPayload {
+  jobId: string;
+  workspaceId: string;
+  operationKey: string;
+  childJobIds: string[];
+  options: Omit<AutoMaterialOpts, 'operationKey'> & { bpm: number; keySignature: string; wantedRoles?: string[] };
+}
+
+/** Durable second half of an automatic material build. */
+export async function finishAutoMaterialBeat(app: FastifyInstance, payload: FinishAutoMaterialPayload) {
+  const { workspaceId, options } = payload;
+  const project = await prisma.project.findFirst({ where: { id: options.projectId, workspaceId }, select: { id: true } });
+  if (!project) throw new Error('auto material project missing or outside workspace');
+  if (options.songId) {
+    const song = await prisma.song.findFirst({ where: { id: options.songId, projectId: options.projectId, workspaceId }, select: { id: true } });
+    if (!song) throw new Error('auto material song missing or outside project');
+  }
+
+  const deadline = Date.now() + 15 * 60_000;
+  while (payload.childJobIds.length) {
+    const children = await prisma.providerJob.findMany({
+      where: { id: { in: payload.childJobIds }, workspaceId },
+      select: { id: true, status: true },
+    });
+    if (children.length !== payload.childJobIds.length) throw new Error('auto material child job missing or outside workspace');
+    if (children.every((child: { status: string }) => child.status === 'SUCCEEDED' || child.status === 'FAILED' || child.status === 'CANCELED')) break;
+    if (Date.now() >= deadline) throw new Error('auto material forge timed out');
+    await sleep(10_000);
+  }
+
+  const shelf = await loadShelf(workspaceId, options.genre);
+  const picks = pickMaterial(shelf, options.genre, options.bpm, options.keySignature, {
+    varietySeed: stableSeed(payload.operationKey),
+    roles: options.wantedRoles,
+  });
+  const coverage = materialCoverage(picks);
+  if (!coverage.ready) {
+    throw new Error(`auto material build is incomplete after forging (beds=${coverage.beds}, rhythm=${coverage.rhythm}, low-end=${coverage.lowEnd}, tonal=${coverage.tonal})`);
+  }
+
+  const assemblyJobId = await assembleFrom(
+    app,
+    workspaceId,
+    options.projectId,
+    options.genre,
+    options.bpm,
+    options.keySignature,
+    options.vibe,
+    options.songId,
+    picks,
+    payload.operationKey
+  );
+  return { assemblyJobId, roles: picks.map((pick) => pick.role), bpm: options.bpm, keySignature: options.keySignature };
 }
 
 /**
- * Forge the genre's missing kit roles near this bpm, then assemble the exact beat.
- * Returns immediately: 'assembling' if the shelf was already stocked, or 'forging'
- * (with a detached waiter that assembles once the loops land). Never throws to the
- * caller — the detached half logs and gives up cleanly.
+ * Forge missing measured-lane roles and durably hand the follow-up assembly to
+ * the orchestration queue. A process restart cannot lose the second half.
  */
 export async function autoMaterialBeat(app: FastifyInstance, workspaceId: string, opts: AutoMaterialOpts) {
+  const project = await prisma.project.findFirst({ where: { id: opts.projectId, workspaceId }, select: { id: true } });
+  if (!project) throw new Error('auto material project missing or outside workspace');
+  if (opts.songId) {
+    const song = await prisma.song.findFirst({ where: { id: opts.songId, projectId: opts.projectId, workspaceId }, select: { id: true } });
+    if (!song) throw new Error('auto material song missing or outside project');
+  }
+
+  const operationKey = opts.operationKey ?? `material-auto:${randomUUID()}`;
   const bpm = opts.bpm ?? getSoundDNA(opts.genre)?.typicalBpm ?? 108;
   const keySignature = opts.keySignature ?? homeKeyFor(opts.genre);
-
-  // §6 — roles come from the MEASURED lane profile when it exists (derives log_drum /
-  // shaker / etc. from what the lane actually is), and fall back to the hardcoded kit
-  // ONLY when the lane is underprofiled — and we SAY SO (materialSource).
   const profile = await loadLaneProfileForGenre(workspaceId, opts.genre);
-  const wanted = profile ? laneMaterialNeeds(profile).roles.map((r) => r.role) : kitRolesFor(opts.genre);
+  // Measured needs supplement the genre's real performance kit; they never
+  // replace it with the old generic drums/bass/chords vocabulary.
+  const measuredRoles = profile ? laneMaterialNeeds(profile).roles.map((role) => role.role) : [];
+  const wanted = [...new Set([...kitRolesFor(opts.genre, 14), ...measuredRoles])];
   const materialSource = profile
     ? `profile-driven (${Object.keys(profile.features).length} measured features)`
-    : `fallback-hardcoded (lane underprofiled: < 3 measured refs)`;
+    : 'fallback-hardcoded (lane underprofiled: < 3 measured refs)';
 
   const shelf = await loadShelf(workspaceId, opts.genre);
-  // Fresh variety seed per request — the deterministic pick served the SAME loop
-  // per role on every assemble, so every beat in a lane was the same beat.
-  const picks = pickMaterial(shelf, opts.genre, bpm, keySignature, { varietySeed: Date.now() % 100000 });
-  const have = new Set(picks.map((p) => p.role));
-  const missing = wanted.filter((r) => !have.has(r));
+  const picks = pickMaterial(shelf, opts.genre, bpm, keySignature, { varietySeed: stableSeed(operationKey), roles: wanted });
+  const have = new Set(picks.map((pick) => pick.role));
+  const missing = wanted.filter((role) => !have.has(role));
 
-  // Shelf already stocked → assemble now.
-  if (!missing.length && picks.length >= 2) {
-    const jobId = await assembleFrom(app, workspaceId, opts.projectId, opts.genre, bpm, keySignature, opts.vibe, opts.songId, picks);
-    return { status: 'assembling' as const, jobId, roles: picks.map((p) => p.role), bpm, keySignature, materialSource };
+  if (!missing.length && materialCoverage(picks).ready) {
+    const jobId = await assembleFrom(app, workspaceId, opts.projectId, opts.genre, bpm, keySignature, opts.vibe, opts.songId, picks, operationKey);
+    return { status: 'assembling' as const, jobId, roles: picks.map((pick) => pick.role), bpm, keySignature, materialSource };
   }
 
-  // Forge the missing roles, staggered for the Replicate prediction-creation limit.
   const forging: Array<{ role: string; jobId: string }> = [];
-  for (let i = 0; i < missing.length; i++) {
-    const role = missing[i]!;
-    const charge = await app.chargeCredits({ workspaceId, key: 'beat_idea_short_30s' });
-    if (!charge.ok) break; // out of budget → assemble with what we have (if enough)
-    const job = await prisma.providerJob.create({
-      data: { workspaceId, kind: 'material', provider: 'replicate', status: 'QUEUED', inputJson: { genre: opts.genre, role, bpm, keySignature } as never },
+  for (let index = 0; index < missing.length; index += 1) {
+    const role = missing[index]!;
+    const idempotencyKey = `${operationKey}:forge:${role}`;
+    const charge = await app.chargeCredits({ workspaceId, key: 'beat_idea_short_30s', refTable: 'Project', refId: opts.projectId, idempotencyKey });
+    if (!charge.ok) break;
+    const job = await createQueuedProviderJob({
+      app,
+      queue: app.queues.music,
+      jobName: 'forge-material',
+      workspaceId,
+      projectId: opts.projectId,
+      kind: 'material',
+      provider: 'workspace-music',
+      inputJson: { genre: opts.genre, role, bpm, keySignature },
+      charge,
+      idempotencyKey,
+      payload: (jobId) => ({ jobId, workspaceId, genre: opts.genre, role, bpm, keySignature }),
+      delayMs: index * 30_000,
     });
-    await enqueue({ queue: app.queues.music, name: 'forge-material', payload: { jobId: job.id, workspaceId, genre: opts.genre, role, bpm, keySignature }, delayMs: i * 30_000 });
-    forging.push({ role, jobId: job.id });
+    forging.push({ role, jobId: job.jobId });
   }
 
-  // Detached: wait for the loops, then assemble automatically.
-  void (async () => {
-    try {
-      for (const f of forging) {
-        for (let t = 0; t < 40; t++) {
-          await sleep(10_000);
-          const j = await prisma.providerJob.findUnique({ where: { id: f.jobId }, select: { status: true } });
-          if (!j || j.status === 'FAILED' || j.status === 'SUCCEEDED') break;
-        }
-      }
-      const shelf2 = await loadShelf(workspaceId, opts.genre);
-      const picks2 = pickMaterial(shelf2, opts.genre, bpm, keySignature, { varietySeed: Date.now() % 100000 });
-      if (picks2.length >= 2) {
-        await assembleFrom(app, workspaceId, opts.projectId, opts.genre, bpm, keySignature, opts.vibe, opts.songId, picks2);
-      }
-    } catch (err) {
-      app.log?.warn?.({ err, genre: opts.genre }, 'autoMaterialBeat: auto-assemble after forge failed');
-    }
-  })();
+  const options = { projectId: opts.projectId, genre: opts.genre, bpm, keySignature, vibe: opts.vibe, songId: opts.songId, wantedRoles: wanted };
+  const orchestration = await createQueuedProviderJob({
+    app,
+    queue: app.queues.orchestration,
+    jobName: 'finish-auto-material',
+    workspaceId,
+    projectId: opts.projectId,
+    kind: 'material-orchestration',
+    provider: 'internal',
+    inputJson: { childJobIds: forging.map((item) => item.jobId), options },
+    idempotencyKey: `${operationKey}:finish`,
+    payload: (jobId) => ({ jobId, workspaceId, operationKey, childJobIds: forging.map((item) => item.jobId), options }),
+  });
 
   return {
     status: 'forging' as const,
+    jobId: orchestration.jobId,
     forging,
     bpm,
     keySignature,
     materialSource,
-    note: `AI is forging the ${opts.genre} kit (${forging.map((f) => f.role).join(', ') || 'none needed'}) and will assemble the exact beat automatically when the loops land — no need to run each step.`,
+    note: `AI is forging ${forging.length} missing ${opts.genre} role(s); durable orchestration will assemble the beat when they finish.`,
   };
 }

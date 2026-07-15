@@ -8,14 +8,31 @@
     ".": {
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
+    },
+    "./server-url-safety": {
+      "types": "./dist/server-url-safety.d.ts",
+      "default": "./dist/server-url-safety.js"
     }
   },
-  "files": ["dist"],
+  "typesVersions": {
+    "*": {
+      "server-url-safety": [
+        "dist/server-url-safety.d.ts"
+      ],
+      "*": [
+        "dist/index.d.ts"
+      ]
+    }
+  },
+  "files": [
+    "dist"
+  ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "undici": "^6.27.0",
     "zod": "^3.23.8"
   },
   "devDependencies": {

@@ -130,7 +130,7 @@ export default function CreatePage() {
     }
     setPhase('producing'); setStepIdx(saved.renderJobId ? 3 : 1);
     void (async () => {
-      let dropJobId = saved!.dropJobId; let renderJobId = saved!.renderJobId; let projectId = saved!.projectId;
+      const dropJobId = saved!.dropJobId; let renderJobId = saved!.renderJobId; let projectId = saved!.projectId;
       let hook = saved!.hook ?? ''; let score = saved!.score ?? null; let title = saved!.title ?? 'Your song';
       try {
         for (let i = 0; i < 200; i++) {
@@ -166,7 +166,7 @@ export default function CreatePage() {
         setPhase('finishing'); clearProduce();
       } catch { setSong({ title: 'Your song', score: null, url: '', projectId: '' }); setPhase('finishing'); clearProduce(); }
     })();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+
   }, []);
   // MULTI-GENRE: first pick = the backbone; a second pick FUSES into it.
   const [genres, setGenres] = useState<string[]>(['afrobeats']);
@@ -191,10 +191,16 @@ export default function CreatePage() {
   // Explicit instrument picks — featured prominently in the render's style
   // prompt (steering on provider engines; exact on the own engine).
   const [instruments, setInstruments] = useState<string[]>([]);
-  // 'auto' = let the backend's defaultSongEngine() choose (Suno when a key
-  // exists, else the fallback). Hardcoding 'minimax' here used to OVERRIDE that
-  // — so full songs never upgraded to Suno even with a key. Auto is the default.
-  const [engine, setEngine] = useState<'auto' | 'suno' | 'ace_step' | 'minimax' | 'own'>('auto');
+  // 'auto' lets the backend choose from routes connected for this workspace.
+  const [engine, setEngine] = useState<'auto' | 'suno' | 'eleven' | 'ace_step' | 'minimax'>('auto');
+  const [musicRoutes, setMusicRoutes] = useState<{ flagship: boolean; advanced: boolean; standard: boolean } | null>(null);
+  useEffect(() => {
+    void api.get<{ flagship: boolean; advanced: boolean; standard: boolean }>('/settings/music-capabilities')
+      .then(setMusicRoutes)
+      .catch(() => setMusicRoutes({ flagship: false, advanced: false, standard: false }));
+  }, [api]);
+  const hasMusicRoute = musicRoutes !== null
+    && (musicRoutes.flagship || musicRoutes.advanced || musicRoutes.standard);
 
   // Three ways in: describe it / bring your own lyrics / listen & recreate.
   const [path, setPath] = useState<'song' | 'lyrics' | 'mumble'>('song');
@@ -260,12 +266,16 @@ export default function CreatePage() {
   useEffect(() => {
     // Fire once autoProduce is set. Phase may already be 'producing' (we start
     // there on ?produce=1 to skip the form flash), so don't gate on phase==='form'.
-    if (autoProduce) {
-      setAutoProduce(false);
-      void createSong();
+    if (!autoProduce || musicRoutes === null) return;
+    setAutoProduce(false);
+    if (!hasMusicRoute) {
+      setErr('No music engine is connected. Ask an owner to connect one in Settings.');
+      setPhase('error');
+      return;
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [autoProduce]);
+    void createSong();
+
+  }, [autoProduce, hasMusicRoute, musicRoutes]);
 
   // SALIENCE: the software knows each lane's natural tempo and tongue — picking a
   // genre sets them; fusing two BLENDS the tempo; the user's touch always wins.
@@ -278,7 +288,7 @@ export default function CreatePage() {
       const cand = [...new Set(sigs.flatMap((x) => x.languages))].filter((l) => LANGS.some((x) => x.value === l));
       if (cand.length) setLangs(cand);
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+
   }, [genres]);
 
   const toggleLang = (l: string) => { langsTouched.current = true; setLangs((p) => (p.includes(l) ? p.filter((x) => x !== l) : [...p, l])); };
@@ -297,6 +307,11 @@ export default function CreatePage() {
 
   async function createSong() {
     setErr('');
+    if (!hasMusicRoute) {
+      setErr('No music engine is connected. Ask an owner to connect one in Settings.');
+      setPhase('error');
+      return;
+    }
     // PRE-FLIGHT: refuse BEFORE the user commits to a multi-minute wait — never
     // let them sit through "producing…" only to hit the daily cap at the end.
     try {
@@ -318,7 +333,7 @@ export default function CreatePage() {
         ? ` In the VIBE/LANE of ${influence.trim()} (capture that energy, tempo and production feel — never copy their melodies/lyrics and never name them in the song).`
         : '';
       const fusionLine = fusion.length ? ` This is a GENRE FUSION: ${genreLabel} — both identities must be clearly audible, something new, never mush.` : '';
-      const theme = `${songName.trim() ? (singName ? `SONG TITLE (CREATIVE ANCHOR): \"${songName.trim()}\" — the HOOK must SING this name (or a natural in-language variant) as its centerpiece; verses orbit its meaning; if the vibe conflicts with the name inside the hook, the NAME wins. The lyric title uses it exactly. ` : `SONG TITLE (LABEL ONLY): \"${songName.trim()}\" — use it as the title exactly, but do NOT force the phrase into the lyrics. `) : ''}${genreLabel} ${mood} song, ${bpm}bpm, ${langNames}${vibe ? `, ${vibe.trim()}` : ''}. Make it catchy and current.${fusionLine}${influenceLine}`;
+      const theme = `${songName.trim() ? (singName ? `SONG TITLE (CREATIVE ANCHOR): "${songName.trim()}" — the HOOK must SING this name (or a natural in-language variant) as its centerpiece; verses orbit its meaning; if the vibe conflicts with the name inside the hook, the NAME wins. The lyric title uses it exactly. ` : `SONG TITLE (LABEL ONLY): "${songName.trim()}" — use it as the title exactly, but do NOT force the phrase into the lyrics. `) : ''}${genreLabel} ${mood} song, ${bpm}bpm, ${langNames}${vibe ? `, ${vibe.trim()}` : ''}. Make it catchy and current.${fusionLine}${influenceLine}`;
       // Fire the Drop Machine — it replies 202 + a job id INSTANTLY and works in
       // the background (holding a 3-minute HTTP request open dies on real
       // networks). We poll the drop job for the hook/lyrics result…
@@ -464,6 +479,11 @@ export default function CreatePage() {
     // (daily cap, malformed JSON) and used to leave this (and the button) dead.
     if (lyricsText.trim().length < 20) return;
     setErr('');
+    if (!hasMusicRoute) {
+      setErr('No music engine is connected. Ask an owner to connect one in Settings.');
+      setPhase('error');
+      return;
+    }
     try {
       const pf = await api.get<{ ok: boolean; mode: string }>('/billing/preflight').catch(() => ({ ok: true, mode: 'unknown' }));
       if (!pf.ok) { setErr('Daily limit reached — resets at midnight UTC.'); setPhase('error'); return; }
@@ -792,17 +812,20 @@ export default function CreatePage() {
           {([
             // §1.11 THE WALL: public surfaces speak in ENGINE CLASSES, never
             // vendor names. Values stay internal identifiers; labels are classes.
-            { value: 'auto', label: 'Auto', hint: 'Best engine available (recommended)' },
-            { value: 'suno', label: 'Flagship', hint: 'Best quality (first-party releases)' },
-            { value: 'minimax', label: 'Standard A', hint: 'High vocal realism' },
-            { value: 'ace_step', label: 'Standard B', hint: 'Fast draft' },
-            { value: 'own', label: 'Our Engine', hint: 'Instrumental built from YOUR + synth material (owned)' },
-          ] as const).map((e) => (
+            { value: 'auto', label: 'Auto', hint: 'Connected route', available: hasMusicRoute },
+            { value: 'suno', label: 'Flagship', hint: 'First-party route', available: musicRoutes?.flagship === true },
+            { value: 'eleven', label: 'Advanced', hint: 'Section-controlled route', available: musicRoutes?.advanced === true },
+            { value: 'minimax', label: 'Standard A', hint: 'Full-song route', available: musicRoutes?.standard === true },
+            { value: 'ace_step', label: 'Standard B', hint: 'Alternate full-song route', available: musicRoutes?.standard === true },
+          ] as const).filter((e) => e.available).map((e) => (
             <button key={e.value} onClick={() => setEngine(e.value)} className={`rounded-full px-4 py-2 text-sm ${engine === e.value ? 'bg-brand-gradient text-ink shadow-glow' : 'border border-white/10 bg-white/5 text-slate-300 hover:bg-white/10'}`}>
               {e.label} <span className="opacity-60">· {e.hint}</span>
             </button>
           ))}
         </div>
+        {musicRoutes && !hasMusicRoute && (
+          <p className="mt-2 text-sm text-amber-300">No vocal engine is connected. An owner must connect one in Settings before rendering.</p>
+        )}
       </div>
 
       <div className="mt-4"><div className="mb-2 text-sm text-slate-400">Takes <span className="text-xs text-slate-500">— more takes = more directions; the ear keeps the one most in your lane</span></div>
@@ -817,15 +840,20 @@ export default function CreatePage() {
 
       <div className="mt-8 flex flex-wrap gap-3">
         {path === 'song' ? (
-          <button onClick={() => void createSong()} className="rounded-full bg-brand-gradient px-6 py-3 font-medium text-ink shadow-glow">
+          <button
+            onClick={() => void createSong()}
+            disabled={!hasMusicRoute}
+            title={!hasMusicRoute ? 'Connect a music engine in Settings first' : undefined}
+            className="rounded-full bg-brand-gradient px-6 py-3 font-medium text-ink shadow-glow disabled:cursor-not-allowed disabled:opacity-50"
+          >
             ⚡ Create the song
           </button>
         ) : (
           <button
             onClick={() => void createFromLyrics()}
-            disabled={lyricsText.trim().length < 20}
-            title={!decon ? 'Deconstruct your lyrics first' : undefined}
-            className="rounded-full bg-brand-gradient px-6 py-3 font-medium text-ink shadow-glow disabled:opacity-50"
+            disabled={lyricsText.trim().length < 20 || !hasMusicRoute}
+            title={!hasMusicRoute ? 'Connect a music engine in Settings first' : !decon ? 'Deconstruct your lyrics first' : undefined}
+            className="rounded-full bg-brand-gradient px-6 py-3 font-medium text-ink shadow-glow disabled:cursor-not-allowed disabled:opacity-50"
           >
             🎤 Sing MY lyrics — make the song
           </button>

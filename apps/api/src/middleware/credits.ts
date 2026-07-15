@@ -1,41 +1,23 @@
-import fp from 'fastify-plugin';
-import { prisma } from '@afrohit/db';
-import { costOf, PLAN_LIMITS, type CreditKey } from '@afrohit/shared';
-import { isInternalMode } from './auth';
+import fp from "fastify-plugin";
+import {
+  chargeWorkspaceCredits,
+  refundWorkspaceCharge,
+  prisma,
+} from "@afrohit/db";
+import type { CreditKey } from "@afrohit/shared";
+import { isInternalMode } from "./auth";
 
-/** What prisma.$transaction hands an interactive callback: the client minus the
- *  session-level methods (mirrors Prisma's ITXClientDenyList). Written via
- *  `typeof prisma` so it stays correct under both the real client types and the
- *  sandbox compile shim (where prisma is `any`). */
-type Tx = Omit<typeof prisma, '$connect' | '$disconnect' | '$on' | '$transaction' | '$use' | '$extends'>;
-
-// Map a credit action → the PLAN_LIMITS monthly category it counts against, and
-// the ledger reasons that make up that category's usage. Keys not listed are
-// uncapped (charged on balance only).
-const LIMIT_CATEGORY: Partial<Record<CreditKey, string>> = {
-  full_song_demo: 'monthlyDemoSongs',
-  beat_idea_short_30s: 'monthlyDemoSongs',
-  voice_render_30s: 'monthlyVoiceRenders',
-  voice_render_full: 'monthlyVoiceRenders',
-  cover_art_low: 'coverArt',
-  cover_art_high: 'coverArt',
-};
-const CATEGORY_REASONS: Record<string, string[]> = {
-  monthlyDemoSongs: ['full_song_demo', 'beat_idea_short_30s'],
-  monthlyVoiceRenders: ['voice_render_30s', 'voice_render_full'],
-  coverArt: ['cover_art_low', 'cover_art_high'],
-};
-
-declare module 'fastify' {
+declare module "fastify" {
   interface FastifyInstance {
     chargeCredits(opts: {
       workspaceId: string;
       key: CreditKey;
       multiplier?: number;
+      planUnits?: number;
       refTable?: string;
       refId?: string;
       idempotencyKey?: string;
-    }): Promise<{ ok: true; balance: number } | { ok: false; needed: number; balance: number; reason?: string }>;
+    }): ReturnType<typeof chargeWorkspaceCredits>;
 
     refundCredits(opts: {
       workspaceId: string;
@@ -43,173 +25,52 @@ declare module 'fastify' {
       multiplier?: number;
       refTable?: string;
       refId?: string;
-    }): Promise<void>;
+      chargeId: string;
+    }): ReturnType<typeof refundWorkspaceCharge>;
   }
 }
 
 /**
- * Credits plugin — atomically debits credits inside a transaction, refusing
- * if the workspace is short. Every job kind reads its cost from CREDIT_COSTS.
+ * Atomically applies idempotency, generation caps, plan limits, and balance
+ * changes under one workspace advisory lock.
  */
 export const creditsPlugin = fp(async function (app) {
-  app.decorate('chargeCredits', async (opts: {
-    workspaceId: string;
-    key: CreditKey;
-    multiplier?: number;
-    refTable?: string;
-    refId?: string;
-    /** Crucib lesson: a retried/double-submitted request must never charge
-     *  twice. Same key + workspace + action = one ledger row, ever. */
-    idempotencyKey?: string;
-  }) => {
-    // Deterministic ledger id when an idempotency key is given — the unique PK
-    // makes the double-charge structurally impossible (P2002 = already charged).
-    const { createHash } = await import('node:crypto');
-    const ledgerId = opts.idempotencyKey
-      ? 'idem_' + createHash('sha256').update(`${opts.workspaceId}|${opts.key}|${opts.idempotencyKey}`).digest('hex').slice(0, 24)
-      : undefined;
-    // Internal single-owner mode: the operator pays provider costs directly via
-    // their own API keys — no internal credit wall. WO-1 SAFETY RAIL: spend is
-    // CAPPED BY DEFAULT (daily + monthly) so a runaway loop can never exceed it
-    // — the API is publicly reachable and best-of-N multiplies renders. Override
-    // via MAX_DAILY_GENERATIONS / MAX_MONTHLY_GENERATIONS (0 = explicit opt-out).
-    if (isInternalMode()) {
-      // TESTING PHASE (owner directive 2026-07-11): the daily/monthly generation
-      // cap is a runaway-loop safety rail for PUBLIC launch. During solo testing
-      // it only gets in the way — and a STALE Railway MAX_DAILY_GENERATIONS value
-      // would silently override any code default, which is why "didn't we fix
-      // this" kept coming back. So the cap is now OFF by default and only enforced
-      // when explicitly opted in with ENFORCE_GENERATION_CAP=1. No env value can
-      // block the owner unless the owner turns enforcement on. Re-enable (set the
-      // flag) before going public.
-      if (process.env.ENFORCE_GENERATION_CAP === '1') {
-        const daily = Number(process.env.MAX_DAILY_GENERATIONS ?? 1000);
-        const monthly = Number(process.env.MAX_MONTHLY_GENERATIONS ?? 20000);
-        if (daily > 0) {
-          const since = new Date();
-          since.setUTCHours(0, 0, 0, 0);
-          // Count EVERY charged action today (debit ledger rows), not just
-          // ProviderJob rows — so text-only chat loops are capped too, and paid
-          // paths like analyze count once (not via an inflating side effect).
-          const usedToday = await prisma.creditLedger.count({
-            where: { workspaceId: opts.workspaceId, createdAt: { gte: since }, delta: { lt: 0 } },
-          });
-          if (usedToday >= daily) {
-            return { ok: false as const, needed: daily, balance: usedToday, reason: 'daily_cap' };
-          }
-        }
-        if (monthly > 0) {
-          const monthStart = new Date();
-          monthStart.setUTCDate(1);
-          monthStart.setUTCHours(0, 0, 0, 0);
-          const usedMonth = await prisma.creditLedger.count({
-            where: { workspaceId: opts.workspaceId, createdAt: { gte: monthStart }, delta: { lt: 0 } },
-          });
-          if (usedMonth >= monthly) {
-            return { ok: false as const, needed: monthly, balance: usedMonth, reason: 'monthly_cap' };
-          }
-        }
-      }
-      // Ledger the charge so the cap has a uniform unit across all generation types.
-      try {
-        await prisma.creditLedger.create({
-          data: {
-            ...(ledgerId ? { id: ledgerId } : {}),
-            workspaceId: opts.workspaceId,
-            delta: -(costOf(opts.key) * (opts.multiplier ?? 1)),
-            reason: opts.key,
-            refTable: opts.refTable,
-            refId: opts.refId,
-          },
-        });
-      } catch (e) {
-        if ((e as { code?: string }).code === 'P2002') return { ok: true as const, balance: Number.MAX_SAFE_INTEGER }; // already charged — idempotent
-        throw e;
-      }
-      return { ok: true as const, balance: Number.MAX_SAFE_INTEGER };
-    }
-    // PLAN_LIMITS enforcement (audit DEAD: the table was advertised but never
-    // enforced). For real tenants, refuse an action once this month's usage in its
-    // category exceeds the tier's hard cap (cap × 1.2 tolerance). Internal/owner
-    // mode returned above, so this only gates paying multi-tenant workspaces.
-    const category = LIMIT_CATEGORY[opts.key];
-    if (category) {
-      const ws = await prisma.workspace.findUnique({ where: { id: opts.workspaceId }, select: { plan: true } });
-      const limits = PLAN_LIMITS[(ws?.plan ?? 'STARTER') as keyof typeof PLAN_LIMITS];
-      const cap = limits ? (limits as Record<string, number>)[category] : undefined;
-      if (typeof cap === 'number' && cap >= 0) {
-        const monthStart = new Date();
-        monthStart.setUTCDate(1); monthStart.setUTCHours(0, 0, 0, 0);
-        const used = await prisma.creditLedger.count({
-          where: { workspaceId: opts.workspaceId, createdAt: { gte: monthStart }, reason: { in: CATEGORY_REASONS[category] } },
-        });
-        if (used >= Math.ceil(cap * 1.2)) {
-          return { ok: false as const, needed: costOf(opts.key) * (opts.multiplier ?? 1), balance: 0, reason: `plan_limit:${category}` };
-        }
-      }
-    }
-    const cost = costOf(opts.key) * (opts.multiplier ?? 1);
-    return prisma.$transaction(async (tx: Tx) => {
-      // ATOMIC CONDITIONAL DEBIT (Crucib P0-6 lesson): read-check-then-write let
-      // two concurrent charges both pass the balance check. One guarded UPDATE
-      // is the whole check — 0 rows touched = insufficient funds, race-free.
-      const debited = await tx.workspace.updateMany({
-        where: { id: opts.workspaceId, creditsCents: { gte: cost } },
-        data: { creditsCents: { decrement: cost } },
-      });
-      if (debited.count === 0) {
-        const ws = await tx.workspace.findUnique({ where: { id: opts.workspaceId }, select: { creditsCents: true } });
-        if (!ws) throw new Error('workspace missing');
-        return { ok: false as const, needed: cost, balance: ws.creditsCents };
-      }
-      try {
-        await tx.creditLedger.create({
-          data: {
-            ...(ledgerId ? { id: ledgerId } : {}),
-            workspaceId: opts.workspaceId,
-            delta: -cost,
-            reason: opts.key,
-            refTable: opts.refTable,
-            refId: opts.refId,
-          },
-        });
-      } catch (e) {
-        // Idempotent replay: the charge already exists — undo this debit and
-        // report success (money mutations atomic; success only on full success).
-        if ((e as { code?: string }).code === 'P2002') {
-          await tx.workspace.update({ where: { id: opts.workspaceId }, data: { creditsCents: { increment: cost } } });
-          const ws = await tx.workspace.findUnique({ where: { id: opts.workspaceId }, select: { creditsCents: true } });
-          return { ok: true as const, balance: ws?.creditsCents ?? 0 };
-        }
-        throw e;
-      }
-      const ws = await tx.workspace.findUnique({ where: { id: opts.workspaceId }, select: { creditsCents: true } });
-      return { ok: true as const, balance: ws?.creditsCents ?? 0 };
-    });
-  });
+  app.decorate(
+    "chargeCredits",
+    async (opts: {
+      workspaceId: string;
+      key: CreditKey;
+      multiplier?: number;
+      planUnits?: number;
+      refTable?: string;
+      refId?: string;
+      idempotencyKey?: string;
+    }) =>
+      chargeWorkspaceCredits(prisma, {
+        ...opts,
+        internalMode: isInternalMode(),
+        enforceGenerationCap: process.env.ENFORCE_GENERATION_CAP !== "0",
+        dailyCap: Number(process.env.MAX_DAILY_GENERATIONS ?? 100),
+        monthlyCap: Number(process.env.MAX_MONTHLY_GENERATIONS ?? 2_000),
+      })
+  );
 
-  app.decorate('refundCredits', async (opts: {
-    workspaceId: string;
-    key: CreditKey;
-    multiplier?: number;
-    refTable?: string;
-    refId?: string;
-  }) => {
-    const amount = costOf(opts.key) * (opts.multiplier ?? 1);
-    await prisma.$transaction(async (tx: Tx) => {
-      await tx.workspace.update({
-        where: { id: opts.workspaceId },
-        data: { creditsCents: { increment: amount } },
-      });
-      await tx.creditLedger.create({
-        data: {
-          workspaceId: opts.workspaceId,
-          delta: amount,
-          reason: `refund_${opts.key}`,
-          refTable: opts.refTable,
-          refId: opts.refId,
-        },
-      });
-    });
-  });
+  app.decorate(
+    "refundCredits",
+    async (opts: {
+      workspaceId: string;
+      key: CreditKey;
+      multiplier?: number;
+      refTable?: string;
+      refId?: string;
+      chargeId: string;
+    }) =>
+      refundWorkspaceCharge(prisma, {
+        workspaceId: opts.workspaceId,
+        chargeId: opts.chargeId,
+        internalMode: isInternalMode(),
+        refTable: opts.refTable,
+        refId: opts.refId,
+      })
+  );
 });

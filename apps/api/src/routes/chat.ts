@@ -21,6 +21,8 @@ import { prompts, studioChat } from '@afrohit/ai';
 import { requireAuth } from '../middleware/auth';
 import { runChatTool } from '../services/chat-tools';
 import { dataLakeSummary } from '../lib/data-lake';
+import { scopedRequestKey } from '../lib/queued-job';
+import { operationErrorBody, runIdempotentOperation } from '../lib/idempotent-operation';
 
 /**
  * Per-request generation guard. The model can emit several tool calls in one turn
@@ -171,7 +173,15 @@ export default async function chat(app: FastifyInstance) {
     async (req: FastifyRequest, reply: FastifyReply) => {
       const { workspaceId, userId } = requireAuth(req);
       const body = chatMessageInputSchema.parse(req.body);
+      const idempotencyKey = scopedRequestKey(req.headers as Record<string, unknown>, 'chat-message');
 
+      const operation = await runIdempotentOperation({
+        workspaceId,
+        kind: 'chat-message',
+        provider: 'text',
+        idempotencyKey,
+        inputJson: { userId, body },
+        execute: async () => {
       const thread = body.threadId
         ? await prisma.chatThread.findFirstOrThrow({
             where: { id: body.threadId, workspaceId, userId },
@@ -184,6 +194,7 @@ export default async function chat(app: FastifyInstance) {
       await prisma.chatMessage.create({
         data: { threadId: thread.id, role: 'user', content: body.content },
       });
+      const requestOperationKey = `chat-request:${workspaceId}:${idempotencyKey}`;
 
       // Guarantee the thread has a project so every tool has context.
       const projectId = await ensureThreadProject(workspaceId, thread);
@@ -249,7 +260,7 @@ export default async function chat(app: FastifyInstance) {
 
       if (turn.toolCalls?.length) {
         const guard = makeGenGuard();
-        for (const call of turn.toolCalls) {
+        for (const [callIndex, call] of turn.toolCalls.entries()) {
           const gate = guard(call.name);
           const result = gate.allowed
             ? await runChatTool({
@@ -257,6 +268,7 @@ export default async function chat(app: FastifyInstance) {
                 userId,
                 projectId,
                 app,
+                operationKey: `${requestOperationKey}:${callIndex}`,
                 name: call.name,
                 args: call.arguments,
               })
@@ -301,7 +313,6 @@ export default async function chat(app: FastifyInstance) {
         });
 
         await prisma.chatThread.update({ where: { id: thread.id }, data: { updatedAt: new Date() } });
-        reply.code(200);
         return {
           threadId: thread.id,
           assistant: finalTurn.text ?? '',
@@ -315,6 +326,13 @@ export default async function chat(app: FastifyInstance) {
       await prisma.chatThread.update({ where: { id: thread.id }, data: { updatedAt: new Date() } });
 
       return { threadId: thread.id, assistant: turn.text ?? '', toolCalls: [] };
+        },
+      });
+      if (operation.state !== 'completed') {
+        const failure = operationErrorBody(operation);
+        return reply.code(failure.statusCode).send(failure.body);
+      }
+      return reply.code(200).send(operation.value);
     }
   );
 
@@ -337,6 +355,7 @@ export default async function chat(app: FastifyInstance) {
     async (req: FastifyRequest, reply: FastifyReply) => {
       const { workspaceId, userId } = requireAuth(req);
       const body = chatMessageInputSchema.parse(req.body);
+      const idempotencyKey = scopedRequestKey(req.headers as Record<string, unknown>, 'chat-message-stream');
 
       reply.raw.writeHead(200, {
         'content-type': 'text/event-stream',
@@ -363,6 +382,13 @@ export default async function chat(app: FastifyInstance) {
       };
 
       try {
+        const operation = await runIdempotentOperation({
+          workspaceId,
+          kind: 'chat-message-stream',
+          provider: 'text',
+          idempotencyKey,
+          inputJson: { userId, body },
+          execute: async () => {
         const thread = body.threadId
           ? await prisma.chatThread.findFirstOrThrow({
               where: { id: body.threadId, workspaceId, userId },
@@ -375,6 +401,7 @@ export default async function chat(app: FastifyInstance) {
         await prisma.chatMessage.create({
           data: { threadId: thread.id, role: 'user', content: body.content },
         });
+        const requestOperationKey = `chat-stream:${workspaceId}:${idempotencyKey}`;
 
         // Guarantee the thread has a project so every tool has context.
         const projectId = await ensureThreadProject(workspaceId, thread);
@@ -445,11 +472,11 @@ export default async function chat(app: FastifyInstance) {
           }
 
           const roundResults: Array<{ name: string; output: unknown }> = [];
-          for (const call of turn.toolCalls) {
+          for (const [callIndex, call] of turn.toolCalls.entries()) {
             send({ type: 'tool_start', name: call.name });
             const gate = guard(call.name);
             const result = gate.allowed
-              ? await runChatTool({ workspaceId, userId, projectId, app, name: call.name, args: call.arguments })
+              ? await runChatTool({ workspaceId, userId, projectId, app, operationKey: `${requestOperationKey}:${round}:${callIndex}`, name: call.name, args: call.arguments })
               : { skipped: true, reason: gate.reason };
             send({ type: 'tool_result', name: call.name, output: result });
             await prisma.chatMessage.create({
@@ -488,6 +515,16 @@ export default async function chat(app: FastifyInstance) {
         send({ type: 'assistant', text: finalText });
 
         await prisma.chatThread.update({ where: { id: thread.id }, data: { updatedAt: new Date() } });
+        return { threadId: thread.id, assistant: finalText };
+          },
+        });
+        if (operation.state !== 'completed') {
+          const failure = operationErrorBody(operation);
+          send({ type: 'error', ...failure.body });
+        } else if (operation.replayed) {
+          send({ type: 'thread', threadId: operation.value.threadId, replayed: true });
+          send({ type: 'assistant', text: operation.value.assistant, replayed: true });
+        }
         send({ type: 'done' });
       } catch (err) {
         req.log.error({ err }, 'chat stream failed');
