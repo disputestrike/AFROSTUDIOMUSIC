@@ -9,6 +9,7 @@ import {
   signCalibrationArtifact,
   validateEarCorpusManifest,
 } from "../src/lib/ear-corpus";
+import { logDrumScoreForCalibration } from "./eval-ear";
 
 let failures = 0;
 function check(name: string, condition: boolean) {
@@ -101,6 +102,28 @@ async function main() {
     check(
       "corpus fingerprint is independent of manifest row order",
       reorderedResult.corpusHash === validated.corpusHash
+    );
+
+    const bootstrapScores = [
+      0.72, 0.68, 0.64, 0.31, 0.27, 0.22, 0.34, 0.29, 0.25,
+    ].map(value => logDrumScoreForCalibration({ source: "inferred", value }));
+    check(
+      "computed inferred log-drum scores can bootstrap calibration",
+      bootstrapScores.every(score => score !== null) &&
+        Math.min(...(bootstrapScores.slice(0, 3) as number[])) >
+          Math.max(...(bootstrapScores.slice(3) as number[]))
+    );
+    check(
+      "unknown, missing, or non-finite scores cannot pass calibration",
+      logDrumScoreForCalibration({ source: "unknown", value: 0.9 }) === null &&
+        logDrumScoreForCalibration({ source: "inferred" }) === null &&
+        logDrumScoreForCalibration(undefined) === null &&
+        logDrumScoreForCalibration({ source: "inferred", value: NaN }) ===
+          null &&
+        logDrumScoreForCalibration({
+          source: "measured",
+          value: Number.POSITIVE_INFINITY,
+        }) === null
     );
 
     const duplicateId = structuredClone(manifest);

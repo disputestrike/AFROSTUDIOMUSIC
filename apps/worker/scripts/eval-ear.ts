@@ -38,6 +38,26 @@ type Result = {
   logDrumLikelihood: number | null;
 };
 
+type CalibrationLogDrumEvidence = {
+  source?: unknown;
+  value?: unknown;
+};
+
+export function logDrumScoreForCalibration(
+  evidence: CalibrationLogDrumEvidence | null | undefined
+): number | null {
+  const acceptedSource =
+    evidence?.source === "measured" || evidence?.source === "inferred";
+  if (
+    !acceptedSource ||
+    typeof evidence.value !== "number" ||
+    !Number.isFinite(evidence.value)
+  ) {
+    return null;
+  }
+  return evidence.value;
+}
+
 async function main() {
   if (!existsSync(manifestPath))
     throw new Error(`No ear corpus manifest at ${manifestPath}`);
@@ -73,11 +93,9 @@ async function main() {
       typeof analysis.fourOnFloor.value === "boolean"
         ? analysis.fourOnFloor.value
         : null;
-    const logDrumLikelihood =
-      analysis.logDrumLikelihood.source === "measured" &&
-      typeof analysis.logDrumLikelihood.value === "number"
-        ? analysis.logDrumLikelihood.value
-        : null;
+    const logDrumLikelihood = logDrumScoreForCalibration(
+      analysis.logDrumLikelihood
+    );
     results.push({
       row,
       tempo,
@@ -206,7 +224,9 @@ async function main() {
   console.log(`Corpus SHA-256: ${corpus.corpusHash}`);
 }
 
-main().catch(error => {
-  console.error(error instanceof Error ? error.message : error);
-  process.exitCode = 1;
-});
+if (require.main === module) {
+  void main().catch(error => {
+    console.error(error instanceof Error ? error.message : error);
+    process.exitCode = 1;
+  });
+}
