@@ -55,6 +55,15 @@ No skipped, unavailable, informational, or credential-dependent check is reporte
 The database proofs used isolated PostgreSQL databases named `afrohit_empty` and
 `afrohit_legacy`. They did not touch a production database.
 
+## Current Remote Check Status
+
+As of 2026-07-15, the GitHub `quality` job on PR #1 did not execute any
+workflow step because the account has a failed payment or insufficient Actions
+spending capacity. The external `Workers Builds: afroboom` check is stale: the
+repository has no Cloudflare Worker configuration and the application worker
+deploys through Railway. These are account/integration blockers, not passing
+tests and not code failures.
+
 ## Competitive Claim Gate
 
 The benchmark may emit an AfroHit-outperforms-Suno verdict only when all of the
@@ -64,10 +73,17 @@ following are true:
 2. At least 10 open, rights-attested, hash-frozen pairs are covered.
 3. At least 5 genres are represented.
 4. Competitor and AfroHit audio hashes are unique, valid, and never collide across sides.
-5. Every pair attests a blind, identity-removed, loudness- and duration-matched protocol.
+5. Every pair uses a blind, identity-removed protocol with hash-bound EBU R128
+   loudness and duration measurements, empty metadata-tag inventories, and
+   persisted tolerances no greater than 1 LUFS and 1 second.
 6. Every eligible pair has at least 3 distinct authenticated judges.
 7. The 95% Wilson lower bound of the AfroHit win rate is above 0.50.
 8. No measured quality dimension averages below -0.25 versus the competitor.
+
+Manual or UI-created pairs without measured normalization evidence remain
+available for internal listening but are ineligible for a competitive claim.
+Once a pair has judgments, changing its rights or comparison protocol
+supersedes it and creates a fresh pair rather than relabeling old results.
 
 Authenticated identity uniqueness is not presented as proof of real-world judge
 independence. Study recruitment and conflict-of-interest controls remain part of the

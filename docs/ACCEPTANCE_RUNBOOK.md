@@ -108,6 +108,12 @@ The top-level protocol must attest:
 - At least three independent judges per pair.
 - A note identifying the controlled listening procedure.
 
+Every corpus entry must also include analyzer-produced normalization evidence
+bound to the SHA-256 hashes of both audio files. The evidence must record EBU
+R128 integrated LUFS and duration for both sides, prove that format and stream
+metadata tags were removed, and persist tolerances no greater than 1 LUFS and
+1 second. Declaration booleans alone are ineligible for a competitive claim.
+
 Validate without network access:
 
 ```powershell
@@ -126,7 +132,10 @@ The uploader never stores bearer tokens or signed upload URLs. After upload it
 calls the server evidence endpoint and fails unless the server independently
 finds at least ten rights-valid, byte-independent pairs across five genres.
 Duplicate competitor hashes, duplicate AfroHit hashes, cross-side collisions,
-or malformed rights evidence are excluded before judgments are scored.
+malformed rights evidence, or missing measured normalization evidence are
+excluded before judgments are scored. A judged pair cannot be reused under a
+different rights or comparison protocol; it is superseded and a new pair is
+created instead.
 
 The superiority claim remains locked until there are at least 30 eligible
 judgments, ten eligible pairs, five genres, three independent judges per pair,
@@ -167,7 +176,21 @@ receipt, split evidence, release package, and matching artifact fingerprint.
 After submission, replay duplicate and out-of-order partner webhooks and prove
 the state remains monotonic and idempotent.
 
-## 7. Launch Decision
+## 7. Repository Hosting Checks
+
+Before treating a remote red check as a product regression, confirm that its
+runner actually started.
+
+- GitHub Actions run `29432100392` allocated no runner and executed zero steps.
+  GitHub reported a failed account payment or exhausted Actions spending limit.
+  Corrective action: restore Actions billing/spend capacity, then rerun the job.
+- `Workers Builds: afroboom` is a stale Cloudflare GitHub App integration. This
+  repository has no Wrangler config or Cloudflare Worker deployment; its BullMQ
+  worker deploys through Railway. Disconnect `afroboom` under Cloudflare Workers
+  & Pages → Settings → Builds, then remove this repository from the Cloudflare
+  GitHub App's repository access. Do not disable repository CI.
+
+## 8. Launch Decision
 
 Repository green means the implementation baseline is fit for controlled
 staging. Commercial launch still requires the applicable live account,

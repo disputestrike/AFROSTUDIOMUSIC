@@ -66,10 +66,12 @@ const normalizationSideEvidenceSchema = z
 const normalizationEvidenceSchema = z
   .object({
     schemaVersion: z.literal(1),
-    measuredAt: z.string().refine(
-      value => value.endsWith("Z") && Number.isFinite(Date.parse(value)),
-      "measuredAt must be a UTC timestamp"
-    ),
+    measuredAt: z
+      .string()
+      .refine(
+        value => value.endsWith("Z") && Number.isFinite(Date.parse(value)),
+        "measuredAt must be a UTC timestamp"
+      ),
     analyzer: z
       .object({
         name: z.string().trim().min(2).max(80),
@@ -107,8 +109,9 @@ const normalizationEvidenceSchema = z
       });
     }
     if (
-      Math.abs(value.afrohit.durationSeconds - value.reference.durationSeconds) >
-      value.tolerances.maxDurationDeltaSeconds
+      Math.abs(
+        value.afrohit.durationSeconds - value.reference.durationSeconds
+      ) > value.tolerances.maxDurationDeltaSeconds
     ) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,

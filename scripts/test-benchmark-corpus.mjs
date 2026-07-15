@@ -165,8 +165,7 @@ try {
   assert.notEqual(loudnessRejected.status, 0, "loudness mismatch was accepted");
 
   const durationMismatch = structuredClone(manifest);
-  durationMismatch.entries[0].normalizationEvidence.reference.durationSeconds =
-    182;
+  durationMismatch.entries[0].normalizationEvidence.reference.durationSeconds = 182;
   const durationMismatchPath = join(directory, "duration-mismatch.json");
   await writeFile(durationMismatchPath, JSON.stringify(durationMismatch));
   const durationRejected = spawnSync(

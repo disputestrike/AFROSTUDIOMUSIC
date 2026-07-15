@@ -236,13 +236,15 @@ function assertNormalizationEvidence(evidence, label, referenceHash) {
   assert(
     Math.abs(
       evidence.afrohit.integratedLufs - evidence.reference.integratedLufs
-    ) <= evidence.tolerances.maxIntegratedLufsDelta + 1e-9,
+    ) <=
+      evidence.tolerances.maxIntegratedLufsDelta + 1e-9,
     label + " measured loudness exceeds its persisted tolerance"
   );
   assert(
     Math.abs(
       evidence.afrohit.durationSeconds - evidence.reference.durationSeconds
-    ) <= evidence.tolerances.maxDurationDeltaSeconds + 1e-9,
+    ) <=
+      evidence.tolerances.maxDurationDeltaSeconds + 1e-9,
     label + " measured duration exceeds its persisted tolerance"
   );
 }

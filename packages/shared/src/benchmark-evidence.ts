@@ -238,20 +238,16 @@ export function hasValidBenchmarkNormalizationEvidence(
     tolerances.maxDurationDeltaSeconds < 0 ||
     tolerances.maxDurationDeltaSeconds >
       BENCHMARK_NORMALIZATION_LIMITS.maxDurationDeltaSeconds ||
-    !hasValidNormalizationSide(
-      evidence.afrohit,
-      row.afrohitContentHash
-    ) ||
-    !hasValidNormalizationSide(
-      evidence.reference,
-      row.referenceContentHash
-    )
+    !hasValidNormalizationSide(evidence.afrohit, row.afrohitContentHash) ||
+    !hasValidNormalizationSide(evidence.reference, row.referenceContentHash)
   ) {
     return false;
   }
 
-  const afrohit = evidence.afrohit as unknown as BenchmarkNormalizationSideEvidence;
-  const reference = evidence.reference as unknown as BenchmarkNormalizationSideEvidence;
+  const afrohit =
+    evidence.afrohit as unknown as BenchmarkNormalizationSideEvidence;
+  const reference =
+    evidence.reference as unknown as BenchmarkNormalizationSideEvidence;
   return (
     Math.abs(afrohit.integratedLufs - reference.integratedLufs) <=
       tolerances.maxIntegratedLufsDelta + NORMALIZATION_EPSILON &&

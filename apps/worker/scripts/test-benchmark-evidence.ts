@@ -244,8 +244,7 @@ const excessiveTolerance = corpusRows();
   }
 ).tolerances.maxIntegratedLufsDelta = 1.1;
 assert.equal(
-  evaluateBenchmarkCorpus(excessiveTolerance).sample
-    .invalidNormalizationPairs,
+  evaluateBenchmarkCorpus(excessiveTolerance).sample.invalidNormalizationPairs,
   1
 );
 
