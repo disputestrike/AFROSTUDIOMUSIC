@@ -34,6 +34,57 @@ interface MixPayload {
   settings?: ConsoleTrackPayload[];
 }
 
+type MixSourceContributor = {
+  id: string;
+  kind: 'beat' | 'vocal';
+  contentHash: string | null;
+};
+
+export type MixSourceLineage = {
+  beatId: string;
+  beatContentHash: string;
+  vocalRenderIds: string[];
+  vocalRenderContentHashes: string[];
+};
+
+export function selectAudibleConsoleSettings<T extends { mute: boolean; solo: boolean }>(
+  settings: readonly T[],
+): T[] {
+  const anySolo = settings.some((setting) => setting.solo);
+  return settings.filter((setting) => (anySolo ? setting.solo : !setting.mute));
+}
+
+export function buildMixSourceLineage(
+  contributors: readonly MixSourceContributor[],
+): MixSourceLineage {
+  const exactById = new Map<string, MixSourceContributor & { contentHash: string }>();
+  for (const contributor of contributors) {
+    if (!/^[a-f0-9]{64}$/i.test(contributor.contentHash ?? '')) {
+      throw new Error(`mix lineage source is not certified: ${contributor.id}`);
+    }
+    const exact = { ...contributor, contentHash: contributor.contentHash! };
+    const existing = exactById.get(exact.id);
+    if (existing && (existing.kind !== exact.kind || existing.contentHash !== exact.contentHash)) {
+      throw new Error(`mix lineage source identity conflict: ${exact.id}`);
+    }
+    exactById.set(exact.id, exact);
+  }
+  const exact = [...exactById.values()];
+  const beats = exact.filter((contributor) => contributor.kind === 'beat');
+  if (beats.length !== 1) {
+    throw new Error(`mix lineage requires exactly one audible beat source; received ${beats.length}`);
+  }
+  const vocals = exact
+    .filter((contributor) => contributor.kind === 'vocal')
+    .sort((left, right) => left.id.localeCompare(right.id));
+  return {
+    beatId: beats[0]!.id,
+    beatContentHash: beats[0]!.contentHash,
+    vocalRenderIds: vocals.map((vocal) => vocal.id),
+    vocalRenderContentHashes: vocals.map((vocal) => vocal.contentHash),
+  };
+}
+
 const mixableVocalWhere = {
   approved: true,
   assetKind: 'isolated_vocal',
@@ -82,7 +133,7 @@ async function persistSuccess(opts: {
   bytes: Buffer;
   notes: string;
   settings?: ConsoleTrackPayload[];
-  source: Record<string, unknown>;
+  source: MixSourceLineage;
 }) {
   const certified = await certifyAndStore(opts.payload.workspaceId, opts.bytes);
   try {
@@ -145,14 +196,20 @@ export async function processMix(payload: MixPayload): Promise<void> {
       prisma.beatAsset.findFirst({
         where: { songId: payload.songId, projectId: payload.projectId, ...mixableBeatWhere },
         orderBy: { createdAt: 'desc' },
+        select: { id: true, url: true, contentHash: true },
       }),
       prisma.vocalRender.findFirst({
         where: { songId: payload.songId, projectId: payload.projectId, role: 'lead', ...mixableVocalWhere },
         orderBy: { createdAt: 'desc' },
+        select: { id: true, url: true, contentHash: true },
       }),
     ]);
     if (!beat) throw new Error('mix requires an approved beat');
     if (!vocal) throw new Error('mix requires a QC-passed isolated lead vocal');
+    const source = buildMixSourceLineage([
+      { id: beat.id, kind: 'beat', contentHash: beat.contentHash },
+      { id: vocal.id, kind: 'vocal', contentHash: vocal.contentHash },
+    ]);
     const [beatBytes, vocalBytes] = await Promise.all([
       downloadToBuffer(beat.url),
       downloadToBuffer(vocal.url),
@@ -164,7 +221,7 @@ export async function processMix(payload: MixPayload): Promise<void> {
       preset: payload.preset,
       bytes: mixed,
       notes: `Verified FFmpeg mixdown - beat ${beat.id.slice(-6)}, vocal ${vocal.id.slice(-6)}.`,
-      source: { beatId: beat.id, vocalRenderIds: [vocal.id] },
+      source,
     });
   } catch (error) {
     await markFailed(payload.jobId, error);
@@ -182,7 +239,7 @@ async function processConsoleMix(payload: MixPayload, songTitle: string): Promis
         projectId: payload.projectId,
         ...mixableBeatWhere,
       },
-      select: { id: true, url: true },
+      select: { id: true, url: true, contentHash: true },
     }),
     prisma.vocalRender.findMany({
       where: {
@@ -191,20 +248,26 @@ async function processConsoleMix(payload: MixPayload, songTitle: string): Promis
         projectId: payload.projectId,
         ...mixableVocalWhere,
       },
-      select: { id: true, url: true },
+      select: { id: true, url: true, contentHash: true },
     }),
   ]);
-  const assets = new Map<string, { kind: 'beat' | 'vocal'; url: string }>([
-    ...beats.map((beat: { id: string; url: string }) => [beat.id, { kind: 'beat' as const, url: beat.url }] as const),
-    ...vocals.map((vocal: { id: string; url: string }) => [vocal.id, { kind: 'vocal' as const, url: vocal.url }] as const),
+  type ConsoleAsset = MixSourceContributor & { url: string };
+  type CertifiedAssetRow = { id: string; url: string; contentHash: string | null };
+  const assets = new Map<string, ConsoleAsset>([
+    ...beats.map((beat: CertifiedAssetRow) => [beat.id, { ...beat, kind: 'beat' as const }] as const),
+    ...vocals.map((vocal: CertifiedAssetRow) => [vocal.id, { ...vocal, kind: 'vocal' as const }] as const),
   ]);
   const invalidIds = ids.filter((id) => !assets.has(id));
   if (invalidIds.length) throw new Error(`console mix contains invalid tracks: ${invalidIds.join(',')}`);
 
   const settings = posted.map((setting) => ({ ...setting, kind: assets.get(setting.id)!.kind }));
+  const audibleSettings = selectAudibleConsoleSettings(settings);
+  const source = buildMixSourceLineage(
+    audibleSettings.map((setting) => assets.get(setting.id)!),
+  );
   const dir = await mkdtemp(join(tmpdir(), 'afrohit-console-in-'));
   try {
-    const tracks: ConsoleTrack[] = await Promise.all(settings.map(async (setting, index) => {
+    const tracks: ConsoleTrack[] = await Promise.all(audibleSettings.map(async (setting, index) => {
       const bytes = await downloadToBuffer(assets.get(setting.id)!.url);
       const path = join(dir, `track-${index}.bin`);
       await writeFile(path, bytes);
@@ -227,10 +290,7 @@ async function processConsoleMix(payload: MixPayload, songTitle: string): Promis
       bytes: mixed,
       notes: `Verified console mix - ${settings.length} tracks.`,
       settings,
-      source: {
-        beatIds: settings.filter((setting) => setting.kind === 'beat').map((setting) => setting.id),
-        vocalRenderIds: settings.filter((setting) => setting.kind === 'vocal').map((setting) => setting.id),
-      },
+      source,
     });
   } finally {
     await rm(dir, { recursive: true, force: true }).catch(() => undefined);
