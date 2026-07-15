@@ -30,6 +30,45 @@ const DEFAULT_PLAN_UNITS: Partial<Record<CreditKey, number>> = {
   video_20s: 20,
 };
 
+export const QUEUE_BOUND_MEDIA_CREDIT_KEYS = [
+  "cover_art_low",
+  "cover_art_high",
+  "beat_idea_short_30s",
+  "full_song_demo",
+  "stems_export",
+  "analyze_audio",
+  "voice_render_30s",
+  "voice_render_full",
+  "voice_profile_setup",
+  "voice_clone_training",
+  "voice_sing_render",
+  "mix_preset",
+  "master_preset",
+  "video_8s",
+  "video_20s",
+  "release_export",
+] as const satisfies readonly CreditKey[];
+
+export const QUEUE_BOUND_MEDIA_REFERENCE_TABLES = [
+  "Project",
+  "Song",
+  "Workspace",
+  "VoiceConsent",
+  "VoiceProfile",
+  "VideoConcept",
+] as const;
+
+export const DEFAULT_ORPHAN_CHARGE_AGE_MS = 60 * 60 * 1_000;
+export const MIN_ORPHAN_CHARGE_AGE_MS = 15 * 60 * 1_000;
+export const MAX_ORPHAN_CHARGE_BATCH_SIZE = 100;
+const DEFAULT_ORPHAN_CHARGE_BATCH_SIZE = 25;
+
+const QUEUE_BOUND_MEDIA_KEY_SET = new Set<string>(
+  QUEUE_BOUND_MEDIA_CREDIT_KEYS
+);
+const QUEUE_BOUND_MEDIA_REFERENCE_SET = new Set<string>(
+  QUEUE_BOUND_MEDIA_REFERENCE_TABLES
+);
 export type WorkspaceChargeResult =
   | {
       ok: true;
@@ -268,6 +307,68 @@ export interface WorkspaceRefundOptions {
   refId?: string;
 }
 
+type RefundableCharge = {
+  id: string;
+  delta: number;
+  reason: string;
+  creditKey: string | null;
+  refTable: string | null;
+  refId: string | null;
+  reversal: { id: string } | null;
+};
+
+async function lockCreditLedgerRow(
+  tx: Prisma.TransactionClient,
+  chargeId: string
+): Promise<boolean> {
+  const rows = await tx.$queryRawUnsafe<Array<{ id: string }>>(
+    'SELECT "id" FROM "CreditLedger" WHERE "id" = $1 FOR UPDATE',
+    chargeId
+  );
+  return rows.length === 1;
+}
+
+async function refundWorkspaceChargeInTransaction(
+  tx: Prisma.TransactionClient,
+  opts: WorkspaceRefundOptions,
+  charge: RefundableCharge
+): Promise<WorkspaceRefundResult> {
+  if (charge.reversal) {
+    return {
+      refunded: false as const,
+      refundId: charge.reversal.id,
+    };
+  }
+
+  const amount = -charge.delta;
+  if (!opts.internalMode) {
+    await tx.workspace.update({
+      where: { id: opts.workspaceId },
+      data: { creditsCents: { increment: amount } },
+    });
+  }
+
+  const refund = await tx.creditLedger.create({
+    data: {
+      id: "refund_" + charge.id,
+      workspaceId: opts.workspaceId,
+      delta: amount,
+      reason: "refund_" + (charge.creditKey ?? charge.reason),
+      creditKey: charge.creditKey,
+      units: 0,
+      planUnits: 0,
+      refTable: opts.refTable ?? charge.refTable,
+      refId: opts.refId ?? charge.refId,
+      reversalOfId: charge.id,
+    },
+  });
+  return {
+    refunded: true as const,
+    refundId: refund.id,
+    amount,
+  };
+}
+
 export async function refundWorkspaceCharge(
   client: PrismaClient,
   opts: WorkspaceRefundOptions
@@ -292,41 +393,202 @@ export async function refundWorkspaceCharge(
         },
       });
       if (!charge) return { refunded: false as const };
-      if (charge.reversal) {
-        return {
-          refunded: false as const,
-          refundId: charge.reversal.id,
-        };
-      }
-
-      const amount = -charge.delta;
-      if (!opts.internalMode) {
-        await tx.workspace.update({
-          where: { id: opts.workspaceId },
-          data: { creditsCents: { increment: amount } },
-        });
-      }
-
-      const refund = await tx.creditLedger.create({
-        data: {
-          id: "refund_" + charge.id,
-          workspaceId: opts.workspaceId,
-          delta: amount,
-          reason: "refund_" + (charge.creditKey ?? charge.reason),
-          creditKey: charge.creditKey,
-          units: 0,
-          planUnits: 0,
-          refTable: opts.refTable ?? charge.refTable,
-          refId: opts.refId ?? charge.refId,
-          reversalOfId: charge.id,
-        },
-      });
-      return {
-        refunded: true as const,
-        refundId: refund.id,
-        amount,
-      };
+      return refundWorkspaceChargeInTransaction(tx, opts, charge);
     },
     { maxWait: 10_000, timeout: 30_000 }
   );
+}
+
+export interface OrphanQueueChargeCandidate {
+  delta: number;
+  reason: string;
+  creditKey: string | null;
+  refTable: string | null;
+  refId: string | null;
+  createdAt: Date;
+  chargedJob: { id: string } | null;
+  reversal: { id: string } | null;
+}
+
+export function isOrphanQueueBoundMediaDebit(
+  candidate: OrphanQueueChargeCandidate,
+  cutoff: Date
+): boolean {
+  const createdAt = candidate.createdAt.getTime();
+  const cutoffAt = cutoff.getTime();
+  if (!Number.isFinite(createdAt) || !Number.isFinite(cutoffAt)) return false;
+  if (candidate.delta >= 0 || createdAt > cutoffAt) return false;
+  if (candidate.chargedJob || candidate.reversal) return false;
+  if (
+    !candidate.creditKey ||
+    !QUEUE_BOUND_MEDIA_KEY_SET.has(candidate.creditKey)
+  ) {
+    return false;
+  }
+  if (
+    !candidate.refTable ||
+    !QUEUE_BOUND_MEDIA_REFERENCE_SET.has(candidate.refTable) ||
+    !candidate.refId?.trim()
+  ) {
+    return false;
+  }
+  return (
+    candidate.reason === candidate.creditKey ||
+    candidate.reason.startsWith(candidate.creditKey + "_")
+  );
+}
+
+export interface OrphanQueueChargeRecoveryOptions {
+  internalMode: boolean;
+  now?: Date;
+  minAgeMs?: number;
+  batchSize?: number;
+}
+
+export interface OrphanQueueChargeRecoveryPolicy {
+  cutoff: Date;
+  batchSize: number;
+}
+
+export function resolveOrphanQueueChargeRecoveryPolicy(
+  opts: Pick<OrphanQueueChargeRecoveryOptions, "now" | "minAgeMs" | "batchSize">
+): OrphanQueueChargeRecoveryPolicy {
+  const now = opts.now ?? new Date();
+  if (!Number.isFinite(now.getTime()))
+    throw new Error("now must be a valid date");
+
+  const minAgeMs = opts.minAgeMs ?? DEFAULT_ORPHAN_CHARGE_AGE_MS;
+  if (!Number.isSafeInteger(minAgeMs) || minAgeMs < MIN_ORPHAN_CHARGE_AGE_MS) {
+    throw new Error(
+      "orphan charge age must be an integer of at least 15 minutes"
+    );
+  }
+
+  const requestedBatch = opts.batchSize ?? DEFAULT_ORPHAN_CHARGE_BATCH_SIZE;
+  if (!Number.isSafeInteger(requestedBatch) || requestedBatch < 1) {
+    throw new Error("orphan charge batch size must be a positive integer");
+  }
+
+  return {
+    cutoff: new Date(now.getTime() - minAgeMs),
+    batchSize: Math.min(requestedBatch, MAX_ORPHAN_CHARGE_BATCH_SIZE),
+  };
+}
+
+export interface OrphanQueueChargeRecoveryResult {
+  considered: number;
+  refunded: number;
+  skipped: number;
+  amount: number;
+  chargeIds: string[];
+  cutoff: Date;
+}
+
+export async function refundOrphanedQueueBoundMediaCharges(
+  client: PrismaClient,
+  opts: OrphanQueueChargeRecoveryOptions
+): Promise<OrphanQueueChargeRecoveryResult> {
+  const policy = resolveOrphanQueueChargeRecoveryPolicy(opts);
+  const candidates = await client.creditLedger.findMany({
+    where: {
+      delta: { lt: 0 },
+      creditKey: { in: [...QUEUE_BOUND_MEDIA_CREDIT_KEYS] },
+      refTable: { in: [...QUEUE_BOUND_MEDIA_REFERENCE_TABLES] },
+      refId: { not: null },
+      createdAt: { lte: policy.cutoff },
+      chargedJob: { is: null },
+      reversal: { is: null },
+    },
+    orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+    take: policy.batchSize,
+    select: {
+      id: true,
+      workspaceId: true,
+      delta: true,
+      reason: true,
+      creditKey: true,
+      refTable: true,
+      refId: true,
+      createdAt: true,
+      chargedJob: { select: { id: true } },
+      reversal: { select: { id: true } },
+    },
+  });
+
+  let refunded = 0;
+  let skipped = 0;
+  let amount = 0;
+  const chargeIds: string[] = [];
+
+  for (const candidate of candidates) {
+    if (!isOrphanQueueBoundMediaDebit(candidate, policy.cutoff)) {
+      skipped += 1;
+      continue;
+    }
+
+    const result = await client.$transaction(
+      async tx => {
+        await lockWorkspace(tx, candidate.workspaceId);
+        if (!(await lockCreditLedgerRow(tx, candidate.id))) {
+          return { refunded: false as const };
+        }
+
+        const locked = await tx.creditLedger.findFirst({
+          where: {
+            id: candidate.id,
+            workspaceId: candidate.workspaceId,
+            delta: { lt: 0 },
+            creditKey: { in: [...QUEUE_BOUND_MEDIA_CREDIT_KEYS] },
+            refTable: { in: [...QUEUE_BOUND_MEDIA_REFERENCE_TABLES] },
+            refId: { not: null },
+            createdAt: { lte: policy.cutoff },
+            chargedJob: { is: null },
+            reversal: { is: null },
+          },
+          select: {
+            id: true,
+            delta: true,
+            reason: true,
+            creditKey: true,
+            refTable: true,
+            refId: true,
+            createdAt: true,
+            chargedJob: { select: { id: true } },
+            reversal: { select: { id: true } },
+          },
+        });
+        if (!locked || !isOrphanQueueBoundMediaDebit(locked, policy.cutoff)) {
+          return { refunded: false as const };
+        }
+
+        return refundWorkspaceChargeInTransaction(
+          tx,
+          {
+            workspaceId: candidate.workspaceId,
+            chargeId: candidate.id,
+            internalMode: opts.internalMode,
+          },
+          locked
+        );
+      },
+      { maxWait: 10_000, timeout: 30_000 }
+    );
+
+    if (!result.refunded) {
+      skipped += 1;
+      continue;
+    }
+    refunded += 1;
+    amount += result.amount;
+    chargeIds.push(candidate.id);
+  }
+
+  return {
+    considered: candidates.length,
+    refunded,
+    skipped,
+    amount,
+    chargeIds,
+    cutoff: policy.cutoff,
+  };
 }
