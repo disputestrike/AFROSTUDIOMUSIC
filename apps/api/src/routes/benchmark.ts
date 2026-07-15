@@ -60,11 +60,26 @@ const comparisonProtocolSchema = z
   })
   .strict();
 
-function hasValidStoredProtocol(value: unknown): boolean {
+export function storedAttestationMatches(
+  value: unknown,
+  candidate: Record<string, unknown>
+): boolean {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
   const attestation = value as Record<string, unknown>;
-  return comparisonProtocolSchema.safeParse(attestation.comparisonProtocol)
-    .success;
+  if (
+    !comparisonProtocolSchema.safeParse(attestation.comparisonProtocol).success
+  ) {
+    return false;
+  }
+  return (
+    canonicalJson({
+      confirmed: attestation.confirmed,
+      basis: attestation.basis,
+      note: attestation.note,
+      contentHash: attestation.contentHash,
+      comparisonProtocol: attestation.comparisonProtocol,
+    }) === canonicalJson(candidate)
+  );
 }
 
 const createCompetitorPairSchema = z
@@ -486,73 +501,119 @@ export default async function benchmark(app: FastifyInstance) {
       input.referenceKey,
       input.referenceFormat
     );
-    const attestedAt = new Date();
-    const rightsAttestation = {
-      schemaVersion: 1,
+    const attestationSemantics = {
       confirmed: true,
       basis: input.rightsAttestation.basis,
       note: input.rightsAttestation.note,
-      attestedBy: userId,
-      attestedAt: attestedAt.toISOString(),
       contentHash: reference.contentHash,
       comparisonProtocol: input.comparisonProtocol,
     };
-    const existing = await prisma.benchmarkPair.findFirst({
-      where: {
-        workspaceId,
-        songId: input.songId,
-        competitor: input.competitor,
-        afrohitContentHash: certification.audio.contentHash,
-        referenceContentHash: reference.contentHash,
-        status: "open",
-      },
-      select: {
-        id: true,
-        rightsAttestation: true,
-        _count: { select: { judgments: true } },
-      },
-    });
-    if (existing && hasValidStoredProtocol(existing.rightsAttestation)) {
-      return { id: existing.id, existing: true, upgraded: false };
-    }
-    if (existing && existing._count.judgments === 0) {
-      await prisma.benchmarkPair.update({
-        where: { id: existing.id },
-        data: {
-          rightsBasis: input.rightsAttestation.basis,
-          rightsAttestation,
-        },
-      });
-      return { id: existing.id, existing: true, upgraded: true };
-    }
-    if (existing) {
-      await prisma.benchmarkPair.update({
-        where: { id: existing.id },
-        data: { status: "superseded", closedAt: attestedAt },
-      });
-    }
+    let result:
+      | { id: string; existing: true; upgraded: boolean }
+      | { id: string; existing: false };
+    for (let attempt = 0; ; attempt++) {
+      try {
+        result = await prisma.$transaction(
+          async tx => {
+            const attestedAt = new Date();
+            const rightsAttestation = {
+              schemaVersion: 1,
+              ...attestationSemantics,
+              attestedBy: userId,
+              attestedAt: attestedAt.toISOString(),
+            };
+            const pairIdentity = {
+              workspaceId,
+              songId: input.songId,
+              competitor: input.competitor,
+              afrohitContentHash: certification.audio!.contentHash!,
+              referenceContentHash: reference.contentHash,
+              status: "open",
+            } as const;
+            const existing = await tx.benchmarkPair.findFirst({
+              where: pairIdentity,
+              orderBy: { createdAt: "desc" },
+              select: {
+                id: true,
+                rightsAttestation: true,
+                _count: { select: { judgments: true } },
+              },
+            });
+            if (
+              existing &&
+              storedAttestationMatches(
+                existing.rightsAttestation,
+                attestationSemantics
+              )
+            ) {
+              return { id: existing.id, existing: true, upgraded: false };
+            }
+            if (existing && existing._count.judgments === 0) {
+              const updated = await tx.benchmarkPair.updateMany({
+                where: {
+                  id: existing.id,
+                  workspaceId,
+                  status: "open",
+                  judgments: { none: {} },
+                },
+                data: {
+                  rightsBasis: input.rightsAttestation.basis,
+                  rightsAttestation,
+                },
+              });
+              if (updated.count === 1) {
+                return { id: existing.id, existing: true, upgraded: true };
+              }
+              throw Object.assign(
+                new Error("benchmark pair changed concurrently"),
+                { code: "P2034" }
+              );
+            }
+            if (existing) {
+              const superseded = await tx.benchmarkPair.updateMany({
+                where: { id: existing.id, workspaceId, status: "open" },
+                data: { status: "superseded", closedAt: attestedAt },
+              });
+              if (superseded.count !== 1) {
+                throw Object.assign(
+                  new Error("benchmark pair changed concurrently"),
+                  { code: "P2034" }
+                );
+              }
+            }
 
-    const pair = await prisma.benchmarkPair.create({
-      data: {
-        workspaceId,
-        createdById: userId,
-        songId: input.songId,
-        genre: certification.song.project.genre,
-        competitor: input.competitor,
-        afrohitAssetRef: certification.audio.url,
-        afrohitContentHash: certification.audio.contentHash,
-        referenceAssetRef: reference.assetRef,
-        referenceContentHash: reference.contentHash,
-        referenceSizeBytes: reference.sizeBytes,
-        referenceFormat: reference.format,
-        rightsBasis: input.rightsAttestation.basis,
-        rightsAttestation,
-        seed: randomBytes(32).toString("hex"),
-      },
-      select: { id: true },
-    });
-    reply.code(201);
-    return { id: pair.id, existing: false };
+            const pair = await tx.benchmarkPair.create({
+              data: {
+                workspaceId,
+                createdById: userId,
+                songId: input.songId,
+                genre: certification.song.project.genre,
+                competitor: input.competitor,
+                afrohitAssetRef: certification.audio!.url,
+                afrohitContentHash: certification.audio!.contentHash!,
+                referenceAssetRef: reference.assetRef,
+                referenceContentHash: reference.contentHash,
+                referenceSizeBytes: reference.sizeBytes,
+                referenceFormat: reference.format,
+                rightsBasis: input.rightsAttestation.basis,
+                rightsAttestation,
+                seed: randomBytes(32).toString("hex"),
+              },
+              select: { id: true },
+            });
+            return { id: pair.id, existing: false };
+          },
+          { isolationLevel: "Serializable" }
+        );
+        break;
+      } catch (error) {
+        if ((error as { code?: string }).code !== "P2034" || attempt >= 2) {
+          throw error;
+        }
+      }
+    }
+    if (!result.existing) reply.code(201);
+    return result;
   });
 
   app.get("/competitor/pairs", async req => {
