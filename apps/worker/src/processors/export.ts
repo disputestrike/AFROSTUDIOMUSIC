@@ -17,6 +17,7 @@ import {
 } from '../lib/ffmpeg';
 import { markFailed, markRunning } from '../lib/jobs';
 import { deleteObjectByUrl, downloadToBuffer, uploadBytes } from '../lib/storage';
+import { releaseLineageEvidence, resolveCertifiedReleaseLineage } from './rights';
 
 interface ExportPayload {
   jobId: string;
@@ -302,9 +303,21 @@ export async function processExport(payload: ExportPayload): Promise<void> {
     if (payload.receiptId && payload.receiptId !== certification.rightsReceipt.id) {
       throw new Error('export_blocked: queued rights receipt is stale');
     }
+    const lineage = await resolveCertifiedReleaseLineage({
+      workspaceId: payload.workspaceId,
+      projectId: payload.projectId,
+      songId: payload.songId,
+      audio: certification.audio,
+    });
+    const exactLineage = releaseLineageEvidence(lineage);
+    const receiptPayload = jsonRecord(certification.rightsReceipt.canonicalPayload);
+    if (!receiptPayload || canonicalJson(receiptPayload.lineage) !== canonicalJson(exactLineage)) {
+      throw new Error('export_blocked: rights receipt does not bind current exact audio lineage');
+    }
 
     const sourceFingerprint = releaseEvidenceHash({
-      version: 1,
+      version: 2,
+      lineage: exactLineage,
       artifacts: certification.artifactSnapshot,
       rightsReceipt: {
         id: certification.rightsReceipt.id,
@@ -331,6 +344,7 @@ export async function processExport(payload: ExportPayload): Promise<void> {
       'artwork/cover-3000x3000-rgb.jpg',
       'audio/' + base + '.wav',
       'audio/' + base + '.mp3',
+      'performance/' + base + '-backing-track.wav',
     ];
     const existing = await prisma.export.findUnique({
       where: { songId_sourceFingerprint: { songId: payload.songId, sourceFingerprint } },
@@ -372,17 +386,7 @@ export async function processExport(payload: ExportPayload): Promise<void> {
       return;
     }
 
-    const backing = await prisma.beatAsset.findFirst({
-      where: {
-        songId: payload.songId,
-        assetKind: 'instrumental',
-        approved: true,
-        qualityState: 'passed',
-        contentHash: { not: null },
-        verifiedAt: { not: null },
-      },
-      orderBy: { createdAt: 'desc' },
-    });
+    const backing = lineage.beat;
     const [audioBytes, coverBytes, backingBytes] = await Promise.all([
       downloadToBuffer(certification.audio.url, {
         maxBytes: 512 * 1024 * 1024,
@@ -435,6 +439,7 @@ export async function processExport(payload: ExportPayload): Promise<void> {
         sourceKind: certification.audio.kind,
         sourceId: certification.audio.id,
         sourceContentHash: certification.audio.contentHash,
+        lineage: exactLineage,
         deliveryWav: '24-bit PCM, 44.1 kHz, stereo',
         deliveryMp3: '320 kbps, 44.1 kHz, stereo',
       },
@@ -479,7 +484,6 @@ export async function processExport(payload: ExportPayload): Promise<void> {
         canonicalPayload: certification.rightsReceipt.canonicalPayload,
       }) + '\n',
     );
-    const receiptPayload = certification.rightsReceipt.canonicalPayload as JsonRecord | null;
     addPackageFile(
       files,
       'rights/ai-and-provenance.json',
@@ -487,6 +491,7 @@ export async function processExport(payload: ExportPayload): Promise<void> {
         aiDisclosure: receiptPayload?.aiDisclosure ?? null,
         provenance: receiptPayload?.provenance ?? null,
         artifactFingerprint: certification.artifactFingerprint,
+        lineage: exactLineage,
       }) + '\n',
     );
 
@@ -506,6 +511,7 @@ export async function processExport(payload: ExportPayload): Promise<void> {
       schemaVersion: 1,
       sourceFingerprint,
       artifactFingerprint: certification.artifactFingerprint,
+      lineage: exactLineage,
       receiptId: certification.rightsReceipt.id,
       receiptHash: certification.rightsReceipt.hash,
       splitAttestationId: certification.splitAttestation?.id ?? null,
