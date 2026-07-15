@@ -164,6 +164,7 @@ const TS: Array<[string, string]> = [
   ["Hit concept gate (emotion, not scenery)", "test-concept-gate.ts"],
   ["Security boundaries", "test-security-boundaries.ts"],
   ["Durable jobs + billing receipts", "test-durable-workflows.ts"],
+  ["Job redelivery + refund durability", "test-job-durability.ts"],
 ];
 for (const [name, file] of TS) {
   if (!existsSync(join(scripts, file))) {

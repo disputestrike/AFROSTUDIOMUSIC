@@ -1,7 +1,8 @@
 import { Worker } from "bullmq";
 import type { FastifyInstance } from "fastify";
-import { prisma, Prisma } from "@afrohit/db";
+import { prisma, Prisma, refundWorkspaceCharge } from "@afrohit/db";
 import { dropBatchSchema, redactSensitiveText } from "@afrohit/shared";
+import { isInternalMode } from "../middleware/auth";
 import { QUEUES } from "./queue";
 import { runDropPipeline } from "../routes/drop";
 import {
@@ -18,6 +19,119 @@ type DropOrchestrationPayload = {
   input: unknown;
   albumId?: string;
 };
+const REFUND_OUTBOX_MARKER = "refund_pending:";
+const TERMINAL_JOB_STATUSES = new Set(["SUCCEEDED", "FAILED", "CANCELED"]);
+
+function isTerminalJobStatus(status: string): boolean {
+  return TERMINAL_JOB_STATUSES.has(status);
+}
+
+function isFinalAttempt(job: {
+  attemptsMade: number;
+  opts: { attempts?: number };
+}): boolean {
+  return job.attemptsMade + 1 >= (job.opts.attempts ?? 1);
+}
+
+function refundRetryDelayMs(attempt: number): number {
+  const safeAttempt = Math.max(1, Math.floor(attempt) || 1);
+  return Math.min(15 * 60_000, 5_000 * 2 ** Math.min(safeAttempt, 8));
+}
+
+async function recordOrchestrationFailure(
+  app: FastifyInstance,
+  args: {
+    jobId: string;
+    workspaceId: string;
+    error: unknown;
+    finalAttempt: boolean;
+    fallbackMessage: string;
+  }
+): Promise<void> {
+  const failedAt = new Date();
+  const message = redactSensitiveText(
+    (args.error as Error)?.message ?? args.fallbackMessage,
+    500
+  );
+  const failed = await prisma.$transaction(async tx => {
+    const updated = await tx.providerJob.update({
+      where: { id: args.jobId },
+      data: {
+        status: args.finalAttempt ? "FAILED" : "QUEUED",
+        startedAt: args.finalAttempt ? undefined : null,
+        finishedAt: args.finalAttempt ? failedAt : null,
+        errorJson: { message } as never,
+      },
+      select: { chargeLedgerId: true },
+    });
+    if (args.finalAttempt && updated.chargeLedgerId) {
+      await tx.jobOutbox.updateMany({
+        where: { providerJobId: args.jobId },
+        data: {
+          status: "FAILED",
+          nextAttemptAt: failedAt,
+          lastError: `${REFUND_OUTBOX_MARKER}scheduled`,
+        },
+      });
+    }
+    return updated;
+  });
+
+  if (!args.finalAttempt || !failed.chargeLedgerId) return;
+
+  try {
+    await refundWorkspaceCharge(prisma, {
+      workspaceId: args.workspaceId,
+      chargeId: failed.chargeLedgerId,
+      internalMode: isInternalMode(),
+      refTable: "ProviderJob",
+      refId: args.jobId,
+    });
+    await prisma.jobOutbox.updateMany({
+      where: {
+        providerJobId: args.jobId,
+        lastError: { startsWith: REFUND_OUTBOX_MARKER },
+      },
+      data: { status: "DISPATCHED", lastError: null },
+    });
+  } catch (refundError) {
+    try {
+      const row = await prisma.jobOutbox.findUnique({
+        where: { providerJobId: args.jobId },
+        select: { attempts: true },
+      });
+      if (row) {
+        await prisma.jobOutbox.updateMany({
+          where: {
+            providerJobId: args.jobId,
+            lastError: { startsWith: REFUND_OUTBOX_MARKER },
+          },
+          data: {
+            status: "FAILED",
+            attempts: { increment: 1 },
+            nextAttemptAt: new Date(
+              Date.now() + refundRetryDelayMs(row.attempts + 1)
+            ),
+            lastError: `${REFUND_OUTBOX_MARKER}${redactSensitiveText(
+              (refundError as Error)?.message ?? refundError,
+              400
+            )}`,
+          },
+        });
+      }
+    } catch (persistenceError) {
+      app.log.error(
+        { err: persistenceError, jobId: args.jobId },
+        "durable orchestration refund retry update failed"
+      );
+    }
+    app.log.error(
+      { err: refundError, jobId: args.jobId },
+      "orchestration refund deferred for durable retry"
+    );
+  }
+}
+
 
 export async function startOrchestrationWorker(
   app: FastifyInstance
@@ -54,7 +168,7 @@ export async function startOrchestrationWorker(
         });
         if (!owned)
           throw new Error("A&R orchestration job missing or outside workspace");
-        if (owned.status === "SUCCEEDED" || owned.status === "CANCELED") return;
+        if (isTerminalJobStatus(owned.status)) return;
         await prisma.providerJob.update({
           where: { id: data.jobId },
           data: {
@@ -80,18 +194,12 @@ export async function startOrchestrationWorker(
             },
           });
         } catch (error) {
-          await prisma.providerJob.update({
-            where: { id: data.jobId },
-            data: {
-              status: "FAILED",
-              finishedAt: new Date(),
-              errorJson: {
-                message: redactSensitiveText(
-                  (error as Error)?.message ?? "A&R orchestration failed",
-                  500
-                ),
-              } as never,
-            },
+          await recordOrchestrationFailure(app, {
+            jobId: data.jobId,
+            workspaceId: data.workspaceId,
+            error,
+            finalAttempt: isFinalAttempt(bullJob),
+            fallbackMessage: "A&R orchestration failed",
           });
           throw error;
         }
@@ -112,7 +220,7 @@ export async function startOrchestrationWorker(
           throw new Error(
             "material orchestration job missing or outside workspace"
           );
-        if (owned.status === "SUCCEEDED" || owned.status === "CANCELED") return;
+        if (isTerminalJobStatus(owned.status)) return;
         await prisma.providerJob.update({
           where: { id: data.jobId },
           data: {
@@ -133,38 +241,13 @@ export async function startOrchestrationWorker(
             },
           });
         } catch (error) {
-          const finalAttempt =
-            bullJob.attemptsMade + 1 >= (bullJob.opts.attempts ?? 1);
-          const failed = await prisma.providerJob.update({
-            where: { id: data.jobId },
-            data: {
-              status: finalAttempt ? "FAILED" : "QUEUED",
-              finishedAt: finalAttempt ? new Date() : null,
-              errorJson: {
-                message: redactSensitiveText(
-                  (error as Error)?.message ?? "material orchestration failed",
-                  500
-                ),
-              } as never,
-            },
-            select: { chargeLedgerId: true },
+          await recordOrchestrationFailure(app, {
+            jobId: data.jobId,
+            workspaceId: data.workspaceId,
+            error,
+            finalAttempt: isFinalAttempt(bullJob),
+            fallbackMessage: "material orchestration failed",
           });
-          if (finalAttempt && failed.chargeLedgerId) {
-            await app
-              .refundCredits({
-                workspaceId: data.workspaceId,
-                key: "beat_idea_short_30s",
-                refTable: "ProviderJob",
-                refId: data.jobId,
-                chargeId: failed.chargeLedgerId,
-              })
-              .catch(refundError =>
-                app.log.error(
-                  { err: refundError, jobId: data.jobId },
-                  "material batch refund failed"
-                )
-              );
-          }
           throw error;
         }
         return;
@@ -184,7 +267,7 @@ export async function startOrchestrationWorker(
         select: { id: true, status: true },
       });
       if (!owned) throw new Error("drop job missing or outside workspace");
-      if (owned.status === "SUCCEEDED" || owned.status === "CANCELED") return;
+      if (isTerminalJobStatus(owned.status)) return;
 
       await prisma.providerJob.update({
         where: { id: data.jobId },
@@ -240,20 +323,12 @@ export async function startOrchestrationWorker(
           },
         });
       } catch (error) {
-        const finalAttempt =
-          bullJob.attemptsMade + 1 >= (bullJob.opts.attempts ?? 1);
-        await prisma.providerJob.update({
-          where: { id: data.jobId },
-          data: {
-            status: finalAttempt ? "FAILED" : "QUEUED",
-            finishedAt: finalAttempt ? new Date() : null,
-            errorJson: {
-              message: redactSensitiveText(
-                (error as Error)?.message ?? "drop pipeline failed",
-                500
-              ),
-            } as never,
-          },
+        await recordOrchestrationFailure(app, {
+          jobId: data.jobId,
+          workspaceId: data.workspaceId,
+          error,
+          finalAttempt: isFinalAttempt(bullJob),
+          fallbackMessage: "drop pipeline failed",
         });
         throw error;
       }

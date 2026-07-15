@@ -80,10 +80,12 @@ import {
   processVerifyLexicon,
 } from "./processors/compound";
 import {
+  isTerminalProviderJobStatus,
   markFailed,
   markRunning,
   markSucceeded,
   refundFailedJob,
+  retryPendingFailedJobRefunds,
   runWithJobAttemptContext,
 } from "./lib/jobs";
 
@@ -216,6 +218,24 @@ async function runManagedAttempt(
   const dbJobId = job.data?.jobId;
   const finalAttempt = (job.attemptsMade ?? 0) + 1 >= (job.opts?.attempts ?? 1);
 
+  if (dbJobId) {
+    const initialState = await prisma.providerJob.findUnique({
+      where: { id: dbJobId },
+      select: { status: true },
+    });
+    if (!initialState) {
+      throw new Error(`managed provider job ${dbJobId} is missing`);
+    }
+    if (isTerminalProviderJobStatus(initialState.status)) {
+      // FAILED also short-circuits: non-final failures are persisted as QUEUED,
+      // so a stored FAILED state can only represent exhausted work.
+      if (initialState.status === "FAILED") {
+        await refundFailedJob(dbJobId);
+      }
+      return;
+    }
+  }
+
   await runWithJobAttemptContext(finalAttempt, async () => {
     let thrown: unknown;
     try {
@@ -238,7 +258,6 @@ async function runManagedAttempt(
       throw new Error(`managed provider job ${dbJobId} is missing`);
     }
     if (state.status === "SUCCEEDED" || state.status === "CANCELED") {
-      if (thrown) throw thrown;
       return;
     }
 
@@ -262,16 +281,17 @@ async function runManagedAttempt(
 
     if (!finalAttempt) {
       await prisma.providerJob.updateMany({
-        where: { id: dbJobId, status: "FAILED" },
+        where: { id: dbJobId, status: { in: ["FAILED", "QUEUED"] } },
         data: {
           status: "QUEUED",
+          startedAt: null,
           finishedAt: null,
           errorJson: Prisma.DbNull,
         },
       });
     } else {
-      // Idempotent and deliberately not swallowed: a failed refund must remain
-      // operationally visible instead of silently leaking customer credit.
+      // A transient refund failure remains durable in PostgreSQL; the
+      // independent sweeper retries the idempotent reversal.
       await refundFailedJob(dbJobId);
     }
     throw failure;
@@ -559,6 +579,36 @@ const workerHeartbeatTimer = setInterval(() => {
   );
 }, 15_000);
 workerHeartbeatTimer.unref();
+const refundRetryIntervalMs = Math.max(
+  5_000,
+  Math.min(
+    15 * 60_000,
+    Number(process.env.FAILED_JOB_REFUND_INTERVAL_MS ?? 30_000) || 30_000
+  )
+);
+let refundSweepInFlight = false;
+async function sweepFailedJobRefunds(): Promise<void> {
+  if (refundSweepInFlight) return;
+  refundSweepInFlight = true;
+  try {
+    const result = await retryPendingFailedJobRefunds();
+    if (result.attempted) {
+      log.info(result, "failed job refund sweep completed");
+    }
+  } finally {
+    refundSweepInFlight = false;
+  }
+}
+void sweepFailedJobRefunds().catch(err =>
+  log.error({ err }, "failed job refund startup sweep failed")
+);
+const refundRetryTimer = setInterval(() => {
+  void sweepFailedJobRefunds().catch(err =>
+    log.error({ err }, "failed job refund sweep failed")
+  );
+}, refundRetryIntervalMs);
+refundRetryTimer.unref();
+
 
 /**
  * Graceful shutdown with a bounded drain. close() waits for active jobs, but
@@ -568,6 +618,7 @@ workerHeartbeatTimer.unref();
  */
 async function shutdown(signal: string) {
   clearInterval(workerHeartbeatTimer);
+  clearInterval(refundRetryTimer);
   await prisma.systemSetting
     .delete({ where: { key: workerHeartbeatKey } })
     .catch(() => undefined);
