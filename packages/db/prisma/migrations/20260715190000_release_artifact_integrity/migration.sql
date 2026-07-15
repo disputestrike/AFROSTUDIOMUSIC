@@ -7,6 +7,135 @@ CREATE TABLE "ReleaseIdentifierSequence" (
   CONSTRAINT "ReleaseIdentifierSequence_positive_value" CHECK ("value" >= 0)
 );
 
+-- Preserve every displaced legacy value before deterministic de-duplication.
+CREATE TABLE "ReleaseIdentifierConflict" (
+  "id" BIGSERIAL NOT NULL,
+  "entityType" TEXT NOT NULL,
+  "entityId" TEXT NOT NULL,
+  "field" TEXT NOT NULL,
+  "value" TEXT NOT NULL,
+  "retainedEntityId" TEXT NOT NULL,
+  "createdAt" TIMESTAMPTZ(6) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  CONSTRAINT "ReleaseIdentifierConflict_pkey" PRIMARY KEY ("id")
+);
+
+CREATE INDEX "ReleaseIdentifierConflict_entityType_field_value_idx"
+  ON "ReleaseIdentifierConflict"("entityType", "field", "value");
+
+-- Canonicalize harmless legacy formatting so logical duplicates cannot evade
+-- the indexes. Empty identifiers are absence, never a shared identifier.
+UPDATE "Song"
+SET
+  "isrc" = NULLIF(UPPER(BTRIM("isrc")), ''),
+  "upc" = NULLIF(BTRIM("upc"), '')
+WHERE "isrc" IS NOT NULL OR "upc" IS NOT NULL;
+
+UPDATE "Release"
+SET "upc" = NULLIF(BTRIM("upc"), '')
+WHERE "upc" IS NOT NULL;
+
+WITH ranked AS (
+  SELECT
+    "id",
+    "isrc" AS value,
+    FIRST_VALUE("id") OVER (
+      PARTITION BY "isrc" ORDER BY "createdAt", "id"
+    ) AS retained_id,
+    ROW_NUMBER() OVER (
+      PARTITION BY "isrc" ORDER BY "createdAt", "id"
+    ) AS duplicate_rank
+  FROM "Song"
+  WHERE "isrc" IS NOT NULL
+)
+INSERT INTO "ReleaseIdentifierConflict" (
+  "entityType", "entityId", "field", "value", "retainedEntityId"
+)
+SELECT 'Song', "id", 'isrc', value, retained_id
+FROM ranked
+WHERE duplicate_rank > 1;
+
+WITH ranked AS (
+  SELECT
+    "id",
+    ROW_NUMBER() OVER (
+      PARTITION BY "isrc" ORDER BY "createdAt", "id"
+    ) AS duplicate_rank
+  FROM "Song"
+  WHERE "isrc" IS NOT NULL
+)
+UPDATE "Song" song
+SET "isrc" = NULL
+FROM ranked
+WHERE song."id" = ranked."id" AND ranked.duplicate_rank > 1;
+
+WITH ranked AS (
+  SELECT
+    "id",
+    "upc" AS value,
+    FIRST_VALUE("id") OVER (
+      PARTITION BY "upc" ORDER BY "createdAt", "id"
+    ) AS retained_id,
+    ROW_NUMBER() OVER (
+      PARTITION BY "upc" ORDER BY "createdAt", "id"
+    ) AS duplicate_rank
+  FROM "Song"
+  WHERE "upc" IS NOT NULL
+)
+INSERT INTO "ReleaseIdentifierConflict" (
+  "entityType", "entityId", "field", "value", "retainedEntityId"
+)
+SELECT 'Song', "id", 'upc', value, retained_id
+FROM ranked
+WHERE duplicate_rank > 1;
+
+WITH ranked AS (
+  SELECT
+    "id",
+    ROW_NUMBER() OVER (
+      PARTITION BY "upc" ORDER BY "createdAt", "id"
+    ) AS duplicate_rank
+  FROM "Song"
+  WHERE "upc" IS NOT NULL
+)
+UPDATE "Song" song
+SET "upc" = NULL
+FROM ranked
+WHERE song."id" = ranked."id" AND ranked.duplicate_rank > 1;
+
+WITH ranked AS (
+  SELECT
+    "id",
+    "upc" AS value,
+    FIRST_VALUE("id") OVER (
+      PARTITION BY "upc" ORDER BY "createdAt", "id"
+    ) AS retained_id,
+    ROW_NUMBER() OVER (
+      PARTITION BY "upc" ORDER BY "createdAt", "id"
+    ) AS duplicate_rank
+  FROM "Release"
+  WHERE "upc" IS NOT NULL
+)
+INSERT INTO "ReleaseIdentifierConflict" (
+  "entityType", "entityId", "field", "value", "retainedEntityId"
+)
+SELECT 'Release', "id", 'upc', value, retained_id
+FROM ranked
+WHERE duplicate_rank > 1;
+
+WITH ranked AS (
+  SELECT
+    "id",
+    ROW_NUMBER() OVER (
+      PARTITION BY "upc" ORDER BY "createdAt", "id"
+    ) AS duplicate_rank
+  FROM "Release"
+  WHERE "upc" IS NOT NULL
+)
+UPDATE "Release" release
+SET "upc" = NULL
+FROM ranked
+WHERE release."id" = ranked."id" AND ranked.duplicate_rank > 1;
+
 CREATE UNIQUE INDEX "Song_isrc_key" ON "Song"("isrc");
 CREATE UNIQUE INDEX "Song_upc_key" ON "Song"("upc");
 CREATE UNIQUE INDEX "Release_upc_key" ON "Release"("upc");

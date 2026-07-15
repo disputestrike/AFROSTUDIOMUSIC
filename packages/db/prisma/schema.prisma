@@ -1065,6 +1065,20 @@ model ReleaseIdentifierSequence {
   updatedAt DateTime @updatedAt @db.Timestamptz(6)
 }
 
+/// Audit trail for identifiers displaced while legacy duplicates are reconciled
+/// before global uniqueness is enforced.
+model ReleaseIdentifierConflict {
+  id               BigInt   @id @default(autoincrement())
+  entityType       String
+  entityId         String
+  field            String
+  value            String
+  retainedEntityId String
+  createdAt        DateTime @default(now()) @db.Timestamptz(6)
+
+  @@index([entityType, field, value])
+}
+
 /// Storage refs captured by delete triggers before their owning rows disappear.
 /// The cleanup worker consumes these only after checking all surviving owners.
 model AssetDeletionCandidate {

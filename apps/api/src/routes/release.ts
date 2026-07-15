@@ -35,6 +35,113 @@ function record(value: unknown): JsonRecord | null {
     : null;
 }
 
+type ReleasePackageEvidence = {
+  qualityState: string;
+  archiveUrl: string | null;
+  contentHash: string | null;
+  sourceFingerprint: string | null;
+  receiptId: string | null;
+  verifiedAt: Date | null;
+  manifest: unknown;
+};
+
+export function releasePackageIsCurrent(
+  releaseExport: ReleasePackageEvidence | null | undefined,
+  expectation: { artifactFingerprint: string; receiptId: string }
+): boolean {
+  const manifest = record(releaseExport?.manifest);
+  return (
+    !!releaseExport &&
+    releaseExport.qualityState === "ready" &&
+    !!releaseExport.archiveUrl &&
+    !!releaseExport.contentHash &&
+    !!releaseExport.sourceFingerprint &&
+    !!releaseExport.verifiedAt &&
+    releaseExport.receiptId === expectation.receiptId &&
+    manifest?.sourceFingerprint === releaseExport.sourceFingerprint &&
+    manifest?.artifactFingerprint === expectation.artifactFingerprint &&
+    manifest?.receiptId === expectation.receiptId
+  );
+}
+
+export function publicReleaseRevisionSnapshot(revision: {
+  id: string;
+  revision: number;
+  status: string;
+  snapshot: unknown;
+  createdAt: Date;
+}) {
+  const snapshot = record(revision.snapshot);
+  const audio = record(snapshot?.audio);
+  const cover = record(snapshot?.cover);
+  const releaseExport = record(snapshot?.export);
+  const distribution = record(snapshot?.distribution);
+  return {
+    id: revision.id,
+    revision: revision.revision,
+    status: revision.status,
+    createdAt: revision.createdAt,
+    metadata: {
+      title: typeof snapshot?.title === "string" ? snapshot.title : null,
+      artistName:
+        typeof snapshot?.artistName === "string" ? snapshot.artistName : null,
+      genre: typeof snapshot?.genre === "string" ? snapshot.genre : null,
+    },
+    identifiers: {
+      isrc: typeof snapshot?.isrc === "string" ? snapshot.isrc : null,
+      upc: typeof snapshot?.upc === "string" ? snapshot.upc : null,
+    },
+    package: {
+      audioAssetId:
+        typeof audio?.assetId === "string" ? audio.assetId : null,
+      audioAssetKind: typeof audio?.kind === "string" ? audio.kind : null,
+      coverAssetId:
+        typeof cover?.assetId === "string" ? cover.assetId : null,
+      exportId:
+        typeof releaseExport?.exportId === "string"
+          ? releaseExport.exportId
+          : null,
+      artifactFingerprint:
+        typeof releaseExport?.artifactFingerprint === "string"
+          ? releaseExport.artifactFingerprint
+          : null,
+      evidenceHash:
+        typeof releaseExport?.evidenceHash === "string"
+          ? releaseExport.evidenceHash
+          : null,
+    },
+    distribution: {
+      status:
+        typeof distribution?.status === "string"
+          ? distribution.status
+          : revision.status,
+      provider:
+        typeof distribution?.provider === "string"
+          ? distribution.provider
+          : null,
+      externalId:
+        typeof distribution?.externalId === "string"
+          ? distribution.externalId
+          : null,
+      channels: record(distribution?.channels),
+      submittedAt:
+        typeof distribution?.submittedAt === "string"
+          ? distribution.submittedAt
+          : null,
+      statusAt:
+        typeof distribution?.statusAt === "string"
+          ? distribution.statusAt
+          : null,
+      liveAt:
+        typeof distribution?.liveAt === "string" ? distribution.liveAt : null,
+      releaseDate:
+        typeof distribution?.releaseDate === "string"
+          ? distribution.releaseDate
+          : null,
+    },
+  };
+}
+
 function modeFromQuery(query: unknown): ReleaseMode {
   return (query as { mode?: string } | null)?.mode === "hitmaker"
     ? "hitmaker"
@@ -45,7 +152,7 @@ async function nextIdentifierValue(
   tx: Transaction,
   namespace: string
 ): Promise<number> {
-  const rows = await tx.$queryRaw<Array<{ value: number }>>(Prisma.sql`
+  const rows = await tx.$queryRaw(Prisma.sql`
     INSERT INTO "ReleaseIdentifierSequence" ("namespace", "value", "updatedAt")
     VALUES (${namespace}, 1, CURRENT_TIMESTAMP)
     ON CONFLICT ("namespace") DO UPDATE
@@ -54,7 +161,7 @@ async function nextIdentifierValue(
       "updatedAt" = CURRENT_TIMESTAMP
     RETURNING "value"
   `);
-  const value = rows[0]?.value;
+  const value = (rows as Array<{ value: number }>)[0]?.value;
   if (!Number.isSafeInteger(value) || Number(value) < 1) {
     throw new Error("release_identifier_sequence_failed");
   }
@@ -187,6 +294,7 @@ async function statusFor(options: {
       select: {
         id: true,
         qualityState: true,
+        archiveUrl: true,
         contentHash: true,
         sizeBytes: true,
         receiptId: true,
@@ -235,6 +343,7 @@ async function statusFor(options: {
             id: true,
             revision: true,
             status: true,
+            snapshot: true,
             createdAt: true,
           },
         },
@@ -279,14 +388,12 @@ async function statusFor(options: {
   const coverPlaybackUrl = displayedCover
     ? await presignAssetRef(displayedCover.url, 900)
     : null;
-  const exportManifest = record(latestExport?.manifest);
-  const exportArtwork = record(exportManifest?.artwork);
   const exportCurrent =
-    !!latestExport &&
-    latestExport.qualityState === "ready" &&
-    exportManifest?.artifactFingerprint === certification.artifactFingerprint &&
-    exportArtwork?.sourceId === displayedCover?.id &&
-    latestExport.receiptId === certification.rightsReceipt?.id;
+    !!certification.rightsReceipt &&
+    releasePackageIsCurrent(latestExport, {
+      artifactFingerprint: certification.artifactFingerprint,
+      receiptId: certification.rightsReceipt.id,
+    });
 
   return {
     song: {
@@ -388,7 +495,7 @@ async function statusFor(options: {
             artifactFingerprint: latestRelease.artifactFingerprint,
             evidenceHash: latestRelease.evidenceHash,
           },
-          history: latestRelease.revisions,
+          history: latestRelease.revisions.map(publicReleaseRevisionSnapshot),
         }
       : null,
   };
@@ -681,10 +788,7 @@ export default async function release(app: FastifyInstance) {
             message: "Submitted and live release revisions cannot be edited.",
           });
         }
-        if (
-          error instanceof Prisma.PrismaClientKnownRequestError &&
-          error.code === "P2002"
-        ) {
+        if ((error as { code?: unknown } | null)?.code === "P2002") {
           return reply.code(409).send({ error: "identifier_already_assigned" });
         }
         throw error;
@@ -835,44 +939,53 @@ export default async function release(app: FastifyInstance) {
     "/:songId/distribute",
     async (req, reply) => {
       const { workspaceId } = requireRole(req, ["OWNER", "ADMIN"]);
-      const certification = await loadReleaseCertification(prisma, {
-        workspaceId,
-        projectId: req.params.projectId,
-        songId: req.params.songId,
-        hitTarget: BLOW_TARGET,
-      });
-      const releaseHead = await prisma.release.findUnique({
-        where: { songId: certification.song.id },
+      const observedHead = await prisma.release.findUnique({
+        where: { songId: req.params.songId },
         include: { coverAsset: true },
       });
-      if (releaseHead?.status === "live") {
+      if (!observedHead || observedHead.workspaceId !== workspaceId) {
+        return reply.code(409).send({
+          error: "release_artwork_selection_required",
+          message:
+            "Select this song's approved cover before building and distributing its release package.",
+        });
+      }
+      if (observedHead.status === "live") {
         return {
           status: "live",
-          provider: releaseHead.distributor,
-          externalId: releaseHead.externalId,
-          channels: releaseHead.channels,
+          provider: observedHead.distributor,
+          externalId: observedHead.externalId,
+          channels: observedHead.channels,
           message: "This release is already confirmed live.",
         };
       }
-      if (
-        releaseHead &&
-        ["submitted", "accepted"].includes(releaseHead.status)
-      ) {
+      if (["submitted", "accepted"].includes(observedHead.status)) {
         return {
-          status: releaseHead.status,
-          provider: releaseHead.distributor,
-          externalId: releaseHead.externalId,
-          channels: releaseHead.channels,
+          status: observedHead.status,
+          provider: observedHead.distributor,
+          externalId: observedHead.externalId,
+          channels: observedHead.channels,
           message: "This release revision is already with the distributor.",
         };
       }
-      if (releaseHead?.status === "submitting") {
+      if (observedHead.status === "submitting") {
         return reply.code(409).send({ error: "release_submission_in_progress" });
       }
+
+      const observedCertification = await loadReleaseCertification(prisma, {
+        workspaceId,
+        projectId: req.params.projectId,
+        songId: req.params.songId,
+        coverAssetId: observedHead.coverAssetId,
+        hitTarget: BLOW_TARGET,
+      } as never);
       if (
-        !releaseHead?.coverAsset ||
-        !artworkBelongsToSong(releaseHead.coverAsset, certification.song) ||
-        certification.cover?.id !== releaseHead.coverAssetId
+        !observedHead.coverAsset ||
+        !artworkBelongsToSong(
+          observedHead.coverAsset,
+          observedCertification.song
+        ) ||
+        observedCertification.cover?.id !== observedHead.coverAssetId
       ) {
         return reply.code(409).send({
           error: "release_artwork_selection_required",
@@ -881,31 +994,34 @@ export default async function release(app: FastifyInstance) {
         });
       }
       if (
-        !certification.readiness.ready ||
-        !certification.audio ||
-        !certification.cover
+        !observedCertification.readiness.ready ||
+        !observedCertification.audio ||
+        !observedCertification.cover ||
+        !observedCertification.rightsReceipt
       ) {
         return reply.code(409).send({
           error: "not_release_ready",
-          checks: certification.readiness.checks,
+          checks: observedCertification.readiness.checks,
         });
       }
-      const releaseExport = await prisma.export.findFirst({
+
+      const observedExport = await prisma.export.findFirst({
         where: {
-          songId: certification.song.id,
+          songId: observedCertification.song.id,
           qualityState: "ready",
           archiveUrl: { not: null },
           contentHash: { not: null },
-          receiptId: certification.rightsReceipt?.id,
+          sourceFingerprint: { not: null },
+          verifiedAt: { not: null },
+          receiptId: observedCertification.rightsReceipt.id,
         },
         orderBy: { createdAt: "desc" },
       });
-      const manifest = record(releaseExport?.manifest);
-      const manifestArtwork = record(manifest?.artwork);
       if (
-        !releaseExport ||
-        manifest?.artifactFingerprint !== certification.artifactFingerprint ||
-        manifestArtwork?.sourceId !== releaseHead.coverAssetId
+        !releasePackageIsCurrent(observedExport, {
+          artifactFingerprint: observedCertification.artifactFingerprint,
+          receiptId: observedCertification.rightsReceipt.id,
+        })
       ) {
         return reply.code(409).send({
           error: "current_release_package_required",
@@ -917,49 +1033,150 @@ export default async function release(app: FastifyInstance) {
       const stagedAt = new Date();
       let staged;
       try {
-        staged = await prisma.$transaction(async tx => {
-          await tx.$queryRaw(Prisma.sql`
-            SELECT 1::int AS locked
-            FROM pg_advisory_xact_lock(hashtext(${certification.song.id}))
-          `);
-          const current = await tx.release.findUniqueOrThrow({
-            where: { songId: certification.song.id },
-          });
-          if (LOCKED_RELEASE_STATUSES.has(current.status)) {
-            throw new Error("release_locked");
-          }
-          return tx.release.update({
-            where: { id: current.id },
-            data: {
-              projectId: certification.song.projectId,
+        staged = await prisma.$transaction(
+          async tx => {
+            await tx.$queryRawUnsafe(
+              "SELECT 1::int AS locked FROM pg_advisory_xact_lock(hashtext($1))",
+              observedCertification.song.id
+            );
+            const current = await tx.release.findUniqueOrThrow({
+              where: { songId: observedCertification.song.id },
+              include: { coverAsset: true },
+            });
+            if (LOCKED_RELEASE_STATUSES.has(current.status)) {
+              throw new Error("release_locked");
+            }
+            if (current.revision !== observedHead.revision) {
+              throw new Error("release_preflight_changed");
+            }
+
+            const certification = await loadReleaseCertification(tx, {
+              workspaceId,
+              projectId: req.params.projectId,
+              songId: req.params.songId,
+              coverAssetId: current.coverAssetId,
+              hitTarget: BLOW_TARGET,
+            } as never);
+            if (
+              certification.artifactFingerprint !==
+              observedCertification.artifactFingerprint
+            ) {
+              throw new Error("release_preflight_changed");
+            }
+            if (
+              !current.coverAsset ||
+              !artworkBelongsToSong(current.coverAsset, certification.song) ||
+              certification.cover?.id !== current.coverAssetId
+            ) {
+              throw new Error("release_artwork_selection_required");
+            }
+            if (
+              !certification.readiness.ready ||
+              !certification.audio ||
+              !certification.cover ||
+              !certification.rightsReceipt
+            ) {
+              throw new Error("not_release_ready");
+            }
+
+            const releaseExport = await tx.export.findFirst({
+              where: {
+                songId: certification.song.id,
+                qualityState: "ready",
+                archiveUrl: { not: null },
+                contentHash: { not: null },
+                sourceFingerprint: { not: null },
+                verifiedAt: { not: null },
+                receiptId: certification.rightsReceipt.id,
+              },
+              orderBy: { createdAt: "desc" },
+            });
+            if (
+              !releasePackageIsCurrent(releaseExport, {
+                artifactFingerprint: certification.artifactFingerprint,
+                receiptId: certification.rightsReceipt.id,
+              }) ||
+              releaseExport?.id !== observedExport!.id ||
+              releaseExport.sourceFingerprint !==
+                observedExport!.sourceFingerprint ||
+              releaseExport.contentHash !== observedExport!.contentHash
+            ) {
+              throw new Error("release_package_changed");
+            }
+
+            const head = await tx.release.update({
+              where: { id: current.id },
+              data: {
+                projectId: certification.song.projectId,
+                title: certification.song.title,
+                artistName: certification.song.project.artist.stageName,
+                genre: certification.song.project.genre,
+                isrc: certification.song.isrc,
+                upc: certification.song.upc,
+                audioAssetId: certification.audio.id,
+                audioAssetKind: certification.audio.kind,
+                audioUrl: certification.audio.url,
+                coverAssetId: certification.cover.id,
+                coverUrl: certification.cover.url,
+                exportId: releaseExport.id,
+                archiveUrl: releaseExport.archiveUrl,
+                artifactFingerprint: certification.artifactFingerprint,
+                evidenceHash: releaseExport.contentHash,
+                status: "submitting",
+                distributionStatusAt: stagedAt,
+                submittedAt: null,
+                distributor: null,
+                externalId: null,
+                channels: Prisma.DbNull,
+                liveAt: null,
+                releaseDate: null,
+              },
+              select: { id: true, revision: true },
+            });
+            return {
+              ...head,
+              songId: certification.song.id,
               title: certification.song.title,
-              artistName: certification.song.project.artist.stageName,
+              artist: certification.song.project.artist.stageName,
               genre: certification.song.project.genre,
               isrc: certification.song.isrc,
               upc: certification.song.upc,
-              audioAssetId: certification.audio!.id,
-              audioAssetKind: certification.audio!.kind,
-              audioUrl: certification.audio!.url,
-              coverAssetId: releaseHead.coverAssetId,
-              coverUrl: releaseHead.coverAsset!.url,
+              audioAssetId: certification.audio.id,
+              audioAssetKind: certification.audio.kind,
+              audioUrl: certification.audio.url,
+              coverAssetId: certification.cover.id,
+              coverUrl: certification.cover.url,
               exportId: releaseExport.id,
-              archiveUrl: releaseExport.archiveUrl,
+              archiveUrl: releaseExport.archiveUrl!,
               artifactFingerprint: certification.artifactFingerprint,
-              evidenceHash: releaseExport.contentHash,
-              status: "submitting",
-              distributionStatusAt: stagedAt,
-              submittedAt: null,
-              distributor: null,
-              externalId: null,
-              channels: Prisma.DbNull,
-              liveAt: null,
-              releaseDate: null,
-            },
-          });
-        });
+              evidenceHash: releaseExport.contentHash!,
+            };
+          },
+          { isolationLevel: "Serializable" as never }
+        );
       } catch (error) {
-        if ((error as Error).message === "release_locked") {
+        const message = (error as Error).message;
+        if (message === "release_locked") {
           return reply.code(409).send({ error: "release_locked" });
+        }
+        if (
+          message === "release_preflight_changed" ||
+          message === "release_package_changed" ||
+          (error as { code?: unknown } | null)?.code === "P2034"
+        ) {
+          return reply.code(409).send({
+            error: "release_preflight_changed",
+            message:
+              "The release changed during final validation. Review the current revision and submit again.",
+          });
+        }
+        if (message === "release_artwork_selection_required") {
+          return reply
+            .code(409)
+            .send({ error: "release_artwork_selection_required" });
+        }
+        if (message === "not_release_ready") {
+          return reply.code(409).send({ error: "not_release_ready" });
         }
         throw error;
       }
@@ -967,20 +1184,20 @@ export default async function release(app: FastifyInstance) {
       const result = await distributeRelease({
         releaseId: staged.id,
         revision: staged.revision,
-        title: certification.song.title,
-        artist: certification.song.project.artist.stageName,
-        genre: certification.song.project.genre,
-        isrc: certification.song.isrc,
-        upc: certification.song.upc,
-        audioAssetId: certification.audio.id,
-        audioAssetKind: certification.audio.kind,
-        coverAssetId: releaseHead.coverAssetId,
-        exportId: releaseExport.id,
-        artifactFingerprint: certification.artifactFingerprint,
-        audioUrl: await presignAssetRef(certification.audio.url, 3600),
-        coverUrl: await presignAssetRef(certification.cover.url, 3600),
-        bundleUrl: await presignAssetRef(releaseExport.archiveUrl!, 3600),
-        evidenceHash: releaseExport.contentHash!,
+        title: staged.title,
+        artist: staged.artist,
+        genre: staged.genre,
+        isrc: staged.isrc,
+        upc: staged.upc,
+        audioAssetId: staged.audioAssetId,
+        audioAssetKind: staged.audioAssetKind,
+        coverAssetId: staged.coverAssetId,
+        exportId: staged.exportId,
+        artifactFingerprint: staged.artifactFingerprint,
+        audioUrl: await presignAssetRef(staged.audioUrl, 3600),
+        coverUrl: await presignAssetRef(staged.coverUrl, 3600),
+        bundleUrl: await presignAssetRef(staged.archiveUrl, 3600),
+        evidenceHash: staged.evidenceHash,
         idempotencyKey:
           "release:" + staged.id + ":r" + String(staged.revision),
       });
@@ -1008,47 +1225,64 @@ export default async function release(app: FastifyInstance) {
       }
 
       const submittedAt = new Date();
-      await prisma.$transaction(async tx => {
-        await tx.$queryRaw(Prisma.sql`
-          SELECT 1::int AS locked
-          FROM pg_advisory_xact_lock(hashtext(${certification.song.id}))
-        `);
-        const current = await tx.release.findUniqueOrThrow({
-          where: { songId: certification.song.id },
-          select: { id: true, revision: true, status: true },
-        });
-        if (
-          current.status !== "submitting" ||
-          current.revision !== staged.revision
-        ) {
-          throw new Error("release_submission_superseded");
-        }
-        await tx.release.update({
-          where: { id: current.id },
-          data: {
-            submittedAt,
-            distributionStatusAt: submittedAt,
-            distributor: result.provider,
-            externalId: result.externalId,
-            status: result.partnerStatus ?? "submitted",
-            channels: result.channels
-              ? (result.channels as never)
-              : Prisma.DbNull,
-          },
-        });
-        await tx.song.update({
-          where: { id: certification.song.id },
-          data: { status: "EXPORTED" },
-        });
-      });
+      await prisma.$transaction(
+        async tx => {
+          await tx.$queryRawUnsafe(
+            "SELECT 1::int AS locked FROM pg_advisory_xact_lock(hashtext($1))",
+            staged.songId
+          );
+          const current = await tx.release.findUniqueOrThrow({
+            where: { songId: staged.songId },
+            select: {
+              id: true,
+              revision: true,
+              status: true,
+              audioAssetId: true,
+              coverAssetId: true,
+              exportId: true,
+              artifactFingerprint: true,
+              evidenceHash: true,
+            },
+          });
+          if (
+            current.status !== "submitting" ||
+            current.revision !== staged.revision ||
+            current.audioAssetId !== staged.audioAssetId ||
+            current.coverAssetId !== staged.coverAssetId ||
+            current.exportId !== staged.exportId ||
+            current.artifactFingerprint !== staged.artifactFingerprint ||
+            current.evidenceHash !== staged.evidenceHash
+          ) {
+            throw new Error("release_submission_superseded");
+          }
+          await tx.release.update({
+            where: { id: current.id },
+            data: {
+              submittedAt,
+              distributionStatusAt: submittedAt,
+              distributor: result.provider,
+              externalId: result.externalId,
+              status: result.partnerStatus ?? "submitted",
+              channels: result.channels
+                ? (result.channels as never)
+                : Prisma.DbNull,
+            },
+          });
+          await tx.song.update({
+            where: { id: staged.songId },
+            data: { status: "EXPORTED" },
+          });
+        },
+        { isolationLevel: "Serializable" as never }
+      );
       await prisma.analyticsEvent
         .create({
           data: {
             workspaceId,
             name: "release.distribute",
             properties: {
-              songId: certification.song.id,
-              exportId: releaseExport.id,
+              songId: staged.songId,
+              exportId: staged.exportId,
               releaseId: staged.id,
               revision: staged.revision,
               provider: result.provider,

@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import type { PrismaClient } from '@prisma/client';
+import type { Prisma, PrismaClient } from '@prisma/client';
 import { canonicalJson, evaluateReleaseReadiness, type ReleaseReadinessCheck } from '@afrohit/shared';
 
 export const RELEASE_REVIEW_LANGUAGES = ['yo', 'ig', 'ha', 'zu', 'xh', 'st'] as const;
@@ -8,7 +8,12 @@ type SplitEntry = { name: string; role: string; share: number };
 type JsonRecord = Record<string, unknown>;
 
 export interface ReleaseArtifactSnapshot {
-  audio: { kind: 'master' | 'mix'; id: string; contentHash: string } | null;
+  audio: {
+    kind: 'master' | 'mix';
+    id: string;
+    contentHash: string;
+    source: { kind: 'mix'; id: string; contentHash: string } | null;
+  } | null;
   cover: { id: string; contentHash: string } | null;
   lyric: { id: string; contentHash: string } | null;
 }
@@ -35,6 +40,7 @@ export interface ReleaseCertification {
     contentHash: string | null;
     verifiedAt: Date | null;
     meta: unknown;
+    source: { kind: 'mix'; id: string; contentHash: string } | null;
   } | null;
   cover: {
     id: string;
@@ -105,8 +111,15 @@ function normalizedLanguages(value: unknown): string[] {
 }
 
 export async function loadReleaseCertification(
-  db: PrismaClient,
-  options: { workspaceId: string; songId: string; projectId?: string; hitTarget?: number },
+  db: PrismaClient | Prisma.TransactionClient,
+  options: {
+    workspaceId: string;
+    songId: string;
+    projectId?: string;
+    hitTarget?: number;
+    coverAssetId?: string | null;
+    audioAsset?: { kind: 'master' | 'mix'; id: string } | null;
+  },
 ): Promise<ReleaseCertification> {
   const song = await db.song.findFirstOrThrow({
     where: {
@@ -120,38 +133,95 @@ export async function loadReleaseCertification(
     },
   });
 
+  const releaseHead = await db.release.findUnique({
+    where: { songId: song.id },
+    select: {
+      status: true,
+      coverAssetId: true,
+      audioAssetId: true,
+      audioAssetKind: true,
+    },
+  });
+  const hasCoverSelection = Object.prototype.hasOwnProperty.call(options, 'coverAssetId');
+  const selectedCoverId = hasCoverSelection
+    ? options.coverAssetId
+    : releaseHead
+      ? releaseHead.coverAssetId
+      : undefined;
+  const releaseLocksAudio =
+    !!releaseHead &&
+    ['submitting', 'submitted', 'accepted', 'live'].includes(releaseHead.status);
+  const lockedAudio = !releaseLocksAudio
+    ? undefined
+    : releaseHead.audioAssetId &&
+        (releaseHead.audioAssetKind === 'master' ||
+          releaseHead.audioAssetKind === 'mix')
+      ? { kind: releaseHead.audioAssetKind, id: releaseHead.audioAssetId }
+      : null;
+  const selectedAudioRef = Object.prototype.hasOwnProperty.call(options, 'audioAsset')
+    ? options.audioAsset
+    : lockedAudio;
+
+  const masterPromise = selectedAudioRef === null || selectedAudioRef?.kind === 'mix'
+    ? Promise.resolve(null)
+    : db.master.findFirst({
+        where: {
+          ...(selectedAudioRef?.kind === 'master' ? { id: selectedAudioRef.id } : {}),
+          songId: song.id,
+          projectId: song.projectId,
+          approved: true,
+          qualityState: 'passed',
+          contentHash: { not: null },
+          verifiedAt: { not: null },
+        },
+        include: {
+          mix: {
+            select: {
+              id: true,
+              projectId: true,
+              songId: true,
+              approved: true,
+              qualityState: true,
+              contentHash: true,
+              verifiedAt: true,
+            },
+          },
+        },
+        orderBy: selectedAudioRef ? undefined : { createdAt: 'desc' },
+      });
+  const mixPromise = selectedAudioRef === null || selectedAudioRef?.kind === 'master'
+    ? Promise.resolve(null)
+    : db.mix.findFirst({
+        where: {
+          ...(selectedAudioRef?.kind === 'mix' ? { id: selectedAudioRef.id } : {}),
+          songId: song.id,
+          projectId: song.projectId,
+          approved: true,
+          qualityState: 'passed',
+          contentHash: { not: null },
+          verifiedAt: { not: null },
+        },
+        orderBy: selectedAudioRef ? undefined : { createdAt: 'desc' },
+      });
+  const coverPromise = selectedCoverId === null
+    ? Promise.resolve(null)
+    : db.imageAsset.findFirst({
+        where: {
+          ...(selectedCoverId ? { id: selectedCoverId } : {}),
+          projectId: song.projectId,
+          kind: 'cover',
+          approved: true,
+          qualityState: 'passed',
+          contentHash: { not: null },
+          verifiedAt: { not: null },
+        },
+        orderBy: selectedCoverId ? undefined : { createdAt: 'desc' },
+      });
+
   const [master, mix, cover, rightsReceipt, attestations] = await Promise.all([
-    db.master.findFirst({
-      where: {
-        songId: song.id,
-        approved: true,
-        qualityState: 'passed',
-        contentHash: { not: null },
-        verifiedAt: { not: null },
-      },
-      orderBy: { createdAt: 'desc' },
-    }),
-    db.mix.findFirst({
-      where: {
-        songId: song.id,
-        approved: true,
-        qualityState: 'passed',
-        contentHash: { not: null },
-        verifiedAt: { not: null },
-      },
-      orderBy: { createdAt: 'desc' },
-    }),
-    db.imageAsset.findFirst({
-      where: {
-        projectId: song.projectId,
-        kind: 'cover',
-        approved: true,
-        qualityState: 'passed',
-        contentHash: { not: null },
-        verifiedAt: { not: null },
-      },
-      orderBy: { createdAt: 'desc' },
-    }),
+    masterPromise,
+    mixPromise,
+    coverPromise,
     db.rightsReceipt.findFirst({ where: { songId: song.id }, orderBy: { createdAt: 'desc' } }),
     db.releaseAttestation.findMany({
       where: { songId: song.id, kind: { in: ['split_sheet', 'native_language'] } },
@@ -159,10 +229,19 @@ export async function loadReleaseCertification(
     }),
   ]);
 
-  const selectedAudio = master
-    ? { kind: 'master' as const, ...master }
+  const certifiedSourceMix = master?.mix
+    && master.mix.songId === song.id
+    && master.mix.projectId === song.projectId
+    && master.mix.approved
+    && master.mix.qualityState === 'passed'
+    && master.mix.contentHash
+    && master.mix.verifiedAt
+      ? { kind: 'mix' as const, id: master.mix.id, contentHash: master.mix.contentHash }
+      : null;
+  const canonicalAudio = master
+    ? { kind: 'master' as const, ...master, source: certifiedSourceMix }
     : mix
-      ? { kind: 'mix' as const, ...mix }
+      ? { kind: 'mix' as const, ...mix, source: null }
       : null;
   const lyric = song.lyric;
   const lyricHash = lyric
@@ -174,8 +253,13 @@ export async function loadReleaseCertification(
       })
     : null;
   const artifactSnapshot: ReleaseArtifactSnapshot = {
-    audio: selectedAudio?.contentHash
-      ? { kind: selectedAudio.kind, id: selectedAudio.id, contentHash: selectedAudio.contentHash }
+    audio: canonicalAudio?.contentHash
+      ? {
+          kind: canonicalAudio.kind,
+          id: canonicalAudio.id,
+          contentHash: canonicalAudio.contentHash,
+          source: canonicalAudio.source,
+        }
       : null,
     cover: cover?.contentHash ? { id: cover.id, contentHash: cover.contentHash } : null,
     lyric: lyric && lyricHash ? { id: lyric.id, contentHash: lyricHash } : null,
@@ -212,14 +296,14 @@ export async function loadReleaseCertification(
     && requiredNativeLanguages.every((language) => reviewedLanguages.includes(language));
 
   const shareTotal = splitSheet.reduce((total, entry) => total + entry.share, 0);
-  const readiness = evaluateReleaseReadiness({
-    audio: selectedAudio
+  const baseReadiness = evaluateReleaseReadiness({
+    audio: canonicalAudio
       ? {
-          kind: selectedAudio.kind,
-          approved: selectedAudio.approved,
-          qualityState: selectedAudio.qualityState,
-          contentHash: selectedAudio.contentHash,
-          verified: !!selectedAudio.verifiedAt,
+          kind: canonicalAudio.kind,
+          approved: canonicalAudio.approved,
+          qualityState: canonicalAudio.qualityState,
+          contentHash: canonicalAudio.contentHash,
+          verified: !!canonicalAudio.verifiedAt,
         }
       : null,
     cover: cover
@@ -252,6 +336,19 @@ export async function loadReleaseCertification(
     hitTarget: options.hitTarget,
   });
 
+  const lineageCheck: ReleaseReadinessCheck = {
+    name: 'Exact audio lineage',
+    ok: !master?.mixId || certifiedSourceMix !== null,
+    detail: master?.mixId
+      ? certifiedSourceMix
+        ? 'master is bound to certified source mix ' + certifiedSourceMix.id
+        : 'master source mix is missing, stale, or uncertified'
+      : 'certified direct artifact identity is bound',
+  };
+  const readiness = {
+    ready: baseReadiness.ready && lineageCheck.ok,
+    checks: [...baseReadiness.checks, lineageCheck],
+  };
   return {
     song: {
       id: song.id,
@@ -272,7 +369,7 @@ export async function loadReleaseCertification(
         },
       },
     },
-    audio: selectedAudio,
+    audio: canonicalAudio,
     cover,
     lyric,
     artifactSnapshot,
