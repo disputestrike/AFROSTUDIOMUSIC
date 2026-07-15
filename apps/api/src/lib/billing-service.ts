@@ -326,7 +326,7 @@ export async function applySubscriptionStatus(opts: {
   occurredAt: Date;
 }): Promise<string | null> {
   const identity = await resolveSubscriptionIdentity(opts.paypalSubscriptionId);
-  if (!identity) return null;
+  if (!identity) throw lifecycleError('subscription_dependency_missing');
   await prisma.$transaction(async tx => {
     await tx.$queryRawUnsafe(
       'SELECT 1::int AS locked FROM pg_advisory_xact_lock(hashtext($1))',
@@ -334,7 +334,7 @@ export async function applySubscriptionStatus(opts: {
     );
     const current = await tx.billingSubscription.findUniqueOrThrow({
       where: { id: identity.id },
-      select: { status: true, statusEventAt: true },
+      select: { status: true, statusEventAt: true, activatedAt: true },
     });
     if (shouldApplySubscriptionStatus(current, opts.status, opts.occurredAt)) {
       await tx.billingSubscription.update({
@@ -343,7 +343,7 @@ export async function applySubscriptionStatus(opts: {
           status: opts.status,
           statusEventAt: opts.occurredAt,
           ...(opts.status === 'ACTIVE'
-            ? { activatedAt: opts.occurredAt, endedAt: null }
+            ? { activatedAt: current.activatedAt ?? opts.occurredAt, endedAt: null }
             : { endedAt: opts.occurredAt }),
         },
       });
@@ -373,7 +373,8 @@ export async function applySubscriptionSale(opts: {
   occurredAt: Date;
 }): Promise<{ workspaceId: string; applied: boolean } | null> {
   const identity = await resolveSubscriptionIdentity(opts.paypalSubscriptionId);
-  if (!identity || opts.amountCents <= 0 || opts.currency !== 'USD') return null;
+  if (!identity) throw lifecycleError('subscription_dependency_missing');
+  if (opts.amountCents <= 0 || opts.currency !== 'USD') return null;
   const grant =
     PLAN_CREDIT_GRANT_CENTS[
       identity.plan as keyof typeof PLAN_CREDIT_GRANT_CENTS
@@ -480,7 +481,7 @@ export async function applyBillingAdjustment(opts: {
   const entitlement = await prisma.billingEntitlement.findUnique({
     where: { paypalTransactionId: opts.paypalTransactionId },
   });
-  if (!entitlement) return null;
+  if (!entitlement) throw lifecycleError('billing_entitlement_dependency_missing');
   if (
     opts.amountCents != null &&
     (!opts.currency || opts.currency !== entitlement.currency)
@@ -551,12 +552,30 @@ export async function applyBillingAdjustment(opts: {
         latestBySource.set(key, adjustment);
       }
     }
+    const latestAdjustments = [...latestBySource.values()];
+    const cumulativeRefundRisk = latestAdjustments.reduce(
+      (maximum, adjustment) =>
+        adjustment.kind === 'REFUND' && adjustment.sourceId.startsWith('refund-total:')
+          ? Math.max(maximum, adjustment.creditsAtRisk)
+          : maximum,
+      0
+    );
+    const itemizedRefundRisk = latestAdjustments.reduce(
+      (total, adjustment) =>
+        adjustment.kind === 'REFUND' && !adjustment.sourceId.startsWith('refund-total:')
+          ? total + adjustment.creditsAtRisk
+          : total,
+      0
+    );
+    const nonRefundRisk = latestAdjustments.reduce(
+      (total, adjustment) =>
+        adjustment.kind === 'REFUND' ? total : total + adjustment.creditsAtRisk,
+      0
+    );
+    // PayPal's refund-total snapshots already include itemized refunds.
     const targetRevoked = Math.min(
       entitlement.creditsGranted,
-      [...latestBySource.values()].reduce(
-        (total, adjustment) => total + adjustment.creditsAtRisk,
-        0
-      )
+      nonRefundRisk + Math.max(cumulativeRefundRisk, itemizedRefundRisk)
     );
     const currentRevoked = Math.min(
       entitlement.creditsGranted,

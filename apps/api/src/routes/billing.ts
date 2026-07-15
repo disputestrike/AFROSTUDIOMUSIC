@@ -162,23 +162,52 @@ export default async function billing(app: FastifyInstance) {
     const planId = PLAN_ID_FOR_TIER[plan];
     if (!planId) return reply.code(400).send({ error: 'unknown_plan_or_unconfigured' });
 
-    let intent = await prisma.billingIntent.findFirst({
-      where: { workspaceId, kind: 'SUBSCRIPTION', idempotencyKey },
-    });
-    if (intent && intent.plan !== plan) return reply.code(409).send({ error: 'idempotency_key_conflict' });
-    if (!intent) {
-      try {
-        intent = await prisma.billingIntent.create({
-          data: { workspaceId, kind: 'SUBSCRIPTION', plan, idempotencyKey },
-        });
-      } catch (error) {
-        if ((error as { code?: string }).code !== 'P2002') throw error;
-        intent = await prisma.billingIntent.findFirstOrThrow({
-          where: { workspaceId, kind: 'SUBSCRIPTION', idempotencyKey },
-        });
+    const reservation = await prisma.$transaction(async tx => {
+      await tx.$queryRawUnsafe(
+        'SELECT 1::int AS locked FROM pg_advisory_xact_lock(hashtext($1))',
+        `billing-workspace:${workspaceId}`
+      );
+      const existingIntent = await tx.billingIntent.findFirst({
+        where: { workspaceId, kind: 'SUBSCRIPTION', idempotencyKey },
+      });
+      if (existingIntent && existingIntent.plan !== plan) {
+        return { ok: false as const, error: 'idempotency_key_conflict' };
       }
-    }
-    if (intent.approvalUrl && intent.paypalSubscriptionId) {
+      if (existingIntent && ['CANCELED', 'FAILED'].includes(existingIntent.status)) {
+        return { ok: false as const, error: 'subscription_checkout_closed' };
+      }
+      const [workspace, billableSubscription, competingIntent] = await Promise.all([
+        tx.workspace.findUniqueOrThrow({ where: { id: workspaceId }, select: { paypalSubscriptionId: true } }),
+        tx.billingSubscription.findFirst({
+          where: {
+            workspaceId,
+            status: { in: ['PENDING', 'ACTIVE'] },
+            ...(existingIntent ? { billingIntentId: { not: existingIntent.id } } : {}),
+          },
+          select: { id: true },
+        }),
+        tx.billingIntent.findFirst({
+          where: {
+            workspaceId,
+            kind: 'SUBSCRIPTION',
+            status: { in: ['CREATED', 'PENDING_APPROVAL', 'APPROVED'] },
+            ...(existingIntent ? { id: { not: existingIntent.id } } : {}),
+          },
+          select: { id: true },
+        }),
+      ]);
+      const providerSubscriptionConflict = workspace.paypalSubscriptionId &&
+        workspace.paypalSubscriptionId !== existingIntent?.paypalSubscriptionId;
+      if (billableSubscription || competingIntent || providerSubscriptionConflict) {
+        return { ok: false as const, error: 'subscription_already_pending_or_active' };
+      }
+      const intent = existingIntent ?? await tx.billingIntent.create({
+        data: { workspaceId, kind: 'SUBSCRIPTION', plan, idempotencyKey },
+      });
+      return { ok: true as const, intent };
+    });
+    if (!reservation.ok) return reply.code(409).send({ error: reservation.error });
+    const { intent } = reservation;    if (intent.approvalUrl && intent.paypalSubscriptionId) {
       await bindSubscriptionIdentity({
         intentId: intent.id,
         paypalSubscriptionId: intent.paypalSubscriptionId,

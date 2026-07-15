@@ -132,11 +132,7 @@ export default async function webhooks(app: FastifyInstance) {
     let audit = await prisma.billingEvent.findUnique({
       where: { paypalEventId: event.id },
     });
-    if (
-      audit?.status === "processed" ||
-      audit?.status === "ignored" ||
-      audit?.status === "unmatched"
-    ) {
+    if (audit?.status === "processed" || audit?.status === "ignored") {
       return reply.send({ received: true, idempotent: true });
     }
     if (!audit) {
@@ -162,7 +158,7 @@ export default async function webhooks(app: FastifyInstance) {
       const lease = await prisma.billingEvent.updateMany({
         where: {
           id: audit.id,
-          status: { notIn: ["processed", "ignored", "unmatched"] },
+          status: { notIn: ["processed", "ignored"] },
           OR: [
             { status: { not: "processing" } },
             { processingAt: null },
@@ -263,14 +259,18 @@ export default async function webhooks(app: FastifyInstance) {
         },
       });
     } catch (error) {
+      const errorCode = (error as { code?: string }).code ?? "handler_failed";
+      if (RETRYABLE_BILLING_DEPENDENCY_CODES.has(errorCode)) {
+        await prisma.billingEvent.update({
+          where: { id: audit.id },
+          data: { status: "retryable", processingAt: null, processedAt: null, errorCode },
+        });
+        return reply.header("retry-after", "30").code(503).send({ received: false, retryable: true });
+      }
       await prisma.billingEvent
         .update({
           where: { id: audit.id },
-          data: {
-            status: "failed",
-            processingAt: null,
-            errorCode: (error as { code?: string }).code ?? "handler_failed",
-          },
+          data: { status: "failed", processingAt: null, errorCode },
         })
         .catch(() => undefined);
       throw error;
@@ -428,6 +428,17 @@ interface PaypalEvent {
   resource: Record<string, unknown>;
 }
 
+const RETRYABLE_BILLING_DEPENDENCY_CODES = new Set([
+  "billing_entitlement_dependency_missing",
+  "credit_intent_dependency_missing",
+  "subscription_dependency_missing",
+  "subscription_intent_not_found",
+]);
+
+function retryableBillingDependency(code: string): Error {
+  return Object.assign(new Error(code), { code });
+}
+
 // --------- handlers ---------------------------------------------------------
 
 function paypalEventOccurredAt(event: PaypalEvent): Date {
@@ -458,7 +469,8 @@ async function activateSubscription(
     where: { id: r.custom_id, kind: "SUBSCRIPTION" },
     select: { id: true, plan: true },
   });
-  if (!intent || intent.plan !== plan) return null;
+  if (!intent) throw retryableBillingDependency("subscription_intent_not_found");
+  if (intent.plan !== plan) return null;
   await bindSubscriptionIdentity({
     intentId: intent.id,
     paypalSubscriptionId: r.id,
@@ -706,7 +718,14 @@ async function creditCapture(event: PaypalEvent): Promise<string | null> {
     paypalOrderId: orderId ?? undefined,
     amount: r.amount,
   });
-  if (!intent) return null;
+  if (!intent) {
+    const dependency = await prisma.billingIntent.findFirst({
+      where: { id: r.custom_id, kind: "CREDIT_PACK" },
+      select: { id: true },
+    });
+    if (!dependency) throw retryableBillingDependency("credit_intent_dependency_missing");
+    return null;
+  }
   // Idempotency — keyed by capture id (r.id), not the event id, so the
   // return-URL path and the webhook path collapse to the same row.
   const result = await applyCreditCapture({

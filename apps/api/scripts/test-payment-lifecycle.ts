@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import Fastify from "fastify";
+import { serializerCompiler, validatorCompiler } from "fastify-type-provider-zod";
 import { prisma } from "@afrohit/db";
 import { PLAN_CREDIT_GRANT_CENTS } from "@afrohit/shared";
 
@@ -17,6 +18,9 @@ async function main() {
   const workspaceIds = {
     payments: `ws_payment_${suffix}`,
     subscription: `ws_subscription_${suffix}`,
+    checkout: `ws_checkout_${suffix}`,
+    retry: `ws_retry_${suffix}`,
+    aggregate: `ws_aggregate_${suffix}`,
   };
   const envKeys = [
     "PAYPAL_CLIENT_ID",
@@ -31,6 +35,7 @@ async function main() {
     envKeys.map(key => [key, process.env[key]])
   ) as Record<(typeof envKeys)[number], string | undefined>;
   const originalFetch = globalThis.fetch;
+  let subscriptionCreateCalls = 0;
 
   process.env.PAYPAL_CLIENT_ID = "payment-lifecycle-test-client";
   process.env.PAYPAL_CLIENT_SECRET = "payment-lifecycle-test-secret";
@@ -39,7 +44,7 @@ async function main() {
   process.env.PAYPAL_PLAN_CREATOR = `P-CREATOR-${suffix}`;
   process.env.PAYPAL_PLAN_PRO = `P-PRO-${suffix}`;
   process.env.PAYPAL_PLAN_STUDIO = `P-STUDIO-${suffix}`;
-  globalThis.fetch = (async input => {
+  globalThis.fetch = (async (input, init) => {
     const url =
       typeof input === "string"
         ? input
@@ -58,22 +63,38 @@ async function main() {
         headers: { "content-type": "application/json" },
       });
     }
+    if (url.endsWith("/v1/billing/subscriptions")) {
+      subscriptionCreateCalls += 1;
+      const body = JSON.parse(String(init?.body ?? "{}")) as { custom_id?: string };
+      await new Promise(resolve => setTimeout(resolve, 25));
+      return new Response(JSON.stringify({
+        id: `I-CHECKOUT-${body.custom_id}`,
+        status: "APPROVAL_PENDING",
+        links: [{ rel: "approve", href: `https://paypal.test/approve/${body.custom_id}`, method: "GET" }],
+      }), { status: 201, headers: { "content-type": "application/json" } });
+    }
     throw new Error(`unexpected PayPal test request: ${url}`);
   }) as typeof fetch;
 
-  const [{ default: webhooks }, { bindSubscriptionIdentity }] =
+  const [{ default: webhooks }, { default: billing }, { bindSubscriptionIdentity }] =
     await Promise.all([
       import("../src/routes/webhooks"),
+      import("../src/routes/billing"),
       import("../src/lib/billing-service"),
     ]);
   const app = Fastify({ logger: false });
+  app.setValidatorCompiler(validatorCompiler);
+  app.setSerializerCompiler(serializerCompiler);
+  app.addHook("preValidation", async req => {
+    req.auth = { userId: `user_checkout_${suffix}`, workspaceId: workspaceIds.checkout, role: "OWNER", isService: false };
+  });
   await app.register(webhooks, { prefix: "/webhooks" });
+  await app.register(billing, { prefix: "/billing" });
   await app.ready();
 
   const baseTime = Date.now() - 120_000;
   const at = (seconds: number) => new Date(baseTime + seconds * 1_000).toISOString();
-  const send = async (event: PaypalEvent) => {
-    const response = await app.inject({
+  const injectEvent = (event: PaypalEvent) => app.inject({
       method: "POST",
       url: "/webhooks/paypal",
       payload: JSON.stringify(event),
@@ -86,6 +107,8 @@ async function main() {
         "paypal-transmission-time": event.create_time,
       },
     });
+  const send = async (event: PaypalEvent) => {
+    const response = await injectEvent(event);
     assert.equal(response.statusCode, 200, response.body);
     return response.json() as Record<string, unknown>;
   };
@@ -96,13 +119,13 @@ async function main() {
         select: { creditsCents: true },
       })
     ).creditsCents;
-  const createPackIntent = async (label: string) => {
+  const createPackIntent = async (label: string, workspaceId = workspaceIds.payments) => {
     const id = `intent_${label}_${suffix}`;
     const orderId = `ORDER${label}${suffix}`;
     await prisma.billingIntent.create({
       data: {
         id,
-        workspaceId: workspaceIds.payments,
+        workspaceId,
         kind: "CREDIT_PACK",
         status: "PENDING_APPROVAL",
         packKey: "pack_10",
@@ -118,9 +141,10 @@ async function main() {
   const capture = async (
     label: string,
     captureId: string,
-    occurredAt: string
+    occurredAt: string,
+    workspaceId = workspaceIds.payments
   ) => {
-    const intent = await createPackIntent(label);
+    const intent = await createPackIntent(label, workspaceId);
     await send({
       id: `WH-${suffix}-${label}-CAPTURE`,
       event_type: "PAYMENT.CAPTURE.COMPLETED",
@@ -150,9 +174,94 @@ async function main() {
           name: "Subscription Lifecycle Integration",
           slug: `subscription-lifecycle-${suffix.toLowerCase()}`,
         },
+        { id: workspaceIds.checkout, name: "Subscription Checkout Integration", slug: `subscription-checkout-${suffix.toLowerCase()}` },
+        { id: workspaceIds.retry, name: "Payment Retry Integration", slug: `payment-retry-${suffix.toLowerCase()}` },
+        { id: workspaceIds.aggregate, name: "Aggregate Refund Integration", slug: `aggregate-refund-${suffix.toLowerCase()}` },
       ],
     });
 
+    const subscribe = (key: string) => app.inject({
+      method: "POST",
+      url: "/billing/checkout/subscribe",
+      headers: { "idempotency-key": key },
+      payload: { plan: "PRO" },
+    });
+    const checkoutKeys = [`checkout-a-${suffix}`, `checkout-b-${suffix}`];
+    const checkoutAttempts = await Promise.all(
+      checkoutKeys.map(async key => ({ key, response: await subscribe(key) }))
+    );
+    assert.deepEqual(checkoutAttempts.map(x => x.response.statusCode).sort(), [200, 409]);
+    assert.equal(subscriptionCreateCalls, 1);
+    const acceptedCheckout = checkoutAttempts.find(x => x.response.statusCode === 200)!;
+    const rejectedCheckout = checkoutAttempts.find(x => x.response.statusCode === 409)!;
+    assert.equal((rejectedCheckout.response.json() as { error: string }).error, "subscription_already_pending_or_active");
+    const acceptedSubscriptionId = (acceptedCheckout.response.json() as { subscriptionId: string }).subscriptionId;
+    const idempotentCheckout = await subscribe(acceptedCheckout.key);
+    assert.equal(idempotentCheckout.statusCode, 200, idempotentCheckout.body);
+    assert.equal((idempotentCheckout.json() as { subscriptionId: string }).subscriptionId, acceptedSubscriptionId);
+    assert.equal(subscriptionCreateCalls, 1);
+    const blockedCheckout = await subscribe(`checkout-c-${suffix}`);
+    assert.equal(blockedCheckout.statusCode, 409, blockedCheckout.body);
+    assert.equal(subscriptionCreateCalls, 1);
+
+    const retryCaptureId = `CAPTURERETRY${suffix}`;
+    const earlyRefund: PaypalEvent = {
+      id: `WH-${suffix}-EARLY-REFUND`,
+      event_type: "PAYMENT.CAPTURE.REFUNDED",
+      create_time: at(70),
+      resource_type: "refund",
+      resource: {
+        id: `REFUNDEARLY${suffix}`,
+        capture_id: retryCaptureId,
+        amount: { value: "5.00", currency_code: "USD" },
+      },
+    };
+    const earlyResponse = await injectEvent(earlyRefund);
+    assert.equal(earlyResponse.statusCode, 503, earlyResponse.body);
+    let earlyAudit = await prisma.billingEvent.findUniqueOrThrow({
+      where: { paypalEventId: earlyRefund.id },
+      select: { status: true, attempts: true, errorCode: true },
+    });
+    assert.deepEqual(earlyAudit, { status: "retryable", attempts: 1, errorCode: "billing_entitlement_dependency_missing" });
+    await capture("RETRY", retryCaptureId, at(71), workspaceIds.retry);
+    await send(earlyRefund);
+    assert.equal(await credits(workspaceIds.retry), 50_000);
+    earlyAudit = await prisma.billingEvent.findUniqueOrThrow({
+      where: { paypalEventId: earlyRefund.id },
+      select: { status: true, attempts: true, errorCode: true },
+    });
+    assert.deepEqual(earlyAudit, { status: "processed", attempts: 2, errorCode: null });
+
+    const aggregateCaptureId = `CAPTUREAGG${suffix}`;
+    await capture("AGGREGATE", aggregateCaptureId, at(80), workspaceIds.aggregate);
+    await send({
+      id: `WH-${suffix}-AGGREGATE-ITEMIZED`,
+      event_type: "PAYMENT.CAPTURE.REFUNDED",
+      create_time: at(81),
+      resource_type: "refund",
+      resource: {
+        id: `REFUNDITEM${suffix}`,
+        capture_id: aggregateCaptureId,
+        amount: { value: "2.50", currency_code: "USD" },
+      },
+    });
+    assert.equal(await credits(workspaceIds.aggregate), 75_000);
+    await send({
+      id: `WH-${suffix}-AGGREGATE-TOTAL-50`,
+      event_type: "PAYMENT.CAPTURE.REFUNDED",
+      create_time: at(82),
+      resource_type: "capture",
+      resource: { id: aggregateCaptureId, total_refunded_amount: { value: "5.00", currency_code: "USD" } },
+    });
+    assert.equal(await credits(workspaceIds.aggregate), 50_000);
+    await send({
+      id: `WH-${suffix}-AGGREGATE-TOTAL-75`,
+      event_type: "PAYMENT.CAPTURE.REFUNDED",
+      create_time: at(83),
+      resource_type: "capture",
+      resource: { id: aggregateCaptureId, total_refunded_amount: { value: "7.50", currency_code: "USD" } },
+    });
+    assert.equal(await credits(workspaceIds.aggregate), 25_000);
     const partialCaptureId = `CAPTURE1${suffix}`;
     const partialIntent = await capture("PARTIAL", partialCaptureId, at(1));
     assert.equal(await credits(workspaceIds.payments), 100_000);
@@ -452,6 +561,30 @@ async function main() {
       paypalSubscriptionId: subscriptionId,
     });
 
+    const firstActivation = await prisma.billingSubscription.findUniqueOrThrow({
+      where: { paypalSubscriptionId: subscriptionId },
+      select: { activatedAt: true },
+    });
+    assert.equal(firstActivation.activatedAt?.toISOString(), at(40));
+    await send({
+      id: `WH-${suffix}-SUBSCRIPTION-SUSPENDED`,
+      event_type: "BILLING.SUBSCRIPTION.SUSPENDED",
+      create_time: at(41),
+      resource_type: "subscription",
+      resource: { id: subscriptionId, custom_id: subscriptionIntentId },
+    });
+    await send({
+      id: `WH-${suffix}-SUBSCRIPTION-RESUMED`,
+      event_type: "BILLING.SUBSCRIPTION.ACTIVATED",
+      create_time: at(42),
+      resource_type: "subscription",
+      resource: { id: subscriptionId, custom_id: subscriptionIntentId, plan_id: process.env.PAYPAL_PLAN_PRO },
+    });
+    const resumedIdentity = await prisma.billingSubscription.findUniqueOrThrow({
+      where: { paypalSubscriptionId: subscriptionId },
+      select: { status: true, activatedAt: true, endedAt: true },
+    });
+    assert.deepEqual(resumedIdentity, { status: "ACTIVE", activatedAt: new Date(at(40)), endedAt: null });
     await send({
       id: `WH-${suffix}-SALE-PARTIAL-REFUND`,
       event_type: "PAYMENT.SALE.REFUNDED",
