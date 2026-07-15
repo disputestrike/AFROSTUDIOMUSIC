@@ -169,7 +169,8 @@ for (const [name, file] of TS) {
     });
     continue;
   }
-  const { code } = runTsx(file);
+  const { code, out } = runTsx(file);
+  if (code !== 0 && out.trim()) console.error(out.trim());
   results.push({
     name,
     status: code === 0 ? "PASS" : "FAIL",

@@ -131,11 +131,9 @@ def main():
     print(f"\nlog-drum separation: amapiano({logdr['amapiano']}) - max(others) = {sep:.3f}  {'OK' if sep_ok else 'FAIL (should be > 0)'}")
     print("\n" + ("PASS: synthetic ear regression OK (direction). Real calibration -> eval-ear.ts." if ok else "FAIL: detector regression."))
 
-    # When all 3 gates pass, write a TRUTH-GATE calibration artifact so the log drum
-    # ships 'measured'. Clearly labelled calibratedOn:'synthetic' — the constants are
-    # validated to SEPARATE the genres on controlled audio; 9 real tracks via
-    # eval-ear.ts overwrite this for full accuracy on real records. This is data
-    # earning the gate open, not a human flag.
+    # When all 3 gates pass, write a synthetic calibration artifact with explicit
+    # provenance. It validates detector direction and constants, but must remain
+    # inferred until eval-ear.ts passes on nine rights-clean real tracks.
     if ok:
         import datetime
         artifact = {
@@ -145,6 +143,7 @@ def main():
             "fittedOn": datetime.date.today().isoformat(),
             "calibratedOn": "synthetic-archetypes",
             "trackCount": 3,
+            "provenance": "synthetic",
             "note": "Calibrated on SYNTHETIC amapiano/house/afrobeats archetypes (controlled DSP, known ground truth) — proves the constants SEPARATE the genres. Drop 9 real rights-clean tracks + run eval-ear.ts to overwrite with real-audio calibration for full accuracy on real records.",
             "params": {"r0": 0.45, "s": 0.12, "w1": 1.2, "w2": 0.15, "glideFloor": 0.30},
         }
@@ -153,7 +152,7 @@ def main():
             json.dump(artifact, f, indent=2)
             f.write("\n")
         print(f"Wrote calibration artifact (synthetic, margin {sep:.3f}) -> {path}")
-        print("log-drum now ships 'measured'. Commit logdrum_calibration.json; real tracks refine it.")
+        print("log-drum remains 'inferred'; nine rights-clean real tracks are required to open the measured gate.")
     sys.exit(0 if ok else 1)
 
 
