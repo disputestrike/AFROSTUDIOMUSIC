@@ -60,7 +60,10 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - name: Install DSP proof stack
         run: python -m pip install numpy==1.26.4 scipy==1.13.1 soundfile==0.12.1 librosa==0.10.2.post1 pyloudnorm==0.1.1
-      - run: pnpm --filter @afrohit/db generate
+      - name: Build integration test dependencies
+        run: |
+          pnpm --filter @afrohit/shared build
+          pnpm --filter @afrohit/db build
       - name: Apply all database migrations
         run: pnpm --filter @afrohit/db migrate:safe
       - name: Verify migration state
