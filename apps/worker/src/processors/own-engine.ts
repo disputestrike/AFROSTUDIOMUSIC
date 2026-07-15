@@ -49,7 +49,9 @@ import {
   resolveAssetForProvider,
   uploadBytes,
 } from "../lib/storage";
-import { measureAudioQuality, mixBuffers } from "../lib/ffmpeg";
+import { mixBuffers } from "../lib/ffmpeg";
+import { certifyAudioBytes } from "../lib/certified-assets";
+import { deleteUnreferencedAssetRefs } from "./asset-cleanup";
 import { renderMelodyGuide } from "../lib/melody-guide";
 import { measureAudio, dspAvailable } from "../lib/dsp";
 import { markRunning, markSucceeded, markFailed } from "../lib/jobs";
@@ -92,7 +94,8 @@ async function pickKit(
   });
   const exactRequested = new Set<string>(requestedRoles);
   const eligibleRows = rows.filter(
-    row => !exactRequested.has(row.role) || hasExactMaterialRoleEvidence(row)
+    (row: { role: string; roleEvidence?: string | null }) =>
+      !exactRequested.has(row.role) || hasExactMaterialRoleEvidence(row)
   );
   // Rich signature roles lead; deterministic synth primitives remain the
   // controllable foundation when a lane's collected shelf is still shallow.
@@ -252,8 +255,7 @@ export async function processOwnEngine(p: OwnEnginePayload): Promise<void> {
         requestedRoleProvenance?.mappings?.map(mapping => mapping.role) ?? []
       );
       if (
-        requestedRoleProvenance?.version !==
-          REQUESTED_MATERIAL_ROLES_VERSION ||
+        requestedRoleProvenance?.version !== REQUESTED_MATERIAL_ROLES_VERSION ||
         requestedRoleProvenance.source !== "user-instrument-selection" ||
         derivedRequest.unsupportedInstruments.length > 0 ||
         derivedRequest.requestedRoles.length !== requestedRoles.length ||
@@ -471,54 +473,77 @@ export async function processOwnEngine(p: OwnEnginePayload): Promise<void> {
       );
       notes.push(mel.note);
       if (mel.url) {
-        let mixedUrl: string | null = null;
+        let certifiedUrl: string | null = null;
         try {
           const [bed, lead] = await Promise.all([
             downloadToBuffer(out.url),
             downloadToBuffer(mel.url),
           ]);
           const mixed = await mixBuffers(bed, lead, 0.85);
-          mixedUrl = await uploadBytes({
+          const certified = await certifyAudioBytes({
             workspaceId: p.workspaceId,
             kind: "beats",
             bytes: mixed,
             contentType: "audio/wav",
             ext: "wav",
           });
-          const qc = await measureAudioQuality(mixedUrl).catch(() => null);
-          // WO-1 SAFETY RAIL: the melody-mixed take passes the same QC gate as
-          // any render — a broken mix is rejected and the clean assembled bed
-          // (which already passed its own gate) stays the shipped take.
-          if (!qc || qc.verdict === "fail") {
-            notes.push(
-              `melody mix rejected by QC (${(qc?.flags ?? []).join(", ") || "unmeasured/broken audio"}) — kept the clean assembled bed`
+          certifiedUrl = certified.url;
+
+          const assembled = await prisma.beatAsset.findUnique({
+            where: { id: finalBeatId },
+            select: { url: true, meta: true },
+          });
+          if (!assembled || assembled.url !== out.url) {
+            throw new Error(
+              "assembled beat changed before melody certification"
             );
-            await deleteObjectByUrl(mixedUrl).catch(() => {});
-            mixedUrl = null;
-          } else {
-            finalUrl = mixedUrl;
-            const assembled = await prisma.beatAsset.findUnique({
-              where: { id: finalBeatId },
-              select: { meta: true },
-            });
-            await prisma.beatAsset.update({
-              where: { id: finalBeatId },
-              data: {
-                url: finalUrl,
-                provider: "afrohit-own",
-                meta: {
-                  ...((assembled?.meta ?? {}) as Record<string, unknown>),
-                  melodyLayer: { engine: "musicgen", qc },
-                } as never,
-              },
-            });
-            await deleteObjectByUrl(out.url).catch(() => {});
-            mixedUrl = null;
+          }
+
+          const updated = await prisma.beatAsset.updateMany({
+            where: { id: finalBeatId, url: out.url },
+            data: {
+              url: certified.url,
+              provider: "afrohit-own",
+              duration: certified.qc.durationS,
+              qualityState: certified.qualityState,
+              contentHash: certified.contentHash,
+              verifiedAt: certified.verifiedAt,
+              meta: {
+                ...((assembled.meta ?? {}) as Record<string, unknown>),
+                melodyLayer: {
+                  engine: "musicgen",
+                  sourceUrl: out.url,
+                  qc: certified.qc,
+                  contentHash: certified.contentHash,
+                  verifiedAt: certified.verifiedAt.toISOString(),
+                },
+              } as never,
+            },
+          });
+          if (updated.count !== 1) {
+            throw new Error(
+              "assembled beat changed during melody certification"
+            );
+          }
+
+          finalUrl = certified.url;
+          certifiedUrl = null;
+          notes.push(
+            "melody mix: PASS-certified bytes replaced the assembled bed"
+          );
+          try {
+            await deleteUnreferencedAssetRefs(p.workspaceId, [out.url]);
+          } catch (retireError) {
+            notes.push(
+              `old melody bed retained for cleanup: ${(retireError as Error)?.message?.slice(0, 80)}`
+            );
           }
         } catch (err) {
-          if (mixedUrl) await deleteObjectByUrl(mixedUrl).catch(() => {});
+          if (certifiedUrl) {
+            await deleteObjectByUrl(certifiedUrl).catch(() => {});
+          }
           notes.push(
-            `melody mix skipped: ${(err as Error)?.message?.slice(0, 100)}`
+            `melody mix rejected or skipped: ${(err as Error)?.message?.slice(0, 100)}`
           );
         }
       }

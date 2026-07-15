@@ -1,6 +1,6 @@
-import { Prisma, prisma } from '@afrohit/db';
-import { markFailed, markRunning, markSucceeded } from '../lib/jobs';
-import { deleteObjectByUrl } from '../lib/storage';
+import { Prisma, prisma } from "@afrohit/db";
+import { markFailed, markRunning, markSucceeded } from "../lib/jobs";
+import { deleteObjectByUrl } from "../lib/storage";
 
 type AssetCleanupPayload = {
   jobId: string;
@@ -10,43 +10,47 @@ type AssetCleanupPayload = {
 };
 
 type CleanupScope = { songId: string } | { projectId: string } | null;
+type AssetRefRow = { ref: string };
+type DeletionCandidateRow = { id: string; ref: string };
 
 export function cleanupScopeFromReason(reason: string): CleanupScope {
-  const separator = reason.indexOf(':');
+  const separator = reason.indexOf(":");
   if (separator < 1) return null;
   const kind = reason.slice(0, separator);
   const id = reason.slice(separator + 1).trim();
   if (!id) return null;
-  if (kind === 'song') return { songId: id };
-  if (kind === 'project') return { projectId: id };
+  if (kind === "song") return { songId: id };
+  if (kind === "project") return { projectId: id };
   return null;
 }
 
 export function planAssetCleanup(
   requested: string[],
   tombstoned: string[],
-  protectedRefs: Iterable<string>,
+  protectedRefs: Iterable<string>
 ): { candidates: string[]; deletable: string[]; protected: string[] } {
-  const candidates = [...new Set([...requested, ...tombstoned].filter(Boolean))];
+  const candidates = [
+    ...new Set([...requested, ...tombstoned].filter(Boolean)),
+  ];
   const protectedSet = new Set(protectedRefs);
-  const protectedUrls = candidates.filter((ref) => protectedSet.has(ref));
+  const protectedUrls = candidates.filter(ref => protectedSet.has(ref));
   return {
     candidates,
-    deletable: candidates.filter((ref) => !protectedSet.has(ref)),
+    deletable: candidates.filter(ref => !protectedSet.has(ref)),
     protected: protectedUrls,
   };
 }
 
 async function protectedAssetRefs(
   workspaceId: string,
-  candidates: string[],
+  candidates: string[]
 ): Promise<Set<string>> {
   const protectedRefs = new Set<string>();
   for (let offset = 0; offset < candidates.length; offset += 500) {
     const chunk = candidates.slice(offset, offset + 500);
     if (!chunk.length) continue;
-    const values = Prisma.join(chunk.map((ref) => Prisma.sql`(${ref})`));
-    const rows = await prisma.$queryRaw<Array<{ ref: string }>>(Prisma.sql`
+    const values = Prisma.join(chunk.map(ref => Prisma.sql`(${ref})`));
+    const rows = (await prisma.$queryRaw(Prisma.sql`
       WITH candidates("ref") AS (VALUES ${values}),
       referenced("ref") AS (
         SELECT song."instrumentalUrl" FROM "Song" song
@@ -127,17 +131,30 @@ async function protectedAssetRefs(
       SELECT DISTINCT candidates."ref"
       FROM candidates
       JOIN referenced ON referenced."ref" = candidates."ref"
-    `);
+    `)) as AssetRefRow[];
     for (const row of rows) protectedRefs.add(row.ref);
   }
   return protectedRefs;
 }
 
-export async function processAssetCleanup(payload: AssetCleanupPayload): Promise<void> {
+export async function deleteUnreferencedAssetRefs(
+  workspaceId: string,
+  refs: string[]
+): Promise<{ candidates: string[]; deletable: string[]; protected: string[] }> {
+  const candidates = [...new Set(refs.filter(Boolean))].slice(0, 10_000);
+  const protectedRefs = await protectedAssetRefs(workspaceId, candidates);
+  const plan = planAssetCleanup(candidates, [], protectedRefs);
+  for (const ref of plan.deletable) await deleteObjectByUrl(ref);
+  return plan;
+}
+
+export async function processAssetCleanup(
+  payload: AssetCleanupPayload
+): Promise<void> {
   await markRunning(payload.jobId);
   try {
     const scope = cleanupScopeFromReason(payload.reason);
-    const tombstones = scope
+    const tombstones: DeletionCandidateRow[] = scope
       ? await prisma.assetDeletionCandidate.findMany({
           where: { workspaceId: payload.workspaceId, ...scope },
           select: { id: true, ref: true },
@@ -145,22 +162,16 @@ export async function processAssetCleanup(payload: AssetCleanupPayload): Promise
       : [];
     const initial = planAssetCleanup(
       payload.refs.slice(0, 10_000),
-      tombstones.map((row) => row.ref),
-      [],
+      tombstones.map(row => row.ref),
+      []
     );
-    const protectedRefs = await protectedAssetRefs(
+    const plan = await deleteUnreferencedAssetRefs(
       payload.workspaceId,
-      initial.candidates,
+      initial.candidates
     );
-    const plan = planAssetCleanup(
-      payload.refs.slice(0, 10_000),
-      tombstones.map((row) => row.ref),
-      protectedRefs,
-    );
-    for (const ref of plan.deletable) await deleteObjectByUrl(ref);
     if (tombstones.length) {
       await prisma.assetDeletionCandidate.deleteMany({
-        where: { id: { in: tombstones.map((row) => row.id) } },
+        where: { id: { in: tombstones.map(row => row.id) } },
       });
     }
     await markSucceeded(payload.jobId, {

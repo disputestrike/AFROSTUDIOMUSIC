@@ -175,6 +175,8 @@ function testSniffingAndPostcondition(): void {
 function testProcessorWiring(): void {
   const music = readFileSync(join(process.cwd(), 'src/processors/music.ts'), 'utf8');
   const stems = readFileSync(join(process.cwd(), 'src/processors/stems.ts'), 'utf8');
+  const ownEngine = readFileSync(join(process.cwd(), 'src/processors/own-engine.ts'), 'utf8');
+  const cleanup = readFileSync(join(process.cwd(), 'src/processors/asset-cleanup.ts'), 'utf8');
   const hashAt = music.indexOf('const sourceContentHash');
   const resolveAt = music.indexOf('const stemResolution = await resolveMusicStemSources');
   const transactionAt = music.indexOf('const beat = await prisma.$transaction');
@@ -185,7 +187,56 @@ function testProcessorWiring(): void {
   assert.match(music, /enforceMusicStemPersistence\(p\.input\.withStems, persistedStemCount\)/);
   assert.match(music, /catch \(err\)[\s\S]*await markFailed\(p\.jobId, err\)/);
   assert.match(stems, /materializeStemAudio/);
-  assert.match(stems, /format:\s*s\.format/);
+  assert.match(stems, /format:\s*(?:s|stem)\.format/);
+
+  const melodyMixAt = ownEngine.indexOf('const mixed = await mixBuffers');
+  const melodyCertAt = ownEngine.indexOf('const certified = await certifyAudioBytes', melodyMixAt);
+  const melodyUpdateAt = ownEngine.indexOf('const updated = await prisma.beatAsset.updateMany', melodyCertAt);
+  const melodyPublishAt = ownEngine.indexOf('finalUrl = certified.url', melodyUpdateAt);
+  const melodyRetireAt = ownEngine.indexOf('await deleteUnreferencedAssetRefs', melodyPublishAt);
+  assert.ok(
+    melodyMixAt >= 0 &&
+      melodyMixAt < melodyCertAt &&
+      melodyCertAt < melodyUpdateAt &&
+      melodyUpdateAt < melodyPublishAt &&
+      melodyPublishAt < melodyRetireAt,
+    'melody bytes must be certified and atomically published before old-object retirement',
+  );
+  assert.match(ownEngine, /where:\s*\{\s*id:\s*finalBeatId,\s*url:\s*out\.url\s*\}/);
+  assert.match(ownEngine, /duration:\s*certified\.qc\.durationS/);
+  assert.match(ownEngine, /qualityState:\s*certified\.qualityState/);
+  assert.match(ownEngine, /contentHash:\s*certified\.contentHash/);
+  assert.match(ownEngine, /verifiedAt:\s*certified\.verifiedAt/);
+  assert.doesNotMatch(ownEngine, /measureAudioQuality\(mixedUrl\)/);
+
+  assert.ok([...stems.matchAll(/certifyAudioBytes\(/g)].length >= 3);
+  assert.match(stems, /stem separation must return both instrumental and acapella outputs/);
+  assert.match(stems, /sourceLineage[\s\S]*instrumentalMeta/);
+  assert.match(stems, /project:\s*\{\s*workspaceId:\s*p\.workspaceId\s*\}/);
+  assert.doesNotMatch(stems, /await prisma\.stem\.deleteMany/);
+  const truePath = stems.slice(stems.indexOf('async function processTrueInstrumental'));
+  const trueTransactionAt = truePath.indexOf('await prisma.$transaction([');
+  const trueDeleteAt = truePath.indexOf('prisma.stem.deleteMany', trueTransactionAt);
+  const songUpdateAt = truePath.indexOf('prisma.song.update', trueDeleteAt);
+  const beatReceiptAt = truePath.indexOf('prisma.beatAsset.update', songUpdateAt);
+  const trueRetireAt = truePath.indexOf('await retireSupersededAudio', beatReceiptAt);
+  assert.ok(
+    trueTransactionAt >= 0 &&
+      trueTransactionAt < trueDeleteAt &&
+      trueDeleteAt < songUpdateAt &&
+      songUpdateAt < beatReceiptAt &&
+      beatReceiptAt < trueRetireAt,
+    'true stems must replace rows and receipts transactionally before old-object retirement',
+  );
+  assert.match(truePath, /instrumental:\s*\{[\s\S]*wav:\s*audioCertificationReceipt[\s\S]*mp3:\s*audioCertificationReceipt/);
+  assert.match(truePath, /acapella:\s*\{[\s\S]*wav:\s*audioCertificationReceipt[\s\S]*mp3:\s*audioCertificationReceipt/);
+
+  const cleanupHelper = cleanup.slice(cleanup.indexOf('export async function deleteUnreferencedAssetRefs'));
+  const protectedAt = cleanupHelper.indexOf('const protectedRefs = await protectedAssetRefs');
+  const cleanupPlanAt = cleanupHelper.indexOf('const plan = planAssetCleanup', protectedAt);
+  const physicalDeleteAt = cleanupHelper.indexOf('await deleteObjectByUrl', cleanupPlanAt);
+  assert.ok(protectedAt >= 0 && protectedAt < cleanupPlanAt && cleanupPlanAt < physicalDeleteAt);
+  assert.doesNotMatch(cleanup, /\$queryRaw</);
 }
 
 async function main(): Promise<void> {
