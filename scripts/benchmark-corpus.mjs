@@ -37,6 +37,10 @@ const MIME = {
   webm: "audio/webm",
 };
 const HASH = /^[a-f0-9]{64}$/i;
+const NORMALIZATION_LIMITS = {
+  maxIntegratedLufsDelta: 1,
+  maxDurationDeltaSeconds: 1,
+};
 const args = process.argv.slice(2);
 
 function argumentValue(name) {
@@ -62,6 +66,7 @@ function help() {
       "",
       "Manifest requirements:",
       "  schemaVersion 1, competitor suno, protocol attestation,",
+      "  measured normalization evidence for both sides of every pair,",
       "  at least 10 unique files and songs across at least 5 genres.",
     ].join("\n")
   );
@@ -135,6 +140,110 @@ function isUtcTimestamp(value) {
     typeof value === "string" &&
     value.endsWith("Z") &&
     Number.isFinite(Date.parse(value))
+  );
+}
+
+function assertNormalizationSide(side, label) {
+  assertStrictKeys(
+    side,
+    ["contentHash", "integratedLufs", "durationSeconds", "metadata"],
+    label
+  );
+  assert(
+    typeof side.contentHash === "string" && HASH.test(side.contentHash),
+    label + ".contentHash must be a full SHA-256 hash"
+  );
+  assert(
+    Number.isFinite(side.integratedLufs) &&
+      side.integratedLufs >= -70 &&
+      side.integratedLufs <= 5,
+    label + ".integratedLufs must be a measured value from -70 to 5"
+  );
+  assert(
+    Number.isFinite(side.durationSeconds) &&
+      side.durationSeconds >= 1 &&
+      side.durationSeconds <= 21_600,
+    label + ".durationSeconds must be a measured value from 1 to 21600"
+  );
+  assertStrictKeys(
+    side.metadata,
+    ["formatTagKeys", "streamTagKeys"],
+    label + ".metadata"
+  );
+  assert(
+    Array.isArray(side.metadata.formatTagKeys) &&
+      side.metadata.formatTagKeys.length === 0 &&
+      Array.isArray(side.metadata.streamTagKeys) &&
+      side.metadata.streamTagKeys.length === 0,
+    label + ".metadata must contain empty post-normalization tag inventories"
+  );
+}
+
+function assertNormalizationEvidence(evidence, label, referenceHash) {
+  assertStrictKeys(
+    evidence,
+    [
+      "schemaVersion",
+      "measuredAt",
+      "analyzer",
+      "tolerances",
+      "afrohit",
+      "reference",
+    ],
+    label
+  );
+  assert(evidence.schemaVersion === 1, label + ".schemaVersion must be 1");
+  assert(
+    isUtcTimestamp(evidence.measuredAt),
+    label + ".measuredAt must be a UTC timestamp"
+  );
+  assertStrictKeys(
+    evidence.analyzer,
+    ["name", "version", "loudnessMethod"],
+    label + ".analyzer"
+  );
+  assert(
+    typeof evidence.analyzer.name === "string" &&
+      evidence.analyzer.name.trim().length >= 2 &&
+      typeof evidence.analyzer.version === "string" &&
+      evidence.analyzer.version.trim().length >= 1 &&
+      evidence.analyzer.loudnessMethod === "ebu_r128",
+    label + ".analyzer must identify an EBU R128 measurement tool"
+  );
+  assertStrictKeys(
+    evidence.tolerances,
+    ["maxIntegratedLufsDelta", "maxDurationDeltaSeconds"],
+    label + ".tolerances"
+  );
+  for (const [key, maximum] of Object.entries(NORMALIZATION_LIMITS)) {
+    assert(
+      Number.isFinite(evidence.tolerances[key]) &&
+        evidence.tolerances[key] >= 0 &&
+        evidence.tolerances[key] <= maximum,
+      label + ".tolerances." + key + " exceeds the claim limit"
+    );
+  }
+  assertNormalizationSide(evidence.afrohit, label + ".afrohit");
+  assertNormalizationSide(evidence.reference, label + ".reference");
+  assert(
+    evidence.reference.contentHash.toLowerCase() === referenceHash,
+    label + ".reference.contentHash does not match the reference file"
+  );
+  assert(
+    evidence.afrohit.contentHash.toLowerCase() !== referenceHash,
+    label + " must bind two distinct audio assets"
+  );
+  assert(
+    Math.abs(
+      evidence.afrohit.integratedLufs - evidence.reference.integratedLufs
+    ) <= evidence.tolerances.maxIntegratedLufsDelta + 1e-9,
+    label + " measured loudness exceeds its persisted tolerance"
+  );
+  assert(
+    Math.abs(
+      evidence.afrohit.durationSeconds - evidence.reference.durationSeconds
+    ) <= evidence.tolerances.maxDurationDeltaSeconds + 1e-9,
+    label + " measured duration exceeds its persisted tolerance"
   );
 }
 
@@ -254,13 +363,23 @@ async function parseManifest(path) {
   const songIds = new Set();
   const paths = new Set();
   const hashes = new Set();
+  const afrohitHashes = new Set();
   const genres = new Set();
   const entries = [];
   for (const [index, entry] of manifest.entries.entries()) {
     const label = "entries[" + index + "]";
     assertStrictKeys(
       entry,
-      ["id", "songId", "genre", "file", "format", "sha256", "rights"],
+      [
+        "id",
+        "songId",
+        "genre",
+        "file",
+        "format",
+        "sha256",
+        "rights",
+        "normalizationEvidence",
+      ],
       label
     );
     assert(
@@ -374,6 +493,18 @@ async function parseManifest(path) {
       isUtcTimestamp(entry.rights.attestedAt),
       label + ".rights.attestedAt must be a UTC timestamp"
     );
+    assertNormalizationEvidence(
+      entry.normalizationEvidence,
+      label + ".normalizationEvidence",
+      actualHash
+    );
+    const afrohitHash =
+      entry.normalizationEvidence.afrohit.contentHash.toLowerCase();
+    assert(
+      !afrohitHashes.has(afrohitHash),
+      "AfroHit audio bytes are duplicated: " + afrohitHash
+    );
+    afrohitHashes.add(afrohitHash);
     entries.push({
       ...entry,
       sha256: actualHash,
@@ -381,6 +512,12 @@ async function parseManifest(path) {
       sizeBytes: fileInfo.size,
       contentType: MIME[entry.format],
     });
+  }
+  for (const referenceHash of hashes) {
+    assert(
+      !afrohitHashes.has(referenceHash),
+      "audio bytes appear on both benchmark sides: " + referenceHash
+    );
   }
   assert(genres.size >= 5, "at least 5 genres are required");
   const publicManifest = {
@@ -395,6 +532,7 @@ async function parseManifest(path) {
       format: entry.format,
       sha256: entry.sha256,
       rights: entry.rights,
+      normalizationEvidence: entry.normalizationEvidence,
     })),
   };
   return {
@@ -599,7 +737,10 @@ if (!validateOnly) {
           basis: entry.rights.basis,
           note: (entry.rights.note + protocolTag).slice(0, 500),
         },
-        comparisonProtocol: parsed.manifest.protocol,
+        comparisonProtocol: {
+          ...parsed.manifest.protocol,
+          normalizationEvidence: entry.normalizationEvidence,
+        },
       },
       idempotencyKey:
         "benchmark-pair." + parsed.manifestHash.slice(0, 20) + "." + entry.id,
@@ -661,6 +802,7 @@ const reportBase = {
     genres: parsed.genres,
     uniqueCompetitorHashes: parsed.entries.length,
     rightsAttested: parsed.entries.length,
+    normalizationMeasured: parsed.entries.length,
   },
   uploads: uploaded,
   serverEvidence: server,
