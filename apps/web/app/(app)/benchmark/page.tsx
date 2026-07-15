@@ -52,11 +52,38 @@ interface CompetitivePair {
 }
 
 interface Evidence {
+  schemaVersion: number;
   totalPairs: number;
   competitor: string;
   verdict: string;
   claimReady: boolean;
+  statisticalClaimReady: boolean;
   claim: string;
+  evidenceHash: string;
+  corpus: {
+    claimReady: boolean;
+    sample: {
+      totalPairs: number;
+      rightsValidPairs: number;
+      protocolValidPairs: number;
+      eligiblePairs: number;
+      uniqueReferenceHashes: number;
+      uniqueAfrohitHashes: number;
+      genres: number;
+      invalidRightsPairs: number;
+      invalidProtocolPairs: number;
+      duplicateReferencePairs: number;
+      duplicateAfrohitPairs: number;
+      crossSideHashCollisions: number;
+    };
+    gates: {
+      rightsPassed: boolean;
+      protocolPassed: boolean;
+      independencePassed: boolean;
+      genreCoveragePassed: boolean;
+      required: { minPairs: number; minGenres: number };
+    };
+  };
   sample: {
     submittedJudgments: number;
     eligibleJudgments: number;
@@ -73,6 +100,7 @@ interface Evidence {
     samplePassed: boolean;
     superiorityPassed: boolean;
     dimensionFloorPassed: boolean;
+    corpusPassed: boolean;
     required: {
       minJudgments: number;
       minPairs: number;
@@ -193,6 +221,8 @@ export default function BenchmarkPage() {
   >("owner");
   const [rightsNote, setRightsNote] = useState("");
   const [rightsConfirmed, setRightsConfirmed] = useState(false);
+  const [protocolNote, setProtocolNote] = useState("");
+  const [protocolConfirmed, setProtocolConfirmed] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
   const [scores, setScores] = useState<Record<Side, Scores>>({
     a: blankScores(),
@@ -292,7 +322,9 @@ export default function BenchmarkPage() {
       !songId ||
       !referenceFile ||
       !rightsConfirmed ||
-      rightsNote.trim().length < 3
+      rightsNote.trim().length < 3 ||
+      !protocolConfirmed ||
+      protocolNote.trim().length < 10
     )
       return;
     const format = audioFormat(referenceFile);
@@ -323,11 +355,22 @@ export default function BenchmarkPage() {
             basis: rightsBasis,
             note: rightsNote.trim(),
           },
+          comparisonProtocol: {
+            version: 1,
+            blind: true,
+            identityMetadataRemoved: true,
+            loudnessMatched: true,
+            durationMatched: true,
+            independentJudgesMin: 3,
+            note: protocolNote.trim(),
+          },
         }
       );
       setReferenceFile(null);
       setRightsNote("");
       setRightsConfirmed(false);
+      setProtocolNote("");
+      setProtocolConfirmed(false);
       await loadCompetitive();
       setSelectedPairId(result.id);
       resetJudgment();
@@ -530,6 +573,40 @@ export default function BenchmarkPage() {
             <p className="text-sm text-slate-300 sm:col-span-2 lg:col-span-4">
               {evidence?.claim}
             </p>
+            {evidence && (
+              <div className="flex flex-wrap gap-x-5 gap-y-2 text-xs text-slate-400 sm:col-span-2 lg:col-span-4">
+                <p className="flex items-center gap-1.5">
+                  <ShieldCheck
+                    className={
+                      "h-4 w-4 " +
+                      (evidence.gates.corpusPassed
+                        ? "text-emerald-300"
+                        : "text-amber-300")
+                    }
+                  />
+                  Corpus {evidence.corpus.sample.eligiblePairs}/
+                  {evidence.corpus.gates.required.minPairs}
+                </p>
+                <p>
+                  Rights {evidence.corpus.sample.rightsValidPairs}/
+                  {evidence.corpus.sample.totalPairs}
+                </p>
+                <p>
+                  Protocol {evidence.corpus.sample.protocolValidPairs}/
+                  {evidence.corpus.sample.totalPairs}
+                </p>
+                <p>
+                  Unique audio{" "}
+                  {Math.min(
+                    evidence.corpus.sample.uniqueReferenceHashes,
+                    evidence.corpus.sample.uniqueAfrohitHashes
+                  )}
+                </p>
+                <p title={evidence.evidenceHash}>
+                  Evidence {evidence.evidenceHash.slice(0, 12)}
+                </p>
+              </div>
+            )}
           </section>
 
           <section className="grid gap-6 border-b border-slate-800 pb-6 lg:grid-cols-[minmax(0,1fr)_minmax(320px,0.8fr)]">
@@ -626,6 +703,27 @@ export default function BenchmarkPage() {
                   comparative evaluation.
                 </span>
               </label>
+              <label className="block text-sm text-slate-300">
+                Listening protocol
+                <input
+                  value={protocolNote}
+                  onChange={event => setProtocolNote(event.target.value)}
+                  maxLength={500}
+                  className="mt-1 h-10 w-full rounded border border-slate-700 bg-slate-950 px-3"
+                />
+              </label>
+              <label className="flex items-start gap-2 text-sm text-slate-300">
+                <input
+                  type="checkbox"
+                  checked={protocolConfirmed}
+                  onChange={event => setProtocolConfirmed(event.target.checked)}
+                  className="mt-1 h-4 w-4 accent-cyan-400"
+                />
+                <span>
+                  I confirm source identity was removed and both tracks use the
+                  same listening window and matched loudness.
+                </span>
+              </label>
               <button
                 type="button"
                 onClick={() => void createPair()}
@@ -634,7 +732,9 @@ export default function BenchmarkPage() {
                   !songId ||
                   !referenceFile ||
                   !rightsConfirmed ||
-                  rightsNote.trim().length < 3
+                  rightsNote.trim().length < 3 ||
+                  !protocolConfirmed ||
+                  protocolNote.trim().length < 10
                 }
                 className="inline-flex h-10 items-center gap-2 rounded bg-cyan-400 px-4 text-sm font-semibold text-slate-950 disabled:cursor-not-allowed disabled:opacity-40"
               >

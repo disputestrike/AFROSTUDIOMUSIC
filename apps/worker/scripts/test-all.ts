@@ -117,6 +117,7 @@ function runPython(file: string): { code: number | null; out: string } {
 
 // ---- Phases 1–7: pure TS unit tests ----
 const TS: Array<[string, string]> = [
+  ["P0  Ear corpus integrity", "test-ear-corpus.ts"],
   ["P1  LaneProfile", "test-lane-profile.ts"],
   ["P2  Compliance + drift", "test-lane-compliance.ts"],
   ["P3  RepairPlanner", "test-lane-repair.ts"],
@@ -139,6 +140,7 @@ const TS: Array<[string, string]> = [
   ["Production runtime safety", "test-runtime-safety.ts"],
   ["Video provider contracts", "test-video-providers.ts"],
   ["Video shot billing", "test-video-storyboard.ts"],
+  ["Video render evidence", "test-video-evidence.ts"],
   ["Media adapters fail closed", "test-media-adapter-safety.ts"],
   ["Email delivery truth", "test-email-delivery.ts"],
   ["Distribution lifecycle contract", "test-distribution-contract.ts"],

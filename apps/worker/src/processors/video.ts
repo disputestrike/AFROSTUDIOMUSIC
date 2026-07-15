@@ -11,11 +11,12 @@ import {
   type VideoShotInput,
 } from "@afrohit/ai";
 import { markFailed, markRunning, markSucceeded } from "../lib/jobs";
+import { downloadToBuffer, uploadBytes } from "../lib/storage";
 import {
-  downloadToBuffer,
-  ingestRemoteFile,
-  uploadBytes,
-} from "../lib/storage";
+  estimateVideoCostUsd,
+  inspectVideoBytes,
+  type VideoInspection,
+} from "../lib/video-inspection";
 
 interface VideoShot {
   index?: number;
@@ -42,6 +43,11 @@ interface VideoProgress {
   externalId?: string;
   url?: string;
   durationS?: number;
+  contentHash?: string;
+  sizeBytes?: number;
+  width?: number;
+  height?: number;
+  costUsd?: number;
 }
 
 const ASPECT: Record<VideoPayload["format"], VideoShotInput["aspectRatio"]> = {
@@ -148,53 +154,52 @@ async function cropSquare(bytes: Uint8Array): Promise<Buffer> {
 async function storeVideo(
   workspaceId: string,
   format: VideoPayload["format"],
-  output: VideoRenderOutput
-): Promise<{ url: string; contentHash: string | null }> {
+  output: VideoRenderOutput,
+  expectedDurationS: number
+): Promise<{ url: string; inspection: VideoInspection }> {
   if (!output.videoBytes && !output.videoUrl) {
     throw new Error("video provider returned no media");
   }
 
-  if (output.videoBytes || format === "square") {
-    let bytes = output.videoBytes
-      ? Buffer.from(output.videoBytes)
-      : await downloadToBuffer(output.videoUrl!, {
-          maxBytes: MAX_VIDEO_BYTES,
-          timeoutMs: 10 * 60_000,
-        });
-    if (!bytes.length || bytes.length > MAX_VIDEO_BYTES) {
-      throw new Error("video provider returned empty or oversized media");
-    }
-    if (format === "square") bytes = await cropSquare(bytes);
-    const contentHash = createHash("sha256").update(bytes).digest("hex");
-    const url = await uploadBytes({
-      workspaceId,
-      kind: "videos",
-      bytes,
-      ext: "mp4",
-      contentType: "video/mp4",
-    });
-    return { url, contentHash };
+  let bytes = output.videoBytes
+    ? Buffer.from(output.videoBytes)
+    : await downloadToBuffer(output.videoUrl!, {
+        maxBytes: MAX_VIDEO_BYTES,
+        timeoutMs: 10 * 60_000,
+      });
+  if (!bytes.length || bytes.length > MAX_VIDEO_BYTES) {
+    throw new Error("video provider returned empty or oversized media");
   }
-
-  const url = await ingestRemoteFile({
-    workspaceId,
-    url: output.videoUrl!,
-    kind: "videos",
-    ext: "mp4",
-    contentType: "video/mp4",
+  if (format === "square") bytes = await cropSquare(bytes);
+  const inspection = await inspectVideoBytes(bytes, {
+    format,
+    expectedDurationS,
     maxBytes: MAX_VIDEO_BYTES,
   });
-  return { url, contentHash: null };
+  const url = await uploadBytes({
+    workspaceId,
+    kind: "videos",
+    bytes,
+    ext: "mp4",
+    contentType: "video/mp4",
+  });
+  return { url, inspection };
 }
-
 export async function processVideo(p: VideoPayload) {
   await markRunning(p.jobId);
+  let knownCostUsd = 0;
+  let hasCostEvidence = false;
+  let costEvidenceComplete = true;
   try {
     const adapter = videoAdapter();
     if (adapter.name === "stub" && process.env.ALLOW_STUB_AUDIO !== "1") {
       await markFailed(p.jobId, "video_failed: no video engine configured");
       return;
     }
+    await prisma.providerJob.updateMany({
+      where: { id: p.jobId, workspaceId: p.workspaceId },
+      data: { provider: adapter.name },
+    });
     if (
       adapter.name !== "veo" &&
       adapter.name !== "sora" &&
@@ -223,7 +228,13 @@ export async function processVideo(p: VideoPayload) {
       shotIndex: number;
       url: string;
       durationS: number;
+      contentHash: string;
+      sizeBytes: number;
+      width: number;
+      height: number;
+      qualityState: "passed";
     }> = [];
+
     const maxPollAttempts = Math.max(
       1,
       Math.min(180, Number(process.env.VIDEO_POLL_MAX_ATTEMPTS ?? 90) || 90)
@@ -235,6 +246,9 @@ export async function processVideo(p: VideoPayload) {
         data: {
           externalId: latestExternalId,
           outputJson: { videoProgress: progress } as never,
+          cost: hasCostEvidence
+            ? (knownCostUsd.toFixed(6) as never)
+            : undefined,
         },
       });
     };
@@ -242,10 +256,54 @@ export async function processVideo(p: VideoPayload) {
     for (const { shot, shotIndex } of selected) {
       const existing = progress.find(entry => entry.shotIndex === shotIndex);
       if (existing?.state === "succeeded" && existing.url) {
+        let progressChanged = false;
+        if (
+          !existing.contentHash ||
+          !existing.sizeBytes ||
+          !existing.width ||
+          !existing.height
+        ) {
+          const bytes = await downloadToBuffer(existing.url, {
+            maxBytes: MAX_VIDEO_BYTES,
+            timeoutMs: 10 * 60_000,
+          });
+          const inspection = await inspectVideoBytes(bytes, {
+            format: p.format,
+            expectedDurationS: shot.duration_s,
+            maxBytes: MAX_VIDEO_BYTES,
+          });
+          existing.contentHash = inspection.contentHash;
+          existing.sizeBytes = inspection.sizeBytes;
+          existing.width = inspection.width;
+          existing.height = inspection.height;
+          existing.durationS = inspection.durationS;
+          progressChanged = true;
+        }
+        const resumedCost =
+          Number.isFinite(existing.costUsd) && existing.costUsd! >= 0
+            ? existing.costUsd!
+            : estimateVideoCostUsd(
+                adapter.name,
+                existing.durationS ?? shot.duration_s,
+                undefined
+              );
+        if (resumedCost === null) costEvidenceComplete = false;
+        else {
+          existing.costUsd = resumedCost;
+          knownCostUsd += resumedCost;
+          hasCostEvidence = true;
+          progressChanged = true;
+        }
+        if (progressChanged) await save(existing.externalId);
         results.push({
           shotIndex,
           url: existing.url,
           durationS: existing.durationS ?? shot.duration_s,
+          contentHash: existing.contentHash,
+          sizeBytes: existing.sizeBytes,
+          width: existing.width,
+          height: existing.height,
+          qualityState: "passed",
         });
         continue;
       }
@@ -256,6 +314,7 @@ export async function processVideo(p: VideoPayload) {
           ? await adapter.poll(existing.externalId, input)
           : await adapter.renderShot(input);
 
+      let reportedCostUsd = render.estimatedCostUsd;
       if (render.externalId) {
         const entry = existing ?? { shotIndex, state: "submitted" as const };
         entry.state = "submitted";
@@ -279,6 +338,9 @@ export async function processVideo(p: VideoPayload) {
         );
         attempts += 1;
         render = await adapter.poll(render.externalId, input);
+        if (render.estimatedCostUsd != null) {
+          reportedCostUsd = render.estimatedCostUsd;
+        }
       }
       if (render.status !== "succeeded" || !render.output) {
         throw new Error(
@@ -286,7 +348,37 @@ export async function processVideo(p: VideoPayload) {
         );
       }
 
-      const stored = await storeVideo(p.workspaceId, p.format, render.output);
+      let entry =
+        existing ?? progress.find(item => item.shotIndex === shotIndex);
+      if (!entry) {
+        entry = { shotIndex, state: "submitted" };
+        progress.push(entry);
+      }
+      entry.externalId = render.externalId ?? entry.externalId;
+      const shotCost =
+        Number.isFinite(entry.costUsd) && entry.costUsd! >= 0
+          ? entry.costUsd!
+          : estimateVideoCostUsd(
+              adapter.name,
+              Number.isFinite(render.output.durationS) &&
+                render.output.durationS > 0
+                ? render.output.durationS
+                : shot.duration_s,
+              reportedCostUsd
+            );
+      if (shotCost === null) costEvidenceComplete = false;
+      else {
+        entry.costUsd = shotCost;
+        knownCostUsd += shotCost;
+        hasCostEvidence = true;
+      }
+      await save(entry.externalId);
+      const stored = await storeVideo(
+        p.workspaceId,
+        p.format,
+        render.output,
+        shot.duration_s
+      );
       const renderId = `video_${createHash("sha256")
         .update(`${p.jobId}:${shotIndex}`)
         .digest("hex")
@@ -298,13 +390,20 @@ export async function processVideo(p: VideoPayload) {
           projectId: p.projectId,
           conceptId: p.conceptId,
           url: stored.url,
-          durationS: render.output.durationS,
+          durationS: stored.inspection.durationS,
           provider: adapter.name,
           meta: {
             shotIndex,
             shotPrompt: shot.prompt,
             motion: shot.motion,
-            contentHash: stored.contentHash,
+            contentHash: stored.inspection.contentHash,
+            sizeBytes: stored.inspection.sizeBytes,
+            width: stored.inspection.width,
+            height: stored.inspection.height,
+            measuredDurationS: stored.inspection.durationS,
+            codec: stored.inspection.codec,
+            container: stored.inspection.container,
+            qualityState: stored.inspection.qualityState,
             sourceAspectRatio:
               input.aspectRatio === "1:1" ? "16:9" : input.aspectRatio,
             outputAspectRatio: input.aspectRatio,
@@ -312,13 +411,20 @@ export async function processVideo(p: VideoPayload) {
         },
         update: {
           url: stored.url,
-          durationS: render.output.durationS,
+          durationS: stored.inspection.durationS,
           provider: adapter.name,
           meta: {
             shotIndex,
             shotPrompt: shot.prompt,
             motion: shot.motion,
-            contentHash: stored.contentHash,
+            contentHash: stored.inspection.contentHash,
+            sizeBytes: stored.inspection.sizeBytes,
+            width: stored.inspection.width,
+            height: stored.inspection.height,
+            measuredDurationS: stored.inspection.durationS,
+            codec: stored.inspection.codec,
+            container: stored.inspection.container,
+            qualityState: stored.inspection.qualityState,
             sourceAspectRatio:
               input.aspectRatio === "1:1" ? "16:9" : input.aspectRatio,
             outputAspectRatio: input.aspectRatio,
@@ -326,26 +432,52 @@ export async function processVideo(p: VideoPayload) {
         },
       });
 
-      let entry =
-        existing ?? progress.find(item => item.shotIndex === shotIndex);
-      if (!entry) {
-        entry = { shotIndex, state: "succeeded" };
-        progress.push(entry);
-      }
       entry.state = "succeeded";
       entry.externalId = render.externalId ?? entry.externalId;
       entry.url = stored.url;
-      entry.durationS = render.output.durationS;
+      entry.durationS = stored.inspection.durationS;
+      entry.contentHash = stored.inspection.contentHash;
+      entry.sizeBytes = stored.inspection.sizeBytes;
+      entry.width = stored.inspection.width;
+      entry.height = stored.inspection.height;
       await save(entry.externalId);
       results.push({
         shotIndex,
         url: stored.url,
-        durationS: render.output.durationS,
+        durationS: stored.inspection.durationS,
+        contentHash: stored.inspection.contentHash,
+        sizeBytes: stored.inspection.sizeBytes,
+        width: stored.inspection.width,
+        height: stored.inspection.height,
+        qualityState: stored.inspection.qualityState,
       });
     }
 
-    await markSucceeded(p.jobId, { renders: results });
+    await markSucceeded(
+      p.jobId,
+      {
+        renders: results,
+        estimatedCostUsd:
+          costEvidenceComplete && hasCostEvidence ? knownCostUsd : null,
+        knownCostUsd: hasCostEvidence ? knownCostUsd : null,
+        costEvidenceComplete: costEvidenceComplete && hasCostEvidence,
+      },
+      hasCostEvidence ? knownCostUsd : undefined
+    );
   } catch (error) {
+    if (hasCostEvidence) {
+      await prisma.providerJob
+        .updateMany({
+          where: { id: p.jobId, workspaceId: p.workspaceId },
+          data: { cost: knownCostUsd.toFixed(6) as never },
+        })
+        .catch((costError: unknown) =>
+          console.warn(
+            `[video ${p.jobId}] failed to persist known provider cost:`,
+            (costError as Error).message
+          )
+        );
+    }
     await markFailed(p.jobId, error);
   }
 }

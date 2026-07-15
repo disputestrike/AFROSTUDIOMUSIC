@@ -1,8 +1,50 @@
 import assert from "node:assert/strict";
 import {
+  evaluateBenchmarkCorpus,
   evaluateCompetitorBenchmark,
   type BenchmarkScores,
 } from "@afrohit/shared";
+
+const hash = (index: number) => index.toString(16).padStart(64, "0");
+const attestedAt = "2026-07-14T12:00:00.000Z";
+
+function corpusRows() {
+  const genres = [
+    "afrobeats",
+    "amapiano",
+    "afro_fusion",
+    "highlife",
+    "afro_house",
+  ];
+  return Array.from({ length: 10 }, (_, index) => ({
+    pairId: "pair-" + index,
+    genre: genres[index % genres.length]!,
+    competitor: "suno",
+    afrohitContentHash: hash(index + 1),
+    referenceContentHash: hash(index + 101),
+    referenceSizeBytes: 2_048,
+    referenceFormat: "wav",
+    rightsBasis: "licensed_evaluation",
+    rightsAttestation: {
+      schemaVersion: 1,
+      confirmed: true,
+      basis: "licensed_evaluation",
+      note: "Licensed for controlled blind evaluation.",
+      attestedBy: "owner-1",
+      attestedAt,
+      contentHash: hash(index + 101),
+      comparisonProtocol: {
+        version: 1,
+        blind: true,
+        identityMetadataRemoved: true,
+        loudnessMatched: true,
+        durationMatched: true,
+        independentJudgesMin: 3,
+        note: "Controlled loudness- and duration-matched blind listening.",
+      },
+    },
+  }));
+}
 
 const strong: BenchmarkScores = {
   groove: 5,
@@ -73,4 +115,42 @@ assert.equal(vocalDeficit.gates.dimensionFloorPassed, false);
 assert.equal(vocalDeficit.claimReady, false);
 assert.equal(vocalDeficit.verdict, "competitive_not_proven_ahead");
 
+const validCorpus = evaluateBenchmarkCorpus(corpusRows());
+assert.equal(validCorpus.claimReady, true);
+assert.equal(validCorpus.sample.eligiblePairs, 10);
+assert.equal(validCorpus.sample.genres, 5);
+
+const duplicateCorpus = corpusRows();
+duplicateCorpus[1]!.referenceContentHash =
+  duplicateCorpus[0]!.referenceContentHash;
+(duplicateCorpus[1]!.rightsAttestation as Record<string, unknown>).contentHash =
+  duplicateCorpus[0]!.referenceContentHash;
+const duplicateResult = evaluateBenchmarkCorpus(duplicateCorpus);
+assert.equal(duplicateResult.claimReady, false);
+assert.equal(duplicateResult.sample.eligiblePairs, 8);
+assert.equal(duplicateResult.sample.duplicateReferencePairs, 2);
+
+const invalidRights = corpusRows();
+(invalidRights[0]!.rightsAttestation as Record<string, unknown>).confirmed =
+  false;
+const invalidRightsResult = evaluateBenchmarkCorpus(invalidRights);
+assert.equal(invalidRightsResult.claimReady, false);
+assert.equal(invalidRightsResult.sample.invalidRightsPairs, 1);
+
+const invalidProtocol = corpusRows();
+(
+  (invalidProtocol[0]!.rightsAttestation as Record<string, unknown>)
+    .comparisonProtocol as Record<string, unknown>
+).loudnessMatched = false;
+const invalidProtocolResult = evaluateBenchmarkCorpus(invalidProtocol);
+assert.equal(invalidProtocolResult.claimReady, false);
+assert.equal(invalidProtocolResult.sample.invalidProtocolPairs, 1);
+
+const crossSide = corpusRows();
+crossSide[0]!.referenceContentHash = crossSide[1]!.afrohitContentHash;
+(crossSide[0]!.rightsAttestation as Record<string, unknown>).contentHash =
+  crossSide[1]!.afrohitContentHash;
+const crossSideResult = evaluateBenchmarkCorpus(crossSide);
+assert.equal(crossSideResult.claimReady, false);
+assert.ok(crossSideResult.sample.crossSideHashCollisions > 0);
 console.log("benchmark evidence gate tests passed");

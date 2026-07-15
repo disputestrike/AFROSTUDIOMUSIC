@@ -26,7 +26,11 @@ import sys
 import os
 import json
 import argparse
+import hashlib
+import hmac
 import warnings
+import math
+import re
 import tempfile
 import subprocess
 
@@ -74,14 +78,59 @@ _NOTES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"]
 # to py/fixtures/logdrum_calibration.json. Absent/stale/failed artifact => the field
 # ships 'inferred' (carrying a machine-readable reason) and is excluded from every
 # compliance score. The gate opens when the DATA says it may, not when a human says so.
-LOGDRUM_SCHEMA = 3  # bump when the detector math changes -> forces a refit (stale-schema)
+LOGDRUM_SCHEMA = 4  # schema 4 adds rights, corpus-hash, and HMAC evidence
+EAR_CORPUS_SCHEMA = 1
 _LOGDRUM_DEFAULTS = dict(
     r0=0.45, s=0.12,            # P_sub sigmoid center/width on E(40-100)/E(20-300)
     w1=1.2, w2=0.15,            # P_glide = saturate(w1*glideFraction + w2*glideRate)
     glideFloor=0.30,            # final = core*(glideFloor + (1-glideFloor)*P_glide)
     e_sub=0.8, e_perc=1.0, e_pitch=0.9, geo_root=2.7,  # weighted geo-mean exponents
 )
-CALIB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "py", "fixtures", "logdrum_calibration.json")
+CALIB_PATH = os.environ.get("LOGDRUM_CALIBRATION_PATH") or os.path.join(
+    os.path.dirname(os.path.abspath(__file__)),
+    "py",
+    "fixtures",
+    "logdrum_calibration.json",
+)
+
+
+def _calibration_signature_valid(c):
+    key = os.environ.get("LOGDRUM_CALIBRATION_SIGNING_KEY", "")
+    if len(key.encode("utf-8")) < 32:
+        return False, "missing-signing-key"
+    if c.get("signatureAlgorithm") != "hmac-sha256":
+        return False, "invalid-signature"
+    key_id = hashlib.sha256(key.encode("utf-8")).hexdigest()[:16]
+    if c.get("signatureKeyId") != key_id:
+        return False, "invalid-signature"
+    signature = c.get("signature")
+    if not isinstance(signature, str) or not re.fullmatch(r"[a-f0-9]{64}", signature):
+        return False, "invalid-signature"
+    unsigned = dict(c)
+    unsigned.pop("signature", None)
+    canonical = json.dumps(
+        unsigned,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+        allow_nan=False,
+    ).encode("utf-8")
+    expected = hmac.new(key.encode("utf-8"), canonical, hashlib.sha256).hexdigest()
+    return hmac.compare_digest(signature, expected), "invalid-signature"
+
+
+def _valid_calibration_values(c):
+    margin = c.get("separationMargin")
+    if not isinstance(margin, (int, float)) or not math.isfinite(margin) or margin <= 0:
+        return False
+    params = c.get("params")
+    if not isinstance(params, dict):
+        return False
+    for key in ("r0", "s", "w1", "w2", "glideFloor"):
+        value = params.get(key)
+        if not isinstance(value, (int, float)) or not math.isfinite(value):
+            return False
+    return True
 
 
 def _load_logdrum_calibration():
@@ -93,20 +142,47 @@ def _load_logdrum_calibration():
             return {**d, "calibrated": False, "reason": "gates-not-passed", "separationMargin": None}
         if c.get("schemaVersion") != LOGDRUM_SCHEMA:
             return {**d, "calibrated": False, "reason": "stale-schema", "separationMargin": None}
-        # ADDENDUM C-1 — synthetic calibration must NOT open the truth gate.
-        # Synthetic sines validate DIRECTION, not calibrated absolute values: only
-        # the real 9-track run (eval-ear.ts, the sole writer of 'real-9track')
-        # earns 'measured'. A synthetic artifact still improves the constants but
-        # the field ships 'inferred' and is excluded from every compliance score,
-        # rankTakes, and the promotion rule — exactly as if uncalibrated.
         if c.get("provenance") != "real-9track":
             return {**d, **(c.get("params") or {}), "calibrated": False, "reason": "synthetic-calibration", "separationMargin": c.get("separationMargin"), "provenance": c.get("provenance") or "synthetic"}
-        return {**d, **(c.get("params") or {}), "calibrated": True, "reason": None, "separationMargin": c.get("separationMargin"), "calibratedOn": c.get("calibratedOn") or "reference-tracks", "provenance": "real-9track"}
+        if c.get("rightsVerified") is not True:
+            return {**d, "calibrated": False, "reason": "rights-not-verified", "separationMargin": None}
+        if c.get("manifestSchemaVersion") != EAR_CORPUS_SCHEMA:
+            return {**d, "calibrated": False, "reason": "invalid-manifest-schema", "separationMargin": None}
+        if c.get("trackCount") != 9:
+            return {**d, "calibrated": False, "reason": "invalid-track-count", "separationMargin": None}
+        genre_counts = c.get("genreCounts")
+        if not isinstance(genre_counts, dict) or any(genre_counts.get(genre) != 3 for genre in ("amapiano", "afrobeats", "house")):
+            return {**d, "calibrated": False, "reason": "invalid-genre-balance", "separationMargin": None}
+        rights_counts = c.get("rightsBasisCounts")
+        if not isinstance(rights_counts, dict) or rights_counts.get("owned-master", 0) + rights_counts.get("licensed-evaluation", 0) != 9:
+            return {**d, "calibrated": False, "reason": "invalid-rights-summary", "separationMargin": None}
+        if not isinstance(c.get("corpusHash"), str) or not re.fullmatch(r"[a-f0-9]{64}", c["corpusHash"]):
+            return {**d, "calibrated": False, "reason": "missing-corpus-hash", "separationMargin": None}
+        gates = c.get("gates")
+        if not isinstance(gates, dict) or not all(gates.get(name) is True for name in ("tempo", "fourOnFloor", "logDrumSeparation")):
+            return {**d, "calibrated": False, "reason": "incomplete-gates", "separationMargin": None}
+        if not _valid_calibration_values(c):
+            return {**d, "calibrated": False, "reason": "invalid-calibration-values", "separationMargin": None}
+        signature_ok, signature_reason = _calibration_signature_valid(c)
+        if not signature_ok:
+            return {**d, "calibrated": False, "reason": signature_reason, "separationMargin": None}
+        return {
+            **d,
+            **c["params"],
+            "calibrated": True,
+            "reason": None,
+            "separationMargin": c.get("separationMargin"),
+            "calibratedOn": c.get("calibratedOn") or "rights-clean-9track",
+            "provenance": "real-9track",
+            "rightsVerified": True,
+            "trackCount": 9,
+            "corpusHash": c["corpusHash"],
+            "signatureKeyId": c.get("signatureKeyId"),
+        }
     except FileNotFoundError:
         return {**d, "calibrated": False, "reason": "no-calibration-artifact", "separationMargin": None}
-    except Exception as e:  # noqa — a broken artifact must NOT crash analysis; it just means uncalibrated
+    except Exception as e:  # a broken artifact closes the gate without crashing analysis
         return {**d, "calibrated": False, "reason": f"artifact-error:{type(e).__name__}", "separationMargin": None}
-
 
 LOGDRUM = _load_logdrum_calibration()
 
@@ -805,6 +881,10 @@ def main():
             "separationMargin": LOGDRUM.get("separationMargin"),
             "calibratedOn": LOGDRUM.get("calibratedOn"),
             "provenance": LOGDRUM.get("provenance"),
+            "rightsVerified": bool(LOGDRUM.get("rightsVerified")),
+            "trackCount": LOGDRUM.get("trackCount"),
+            "corpusHash": LOGDRUM.get("corpusHash"),
+            "signatureKeyId": LOGDRUM.get("signatureKeyId"),
             "schema": LOGDRUM_SCHEMA,
         }))
         return

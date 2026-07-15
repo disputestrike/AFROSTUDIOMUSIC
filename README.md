@@ -21,14 +21,14 @@ and no material quality-dimension deficit.
 
 ## Architecture
 
-| Package | Responsibility |
-|---|---|
-| `apps/web` | Next.js application and operational product UI |
-| `apps/api` | Fastify API, JWT sessions, tenant authorization, billing, orchestration, and release gates |
-| `apps/worker` | BullMQ media jobs, provider polling, DSP analysis, stems, mixing, mastering, and heartbeats |
-| `packages/ai` | Language, music, voice, image, analysis, routing, and genre intelligence |
-| `packages/db` | Prisma schema, migrations, encrypted workspace secrets, and durable ledgers |
-| `packages/shared` | Contracts, schemas, credit prices, release evidence, and benchmark statistics |
+| Package           | Responsibility                                                                              |
+| ----------------- | ------------------------------------------------------------------------------------------- |
+| `apps/web`        | Next.js application and operational product UI                                              |
+| `apps/api`        | Fastify API, JWT sessions, tenant authorization, billing, orchestration, and release gates  |
+| `apps/worker`     | BullMQ media jobs, provider polling, DSP analysis, stems, mixing, mastering, and heartbeats |
+| `packages/ai`     | Language, music, voice, image, analysis, routing, and genre intelligence                    |
+| `packages/db`     | Prisma schema, migrations, encrypted workspace secrets, and durable ledgers                 |
+| `packages/shared` | Contracts, schemas, credit prices, release evidence, and benchmark statistics               |
 
 PostgreSQL is the system of record, Redis carries queues, and private
 S3-compatible storage holds media. The worker image includes ffmpeg, the pinned
@@ -81,7 +81,9 @@ migration, and requires the pinned Python DSP proof stack. Real-provider
 acceptance, human listening, payments, and distributor submissions require
 separately controlled credentials and evidence; offline tests do not impersonate
 those results. See [the current production-readiness evidence](docs/PRODUCTION_READINESS_2026-07-14.md)
-for the exact pass, conditional, and blocked gates.
+for the exact pass, conditional, and blocked gates, and
+[the production acceptance runbook](docs/ACCEPTANCE_RUNBOOK.md) for the signed
+ear corpus, live-provider, PayPal, benchmark, and distribution procedures.
 
 ## Deployment And Operations
 

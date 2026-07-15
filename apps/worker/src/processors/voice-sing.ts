@@ -181,6 +181,9 @@ export async function processSingConvert(payload: SingConvertPayload): Promise<v
             pitchChange: payload.pitchChange ?? 'no-change',
             separationEngine: separated.engine ?? 'unknown',
             qualityState: 'passed',
+            contentHash: fullContentHash,
+            isolatedVocalContentHash: vocalInspection.contentHash,
+            isolatedVocalQualityState: vocalInspection.qualityState,
           } as never,
         },
       });

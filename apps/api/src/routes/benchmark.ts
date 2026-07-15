@@ -3,9 +3,12 @@ import { z } from "zod";
 import { createHash, randomBytes } from "node:crypto";
 import { loadReleaseCertification, prisma } from "@afrohit/db";
 import {
+  canonicalJson,
+  evaluateBenchmarkCorpus,
   evaluateCompetitorBenchmark,
   type BenchmarkScores,
   type CompetitorJudgmentEvidence,
+  type CompetitorPairEvidence,
 } from "@afrohit/shared";
 import { requireAuth, requireRole } from "../middleware/auth";
 import { fingerprintUploadedAudio, presignAssetRef } from "../lib/storage";
@@ -45,6 +48,25 @@ const scoreSetSchema = z
   })
   .strict();
 
+const comparisonProtocolSchema = z
+  .object({
+    version: z.literal(1),
+    blind: z.literal(true),
+    identityMetadataRemoved: z.literal(true),
+    loudnessMatched: z.literal(true),
+    durationMatched: z.literal(true),
+    independentJudgesMin: z.number().int().min(3).max(100),
+    note: z.string().trim().min(10).max(500),
+  })
+  .strict();
+
+function hasValidStoredProtocol(value: unknown): boolean {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const attestation = value as Record<string, unknown>;
+  return comparisonProtocolSchema.safeParse(attestation.comparisonProtocol)
+    .success;
+}
+
 const createCompetitorPairSchema = z
   .object({
     songId: z.string().cuid(),
@@ -60,6 +82,7 @@ const createCompetitorPairSchema = z
         note: z.string().trim().min(3).max(500),
       })
       .strict(),
+    comparisonProtocol: comparisonProtocolSchema,
   })
   .strict();
 
@@ -463,6 +486,17 @@ export default async function benchmark(app: FastifyInstance) {
       input.referenceKey,
       input.referenceFormat
     );
+    const attestedAt = new Date();
+    const rightsAttestation = {
+      schemaVersion: 1,
+      confirmed: true,
+      basis: input.rightsAttestation.basis,
+      note: input.rightsAttestation.note,
+      attestedBy: userId,
+      attestedAt: attestedAt.toISOString(),
+      contentHash: reference.contentHash,
+      comparisonProtocol: input.comparisonProtocol,
+    };
     const existing = await prisma.benchmarkPair.findFirst({
       where: {
         workspaceId,
@@ -472,11 +506,32 @@ export default async function benchmark(app: FastifyInstance) {
         referenceContentHash: reference.contentHash,
         status: "open",
       },
-      select: { id: true },
+      select: {
+        id: true,
+        rightsAttestation: true,
+        _count: { select: { judgments: true } },
+      },
     });
-    if (existing) return { id: existing.id, existing: true };
+    if (existing && hasValidStoredProtocol(existing.rightsAttestation)) {
+      return { id: existing.id, existing: true, upgraded: false };
+    }
+    if (existing && existing._count.judgments === 0) {
+      await prisma.benchmarkPair.update({
+        where: { id: existing.id },
+        data: {
+          rightsBasis: input.rightsAttestation.basis,
+          rightsAttestation,
+        },
+      });
+      return { id: existing.id, existing: true, upgraded: true };
+    }
+    if (existing) {
+      await prisma.benchmarkPair.update({
+        where: { id: existing.id },
+        data: { status: "superseded", closedAt: attestedAt },
+      });
+    }
 
-    const attestedAt = new Date();
     const pair = await prisma.benchmarkPair.create({
       data: {
         workspaceId,
@@ -491,15 +546,7 @@ export default async function benchmark(app: FastifyInstance) {
         referenceSizeBytes: reference.sizeBytes,
         referenceFormat: reference.format,
         rightsBasis: input.rightsAttestation.basis,
-        rightsAttestation: {
-          schemaVersion: 1,
-          confirmed: true,
-          basis: input.rightsAttestation.basis,
-          note: input.rightsAttestation.note,
-          attestedBy: userId,
-          attestedAt: attestedAt.toISOString(),
-          contentHash: reference.contentHash,
-        },
+        rightsAttestation,
         seed: randomBytes(32).toString("hex"),
       },
       select: { id: true },
@@ -677,19 +724,35 @@ export default async function benchmark(app: FastifyInstance) {
 
   app.get("/competitor/evidence", async req => {
     const { workspaceId } = requireAuth(req);
-    const [rows, totalPairs] = await Promise.all([
+    const [rows, pairs] = await Promise.all([
       prisma.benchmarkJudgment.findMany({
-        where: { workspaceId },
+        where: { workspaceId, pair: { status: "open" } },
         select: {
           pairId: true,
           userId: true,
           winner: true,
           afrohitScores: true,
           competitorScores: true,
+          confidence: true,
+          createdAt: true,
           pair: { select: { genre: true, competitor: true } },
         },
       }),
-      prisma.benchmarkPair.count({ where: { workspaceId } }),
+      prisma.benchmarkPair.findMany({
+        where: { workspaceId, status: "open" },
+        select: {
+          id: true,
+          genre: true,
+          competitor: true,
+          afrohitContentHash: true,
+          referenceContentHash: true,
+          referenceSizeBytes: true,
+          referenceFormat: true,
+          rightsBasis: true,
+          rightsAttestation: true,
+          createdAt: true,
+        },
+      }),
     ]);
     type JudgmentRow = {
       pairId: string;
@@ -697,20 +760,121 @@ export default async function benchmark(app: FastifyInstance) {
       winner: string;
       afrohitScores: unknown;
       competitorScores: unknown;
+      confidence: number;
+      createdAt: Date;
       pair: { genre: string; competitor: string };
     };
-    const evidenceRows = (rows as JudgmentRow[]).map(row => ({
-      pairId: row.pairId,
-      judgeId: row.userId,
-      genre: row.pair.genre,
-      competitor: row.pair.competitor,
-      winner: row.winner,
-      afrohitScores: row.afrohitScores,
-      competitorScores: row.competitorScores,
-    })) as CompetitorJudgmentEvidence[];
+    type PairRow = {
+      id: string;
+      genre: string;
+      competitor: string;
+      afrohitContentHash: string;
+      referenceContentHash: string;
+      referenceSizeBytes: number;
+      referenceFormat: string;
+      rightsBasis: string;
+      rightsAttestation: unknown;
+      createdAt: Date;
+    };
+    const pairRows = pairs as PairRow[];
+    const corpusResult = evaluateBenchmarkCorpus(
+      pairRows.map(
+        row =>
+          ({
+            pairId: row.id,
+            genre: row.genre,
+            competitor: row.competitor,
+            afrohitContentHash: row.afrohitContentHash,
+            referenceContentHash: row.referenceContentHash,
+            referenceSizeBytes: row.referenceSizeBytes,
+            referenceFormat: row.referenceFormat,
+            rightsBasis: row.rightsBasis,
+            rightsAttestation: row.rightsAttestation,
+          }) satisfies CompetitorPairEvidence
+      ),
+      { competitor: "suno" }
+    );
+    const eligiblePairIds = new Set(corpusResult.eligiblePairIds);
+    const judgmentRows = rows as JudgmentRow[];
+    const evidenceRows = judgmentRows
+      .filter(row => eligiblePairIds.has(row.pairId))
+      .map(row => ({
+        pairId: row.pairId,
+        judgeId: row.userId,
+        genre: row.pair.genre,
+        competitor: row.pair.competitor,
+        winner: row.winner,
+        afrohitScores: row.afrohitScores,
+        competitorScores: row.competitorScores,
+      })) as CompetitorJudgmentEvidence[];
+    const statistical = evaluateCompetitorBenchmark(evidenceRows, {
+      competitor: "suno",
+    });
+    const evidenceHash = createHash("sha256")
+      .update(
+        canonicalJson({
+          schemaVersion: 2,
+          pairs: pairRows
+            .map(row => ({
+              pairId: row.id,
+              genre: row.genre,
+              competitor: row.competitor,
+              afrohitContentHash: row.afrohitContentHash,
+              referenceContentHash: row.referenceContentHash,
+              referenceSizeBytes: row.referenceSizeBytes,
+              referenceFormat: row.referenceFormat,
+              rightsBasis: row.rightsBasis,
+              rightsAttestation: row.rightsAttestation,
+              createdAt: row.createdAt,
+            }))
+            .sort((a, b) => a.pairId.localeCompare(b.pairId)),
+          judgments: judgmentRows
+            .map(row => ({
+              pairId: row.pairId,
+              judgeId: row.userId,
+              winner: row.winner,
+              afrohitScores: row.afrohitScores,
+              competitorScores: row.competitorScores,
+              confidence: row.confidence,
+              createdAt: row.createdAt,
+            }))
+            .sort(
+              (a, b) =>
+                a.pairId.localeCompare(b.pairId) ||
+                a.judgeId.localeCompare(b.judgeId)
+            ),
+        })
+      )
+      .digest("hex");
+    const { eligiblePairIds: _eligiblePairIds, ...corpus } = corpusResult;
+    const {
+      verdict: statisticalVerdict,
+      claimReady: statisticalClaimReady,
+      claim: _statisticalClaim,
+      gates: statisticalGates,
+      ...metrics
+    } = statistical;
+    const claimReady = corpus.claimReady && statisticalClaimReady;
+    const verdict = corpus.claimReady
+      ? statisticalVerdict
+      : "insufficient_evidence";
+
     return {
-      totalPairs,
-      ...evaluateCompetitorBenchmark(evidenceRows, { competitor: "suno" }),
+      schemaVersion: 2,
+      totalPairs: corpus.sample.totalPairs,
+      ...metrics,
+      verdict,
+      claimReady,
+      statisticalClaimReady,
+      claim: claimReady
+        ? "AfroHit outperformed suno in this controlled listening benchmark."
+        : "No evidence-backed claim that AfroHit outperforms suno is permitted yet.",
+      evidenceHash,
+      corpus,
+      gates: {
+        ...statisticalGates,
+        corpusPassed: corpus.claimReady,
+      },
     };
   });
 }

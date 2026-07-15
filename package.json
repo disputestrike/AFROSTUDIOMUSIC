@@ -2,7 +2,7 @@
   "name": "afrohit-studio",
   "version": "0.1.0",
   "private": true,
-  "description": "AfroHit Studio \u2014 AI production house for African and diaspora artists",
+  "description": "AfroHit Studio — AI production house for African and diaspora artists",
   "packageManager": "pnpm@9.12.0",
   "engines": {
     "node": ">=20.10.0",
@@ -27,7 +27,10 @@
     "infra:up": "docker compose -f docker-compose.dev.yml up -d",
     "infra:down": "docker compose -f docker-compose.dev.yml down",
     "format": "prettier --write \"**/*.{ts,tsx,md,json}\"",
-    "verify": "pnpm --filter @afrohit/shared build && pnpm --filter @afrohit/db build && pnpm --filter @afrohit/ai build && pnpm --filter @afrohit/web typecheck && pnpm --filter @afrohit/api typecheck:shim && pnpm --filter @afrohit/worker typecheck:shim && pnpm --filter @afrohit/worker test"
+    "verify": "pnpm --filter @afrohit/shared build && pnpm --filter @afrohit/db build && pnpm --filter @afrohit/ai build && pnpm --filter @afrohit/web typecheck && pnpm --filter @afrohit/api typecheck:shim && pnpm --filter @afrohit/worker typecheck:shim && pnpm --filter @afrohit/worker test && node scripts/test-benchmark-corpus.mjs",
+    "acceptance:production": "node scripts/live-test.mjs",
+    "acceptance:benchmark": "node scripts/benchmark-corpus.mjs",
+    "acceptance:benchmark:test": "node scripts/test-benchmark-corpus.mjs"
   },
   "devDependencies": {
     "@eslint/js": "^9.39.4",

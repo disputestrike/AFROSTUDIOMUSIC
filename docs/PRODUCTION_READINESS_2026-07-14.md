@@ -25,27 +25,32 @@ No skipped, unavailable, informational, or credential-dependent check is reporte
   use, workspace-scoped artist memory, and retrieval analytics.
 - Vocal isolation/verification, mix evidence, release certification, checksums,
   rights attestations, signed distribution handoff, and webhook-driven live status.
-- Frozen blind benchmark pairs, independent judgments, server-side blind ordering,
-  Wilson-confidence scoring, dimension deltas, and claim suppression.
+- Frozen blind benchmark pairs, distinct authenticated judgments, server-side blind
+  ordering, Wilson-confidence scoring, dimension deltas, and claim suppression.
+- Signed schema-4 ear-corpus verification, rights/hash enforcement, decoded video
+  evidence, live-provider acceptance tooling, and a fail-closed benchmark uploader.
 - Safe forward-only migration deployment, dependency-aware readiness, CI services,
   operational runbooks, and cost governance.
 
 ## Gates Proven Locally
 
-| Gate | Result | Evidence |
-|---|---|---|
-| Lint | PASS | `pnpm run lint` |
-| Required offline proofs | PASS | `pnpm run verify`; 42 of 42 required worker proofs passed |
-| Production build | PASS | `pnpm run build`; all six workspace packages built |
-| Dependency audit | PASS | `pnpm run security:audit`; no known vulnerabilities |
-| Fresh database migration | PASS | 20 migrations applied; migration status current; Prisma diff empty |
-| Legacy database migration | PASS | safe runner recognized the baseline and applied all forward migrations; none pending |
-| Credit concurrency | PASS | PostgreSQL integration proved one charge, race-safe caps, idempotent replay, and one refund |
-| Distribution lifecycle | PASS | PostgreSQL integration proved signed idempotent submit/live transitions |
-| Redis outage behavior | PASS | API served `/health` with Redis unavailable and reported degraded dependency state |
-| Identity concurrency | PASS | 20 simultaneous `/api/v1/auth/me` requests all returned 200 |
-| Browser runtime | PASS | desktop and 390x844 mobile checks found no document overflow or clipped text; console had 0 errors and 0 warnings |
-| Unavailable provider UX | PASS | create actions and auto-create are blocked before project/job/charge creation when no route is connected |
+| Gate                      | Result | Evidence                                                                                                               |
+| ------------------------- | ------ | ---------------------------------------------------------------------------------------------------------------------- |
+| Lint                      | PASS   | `pnpm run lint`                                                                                                        |
+| Required offline proofs   | PASS   | `pnpm run verify`; 44 of 44 required worker proofs passed                                                              |
+| Production build          | PASS   | `pnpm run build`; all six workspace packages built                                                                     |
+| Dependency audit          | PASS   | `pnpm run security:audit`; 566 exact locked versions checked, 0 advisory matches                                       |
+| Ear-corpus trust boundary | PASS   | 12 of 12 signing, rights, balance, hash, tamper, and synthetic-closure tests passed; real calibration remains external |
+| Video render evidence     | PASS   | MP4/H.264 decode, dimensions, duration, aspect, content hash, and cost evidence proved                                 |
+| Benchmark corpus harness  | PASS   | `node scripts/test-benchmark-corpus.mjs`; valid corpus accepted and duplicate audio rejected                           |
+| Fresh database migration  | PASS   | 20 migrations applied; migration status current; Prisma diff empty                                                     |
+| Legacy database migration | PASS   | safe runner recognized the baseline and applied all forward migrations; none pending                                   |
+| Credit concurrency        | PASS   | PostgreSQL integration proved one charge, race-safe caps, idempotent replay, and one refund                            |
+| Distribution lifecycle    | PASS   | PostgreSQL integration proved signed idempotent submit/live transitions                                                |
+| Redis outage behavior     | PASS   | API served `/health` with Redis unavailable and reported degraded dependency state                                     |
+| Identity concurrency      | PASS   | 20 simultaneous `/api/v1/auth/me` requests all returned 200                                                            |
+| Browser runtime           | PASS   | desktop and 390x844 mobile checks found no document overflow or clipped text; console had 0 errors and 0 warnings      |
+| Unavailable provider UX   | PASS   | create actions and auto-create are blocked before project/job/charge creation when no route is connected               |
 
 The database proofs used isolated PostgreSQL databases named `afrohit_empty` and
 `afrohit_legacy`. They did not touch a production database.
@@ -56,11 +61,17 @@ The benchmark may emit an AfroHit-outperforms-Suno verdict only when all of the
 following are true:
 
 1. At least 30 eligible judgments exist.
-2. At least 10 frozen pairs are covered.
+2. At least 10 open, rights-attested, hash-frozen pairs are covered.
 3. At least 5 genres are represented.
-4. Every eligible pair has at least 3 independent judges.
-5. The 95% Wilson lower bound of the AfroHit win rate is above 0.50.
-6. No measured quality dimension averages below -0.25 versus the competitor.
+4. Competitor and AfroHit audio hashes are unique, valid, and never collide across sides.
+5. Every pair attests a blind, identity-removed, loudness- and duration-matched protocol.
+6. Every eligible pair has at least 3 distinct authenticated judges.
+7. The 95% Wilson lower bound of the AfroHit win rate is above 0.50.
+8. No measured quality dimension averages below -0.25 versus the competitor.
+
+Authenticated identity uniqueness is not presented as proof of real-world judge
+independence. Study recruitment and conflict-of-interest controls remain part of the
+external human benchmark.
 
 Current verdict: **insufficient evidence**. The UI and API suppress the claim.
 
@@ -68,9 +79,9 @@ Current verdict: **insufficient evidence**. The UI and API suppress the claim.
 
 These are real acceptance gates, not code placeholders:
 
-- Run the rights-clean nine-track ear corpus: three Afrobeats, three Amapiano,
-  and three house references. The local DSP test is informational when `librosa`
-  is absent; CI installs the pinned DSP stack and requires it.
+- Run and sign the rights-clean nine-track ear corpus: three Afrobeats, three
+  Amapiano, and three house references. All 45 mix/stem files must match the
+  manifest hashes; a synthetic or unsigned artifact cannot open calibration.
 - Exercise each configured music, voice, image, video, email, storage, and LLM
   provider with production-scoped credentials and verify output, latency, cost,
   cancellation, retry, and refund behavior.
@@ -83,6 +94,9 @@ These are real acceptance gates, not code placeholders:
 - Run worker queues against production-equivalent Redis and object storage under
   concurrency, worker restart, provider timeout, and dead-letter recovery.
 - Complete the blind human benchmark above before publishing any superiority claim.
+
+Exact commands, required inputs, spend confirmations, and evidence locations are in
+[`ACCEPTANCE_RUNBOOK.md`](./ACCEPTANCE_RUNBOOK.md).
 
 ## Launch Rule
 

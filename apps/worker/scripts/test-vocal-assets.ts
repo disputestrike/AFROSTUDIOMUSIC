@@ -92,7 +92,7 @@ assert.match(mixerRoute, /qualityState:\s*'passed'/);
 assert.match(mixWorker, /mix_qc_failed/);
 assert.match(mixWorker, /tx\.providerJob\.update/);
 assert.match(speechWorker, /assetKind:\s*'spoken_guide'/);
-assert.match(singWorker, /tx\.vocalRender\.create[\s\S]*assetKind:\s*'isolated_vocal'/);
+assert.match(singWorker, /tx\.vocalRender\.create[\s\S]*assetKind:\s*['"]isolated_vocal['"]/);
 assert.doesNotMatch(singWorker, /vocalRender\.create[\s\S]{0,1000}fullRemix/);
 assert.match(datasetWorker, /voiceDataset\.upsert/);
 const datasetReceiptIndex = datasetWorker.indexOf('dataset = await prisma.voiceDataset.update');
