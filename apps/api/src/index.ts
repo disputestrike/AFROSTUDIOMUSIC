@@ -110,6 +110,27 @@ function safeError(error: unknown) {
   };
 }
 
+function isRedisAvailabilityError(error: {
+  code?: string;
+  message?: string;
+}): boolean {
+  if (
+    new Set([
+      "ECONNREFUSED",
+      "ECONNRESET",
+      "ETIMEDOUT",
+      "EPIPE",
+      "NR_CLOSED",
+      "CONNECTION_BROKEN",
+    ]).has(error.code ?? "")
+  ) {
+    return true;
+  }
+  return /redis|stream isn't writeable|connection is closed|command timed out|max retries per request/i.test(
+    error.message ?? ""
+  );
+}
+
 const app = Fastify({
   logger: {
     level: process.env.LOG_LEVEL ?? "info",
@@ -158,14 +179,24 @@ app.setErrorHandler((unknownError, req, reply) => {
   const prismaCode = error.code;
   const validation = Array.isArray(error.validation);
   const inferred =
-    prismaCode === "P2025" ? 404 : prismaCode === "P2002" ? 409 : undefined;
+    prismaCode === "P2025"
+      ? 404
+      : prismaCode === "P2002"
+        ? 409
+        : isRedisAvailabilityError(error)
+          ? 503
+          : undefined;
   const status = Math.max(
     400,
     Math.min(599, inferred ?? error.statusCode ?? 500)
   );
   if (status >= 500) {
     req.log.error({ err: error }, "request failed");
-    return reply.code(status).send({ error: "internal_error" });
+    return reply
+      .code(status)
+      .send({
+        error: status === 503 ? "service_unavailable" : "internal_error",
+      });
   }
   const code = validation
     ? "invalid_request"
@@ -222,11 +253,16 @@ async function bootstrap() {
   await app.register(rateLimit, {
     max: maxRequestsPerMinute,
     timeWindow: "1 minute",
-    redis: app.redis,
+    redis: app.rateLimitRedis,
     skipOnError: false,
     allowList: req => {
       const path = req.url.split("?")[0] ?? "";
-      return path === "/health" || path === "/docs" || path.startsWith("/docs/");
+      return (
+        path === "/health" ||
+        path.startsWith("/health/") ||
+        path === "/docs" ||
+        path.startsWith("/docs/")
+      );
     },
     errorResponseBuilder: (_req, context) => ({
       error: "rate_limited",
@@ -293,21 +329,24 @@ async function bootstrap() {
     try {
       await withTimeout(prisma.$queryRaw`SELECT 1`, 2_000);
       database = true;
-      const [heartbeats, pending, oldest] = await Promise.all([
-        prisma.systemSetting.findMany({
-          where: { key: { startsWith: "worker:heartbeat:" } },
-          select: { value: true },
-          take: 20,
-        }),
-        prisma.jobOutbox.count({
-          where: { status: { in: ["PENDING", "FAILED"] } },
-        }),
-        prisma.jobOutbox.findFirst({
-          where: { status: { in: ["PENDING", "FAILED"] } },
-          orderBy: { createdAt: "asc" },
-          select: { createdAt: true },
-        }),
-      ]);
+      const [heartbeats, pending, oldest] = await withTimeout(
+        Promise.all([
+          prisma.systemSetting.findMany({
+            where: { key: { startsWith: "worker:heartbeat:" } },
+            select: { value: true },
+            take: 20,
+          }),
+          prisma.jobOutbox.count({
+            where: { status: { in: ["PENDING", "FAILED"] } },
+          }),
+          prisma.jobOutbox.findFirst({
+            where: { status: { in: ["PENDING", "FAILED"] } },
+            orderBy: { createdAt: "asc" },
+            select: { createdAt: true },
+          }),
+        ]),
+        2_000
+      );
       worker = heartbeats.some((row: { value: string }) => {
         try {
           const at = new Date(
@@ -331,13 +370,14 @@ async function bootstrap() {
       app.log.warn({ err: error }, "database readiness check failed");
     }
     try {
-      redis = (await withTimeout(app.redis.ping(), 2_000)) === "PONG";
+      redis = (await withTimeout(app.rateLimitRedis.ping(), 2_000)) === "PONG";
     } catch (error) {
       app.log.warn({ err: error }, "redis readiness check failed");
     }
+    const systemOk = database && redis && worker;
     const response = {
-      ok: database,
-      systemOk: database && redis && worker,
+      ok: systemOk,
+      systemOk,
       service: "api",
       checkedAt: checkedAt.toISOString(),
       dependencies: {
@@ -348,7 +388,7 @@ async function bootstrap() {
         oldestPendingSeconds,
       },
     };
-    return reply.code(database ? 200 : 503).send(response);
+    return reply.code(systemOk ? 200 : 503).send(response);
   });
 
   await app.register(

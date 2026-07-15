@@ -1,6 +1,6 @@
 import fp from 'fastify-plugin';
 import { Queue, QueueEvents } from 'bullmq';
-import IORedis from 'ioredis';
+import IORedis, { type RedisOptions } from 'ioredis';
 import { prisma } from '@afrohit/db';
 import { redactSensitiveText } from '@afrohit/shared';
 
@@ -27,8 +27,28 @@ declare module 'fastify' {
   interface FastifyInstance {
     queues: Record<QueueName, Queue>;
     redis: IORedis;
+    rateLimitRedis: IORedis;
     dispatchPendingJobs(): Promise<number>;
   }
+}
+
+const DEFAULT_REQUEST_REDIS_TIMEOUT_MS = 1_000;
+
+export function requestRedisOptions(
+  env: NodeJS.ProcessEnv = process.env
+): RedisOptions {
+  const configured = Number.parseInt(env.REDIS_REQUEST_TIMEOUT_MS ?? '', 10);
+  const commandTimeout = Number.isFinite(configured)
+    ? Math.max(250, Math.min(configured, 5_000))
+    : DEFAULT_REQUEST_REDIS_TIMEOUT_MS;
+  return {
+    // Request-path commands must fail closed quickly instead of waiting through
+    // BullMQ's intentionally unbounded reconnect cycle.
+    maxRetriesPerRequest: 1,
+    enableOfflineQueue: false,
+    connectTimeout: commandTimeout,
+    commandTimeout,
+  };
 }
 
 const DEFAULT_JOB_OPTIONS = {
@@ -47,7 +67,10 @@ type OutboxRow = {
   attempts: number;
 };
 
-async function dispatchRow(queues: Record<QueueName, Queue>, row: OutboxRow): Promise<boolean> {
+async function dispatchRow(
+  queues: Record<QueueName, Queue>,
+  row: OutboxRow
+): Promise<boolean> {
   const queue = queues[row.queueName as QueueName];
   if (!queue) {
     await prisma.jobOutbox.update({
@@ -92,21 +115,28 @@ async function dispatchRow(queues: Record<QueueName, Queue>, row: OutboxRow): Pr
 export const queuePlugin = fp(async function (app) {
   const url = process.env.REDIS_URL ?? 'redis://localhost:6379';
   const connection = new IORedis(url, { maxRetriesPerRequest: null });
+  const rateLimitConnection = new IORedis(url, requestRedisOptions());
   let lastRedisErrorAt = 0;
   const reportRedisError = (error: Error) => {
     const now = Date.now();
     if (now - lastRedisErrorAt < 30_000) return;
     lastRedisErrorAt = now;
-    app.log.warn({ err: error }, 'Redis queue connection unavailable; durable jobs remain in the PostgreSQL outbox');
+    app.log.warn(
+      { err: error },
+      'Redis queue connection unavailable; durable jobs remain in the PostgreSQL outbox'
+    );
   };
   connection.on('error', reportRedisError);
+  rateLimitConnection.on('error', reportRedisError);
 
   const queues = Object.fromEntries(
-    Object.values(QUEUES).map((name) => [name, new Queue(name, { connection })])
+    Object.values(QUEUES).map(name => [name, new Queue(name, { connection })])
   ) as Record<QueueName, Queue>;
-  for (const queue of Object.values(queues)) queue.on('error', reportRedisError);
+  for (const queue of Object.values(queues))
+    queue.on('error', reportRedisError);
 
   app.decorate('redis', connection);
+  app.decorate('rateLimitRedis', rateLimitConnection);
   app.decorate('queues', queues);
 
   const dispatchPendingJobs = async () => {
@@ -130,16 +160,21 @@ export const queuePlugin = fp(async function (app) {
   // Redis can be unavailable while Postgres remains healthy. Persisted outbox
   // rows are replayed on boot and periodically; stable BullMQ IDs make races
   // between multiple API instances harmless.
-  void dispatchPendingJobs().catch((error) => app.log.error({ err: error }, 'job outbox startup dispatch failed'));
+  void dispatchPendingJobs().catch(error =>
+    app.log.error({ err: error }, 'job outbox startup dispatch failed')
+  );
   const dispatchTimer = setInterval(() => {
-    void dispatchPendingJobs().catch((error) => app.log.error({ err: error }, 'job outbox dispatch failed'));
+    void dispatchPendingJobs().catch(error =>
+      app.log.error({ err: error }, 'job outbox dispatch failed')
+    );
   }, 15_000);
   dispatchTimer.unref();
 
   app.addHook('onClose', async () => {
     clearInterval(dispatchTimer);
     for (const q of Object.values(queues)) await q.close();
-    await connection.quit();
+    rateLimitConnection.disconnect();
+    connection.disconnect();
   });
 });
 
@@ -173,7 +208,9 @@ export async function enqueue<T>(opts: {
       queueName: opts.queue.name,
       jobName: opts.name,
       payload: opts.payload as never,
-      ...(opts.delayMs ? { nextAttemptAt: new Date(Date.now() + opts.delayMs) } : {}),
+      ...(opts.delayMs
+        ? { nextAttemptAt: new Date(Date.now() + opts.delayMs) }
+        : {}),
     },
     update: {
       queueName: opts.queue.name,

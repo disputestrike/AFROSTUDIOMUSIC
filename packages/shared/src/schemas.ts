@@ -144,11 +144,7 @@ const INSTRUMENT_ROLE_ALIASES: Readonly<Record<string, MaterialRole>> = {
 };
 
 function normalizedInstrumentSelection(value: string): string {
-  return value
-    .trim()
-    .toLowerCase()
-    .replace(/[_-]+/g, " ")
-    .replace(/\s+/g, " ");
+  return value.trim().toLowerCase().replace(/[_-]+/g, " ").replace(/\s+/g, " ");
 }
 
 export interface RequestedMaterialRoleProvenance {
@@ -167,7 +163,7 @@ export interface RequestedMaterialRoleContract {
 /** Derive worker roles from the public instrument labels. Callers must never
  * accept a client-supplied requestedRoles/provenance object in their place. */
 export function requestedMaterialRoleContract(
-  instruments: readonly string[] | null | undefined,
+  instruments: readonly string[] | null | undefined
 ): RequestedMaterialRoleContract {
   const requestedInstruments: string[] = [];
   const mappings: Array<{ instrument: string; role: MaterialRole }> = [];
@@ -183,8 +179,9 @@ export function requestedMaterialRoleContract(
     requestedInstruments.push(instrument);
 
     const directRole = normalized.replace(/\s+/g, "_");
-    const role = INSTRUMENT_ROLE_ALIASES[normalized]
-      ?? (isMaterialRole(directRole) ? directRole : null);
+    const role =
+      INSTRUMENT_ROLE_ALIASES[normalized] ??
+      (isMaterialRole(directRole) ? directRole : null);
     if (!role) {
       unsupportedInstruments.push(instrument);
       continue;
@@ -215,18 +212,19 @@ export function hasExactMaterialRoleEvidence(pick: {
   roleEvidence?: string | null;
 }): boolean {
   return (EXACT_MATERIAL_ROLE_EVIDENCE as readonly string[]).includes(
-    pick.roleEvidence?.trim() ?? "",
+    pick.roleEvidence?.trim() ?? ""
   );
 }
 
 export function missingExactRequestedMaterialRoles(
   picks: ReadonlyArray<{ role: string; roleEvidence?: string | null }>,
-  requestedRoles: readonly MaterialRole[],
+  requestedRoles: readonly MaterialRole[]
 ): MaterialRole[] {
   return requestedRoles.filter(
-    (role) => !picks.some(
-      (pick) => pick.role === role && hasExactMaterialRoleEvidence(pick),
-    ),
+    role =>
+      !picks.some(
+        pick => pick.role === role && hasExactMaterialRoleEvidence(pick)
+      )
   );
 }
 
@@ -506,31 +504,33 @@ const AUDIO_FORMATS = [
   "webm",
 ] as const;
 
-export const presignUploadSchema = z.object({
-  kind: z.enum(UPLOAD_KINDS),
-  contentType: z
-    .string()
-    .regex(/^audio\/[a-z0-9.+-]+$/i)
-    .max(120),
-  ext: z.enum(AUDIO_FORMATS),
-  sizeBytes: z
-    .number()
-    .int()
-    .min(1_000)
-    .max(250 * 1024 * 1024),
-});
+export const MAX_PRESIGNED_UPLOAD_BYTES = 80 * 1024 * 1024;
 
-export const attachBeatUploadSchema = z.object({
-  key: z.string().min(4), // R2 object key returned by /uploads/presign
-  songId: z.string().cuid().optional(),
-  bpm: z.number().int().min(40).max(220).optional(),
-  keySignature: z.string().max(12).optional(),
-  durationS: z.number().min(1).max(1200).optional(),
-  format: z.enum(AUDIO_FORMATS).default("wav"),
-  title: z.string().max(120).optional(),
-  instrumental: z.boolean().optional(), // full instrumental vs a loop/beat
-  rightsConfirmation: ownedAudioRightsConfirmationSchema,
-}).strict();
+export const presignUploadSchema = z
+  .object({
+    kind: z.enum(UPLOAD_KINDS),
+    contentType: z
+      .string()
+      .regex(/^audio\/[a-z0-9.+-]+$/i)
+      .max(120),
+    ext: z.enum(AUDIO_FORMATS),
+    sizeBytes: z.number().int().min(1_000).max(MAX_PRESIGNED_UPLOAD_BYTES),
+  })
+  .strict();
+
+export const attachBeatUploadSchema = z
+  .object({
+    key: z.string().min(4), // R2 object key returned by /uploads/presign
+    songId: z.string().cuid().optional(),
+    bpm: z.number().int().min(40).max(220).optional(),
+    keySignature: z.string().max(12).optional(),
+    durationS: z.number().min(1).max(1200).optional(),
+    format: z.enum(AUDIO_FORMATS).default("wav"),
+    title: z.string().max(120).optional(),
+    instrumental: z.boolean().optional(), // full instrumental vs a loop/beat
+    rightsConfirmation: ownedAudioRightsConfirmationSchema,
+  })
+  .strict();
 
 export const attachVocalUploadSchema = z.object({
   key: z.string().min(4),
@@ -543,38 +543,42 @@ export const attachVocalUploadSchema = z.object({
 
 // Upload a FINISHED song / full mix — stored as a mix and (by default) sent
 // straight to the mastering chain. This is the "master my track" path.
-export const attachSongUploadSchema = z.object({
-  key: z.string().min(4),
-  songId: z.string().cuid().optional(),
-  title: z.string().max(120).optional(),
-  // An uploaded finished song (Suno, or bring-your-own) → light-touch conform to
-  // the commercial default (-9 LUFS / -1.0 dBTP). Safe now: the two-pass chain
-  // drives with a MEASURED gain and lands linearly on target — the old "-9
-  // crusher" was the one-pass dynamic loudnorm, not the number. Artists who
-  // want the record to breathe opt in to 'breathe_-16.5'.
-  masterPreset: z.enum(MASTER_PRESETS).default("afro_stream_-9"),
-  autoMaster: z.boolean().default(true),
-  rightsConfirmation: ownedAudioRightsConfirmationSchema,
-}).strict();
+export const attachSongUploadSchema = z
+  .object({
+    key: z.string().min(4),
+    songId: z.string().cuid().optional(),
+    title: z.string().max(120).optional(),
+    // An uploaded finished song (Suno, or bring-your-own) → light-touch conform to
+    // the commercial default (-9 LUFS / -1.0 dBTP). Safe now: the two-pass chain
+    // drives with a MEASURED gain and lands linearly on target — the old "-9
+    // crusher" was the one-pass dynamic loudnorm, not the number. Artists who
+    // want the record to breathe opt in to 'breathe_-16.5'.
+    masterPreset: z.enum(MASTER_PRESETS).default("afro_stream_-9"),
+    autoMaster: z.boolean().default(true),
+    rightsConfirmation: ownedAudioRightsConfirmationSchema,
+  })
+  .strict();
 
 // Import audio from a URL the artist has the RIGHTS to (own files, direct audio
 // links, royalty-free / Creative-Commons sources). Not a streaming-platform
 // ripper — the API refuses YouTube/Spotify/etc. hosts.
-export const importUrlSchema = z.object({
-  projectId: z.string().cuid(),
-  url: z.string().url(),
-  kind: z.enum(["beat", "instrumental", "vocal", "song", "reference"]),
-  songId: z.string().cuid().optional(),
-  bpm: z.number().int().min(40).max(220).optional(),
-  keySignature: z.string().max(12).optional(),
-  role: z.enum(["lead", "double", "ad-lib", "harmony"]).optional(),
-  isolationConfirmed: z.boolean().optional(),
-  title: z.string().max(120).optional(),
-  /** kind 'song' only: learn + harvest WITHOUT filing a catalog Song — training
-   *  uploads must never appear in the artist's working catalog. */
-  trainingOnly: z.boolean().optional(),
-  rightsConfirmation: ownedAudioRightsConfirmationSchema,
-}).strict();
+export const importUrlSchema = z
+  .object({
+    projectId: z.string().cuid(),
+    url: z.string().url(),
+    kind: z.enum(["beat", "instrumental", "vocal", "song", "reference"]),
+    songId: z.string().cuid().optional(),
+    bpm: z.number().int().min(40).max(220).optional(),
+    keySignature: z.string().max(12).optional(),
+    role: z.enum(["lead", "double", "ad-lib", "harmony"]).optional(),
+    isolationConfirmed: z.boolean().optional(),
+    title: z.string().max(120).optional(),
+    /** kind 'song' only: learn + harvest WITHOUT filing a catalog Song — training
+     *  uploads must never appear in the artist's working catalog. */
+    trainingOnly: z.boolean().optional(),
+    rightsConfirmation: ownedAudioRightsConfirmationSchema,
+  })
+  .strict();
 
 // ---------- Mixer console (hands-on, DAW-style) ----------------------------
 // Every track gets a channel strip: fader + pan + mute/solo + EQ + comp + verb.
