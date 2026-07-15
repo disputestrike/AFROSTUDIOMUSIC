@@ -3,7 +3,7 @@ import { prisma } from '@afrohit/db';
 import { createMasterInputSchema, createMixInputSchema, attachSongUploadSchema } from '@afrohit/shared';
 import { requireAuth } from '../middleware/auth';
 import { createQueuedProviderJob, scopedRequestKey } from '../lib/queued-job';
-import { enqueueHarvest } from '../lib/harvest';
+import { enqueueHarvest, enqueueLearn } from '../lib/harvest';
 import { publicUrlFor, verifyUploadedAudio } from '../lib/storage';
 import { arReadAfterRender } from '../lib/ar-read';
 
@@ -229,46 +229,31 @@ export default async function mixes(app: FastifyInstance) {
       // must feed the lake like a /listen — otherwise "I pushed my Suno songs
       // and it learned nothing". Best-effort: a failed charge or enqueue never
       // blocks the upload itself.
-      try {
-        const learnIdempotencyKey = scopedRequestKey(req.headers as Record<string, unknown>, 'finished-upload-learn');
-        const learnCharge = await app.chargeCredits({
-          workspaceId,
-          key: 'analyze_audio',
-          refTable: 'Song',
-          refId: songId,
-          idempotencyKey: learnIdempotencyKey,
-        });
-        if (learnCharge.ok) {
-          await createQueuedProviderJob({
-            app,
-            queue: app.queues.music,
-            jobName: 'analyze-audio',
-            workspaceId,
-            projectId: project.id,
-            kind: 'analyze',
-            provider: 'replicate',
-            inputJson: { url: mix.url, source: 'finished-upload', rightsBasis: 'user-attested' },
-            charge: learnCharge,
-            idempotencyKey: learnIdempotencyKey,
-            payload: (jobId) => ({
-              jobId,
-              workspaceId,
-              projectId: project.id,
-              url: mix.url,
-              source: 'finished-upload',
-              rightsBasis: 'user-attested',
-            }),
-          });
-        }
-      } catch (err) {
-        req.log.warn({ err }, 'finished-upload learn enqueue failed (upload still ok)');
-      }
+      await enqueueLearn(app, {
+        workspaceId,
+        projectId: project.id,
+        url: mix.url,
+        source: 'finished-upload',
+        rightsConfirmation: input.rightsConfirmation,
+        idempotencyKey: scopedRequestKey(
+          req.headers as Record<string, unknown>,
+          'finished-upload-learn',
+        ),
+        refTable: 'Song',
+        refId: songId,
+      });
 
       // HARVEST too (audit: finished uploads fed the lake but never the material
       // shelf): stem-split the record and file its NON-VOCAL stems as owned
       // material. Song-scoped — a finished upload has no beat row — and owned by
       // definition (this route only accepts the artist's own key). Best-effort.
-      await enqueueHarvest(app, { workspaceId, projectId: project.id, songId, sourceUrl: mix.url, owned: true });
+      await enqueueHarvest(app, {
+        workspaceId,
+        projectId: project.id,
+        songId,
+        sourceUrl: mix.url,
+        rightsConfirmation: input.rightsConfirmation,
+      });
 
       if (!input.autoMaster) {
         reply.code(201);

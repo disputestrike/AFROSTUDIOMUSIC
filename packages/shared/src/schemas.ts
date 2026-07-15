@@ -4,6 +4,7 @@
  */
 import { z } from "zod";
 import { VOICE_CONSENT_TEXT, VOICE_CONSENT_VERSION } from "./voice-consent";
+import { isMaterialRole, type MaterialRole } from "./material-roles";
 import {
   GENRES,
   LANGUAGES,
@@ -123,6 +124,116 @@ export const generateLyricsInputSchema = z.object({
 
 // ---------- Beats / Music ---------------------------------------------------
 
+export const REQUESTED_MATERIAL_ROLES_VERSION = 1 as const;
+
+const INSTRUMENT_ROLE_ALIASES: Readonly<Record<string, MaterialRole>> = {
+  "log drum": "log_drum",
+  "amapiano log bass": "log_drum",
+  "talking drum": "talking_drum",
+  congas: "conga",
+  saxophone: "sax",
+  "brass section": "brass_section",
+  "highlife guitar": "highlife_guitar",
+  "palm wine guitar": "palmwine_guitar",
+  guitar: "guitar_chords",
+  "guitar chords": "guitar_chords",
+  "lead guitar": "lead_guitar",
+  strings: "strings_line",
+  "warm sub bass": "sub_bass",
+  "synth pads": "synth_pad",
+};
+
+function normalizedInstrumentSelection(value: string): string {
+  return value
+    .trim()
+    .toLowerCase()
+    .replace(/[_-]+/g, " ")
+    .replace(/\s+/g, " ");
+}
+
+export interface RequestedMaterialRoleProvenance {
+  version: typeof REQUESTED_MATERIAL_ROLES_VERSION;
+  source: "user-instrument-selection";
+  instruments: string[];
+  mappings: Array<{ instrument: string; role: MaterialRole }>;
+}
+
+export interface RequestedMaterialRoleContract {
+  requestedRoles: MaterialRole[];
+  unsupportedInstruments: string[];
+  provenance: RequestedMaterialRoleProvenance;
+}
+
+/** Derive worker roles from the public instrument labels. Callers must never
+ * accept a client-supplied requestedRoles/provenance object in their place. */
+export function requestedMaterialRoleContract(
+  instruments: readonly string[] | null | undefined,
+): RequestedMaterialRoleContract {
+  const requestedInstruments: string[] = [];
+  const mappings: Array<{ instrument: string; role: MaterialRole }> = [];
+  const unsupportedInstruments: string[] = [];
+  const seenInstruments = new Set<string>();
+  const seenRoles = new Set<MaterialRole>();
+
+  for (const raw of instruments ?? []) {
+    const instrument = raw.trim();
+    const normalized = normalizedInstrumentSelection(instrument);
+    if (!normalized || seenInstruments.has(normalized)) continue;
+    seenInstruments.add(normalized);
+    requestedInstruments.push(instrument);
+
+    const directRole = normalized.replace(/\s+/g, "_");
+    const role = INSTRUMENT_ROLE_ALIASES[normalized]
+      ?? (isMaterialRole(directRole) ? directRole : null);
+    if (!role) {
+      unsupportedInstruments.push(instrument);
+      continue;
+    }
+    mappings.push({ instrument, role });
+    seenRoles.add(role);
+  }
+
+  return {
+    requestedRoles: [...seenRoles],
+    unsupportedInstruments,
+    provenance: {
+      version: REQUESTED_MATERIAL_ROLES_VERSION,
+      source: "user-instrument-selection",
+      instruments: requestedInstruments,
+      mappings,
+    },
+  };
+}
+
+export const EXACT_MATERIAL_ROLE_EVIDENCE = [
+  "synth-code",
+  "stem-separated",
+  "human-confirmed",
+] as const;
+
+export function hasExactMaterialRoleEvidence(pick: {
+  roleEvidence?: string | null;
+}): boolean {
+  return (EXACT_MATERIAL_ROLE_EVIDENCE as readonly string[]).includes(
+    pick.roleEvidence?.trim() ?? "",
+  );
+}
+
+export function missingExactRequestedMaterialRoles(
+  picks: ReadonlyArray<{ role: string; roleEvidence?: string | null }>,
+  requestedRoles: readonly MaterialRole[],
+): MaterialRole[] {
+  return requestedRoles.filter(
+    (role) => !picks.some(
+      (pick) => pick.role === role && hasExactMaterialRoleEvidence(pick),
+    ),
+  );
+}
+
+export const instrumentSelectionsSchema = z
+  .array(z.string().trim().min(2).max(32))
+  .max(8);
+
 export const generateBeatInputSchema = z.object({
   projectId: z.string().cuid(),
   songId: z.string().cuid().optional(),
@@ -161,7 +272,7 @@ export const generateBeatInputSchema = z.object({
   influence: z.string().max(120).optional(),
   /** Explicit instrument picks — emitted as a high-priority `instrumentation:`
    *  line in the engine's style prompt (steering; exact on the own engine). */
-  instruments: z.array(z.string().min(2).max(32)).max(8).optional(),
+  instruments: instrumentSelectionsSchema.optional(),
 });
 
 // ---------- Voice -----------------------------------------------------------
@@ -367,6 +478,17 @@ export const logShareEventSchema = z.object({
 // ---------- Uploads (bring-your-own beat / instrumental / vocal) ------------
 // The artist uploads their OWN authentic audio. We never invent or replace it.
 
+export const OWNED_AUDIO_RIGHTS_CONFIRMATION_VERSION = 1 as const;
+export const ownedAudioRightsConfirmationSchema = z
+  .object({
+    version: z.literal(OWNED_AUDIO_RIGHTS_CONFIRMATION_VERSION),
+    confirmed: z.literal(true),
+  })
+  .strict();
+export type OwnedAudioRightsConfirmation = z.infer<
+  typeof ownedAudioRightsConfirmationSchema
+>;
+
 export const UPLOAD_KINDS = [
   "beat",
   "instrumental",
@@ -407,7 +529,8 @@ export const attachBeatUploadSchema = z.object({
   format: z.enum(AUDIO_FORMATS).default("wav"),
   title: z.string().max(120).optional(),
   instrumental: z.boolean().optional(), // full instrumental vs a loop/beat
-});
+  rightsConfirmation: ownedAudioRightsConfirmationSchema,
+}).strict();
 
 export const attachVocalUploadSchema = z.object({
   key: z.string().min(4),
@@ -431,7 +554,8 @@ export const attachSongUploadSchema = z.object({
   // want the record to breathe opt in to 'breathe_-16.5'.
   masterPreset: z.enum(MASTER_PRESETS).default("afro_stream_-9"),
   autoMaster: z.boolean().default(true),
-});
+  rightsConfirmation: ownedAudioRightsConfirmationSchema,
+}).strict();
 
 // Import audio from a URL the artist has the RIGHTS to (own files, direct audio
 // links, royalty-free / Creative-Commons sources). Not a streaming-platform
@@ -449,7 +573,8 @@ export const importUrlSchema = z.object({
   /** kind 'song' only: learn + harvest WITHOUT filing a catalog Song — training
    *  uploads must never appear in the artist's working catalog. */
   trainingOnly: z.boolean().optional(),
-});
+  rightsConfirmation: ownedAudioRightsConfirmationSchema,
+}).strict();
 
 // ---------- Mixer console (hands-on, DAW-style) ----------------------------
 // Every track gets a channel strip: fader + pan + mute/solo + EQ + comp + verb.
@@ -493,18 +618,31 @@ export const mixerAiSchema = z.object({
 
 // ---------- Listen / analyze a reference track -----------------------------
 
-// factsOnly: measure a record the artist OWNS but didn't make — uncopyrightable
-// NUMBERS (tempo/key/groove/log-drum/arrangement) into the lane profile; no
-// transcription, no prose recipe, audio purged after measuring. Expression is
-// never learned from someone else's record.
-export const analyzeAudioSchema = z.object({
+// factsOnly: measure a lawfully accessed reference into uncopyrightable NUMBERS
+// (tempo/key/groove/log-drum/arrangement); no transcription, prose recipe, or
+// retained audio. Expression-level learning is a separate, rights-attested path.
+const analyzeAudioBaseShape = {
   /** Training session: delete the uploaded audio after learning from it. */
   purgeAfter: z.boolean().optional(),
-  factsOnly: z.boolean().optional(),
-  /** Required for expression-level learning. Omit for the safe facts-only path. */
-  rightsConfirmed: z.boolean().optional(),
-  url: z.string().url(), // uploaded reference; full learning additionally requires rightsConfirmed
-});
+  url: z.string().url(),
+};
+
+export const analyzeAudioSchema = z.union([
+  z
+    .object({
+      ...analyzeAudioBaseShape,
+      factsOnly: z.literal(true),
+      rightsConfirmation: ownedAudioRightsConfirmationSchema.optional(),
+    })
+    .strict(),
+  z
+    .object({
+      ...analyzeAudioBaseShape,
+      factsOnly: z.literal(false).optional(),
+      rightsConfirmation: ownedAudioRightsConfirmationSchema,
+    })
+    .strict(),
+]);
 
 // ---------- Rights spine (split-sheet + ISRC/UPC + green-light) -------------
 
@@ -575,7 +713,7 @@ export const dropBatchSchema = z.object({
   // energy/production feel — never copies songs, never named in the output.
   influence: z.string().max(200).optional(),
   /** Explicit instrument picks threaded to the render's style prompt. */
-  instruments: z.array(z.string().min(2).max(32)).max(8).optional(),
+  instruments: instrumentSelectionsSchema.optional(),
 });
 
 // ---------- Proxied audio upload (browser → API → R2, no R2 CORS) ----------

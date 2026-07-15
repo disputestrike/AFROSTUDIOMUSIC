@@ -18,18 +18,21 @@ export default async function analyze(app: FastifyInstance) {
     { schema: { body: analyzeAudioSchema } },
     async (req, reply) => {
       const { workspaceId } = requireAuth(req);
-      const { url, purgeAfter, factsOnly, rightsConfirmed } = analyzeAudioSchema.parse(req.body);
-      if (!factsOnly && rightsConfirmed !== true) {
-        return reply.code(400).send({
-          error: 'rights_confirmation_required',
-          message: 'Full learning is only available for audio you own or control. Use facts-only for other references.',
-        });
-      }
+      const input = analyzeAudioSchema.parse(req.body);
+      const { url, purgeAfter, factsOnly } = input;
       const rightsBasis = factsOnly ? 'facts-only' : 'user-attested';
       const source = factsOnly ? 'external-reference-facts' : 'rights-confirmed-reference';
+      const rightsConfirmation = factsOnly
+        ? undefined
+        : {
+            schemaVersion: input.rightsConfirmation.version,
+            confirmed: true as const,
+            rightsBasis,
+          };
 
       // Same bright-line + SSRF guard as /import: no streaming-catalog hosts,
-      // no private/metadata targets. The AI listens to rights-cleared audio only.
+      // no private/metadata targets. Full learning is rights-attested; the
+      // separate facts-only path retains numbers and purges the supplied audio.
       if (!assertWorkspaceAsset(workspaceId, url)) {
         const chk = await assertSafeUrl(url);
         if (!chk.ok) return reply.code(chk.code).send({ error: chk.error, message: chk.message });
@@ -53,7 +56,13 @@ export default async function analyze(app: FastifyInstance) {
         projectId: project.id,
         kind: 'analyze',
         provider: 'replicate',
-        inputJson: { url, factsOnly: !!factsOnly, source, rightsBasis },
+        inputJson: {
+          url,
+          factsOnly: !!factsOnly,
+          source,
+          rightsBasis,
+          ...(rightsConfirmation ? { rightsConfirmation } : {}),
+        },
         charge,
         idempotencyKey,
         payload: (jobId) => ({
@@ -61,10 +70,11 @@ export default async function analyze(app: FastifyInstance) {
           workspaceId,
           projectId: project.id,
           url,
-          purgeAfter,
+          purgeAfter: factsOnly ? true : purgeAfter,
           factsOnly,
           source,
           rightsBasis,
+          ...(rightsConfirmation ? { rightsConfirmation } : {}),
         }),
       });
 

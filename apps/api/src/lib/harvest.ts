@@ -1,6 +1,20 @@
 import type { FastifyInstance } from 'fastify';
 import { createHash } from 'node:crypto';
+import {
+  ownedAudioRightsConfirmationSchema,
+  type OwnedAudioRightsConfirmation,
+} from '@afrohit/shared';
 import { createQueuedProviderJob } from './queued-job';
+
+const OWNED_AUDIO_RIGHTS_BASIS = 'user-attested' as const;
+
+export function ownedRightsEvidence(confirmation: OwnedAudioRightsConfirmation) {
+  return {
+    schemaVersion: confirmation.version,
+    confirmed: true as const,
+    rightsBasis: OWNED_AUDIO_RIGHTS_BASIS,
+  };
+}
 
 function harvestKey(prefix: string, parts: Array<string | undefined>): string {
   return `${prefix}:${createHash('sha256').update(parts.filter(Boolean).join('|')).digest('hex').slice(0, 24)}`;
@@ -15,16 +29,24 @@ function harvestKey(prefix: string, parts: Array<string | undefined>): string {
  * in the catalog. Best-effort: never blocks the upload response.
  *
  * FINISHED SONGS too (audit: the mixes /upload bridge harvested nothing): a full
- * record has no beat row — pass songId + owned:true instead of beatId. Mode stays
- * 'stems' (the four-way split); the processor files only the NON-VOCAL stems as
- * material and, with no beat to attach Stem rows to, skips those. `owned` is the
- * provenance the route vouches for (upload/import routes are owned-audio by
- * definition — this is NEVER set for Zap/preview URLs).
+ * record has no beat row, so pass songId instead of beatId. Mode stays 'stems'
+ * (the four-way split); the processor files only the NON-VOCAL stems as material.
+ * This helper validates the versioned confirmation before deriving the internal
+ * owned flag; Zap and preview URLs never enter this path.
  */
 export async function enqueueHarvest(
   app: FastifyInstance,
-  p: { workspaceId: string; projectId: string; beatId?: string; songId?: string; sourceUrl?: string; owned?: boolean },
+  p: {
+    workspaceId: string;
+    projectId: string;
+    beatId?: string;
+    songId?: string;
+    sourceUrl?: string;
+    rightsConfirmation: OwnedAudioRightsConfirmation;
+  },
 ): Promise<void> {
+  const rightsConfirmation = ownedAudioRightsConfirmationSchema.parse(p.rightsConfirmation);
+  const rightsEvidence = ownedRightsEvidence(rightsConfirmation);
   try {
     if (!p.beatId && !p.songId && !p.sourceUrl) throw new Error('harvest needs an owned source');
     const idempotencyKey = harvestKey('owned-harvest', [p.projectId, p.beatId, p.songId, p.sourceUrl]);
@@ -36,9 +58,27 @@ export async function enqueueHarvest(
       projectId: p.projectId,
       kind: 'stems',
       provider: 'replicate',
-      inputJson: { beatId: p.beatId, songId: p.songId, mode: 'stems', sourceUrl: p.sourceUrl, owned: p.owned, harvest: true },
+      inputJson: {
+        beatId: p.beatId,
+        songId: p.songId,
+        mode: 'stems',
+        sourceUrl: p.sourceUrl,
+        owned: true,
+        harvest: true,
+        rightsConfirmation: rightsEvidence,
+      },
       idempotencyKey,
-      payload: (jobId) => ({ jobId, workspaceId: p.workspaceId, projectId: p.projectId, beatId: p.beatId, songId: p.songId, mode: 'stems', sourceUrl: p.sourceUrl, owned: p.owned }),
+      payload: (jobId) => ({
+        jobId,
+        workspaceId: p.workspaceId,
+        projectId: p.projectId,
+        beatId: p.beatId,
+        songId: p.songId,
+        mode: 'stems',
+        sourceUrl: p.sourceUrl,
+        owned: true,
+        rightsConfirmation: rightsEvidence,
+      }),
     });
     app.log.info({ beatId: p.beatId, songId: p.songId, workspaceId: p.workspaceId }, '[harvest] owned upload → stem harvest queued');
   } catch (e) {
@@ -57,11 +97,28 @@ export async function enqueueHarvest(
  */
 export async function enqueueLearn(
   app: FastifyInstance,
-  p: { workspaceId: string; projectId: string; url: string; source: string },
+  p: {
+    workspaceId: string;
+    projectId: string;
+    url: string;
+    source: string;
+    rightsConfirmation: OwnedAudioRightsConfirmation;
+    idempotencyKey?: string;
+    refTable?: string;
+    refId?: string;
+  },
 ): Promise<void> {
+  const rightsConfirmation = ownedAudioRightsConfirmationSchema.parse(p.rightsConfirmation);
+  const rightsEvidence = ownedRightsEvidence(rightsConfirmation);
   try {
-    const idempotencyKey = harvestKey('owned-learn', [p.projectId, p.url]);
-    const charge = await app.chargeCredits({ workspaceId: p.workspaceId, key: 'analyze_audio', refTable: 'Project', refId: p.projectId, idempotencyKey });
+    const idempotencyKey = p.idempotencyKey ?? harvestKey('owned-learn', [p.projectId, p.url]);
+    const charge = await app.chargeCredits({
+      workspaceId: p.workspaceId,
+      key: 'analyze_audio',
+      refTable: p.refTable ?? 'Project',
+      refId: p.refId ?? p.projectId,
+      idempotencyKey,
+    });
     if (!charge.ok) {
       app.log.warn({ workspaceId: p.workspaceId, source: p.source }, '[learn] analyze charge refused (insufficient credits) — owned upload NOT learned');
       return;
@@ -74,7 +131,12 @@ export async function enqueueLearn(
       projectId: p.projectId,
       kind: 'analyze',
       provider: 'replicate',
-      inputJson: { url: p.url, source: p.source },
+      inputJson: {
+        url: p.url,
+        source: p.source,
+        rightsBasis: OWNED_AUDIO_RIGHTS_BASIS,
+        rightsConfirmation: rightsEvidence,
+      },
       charge,
       idempotencyKey,
       payload: (jobId) => ({
@@ -83,7 +145,8 @@ export async function enqueueLearn(
         projectId: p.projectId,
         url: p.url,
         source: p.source,
-        rightsBasis: 'user-attested',
+        rightsBasis: OWNED_AUDIO_RIGHTS_BASIS,
+        rightsConfirmation: rightsEvidence,
       }),
     });
     app.log.info({ workspaceId: p.workspaceId, source: p.source }, '[learn] owned upload → analyze-audio queued');

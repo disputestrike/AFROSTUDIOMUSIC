@@ -1,6 +1,11 @@
 import type { FastifyInstance } from 'fastify';
 import { prisma } from '@afrohit/db';
-import { generateBeatInputSchema, attachBeatUploadSchema, genreSignature } from '@afrohit/shared';
+import {
+  generateBeatInputSchema,
+  attachBeatUploadSchema,
+  genreSignature,
+  requestedMaterialRoleContract,
+} from '@afrohit/shared';
 import { enrichLyricsForVocals } from '@afrohit/ai';
 import { learnedReferenceBrief, learnedStyleTags, learnedMeasuredTags, learnedUsage } from '../lib/learned';
 import { applySingingBrain, craftOf, type DraftCraft } from '../lib/singing-pipeline';
@@ -129,8 +134,18 @@ export default async function beats(app: FastifyInstance) {
         }
       }
 
-      const autoOwnRoles = !input.songEngine && !input.withVocals ? await ownShelfRoles(workspaceId, genre) : null;
+      const roleRequest = requestedMaterialRoleContract(input.instruments);
+      const autoOwnRoles = !input.songEngine && !input.withVocals && !roleRequest.unsupportedInstruments.length
+        ? await ownShelfRoles(workspaceId, genre)
+        : null;
       const useOwnEngine = input.songEngine === 'own' || !!autoOwnRoles;
+      if (useOwnEngine && roleRequest.unsupportedInstruments.length) {
+        return reply.code(422).send({
+          error: 'unsupported_exact_instruments',
+          message: 'Our Engine cannot prove an exact material role for every requested instrument.',
+          unsupportedInstruments: roleRequest.unsupportedInstruments,
+        });
+      }
       if (!useOwnEngine) {
         const route = validateMusicRoute(input.songEngine, await musicRouteCapabilities(workspaceId), input.withVocals);
         if (!route.ok) return reply.code(route.statusCode).send({ error: route.error, message: route.message });
@@ -170,14 +185,40 @@ export default async function beats(app: FastifyInstance) {
           projectId: project.id,
           kind: 'music',
           provider: 'afrohit-own',
-          inputJson: { ownEngine: true, genre, bpm: ownBpm, ...(autoOwnRoles ? { autoOwn: true } : {}) },
+          inputJson: {
+            ownEngine: true,
+            genre,
+            bpm: ownBpm,
+            ...(autoOwnRoles ? { autoOwn: true } : {}),
+            ...(roleRequest.provenance.instruments.length
+              ? {
+                  requestedRoles: roleRequest.requestedRoles,
+                  requestedRoleProvenance: roleRequest.provenance,
+                }
+              : {}),
+          },
           charge,
           idempotencyKey,
-          payload: (jobId) => ({ jobId, workspaceId, projectId: project.id, songId: input.songId, genre, bpm: ownBpm, melodyPrompt: genreSignature(genre).melodyPrompt }),
+          payload: (jobId) => ({
+            jobId,
+            workspaceId,
+            projectId: project.id,
+            songId: input.songId,
+            genre,
+            bpm: ownBpm,
+            melodyPrompt: genreSignature(genre).melodyPrompt,
+            ...(roleRequest.provenance.instruments.length
+              ? {
+                  requestedRoles: roleRequest.requestedRoles,
+                  requestedRoleProvenance: roleRequest.provenance,
+                }
+              : {}),
+          }),
         });
         reply.code(202);
         return {
           jobId: ownJob.jobId, status: 'queued', replayed: ownJob.replayed, engine: 'afrohit-own-v1',
+          ...(roleRequest.requestedRoles.length ? { requestedRoles: roleRequest.requestedRoles } : {}),
           ...(autoOwnRoles ? { materialSource: `own-shelf (${autoOwnRoles} roles)` } : {}),
           note: autoOwnRoles
             ? `Your ${genre.replace(/_/g, ' ')} shelf is stocked — own-shelf (${autoOwnRoles} roles) — so this beat is assembled from YOUR OWN material instead of renting a provider. Poll the job.`
@@ -346,15 +387,28 @@ export default async function beats(app: FastifyInstance) {
           title: input.title ?? null,
           instrumental: true,
           rightsBasis: 'user-attested',
+          rightsConfirmationVersion: input.rightsConfirmation.version,
         },
       });
 
       // Auto-harvest the artist's own uploaded beat into reusable role loops.
-      await enqueueHarvest(app, { workspaceId, projectId: project.id, beatId: beat.id, sourceUrl: beat.url });
+      await enqueueHarvest(app, {
+        workspaceId,
+        projectId: project.id,
+        beatId: beat.id,
+        sourceUrl: beat.url,
+        rightsConfirmation: input.rightsConfirmation,
+      });
       // AUTO-LEARN too (audit: harvested but never learned): the artist's own
       // beat joins the learned lake as a SoundReference — genre hint = the
       // project's genre, read by the analyze processor. Charged; best-effort.
-      await enqueueLearn(app, { workspaceId, projectId: project.id, url: beat.url, source: 'beat-upload' });
+      await enqueueLearn(app, {
+        workspaceId,
+        projectId: project.id,
+        url: beat.url,
+        source: 'beat-upload',
+        rightsConfirmation: input.rightsConfirmation,
+      });
       reply.code(202);
       return { ...beat, songId, jobId: qcJob.jobId, qualityState: 'pending' };
     }

@@ -45,6 +45,7 @@ import {
   normalizeLyricBody,
   normalizeStoryboardShots,
   videoRenderUsage,
+  requestedMaterialRoleContract,
 } from "@afrohit/shared";
 import { learnLyricCraft, findLearnedLyric } from "../lib/lyric-learn";
 import { dataLakeReport } from "../lib/data-lake";
@@ -1273,12 +1274,21 @@ async function createBeatJob(
   // 'auto' + INSTRUMENTAL ask + a stocked shelf (≥ OWN_ENGINE_MIN_ROLES distinct
   // roles for this genre) → route here too, and SAY so (materialSource).
   // withVocals NEVER auto-routes here — the own engine cannot sing.
+  const roleRequest = requestedMaterialRoleContract(a.instruments);
   const engineUnset = !a.songEngine || (a.songEngine as string) === "auto";
   const autoOwnRoles =
-    engineUnset && !a.withVocals && a.genre
+    engineUnset && !a.withVocals && a.genre && !roleRequest.unsupportedInstruments.length
       ? await ownShelfRoles(ctx.workspaceId, a.genre)
       : null;
   if (a.songEngine === "own" || autoOwnRoles) {
+    if (roleRequest.unsupportedInstruments.length) {
+      return {
+        error: "unsupported_exact_instruments",
+        message:
+          "Our Engine cannot prove an exact material role for every requested instrument.",
+        unsupportedInstruments: roleRequest.unsupportedInstruments,
+      };
+    }
     const idempotencyKey = toolKey(ctx, "beat-own");
     const ownCharge = await ctx.app.chargeCredits({
       workspaceId: ctx.workspaceId,
@@ -1309,6 +1319,12 @@ async function createBeatJob(
         genre: a.genre,
         bpm: ownBpm,
         ...(autoOwnRoles ? { autoOwn: true } : {}),
+        ...(roleRequest.provenance.instruments.length
+          ? {
+              requestedRoles: roleRequest.requestedRoles,
+              requestedRoleProvenance: roleRequest.provenance,
+            }
+          : {}),
       },
       charge: ownCharge,
       idempotencyKey,
@@ -1320,6 +1336,12 @@ async function createBeatJob(
         genre: a.genre,
         bpm: ownBpm,
         melodyPrompt: genreSignature(a.genre).melodyPrompt,
+        ...(roleRequest.provenance.instruments.length
+          ? {
+              requestedRoles: roleRequest.requestedRoles,
+              requestedRoleProvenance: roleRequest.provenance,
+            }
+          : {}),
       }),
     });
     return {
@@ -1327,6 +1349,9 @@ async function createBeatJob(
       status: "queued",
       replayed: ownJob.replayed,
       engine: "afrohit-own-v1",
+      ...(roleRequest.requestedRoles.length
+        ? { requestedRoles: roleRequest.requestedRoles }
+        : {}),
       ...(autoOwnRoles
         ? { materialSource: `own-shelf (${autoOwnRoles} roles)` }
         : {}),
@@ -1918,6 +1943,7 @@ async function runDropTool(
     durationS?: number;
     voice?: "auto" | "female" | "male" | "duet" | "group";
     songTitle?: string;
+    instruments?: string[];
   }
 ) {
   if (!ctx.projectId) return { error: "no_project_in_thread" };
@@ -1984,6 +2010,7 @@ async function runDropTool(
       durationS: a.durationS,
       voice: a.voice,
       vibePrompt: a.theme,
+      instruments: a.instruments,
     })) as { jobId?: string; songId?: string; error?: string };
     // The user's typed song name IS the title (songTitle was a dead field).
     const producedSongId = ap?.songId ?? beat?.songId;

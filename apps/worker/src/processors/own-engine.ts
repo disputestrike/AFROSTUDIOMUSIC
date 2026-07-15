@@ -21,7 +21,10 @@ import {
   blueprintFromMeasured, forgeKitFor, structureMatch, genreSignature, synthKitFor,
   isMaterialRole, jobOf, parseLyricSections, laneFeel, seedFrom, selectMaterialRows,
   materialCoverage, type SongBlueprint, type MeasuredAnalysis, type MelodyScore,
-  withCoarseMaterialRoles,
+  withCoarseMaterialRoles, isSynthesizable, hasExactMaterialRoleEvidence,
+  missingExactRequestedMaterialRoles, REQUESTED_MATERIAL_ROLES_VERSION,
+  requestedMaterialRoleContract,
+  type MaterialRole, type RequestedMaterialRoleProvenance,
 } from '@afrohit/shared';
 import { melodyBrain, getSoundDNA } from '@afrohit/ai';
 import { deleteObjectByUrl, downloadToBuffer, resolveAssetForProvider, uploadBytes } from '../lib/storage';
@@ -37,9 +40,18 @@ export interface OwnEnginePayload {
   jobId: string; workspaceId: string; projectId: string; songId?: string | null;
   genre: string; bpm?: number; melody?: boolean; melodyPrompt?: string;
   blueprint?: SongBlueprint | null;
+  requestedRoles?: MaterialRole[];
+  requestedRoleProvenance?: RequestedMaterialRoleProvenance;
 }
 
-async function pickKit(workspaceId: string, genre: string, bpm: number, key: string, varietySeed: number) {
+async function pickKit(
+  workspaceId: string,
+  genre: string,
+  bpm: number,
+  key: string,
+  varietySeed: number,
+  requestedRoles: readonly MaterialRole[] = [],
+) {
   const rows = await prisma.materialAsset.findMany({
     where: {
       workspaceId,
@@ -51,10 +63,18 @@ async function pickKit(workspaceId: string, genre: string, bpm: number, key: str
     orderBy: { createdAt: 'desc' },
     take: 240,
   });
+  const exactRequested = new Set<string>(requestedRoles);
+  const eligibleRows = rows.filter(
+    (row) => !exactRequested.has(row.role) || hasExactMaterialRoleEvidence(row),
+  );
   // Rich signature roles lead; deterministic synth primitives remain the
   // controllable foundation when a lane's collected shelf is still shallow.
-  const roles = withCoarseMaterialRoles([...forgeKitFor(genre, 12), ...synthKitFor(genre)]);
-  return selectMaterialRows(rows, roles, bpm, key, { varietySeed });
+  const roles = withCoarseMaterialRoles([
+    ...requestedRoles,
+    ...forgeKitFor(genre, 12),
+    ...synthKitFor(genre),
+  ]);
+  return selectMaterialRows(eligibleRows, roles, bpm, key, { varietySeed });
 }
 
 function sectionsFrom(blueprint: SongBlueprint | null | undefined, roles: string[]) {
@@ -130,17 +150,54 @@ export async function processOwnEngine(p: OwnEnginePayload): Promise<void> {
     const bpm = p.bpm ?? genreSignature(p.genre).bpm ?? 112;
     const homeKey = getSoundDNA(p.genre)?.commonKeys?.[0] ?? 'A minor';
     const varietySeed = seedFrom(p.jobId, bpm);
+    const rawRequestedRoles = p.requestedRoles ?? [];
+    const invalidRequestedRoles = rawRequestedRoles.filter((role) => !isMaterialRole(role));
+    if (invalidRequestedRoles.length) {
+      throw new Error(`own-engine: invalid requested material roles (${invalidRequestedRoles.join(', ')})`);
+    }
+    const requestedRoles = [...new Set(rawRequestedRoles)] as MaterialRole[];
+    const requestedRoleProvenance = p.requestedRoleProvenance;
+    if (requestedRoles.length || requestedRoleProvenance?.instruments.length) {
+      const derivedRequest = requestedMaterialRoleContract(
+        requestedRoleProvenance?.instruments,
+      );
+      const mappedRoles = new Set(requestedRoleProvenance?.mappings?.map((mapping) => mapping.role) ?? []);
+      if (
+        requestedRoleProvenance?.version !== REQUESTED_MATERIAL_ROLES_VERSION
+        || requestedRoleProvenance.source !== 'user-instrument-selection'
+        || derivedRequest.unsupportedInstruments.length > 0
+        || derivedRequest.requestedRoles.length !== requestedRoles.length
+        || derivedRequest.requestedRoles.some((role) => !requestedRoles.includes(role))
+        || mappedRoles.size !== requestedRoles.length
+        || requestedRoles.some((role) => !mappedRoles.has(role))
+      ) {
+        throw new Error('own-engine: requested material roles are missing server-derived provenance');
+      }
+    }
 
     // L1a — consume the rich collected shelf, then synthesize only missing
     // controllable foundation roles. Signature uploads/loops remain preferred.
-    let picks = await pickKit(p.workspaceId, p.genre, bpm, homeKey, varietySeed);
+    let picks = await pickKit(p.workspaceId, p.genre, bpm, homeKey, varietySeed, requestedRoles);
     const haveRoles = new Set(picks.map((x) => x.role));
     // Genre-correct primitives (afrobeats gets drums, NOT amapiano's log_drum).
-    const missing = synthKitFor(p.genre).filter((r) => !haveRoles.has(r));
+    const synthTargets = [...new Set([
+      ...synthKitFor(p.genre),
+      ...requestedRoles.filter((role) => isSynthesizable(role)),
+    ])];
+    const missing = synthTargets.filter((r) => !haveRoles.has(r));
     if (missing.length) {
       notes.push(`kit: synth-forged ${missing.join('+')}`);
       await processSynthMaterial({ workspaceId: p.workspaceId, genre: p.genre, bpm, keySignature: homeKey, roles: missing });
-      picks = await pickKit(p.workspaceId, p.genre, bpm, homeKey, varietySeed);
+      picks = await pickKit(p.workspaceId, p.genre, bpm, homeKey, varietySeed, requestedRoles);
+    }
+    const missingRequestedRoles = missingExactRequestedMaterialRoles(picks, requestedRoles);
+    if (missingRequestedRoles.length) {
+      throw new Error(
+        `own-engine: exact requested material unavailable (${missingRequestedRoles.join(', ')})`,
+      );
+    }
+    if (requestedRoles.length) {
+      notes.push(`requested roles: ${requestedRoles.join('+')} (exact evidence)`);
     }
     const coverage = materialCoverage(picks);
     if (!coverage.ready) {
@@ -150,7 +207,20 @@ export async function processOwnEngine(p: OwnEnginePayload): Promise<void> {
     // L1b — assemble on the grid via the existing renderer (child job, called inline).
     const sections = sectionsFrom(p.blueprint, picks.map((x) => x.role));
     const child = await prisma.providerJob.create({
-      data: { workspaceId: p.workspaceId, projectId: p.projectId, kind: 'music', provider: 'material', status: 'QUEUED', inputJson: { ownEngineChild: p.jobId, assemble: true } as never },
+      data: {
+        workspaceId: p.workspaceId,
+        projectId: p.projectId,
+        kind: 'music',
+        provider: 'material',
+        status: 'QUEUED',
+        inputJson: {
+          ownEngineChild: p.jobId,
+          assemble: true,
+          ...(requestedRoles.length
+            ? { requestedRoles, requestedRoleProvenance }
+            : {}),
+        } as never,
+      },
     });
     await processAssembleBeat({ jobId: child.id, workspaceId: p.workspaceId, projectId: p.projectId, songId: p.songId ?? undefined, bpm, genre: p.genre, picks, sections } as never);
     const done = await prisma.providerJob.findUnique({ where: { id: child.id }, select: { status: true, outputJson: true } });
@@ -275,7 +345,25 @@ export async function processOwnEngine(p: OwnEnginePayload): Promise<void> {
           ...((beatRow?.meta ?? {}) as Record<string, unknown>),
           ...(melodyScore ? { melodyScore } : {}),
           ...(melodyGuideUrl ? { melodyGuideUrl } : {}),
-          ownEngine: { v: 2, layers: notes, blueprintMatch },
+          ownEngine: {
+            v: 2,
+            layers: notes,
+            blueprintMatch,
+            ...(requestedRoles.length
+              ? {
+                  requestedRoles,
+                  requestedRoleProvenance,
+                  requestedRoleReceipts: picks
+                    .filter((pick) => requestedRoles.includes(pick.role as MaterialRole))
+                    .map((pick) => ({
+                      materialId: pick.id,
+                      role: pick.role,
+                      roleEvidence: pick.roleEvidence,
+                      rightsBasis: pick.rightsBasis,
+                    })),
+                }
+              : {}),
+          },
         } as never,
       },
     });
@@ -283,6 +371,20 @@ export async function processOwnEngine(p: OwnEnginePayload): Promise<void> {
     // OWN-VOICE seam: once a VoiceProfile trained via POST /voices/train is READY (trainedVersion set), the artist's trained voice sings the lead here — inference wiring lands in a later round.
     await markSucceeded(p.jobId, {
       engine: 'afrohit-own-v1', beatId: finalBeatId, url: finalUrl, blueprintMatch, layers: notes,
+      ...(requestedRoles.length
+        ? {
+            requestedRoles,
+            requestedRoleProvenance,
+            requestedRoleReceipts: picks
+              .filter((pick) => requestedRoles.includes(pick.role as MaterialRole))
+              .map((pick) => ({
+                materialId: pick.id,
+                role: pick.role,
+                roleEvidence: pick.roleEvidence,
+                rightsBasis: pick.rightsBasis,
+              })),
+          }
+        : {}),
       voice: 'record or upload your vocal (POST /projects/:id/vocals/upload) — the mixer picks it up as lead',
     });
     console.log(`[own-engine] ${p.genre} done — ${notes.join(' | ')}${blueprintMatch != null ? ` | skeleton ${Math.round(blueprintMatch * 100)}%` : ''}`);
