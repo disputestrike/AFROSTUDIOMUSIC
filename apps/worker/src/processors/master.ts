@@ -19,6 +19,23 @@ interface MasterPayload {
   finished?: boolean;
 }
 
+function record(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null;
+}
+
+export function isAttestedDirectUpload(meta: unknown): boolean {
+  const direct = record(record(meta)?.directOwnedUpload);
+  const rights = record(direct?.rightsConfirmation);
+  return (
+    direct?.schemaVersion === 1
+    && (direct.sourceKind === 'workspace_upload' || direct.sourceKind === 'url_import')
+    && rights?.version === 1
+    && rights.confirmed === true
+  );
+}
+
 export async function processMaster(payload: MasterPayload): Promise<void> {
   await markRunning(payload.jobId);
   const uploaded: string[] = [];
@@ -26,17 +43,13 @@ export async function processMaster(payload: MasterPayload): Promise<void> {
     if (!(await ffmpegAvailable())) {
       throw new Error('ffmpeg binary not found on worker host');
     }
-    const mix = payload.mixId
+    let mix = payload.mixId
       ? await prisma.mix.findFirstOrThrow({
           where: {
             id: payload.mixId,
             songId: payload.songId,
             projectId: payload.projectId,
             project: { workspaceId: payload.workspaceId },
-            approved: true,
-            qualityState: 'passed',
-            contentHash: { not: null },
-            verifiedAt: { not: null },
           },
         })
       : await prisma.mix.findFirstOrThrow({
@@ -56,8 +69,54 @@ export async function processMaster(payload: MasterPayload): Promise<void> {
       maxBytes: NATIVE_AUDIO_LIMITS.remoteInputMaxBytes,
       timeoutMs: NATIVE_AUDIO_LIMITS.remoteInputTimeoutMs,
     });
-    assertStoredContentHash(sourceBytes, mix.contentHash, 'master_source_mix');
-    const finished = payload.finished || mix.preset === 'uploaded';
+    const sourceAlreadyCertified =
+      mix.approved
+      && mix.qualityState === 'passed'
+      && typeof mix.contentHash === 'string'
+      && /^[a-f0-9]{64}$/i.test(mix.contentHash)
+      && !!mix.verifiedAt;
+    if (sourceAlreadyCertified) {
+      assertStoredContentHash(sourceBytes, mix.contentHash, 'master_source_mix');
+    } else {
+      if (
+        !payload.finished
+        || !['uploaded', 'imported'].includes(mix.preset)
+        || !isAttestedDirectUpload(mix.meta)
+      ) {
+        throw new Error('master_source_mix_not_certified');
+      }
+      const certifiedSource = await certifyAudioBytes({
+        workspaceId: payload.workspaceId,
+        kind: 'mixes',
+        bytes: sourceBytes,
+      });
+      uploaded.push(certifiedSource.url);
+      const existingMeta = record(mix.meta) ?? {};
+      const directOwnedUpload = record(existingMeta.directOwnedUpload) ?? {};
+      mix = await prisma.mix.update({
+        where: { id: mix.id },
+        data: {
+          url: certifiedSource.url,
+          qualityState: certifiedSource.qualityState,
+          contentHash: certifiedSource.contentHash,
+          verifiedAt: certifiedSource.verifiedAt,
+          approved: true,
+          meta: {
+            ...existingMeta,
+            directOwnedUpload: {
+              ...directOwnedUpload,
+              sourceContentHash: certifiedSource.contentHash,
+              certifiedAt: certifiedSource.verifiedAt.toISOString(),
+            },
+            qc: certifiedSource.qc,
+            releaseLineageCertified: false,
+          } as never,
+        },
+      });
+      uploaded.splice(uploaded.indexOf(certifiedSource.url), 1);
+    }
+    const finished =
+      payload.finished || mix.preset === 'uploaded' || mix.preset === 'imported';
     const rendered = await ffmpegMaster({
       mix: sourceBytes,
       preset: payload.preset,
@@ -96,6 +155,8 @@ export async function processMaster(payload: MasterPayload): Promise<void> {
             qc: certified.qc,
             sourceMixId: mix.id,
             sourceContentHash: mix.contentHash,
+            releaseLineageCertified:
+              record(mix.meta)?.releaseLineageCertified === true,
             deliveryMp3: {
               url: certifiedMp3.url,
               contentHash: certifiedMp3.contentHash,

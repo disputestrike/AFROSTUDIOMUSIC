@@ -7,7 +7,8 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint . --max-warnings 0",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test:create-payment-cleanup": "node scripts/test-create-payment-cleanup.mjs"
   },
   "dependencies": {
     "@afrohit/shared": "workspace:*",

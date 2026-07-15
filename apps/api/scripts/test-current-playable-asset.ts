@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import {
   arrangementBlueprint,
   currentPlayableAsset,
@@ -52,23 +53,47 @@ const newerMix = row('mix-1', 'https://audio/new-mix.wav', 3, {
     'mix:mix-1',
   ]);
   const current = currentPlayableAsset({ beats: [beat], masters: [oldMaster], mixes: [newerMix] });
-  assert.equal(current?.type, 'mix', 'chronology wins over model preference');
-  assert.equal(current?.id, 'mix-1');
+  assert.equal(current?.type, 'master', 'uncertified newer rows cannot replace canonical playback');
+  assert.equal(current?.id, 'master-1');
   assert.deepEqual(playableAssetRef(current)?.certification, {
-    status: 'uncertified',
-    certified: false,
-    approved: false,
-    qualityState: 'unmeasured',
-    contentHash: null,
-    verifiedAt: null,
+    status: 'certified',
+    certified: true,
+    approved: true,
+    qualityState: 'passed',
+    contentHash: 'master-hash',
+    verifiedAt: at(2),
   });
 
   const arrangement = playableArrangement(history, current);
-  assert.equal(arrangement?.durationS, 60);
-  assert.deepEqual(arrangement?.boundaries, [15, 30, 45]);
-  assert.equal(arrangement?.bpm, 200);
+  assert.equal(arrangement?.durationS, 120);
+  assert.deepEqual(arrangement?.boundaries, [30, 60, 90]);
+  assert.equal(arrangement?.bpm, 100);
   assert.equal(arrangement?.inherited, true);
   assert.equal(arrangementBlueprint(arrangement)?.sections.length, 4);
+}
+
+{
+  const current = currentPlayableAsset({
+    beats: [row('pending', 'https://audio/pending.wav', 20)],
+    mixes: [row('failed', 'https://audio/failed.wav', 21, {
+      approved: true,
+      qualityState: 'failed',
+      contentHash: 'failed-hash',
+      verifiedAt: at(21),
+    })],
+  });
+  assert.equal(current, null, 'a song with no certified audio has no canonical playable asset');
+}
+{
+  const current = currentPlayableAsset({
+    beats: [beat],
+    mixes: [row('same-bytes-wrapper', beat.url, 4)],
+  });
+  assert.equal(
+    current?.id,
+    beat.id,
+    'an uncertified wrapper around identical bytes cannot erase certified playback evidence'
+  );
 }
 
 {
@@ -111,5 +136,17 @@ const newerMix = row('mix-1', 'https://audio/new-mix.wav', 3, {
   assert.equal(arrangement?.durationS, 95);
   assert.equal(arrangement?.inherited, false, 'an edited master owns its updated structure');
 }
+
+const voicesSource = readFileSync(
+  new URL('../src/routes/voices.ts', import.meta.url),
+  'utf8'
+);
+assert.equal(voicesSource.includes('const current = currentPlayableAsset(s);'), true);
+assert.equal(voicesSource.includes('songInputUrl = current?.url ?? null;'), true);
+assert.equal(
+  voicesSource.includes('const cands = [s.masters[0], s.mixes[0], s.beats[0]]'),
+  false,
+  'voice conversion must not select an uncertified source by timestamp'
+);
 
 console.log('current playable asset: chronology, identity, certification, and arrangement passed');

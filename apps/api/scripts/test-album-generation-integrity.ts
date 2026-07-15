@@ -51,16 +51,35 @@ assert.equal(
   false,
   'an album Drop must not silently substitute an unsupported anchor engine'
 );
+assert.equal(
+  bindAlbumDropInput({ ...baseBinding, styleBrief: '' }).ok,
+  false,
+  'an album Drop must not invent a missing style anchor'
+);
+assert.equal(
+  bindAlbumDropInput({ ...baseBinding, bpm: 0 }).ok,
+  false,
+  'an album Drop must not invent a missing tempo'
+);
 
 const certified = {
   id: 'master-a',
   url: 's3://workspace/masters/master-a.wav',
+  createdAt: new Date('2026-07-15T12:00:00.000Z'),
   approved: true,
   qualityState: 'passed',
   contentHash: 'a'.repeat(64),
   verifiedAt: new Date('2026-07-15T12:00:00.000Z'),
 };
 assert.equal(selectCertifiedAlbumAsset([certified])?.id, certified.id);
+assert.equal(
+  selectCertifiedAlbumAsset([
+    certified,
+    { ...certified, id: 'master-b', createdAt: new Date('2026-07-15T13:00:00.000Z') },
+  ])?.id,
+  'master-b',
+  'the exact newest certified artifact must anchor the album'
+);
 assert.equal(selectCertifiedAlbumAsset([{ ...certified, approved: false }]), undefined);
 assert.equal(selectCertifiedAlbumAsset([{ ...certified, qualityState: 'failed' }]), undefined);
 assert.equal(selectCertifiedAlbumAsset([{ ...certified, contentHash: null }]), undefined);
@@ -72,6 +91,9 @@ assert.match(albumsSource, /inputJson: \{ \.\.\.input, albumId: album\.id, ancho
 assert.match(albumsSource, /payload: \(jobId\).*anchorIdentity/);
 assert.match(albumsSource, /materialUsageIds/);
 assert.match(albumsSource, /referenceUsageIds/);
+assert.match(albumsSource, /playableLineage\(playable\)/);
+assert.doesNotMatch(albumsSource, /\?\? beat\.referenceUsages\.find/);
+assert.doesNotMatch(albumsSource, /beat\.bpm \?\? 103/);
 assert.doesNotMatch(albumsSource, /runDropPipeline\(/);
 
 const workerSource = readFileSync(

@@ -71,6 +71,10 @@ const INSTRUMENTS = [
 const STEPS = ['Setting up your session', 'Writing hooks + A&R picking the best', 'Writing the lyrics', 'Singing & producing your song'];
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
+function isExplicitPaymentRequired(error: unknown): boolean {
+  return error instanceof Error && /^402(?:\s|$)/.test(error.message);
+}
+
 interface Deconstruction {
   title: string;
   languages: string[];
@@ -337,7 +341,9 @@ export default function CreatePage() {
       // Fire the Drop Machine — it replies 202 + a job id INSTANTLY and works in
       // the background (holding a 3-minute HTTP request open dies on real
       // networks). We poll the drop job for the hook/lyrics result…
-      const started = await api.post<{ jobId: string }>(
+      let started: { jobId: string };
+      try {
+        started = await api.post<{ jobId: string }>(
         `/projects/${project.id}/drop`,
         { theme, vibe: vibe.trim().slice(0, 500) || undefined, songTitle: songName.trim() || undefined, voice: voice === 'auto' ? undefined : voice, candidates: takes > 1 ? takes : undefined, pinnedReferenceId: pinnedRef || undefined, count: 1, genre, fusionGenres: fusion.length ? fusion : undefined, mood, bpm, withVocals: true, songEngine: engine === 'auto' ? undefined : engine, influence: influence.trim() || undefined, languages: langs, instruments: instruments.length ? instruments : undefined },
         // One key per CLICK: the retry-on-network-death in apiFetch can re-send
@@ -345,6 +351,12 @@ export default function CreatePage() {
         // starting (and charging) a second one.
         { 'Idempotency-Key': crypto.randomUUID() }
       );
+      } catch (error) {
+        if (isExplicitPaymentRequired(error)) {
+          await api.del('/projects/' + project.id).catch(() => undefined);
+        }
+        throw error;
+      }
       saveProduce({ dropJobId: started.jobId, renderJobId: undefined });
       let item: { jobId?: string; hookText?: string; score: number | null; error?: string } | undefined;
       // Hooks + lyrics run on Claude and can be slow under load — wait up to ~8 min.
@@ -495,7 +507,9 @@ export default function CreatePage() {
       const project = await api.post<{ id: string }>('/projects', { title, genre, bpm });
       const attached = await api.post<{ songId: string }>(`/projects/${project.id}/lyrics/attach`, { title, body: lyricsText.trim() });
       setStepIdx(3); // straight to singing — the words are already written
-      const r = await api.post<{ jobId: string }>(`/projects/${project.id}/beats/generate`, {
+      let r: { jobId: string };
+      try {
+        r = await api.post<{ jobId: string }>(`/projects/${project.id}/beats/generate`, {
         songId: attached.songId,
         genre,
         fusionGenres: fusion.length ? fusion : undefined,
@@ -519,6 +533,12 @@ export default function CreatePage() {
         pinnedReferenceId: pinnedRef || undefined,
         vibePrompt: [`${mood} energy`, decon?.vocalDirection, fusion.length ? `genre fusion: ${genreLabel}` : null].filter(Boolean).join('. '),
       });
+      } catch (error) {
+        if (isExplicitPaymentRequired(error)) {
+          await api.del('/projects/' + project.id).catch(() => undefined);
+        }
+        throw error;
+      }
       saveProduce({ renderJobId: r.jobId, projectId: project.id, title: 'Your song', hook: '', score: null });
       let url: string | null = null;
       let renderFailed = false;

@@ -40,6 +40,10 @@ declare module "@afrohit/db" {
   export const migratePlaintextWorkspaceSecrets: () => Promise<number>;
   export const chargeWorkspaceCredits: (...args: any[]) => Promise<any>;
   export const refundWorkspaceCharge: (...args: any[]) => Promise<any>;
+  export const MIN_ORPHAN_CHARGE_AGE_MS: number;
+  export const refundOrphanedQueueBoundMediaCharges: (
+    ...args: any[]
+  ) => Promise<any>;
   export const releaseEvidenceHash: (value: unknown) => string;
   export const normalizeSplitSheet: (
     value: unknown

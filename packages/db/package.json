@@ -21,7 +21,8 @@
     "lexicon:seed": "node seed/lexicon-seed.mjs",
     "lexicon:dump": "node seed/dump-lexicon.mjs",
     "lexicon:corpus": "node seed/dump-lexicon.mjs && node seed/build-corpus.mjs",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test:orphan-charge-recovery": "node scripts/test-orphan-charge-recovery.mjs"
   },
   "dependencies": {
     "@afrohit/shared": "workspace:*",

@@ -648,7 +648,7 @@ export default async function songs(app: FastifyInstance) {
     if (realMix) {
       mixId = realMix.id;
     } else if (current.type === 'master') {
-      const currentMaster = song.masters.find((master) => master.id === current.id);
+      const currentMaster = song.masters.find((master: { id: string; meta: unknown }) => master.id === current.id);
       const masterMeta = currentMaster?.meta as { sourceMixId?: unknown; sourceContentHash?: unknown } | null;
       const sourceMixId = typeof masterMeta?.sourceMixId === 'string' ? masterMeta.sourceMixId : null;
       const sourceMixHash = typeof masterMeta?.sourceContentHash === 'string' ? masterMeta.sourceContentHash : null;

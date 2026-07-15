@@ -148,14 +148,28 @@ export function playableAssetHistory(collections: PlayableAssetCollections): Pla
 
   const deduped: PlayableAsset[] = [];
   for (const asset of ordered) {
-    if (deduped.at(-1)?.url === asset.url) deduped[deduped.length - 1] = asset;
-    else deduped.push(asset);
+    const previous = deduped.at(-1);
+    if (previous?.url !== asset.url) {
+      deduped.push(asset);
+      continue;
+    }
+    // A newer database wrapper around the same bytes cannot erase stronger
+    // certification evidence. Prefer the newer wrapper only when it is also
+    // certified, or when neither wrapper is certified.
+    if (asset.certification.certified || !previous.certification.certified) {
+      deduped[deduped.length - 1] = asset;
+    }
   }
   return deduped;
 }
 
 export function currentPlayableAsset(collections: PlayableAssetCollections): PlayableAsset | null {
-  return playableAssetHistory(collections).at(-1) ?? null;
+  const history = playableAssetHistory(collections);
+  for (let index = history.length - 1; index >= 0; index--) {
+    const asset = history[index]!;
+    if (asset.certification.certified) return asset;
+  }
+  return null;
 }
 
 export function playableAssetRef(asset: PlayableAsset | null | undefined): PlayableAssetRef | null {

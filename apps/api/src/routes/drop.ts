@@ -78,7 +78,7 @@ type DropTake = {
   error?: string;
 };
 
-type DropChildJob = {
+export type DropChildJob = {
   id: string;
   status: string;
   idempotencyKey: string | null;
@@ -90,7 +90,7 @@ type DropChildJob = {
   finishedAt: Date | null;
 };
 
-type PersistedPlayable = {
+export type PersistedPlayable = {
   assetType: 'beat' | 'mix' | 'master';
   id: string;
   projectId: string;
@@ -365,10 +365,20 @@ function stringField(value: Record<string, unknown> | null, key: string): string
   return typeof field === 'string' && field.trim() ? field : undefined;
 }
 
-function assetProducedByChild(asset: PersistedPlayable, child: DropChildJob, songId: string): boolean {
+export function assetProducedByChild(asset: PersistedPlayable, child: DropChildJob, songId: string): boolean {
+  if (asset.songId !== songId) return false;
   const output = record(child.outputJson);
   const expectedId = stringField(output, `${asset.assetType}Id`);
   if (expectedId === asset.id) return true;
+
+  const expectedHashes = [
+    stringField(output, asset.assetType + 'ContentHash'),
+    stringField(output, 'contentHash'),
+    stringField(output, 'sourceContentHash'),
+  ].filter((hash): hash is string =>
+    typeof hash === 'string' && /^[a-f0-9]{64}$/i.test(hash)
+  );
+  if (!!asset.contentHash && expectedHashes.includes(asset.contentHash)) return true;
 
   const outputUrls = ['url', 'masterUrl', 'wavUrl', 'mp3Url']
     .map((key) => stringField(output, key))
@@ -376,12 +386,7 @@ function assetProducedByChild(asset: PersistedPlayable, child: DropChildJob, son
   const deliveryUrl = stringField(record(record(asset.meta)?.deliveryMp3), 'url');
   if (outputUrls.includes(asset.url) || (!!deliveryUrl && outputUrls.includes(deliveryUrl))) return true;
 
-  if (asset.songId !== songId || !child.finishedAt) return false;
-  const skewMs = 10_000;
-  const startedAt = (child.startedAt ?? child.createdAt).getTime() - skewMs;
-  const finishedAt = child.finishedAt.getTime() + skewMs;
-  const createdAt = asset.createdAt.getTime();
-  return createdAt >= startedAt && createdAt <= finishedAt;
+  return false;
 }
 
 async function loadDropPlayableOutputs(

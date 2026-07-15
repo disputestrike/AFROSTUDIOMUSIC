@@ -448,6 +448,35 @@ export async function processSingConvert(
       );
     }
 
+    const rawInstrumentalUrl =
+      separated.instrumentalUrl ??
+      separated.stems.find(stem => stem.role === "instrumental")?.url;
+    if (!rawInstrumentalUrl) {
+      throw new Error("voice_conversion_stem_separation_returned_no_instrumental");
+    }
+    const rawInstrumentalBytes = await downloadToBuffer(rawInstrumentalUrl, {
+      maxBytes: 256 * 1024 * 1024,
+    });
+    const instrumentalBytes = await transformAudio(rawInstrumentalBytes, {});
+    const instrumentalUrl = await uploadBytes({
+      workspaceId: payload.workspaceId,
+      kind: "beats",
+      bytes: instrumentalBytes,
+      contentType: "audio/wav",
+      ext: "wav",
+    });
+    createdUrls.add(instrumentalUrl);
+    const instrumentalQc = await measureAudioQuality(instrumentalUrl);
+    if (instrumentalQc.verdict !== "pass") {
+      throw new Error(
+        "voice_conversion_instrumental_qc_failed: " +
+          (instrumentalQc.flags.join(", ") || instrumentalQc.verdict)
+      );
+    }
+    const instrumentalContentHash = createHash("sha256")
+      .update(instrumentalBytes)
+      .digest("hex");
+    const instrumentalVerifiedAt = new Date();
     const sourceFingerprint = createHash("sha256")
       .update(songInputUrl)
       .digest("hex")
@@ -485,25 +514,26 @@ export async function processSingConvert(
       });
       if (authorized.count !== 1)
         throw new Error("voice_consent_changed_before_persistence");
-      const mix = await tx.mix.create({
+      const beat = await tx.beatAsset.create({
         data: {
           projectId,
           songId: song.id,
-          preset: "own-voice",
-          url: fullUrl,
-          notes: "Own-voice conversion of an existing sung performance.",
+          url: instrumentalUrl,
+          format: "wav",
+          duration: instrumentalQc.durationS,
+          provider: "internal",
+          assetKind: "instrumental",
           qualityState: "passed",
-          contentHash: fullContentHash,
-          verifiedAt: new Date(),
+          contentHash: instrumentalContentHash,
+          verifiedAt: instrumentalVerifiedAt,
+          approved: true,
           meta: {
-            qc: fullQc,
             ownVoiceConversion: true,
-            convertedFromPerformance: true,
-            predictionId: conversion.predictionId,
             sourceFingerprint,
+            separationEngine: separated.engine ?? "unknown",
+            qc: instrumentalQc,
             ...lineageReceipt,
           } as never,
-          approved: true,
         },
       });
       const vocal = await tx.vocalRender.create({
@@ -525,11 +555,37 @@ export async function processSingConvert(
             convertedFromPerformance: true,
             sourceFingerprint,
             separationEngine: separated.engine ?? "unknown",
-            sourceMixId: mix.id,
             qc: vocalInspection.qc,
             activeRatio: vocalInspection.activeRatio,
             ...lineageReceipt,
           } as never,
+        },
+      });
+      const mix = await tx.mix.create({
+        data: {
+          projectId,
+          songId: song.id,
+          preset: "own-voice",
+          url: fullUrl,
+          notes: "Own-voice conversion of an existing sung performance.",
+          qualityState: "passed",
+          contentHash: fullContentHash,
+          verifiedAt: new Date(),
+          meta: {
+            qc: fullQc,
+            ownVoiceConversion: true,
+            convertedFromPerformance: true,
+            predictionId: conversion.predictionId,
+            sourceFingerprint,
+            source: {
+              beatId: beat.id,
+              beatContentHash: instrumentalContentHash,
+              vocalRenderIds: [vocal.id],
+              vocalRenderContentHashes: [vocalInspection.contentHash],
+            },
+            ...lineageReceipt,
+          } as never,
+          approved: true,
         },
       });
       await tx.song.update({
@@ -549,6 +605,9 @@ export async function processSingConvert(
           outputJson: {
             url: mix.url,
             mixId: mix.id,
+            beatId: beat.id,
+            instrumentalUrl: beat.url,
+            instrumentalContentHash,
             vocalRenderId: vocal.id,
             isolatedVocalUrl: vocal.url,
             durationS: fullQc.durationS,
@@ -565,8 +624,9 @@ export async function processSingConvert(
       });
       if (completed.count !== 1)
         throw new Error("voice_job_canceled_before_persistence");
-      return { mix, vocal };
+      return { beat, mix, vocal };
     });
+    createdUrls.delete(result.beat.url);
     createdUrls.delete(result.mix.url);
     createdUrls.delete(result.vocal.url);
   } catch (error) {

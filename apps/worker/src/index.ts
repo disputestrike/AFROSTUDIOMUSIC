@@ -16,6 +16,8 @@ import {
   migratePlaintextWorkspaceSecrets,
   prisma,
   Prisma,
+  MIN_ORPHAN_CHARGE_AGE_MS,
+  refundOrphanedQueueBoundMediaCharges,
 } from "@afrohit/db";
 import {
   assertProductionRuntimeSafety,
@@ -609,6 +611,48 @@ const refundRetryTimer = setInterval(() => {
 }, refundRetryIntervalMs);
 refundRetryTimer.unref();
 
+const orphanChargeRetryIntervalMs = Math.max(
+  60_000,
+  Math.min(
+    60 * 60_000,
+    Number(process.env.ORPHAN_CHARGE_REFUND_INTERVAL_MS ?? 5 * 60_000) ||
+      5 * 60_000
+  )
+);
+let orphanChargeSweepInFlight = false;
+async function sweepOrphanedQueueCharges(): Promise<void> {
+  if (orphanChargeSweepInFlight) return;
+  orphanChargeSweepInFlight = true;
+  try {
+    const configuredMinAgeMs = Number(
+      process.env.ORPHAN_CHARGE_MIN_AGE_MS ?? 60 * 60_000
+    );
+    const result = await refundOrphanedQueueBoundMediaCharges(prisma, {
+      internalMode:
+        (process.env.AUTH_MODE ?? "internal").toLowerCase() === "internal",
+      minAgeMs:
+        Number.isSafeInteger(configuredMinAgeMs) &&
+        configuredMinAgeMs >= MIN_ORPHAN_CHARGE_AGE_MS
+          ? configuredMinAgeMs
+          : undefined,
+    });
+    if (result.considered) {
+      log.info(result, "orphaned queue charge sweep completed");
+    }
+  } finally {
+    orphanChargeSweepInFlight = false;
+  }
+}
+void sweepOrphanedQueueCharges().catch(err =>
+  log.error({ err }, "orphaned queue charge startup sweep failed")
+);
+const orphanChargeRetryTimer = setInterval(() => {
+  void sweepOrphanedQueueCharges().catch(err =>
+    log.error({ err }, "orphaned queue charge sweep failed")
+  );
+}, orphanChargeRetryIntervalMs);
+orphanChargeRetryTimer.unref();
+
 
 /**
  * Graceful shutdown with a bounded drain. close() waits for active jobs, but
@@ -619,6 +663,7 @@ refundRetryTimer.unref();
 async function shutdown(signal: string) {
   clearInterval(workerHeartbeatTimer);
   clearInterval(refundRetryTimer);
+  clearInterval(orphanChargeRetryTimer);
   await prisma.systemSetting
     .delete({ where: { key: workerHeartbeatKey } })
     .catch(() => undefined);

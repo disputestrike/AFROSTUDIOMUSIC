@@ -2065,7 +2065,7 @@ async function masterSongTool(ctx: Ctx, songId: string, preset?: string) {
   if (realMix) {
     mixId = realMix.id;
   } else if (current.type === "master") {
-    const currentMaster = song.masters.find(master => master.id === current.id);
+    const currentMaster = song.masters.find((master: { id: string; meta: unknown }) => master.id === current.id);
     const masterMeta = currentMaster?.meta as
       | { sourceMixId?: unknown; sourceContentHash?: unknown }
       | null;

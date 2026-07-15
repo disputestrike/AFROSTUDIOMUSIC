@@ -25,6 +25,14 @@ assert.deepEqual(lineageFor([
 });
 const solo = [setting('beat-a', false, true), setting('beat-b'), setting('vocal-a'), setting('vocal-b', false, true)];
 assert.deepEqual(selectAudibleConsoleSettings(solo).map(({ id }) => id), ['beat-a', 'vocal-b']);
+assert.deepEqual(
+  selectAudibleConsoleSettings([
+    setting('beat-a', true, true),
+    setting('vocal-a', false, true),
+  ]).map(({ id }) => id),
+  ['vocal-a'],
+  'muted solo tracks are not audible lineage contributors',
+);
 assert.deepEqual(lineageFor(solo), {
   beatId: 'beat-a', beatContentHash: hash('a'),
   vocalRenderIds: ['vocal-b'], vocalRenderContentHashes: [hash('2')],

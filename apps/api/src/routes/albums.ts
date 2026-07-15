@@ -11,6 +11,7 @@ type AlbumSongEngine = (typeof ALBUM_SONG_ENGINES)[number];
 type AlbumDropInput = ReturnType<typeof dropBatchSchema.parse>;
 
 type CertifiableAlbumAsset = {
+  createdAt: Date;
   url: string;
   approved: boolean;
   qualityState: string;
@@ -19,7 +20,104 @@ type CertifiableAlbumAsset = {
 };
 
 export function selectCertifiedAlbumAsset<T extends CertifiableAlbumAsset>(assets: T[]): T | undefined {
-  return assets.find(isCertifiedPlayableAsset);
+  return assets
+    .filter(isCertifiedPlayableAsset)
+    .sort((left, right) => left.createdAt.getTime() - right.createdAt.getTime())
+    .at(-1);
+}
+
+type AlbumReference = {
+  id: string;
+  workspaceId: string;
+  sourceUrl: string;
+  genre: string | null;
+  active: boolean;
+  analysisState: string;
+  rightsBasis: string;
+};
+
+type AlbumReferenceUsage = {
+  id: string;
+  referenceId: string;
+  pinned: boolean;
+  reference: AlbumReference;
+};
+
+type AlbumMaterialUsage = {
+  id: string;
+  materialId: string;
+  material: { id: string; role: string };
+};
+
+type AlbumBeat = CertifiableAlbumAsset & {
+  id: string;
+  bpm: number | null;
+  provider: string;
+  meta: unknown;
+  referenceUsages: AlbumReferenceUsage[];
+  materialUsages: AlbumMaterialUsage[];
+};
+
+type AlbumMix = CertifiableAlbumAsset & {
+  id: string;
+  meta: unknown;
+  settings: unknown;
+};
+
+type AlbumMaster = CertifiableAlbumAsset & {
+  id: string;
+  mixId: string | null;
+  meta: unknown;
+  mix: AlbumMix | null;
+};
+
+type AlbumPlayable =
+  | (AlbumBeat & { assetType: 'beat' })
+  | (AlbumMix & { assetType: 'mix' })
+  | (AlbumMaster & { assetType: 'master' });
+
+type AlbumLineage = {
+  beatId: string | null;
+  beatContentHash: string | null;
+  vocalRenderIds: string[];
+};
+
+const albumRecord = (value: unknown): Record<string, unknown> =>
+  value != null && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : {};
+
+function mixLineage(mix: AlbumMix): AlbumLineage {
+  const meta = albumRecord(mix.meta);
+  const source = albumRecord(meta.source);
+  const sourceAsset = albumRecord(meta.sourceAsset);
+  const settings = Array.isArray(mix.settings) ? mix.settings.map(albumRecord) : [];
+  const settingsBeat = settings.find((entry) => entry.kind === 'beat' && typeof entry.id === 'string');
+  return {
+    beatId: typeof source.beatId === 'string'
+      ? source.beatId
+      : sourceAsset.type === 'beat' && typeof sourceAsset.id === 'string'
+        ? sourceAsset.id
+        : typeof settingsBeat?.id === 'string'
+          ? settingsBeat.id
+          : null,
+    beatContentHash: typeof meta.sourceContentHash === 'string' ? meta.sourceContentHash : null,
+    vocalRenderIds: Array.isArray(source.vocalRenderIds)
+      ? source.vocalRenderIds.filter((id): id is string => typeof id === 'string')
+      : [],
+  };
+}
+
+function playableLineage(playable: AlbumPlayable): AlbumLineage | null {
+  if (playable.assetType === 'beat') {
+    return { beatId: playable.id, beatContentHash: playable.contentHash, vocalRenderIds: [] };
+  }
+  if (playable.assetType === 'mix') return mixLineage(playable);
+  if (playable.mix && isCertifiedPlayableAsset(playable.mix)) return mixLineage(playable.mix);
+  const sourceAsset = albumRecord(albumRecord(playable.meta).sourceAsset);
+  return sourceAsset.type === 'beat' && typeof sourceAsset.id === 'string'
+    ? { beatId: sourceAsset.id, beatContentHash: null, vocalRenderIds: [] }
+    : null;
 }
 
 type AlbumAnchorBindingRequest = {
@@ -41,6 +139,20 @@ type AlbumAnchorBinding =
 
 /** Pure fail-closed binding policy shared with the focused regression test. */
 export function bindAlbumDropInput(request: AlbumAnchorBindingRequest): AlbumAnchorBinding {
+  if (!request.genre.trim() || !request.styleBrief.trim()) {
+    return {
+      ok: false,
+      error: 'anchor_style_unavailable',
+      message: 'The anchor has no complete measured style brief. No album track was queued.',
+    };
+  }
+  if (!Number.isFinite(request.bpm) || request.bpm < 60 || request.bpm > 180) {
+    return {
+      ok: false,
+      error: 'anchor_tempo_unavailable',
+      message: 'The anchor has no measured reproducible tempo. No album track was queued.',
+    };
+  }
   if (request.requiresExactVoice) {
     return {
       ok: false,
@@ -119,16 +231,19 @@ export default async function albums(app: FastifyInstance) {
           orderBy: { createdAt: 'asc' },
           include: {
             masters: {
+              where: { approved: true, qualityState: 'passed', contentHash: { not: null }, verifiedAt: { not: null } },
               orderBy: { createdAt: 'desc' }, take: 1,
-              select: { url: true, approved: true, qualityState: true, contentHash: true, verifiedAt: true },
+              select: { createdAt: true, url: true, approved: true, qualityState: true, contentHash: true, verifiedAt: true },
             },
             mixes: {
+              where: { approved: true, qualityState: 'passed', contentHash: { not: null }, verifiedAt: { not: null } },
               orderBy: { createdAt: 'desc' }, take: 1,
-              select: { url: true, approved: true, qualityState: true, contentHash: true, verifiedAt: true },
+              select: { createdAt: true, url: true, approved: true, qualityState: true, contentHash: true, verifiedAt: true },
             },
             beats: {
+              where: { approved: true, qualityState: 'passed', contentHash: { not: null }, verifiedAt: { not: null } },
               orderBy: { createdAt: 'desc' }, take: 1,
-              select: { url: true, approved: true, qualityState: true, contentHash: true, verifiedAt: true },
+              select: { createdAt: true, url: true, approved: true, qualityState: true, contentHash: true, verifiedAt: true },
             },
             lyric: { select: { title: true } },
           },
@@ -176,22 +291,18 @@ export default async function albums(app: FastifyInstance) {
       include: {
         project: { include: { artist: true } },
         lyric: true,
-        beats: { orderBy: { createdAt: 'desc' }, take: 1 },
         hooks: { where: { approved: true }, orderBy: { createdAt: 'desc' }, take: 1 },
       },
     });
     if (!anchor) return reply.code(404).send({ error: 'song_not_found' });
 
     // Distill the anchor's sound into a directive every album track will follow.
-    const beat = anchor.beats[0];
-    const meta = (beat?.meta ?? {}) as { qc?: { integratedLufs?: number } };
     const styleBrief = [
       `ALBUM STYLE ANCHOR — every track must hold this production lane and vocal direction while remaining a fresh song:`,
-      `Genre: ${anchor.project.genre}${anchor.project.bpm ? ` at ~${anchor.project.bpm} bpm` : ''}. Engine: ${beat?.provider ?? 'auto'}.`,
+      `Genre: ${anchor.project.genre}${anchor.project.bpm ? ` at ~${anchor.project.bpm} bpm` : ''}..`,
       anchor.project.artist.vocalTone?.length ? `Vocal direction: ${anchor.project.artist.vocalTone.join(', ')}.` : '',
       anchor.hooks[0] ? `Hook style reference (the FEEL, never reuse the words): "${anchor.hooks[0].text.split('\n')[0]!.slice(0, 90)}"` : '',
       anchor.lyric?.languageMix ? `Language mix: ${JSON.stringify(anchor.lyric.languageMix)}.` : '',
-      meta.qc?.integratedLufs != null ? `Production target: ~${meta.qc.integratedLufs} LUFS, keep the anchor's dynamic feel.` : '',
     ].filter(Boolean).join('\n');
 
     const album = await prisma.album.create({
@@ -233,14 +344,29 @@ export default async function albums(app: FastifyInstance) {
             project: { include: { artist: { select: { languages: true } } } },
             lyric: { select: { languageMix: true } },
             masters: {
+              where: { approved: true, qualityState: 'passed', contentHash: { not: null }, verifiedAt: { not: null } },
               orderBy: { createdAt: 'desc' }, take: 1,
-              select: { id: true, url: true, approved: true, qualityState: true, contentHash: true, verifiedAt: true },
+              select: {
+                id: true, url: true, createdAt: true, approved: true, qualityState: true,
+                contentHash: true, verifiedAt: true, mixId: true, meta: true,
+                mix: {
+                  select: {
+                    id: true, url: true, createdAt: true, approved: true, qualityState: true,
+                    contentHash: true, verifiedAt: true, meta: true, settings: true,
+                  },
+                },
+              },
             },
             mixes: {
+              where: { approved: true, qualityState: 'passed', contentHash: { not: null }, verifiedAt: { not: null } },
               orderBy: { createdAt: 'desc' }, take: 1,
-              select: { id: true, url: true, approved: true, qualityState: true, contentHash: true, verifiedAt: true },
+              select: {
+                id: true, url: true, createdAt: true, approved: true, qualityState: true,
+                contentHash: true, verifiedAt: true, meta: true, settings: true,
+              },
             },
             beats: {
+              where: { qualityState: 'passed', contentHash: { not: null }, verifiedAt: { not: null } },
               orderBy: { createdAt: 'desc' }, take: 1,
               include: {
                 referenceUsages: {
@@ -256,48 +382,82 @@ export default async function albums(app: FastifyInstance) {
                 },
                 materialUsages: {
                   orderBy: { createdAt: 'asc' },
-                  include: { material: { select: { id: true, role: true, source: true, rightsBasis: true, contentHash: true } } },
+                  include: { material: { select: { id: true, role: true } } },
                 },
               },
-            },
-            vocalRenders: {
-              where: { role: 'lead', approved: true, qualityState: 'passed' },
-              orderBy: { createdAt: 'desc' },
-              take: 1,
-              select: { id: true, voiceProfileId: true, performanceSource: true, contentHash: true },
             },
           },
         })
       : null;
     if (!anchor) return reply.code(400).send({ error: 'no_anchor', message: 'This album has no anchor song to take its style from.' });
 
-    const beat = anchor.beats[0];
-    if (!beat) {
-      return reply.code(409).send({ error: 'anchor_render_unavailable', message: 'The anchor has no persisted render to bind. No album track was queued.' });
-    }
-    const playable = selectCertifiedAlbumAsset([
-      ...anchor.masters.map((asset) => ({ ...asset, assetType: 'master' as const })),
-      ...anchor.mixes.map((asset) => ({ ...asset, assetType: 'mix' as const })),
-      { ...beat, assetType: 'beat' as const },
+    const beats = anchor.beats as AlbumBeat[];
+    const mixes = anchor.mixes as AlbumMix[];
+    const masters = anchor.masters as AlbumMaster[];
+    const playable = selectCertifiedAlbumAsset<AlbumPlayable>([
+      ...masters.map((asset) => ({ ...asset, assetType: 'master' as const })),
+      ...mixes.map((asset) => ({ ...asset, assetType: 'mix' as const })),
+      ...beats.map((asset) => ({ ...asset, assetType: 'beat' as const })),
     ]);
     if (!playable) {
       return reply.code(409).send({ error: 'anchor_not_playable', message: 'The anchor has no certified playable audio. No album track was queued.' });
     }
 
-    const reusableReference = (reference: {
-      workspaceId: string; genre: string | null; active: boolean; analysisState: string; rightsBasis: string;
-    }) => reference.workspaceId === workspaceId
+    const lineage = playableLineage(playable);
+    if (!lineage || (!lineage.beatId && !lineage.beatContentHash)) {
+      return reply.code(409).send({
+        error: 'anchor_lineage_unresolved',
+        message: 'The certified anchor cannot be tied to one exact source beat. No album track was queued.',
+      });
+    }
+
+    const beat = playable.assetType === 'beat'
+      ? playable
+      : await prisma.beatAsset.findFirst({
+          where: {
+            projectId: anchor.projectId,
+            songId: anchor.id,
+            qualityState: 'passed',
+            contentHash: { not: null },
+            verifiedAt: { not: null },
+            ...(lineage.beatId
+              ? { id: lineage.beatId }
+              : { contentHash: lineage.beatContentHash! }),
+          },
+          include: {
+            referenceUsages: {
+              orderBy: [{ pinned: 'desc' }, { position: 'asc' }],
+              include: {
+                reference: {
+                  select: {
+                    id: true, workspaceId: true, sourceUrl: true, genre: true,
+                    active: true, analysisState: true, rightsBasis: true,
+                  },
+                },
+              },
+            },
+            materialUsages: {
+              orderBy: { createdAt: 'asc' },
+              include: { material: { select: { id: true, role: true } } },
+            },
+          },
+        }) as AlbumBeat | null;
+    if (!beat) {
+      return reply.code(409).send({
+        error: 'anchor_lineage_source_missing',
+        message: 'The certified anchor source evidence is unavailable. No album track was queued.',
+      });
+    }
+
+    const reusableReference = (reference: AlbumReference) => reference.workspaceId === workspaceId
       && reference.active
       && reference.analysisState !== 'failed'
       && ['user-attested', 'self-generated'].includes(reference.rightsBasis)
       && learnedGenreMatches(reference.genre, anchor.project.genre);
-    const provenanceUsage = beat.referenceUsages.find((usage) => usage.pinned && reusableReference(usage.reference))
-      ?? beat.referenceUsages.find((usage) => reusableReference(usage.reference));
-    const anchorUrls = [...new Set([
-      beat.url,
-      ...anchor.masters.map((asset) => asset.url),
-      ...anchor.mixes.map((asset) => asset.url),
-    ])];
+    const provenanceUsage = beat.referenceUsages.find(
+      (usage) => usage.pinned && reusableReference(usage.reference)
+    );
+    const anchorUrls = [...new Set([playable.url, beat.url])];
     const exactReferences = await prisma.soundReference.findMany({
       where: {
         workspaceId,
@@ -311,19 +471,25 @@ export default async function albums(app: FastifyInstance) {
     });
     const exactReference = exactReferences.find(reusableReference);
     const pinnedReference = exactReference ?? provenanceUsage?.reference ?? null;
-    const leadVocal = anchor.vocalRenders[0] ?? null;
     const languageMix = (anchor.lyric?.languageMix ?? {}) as Record<string, unknown>;
     const languages = Object.entries(languageMix)
       .filter(([, share]) => typeof share === 'number' && share > 0)
       .map(([language]) => language);
     const materialRoles = beat.materialUsages.map((usage) => usage.material.role);
+    const anchorBpm = anchor.project.bpm ?? beat.bpm;
+    if (anchorBpm == null) {
+      return reply.code(409).send({
+        error: 'anchor_tempo_unavailable',
+        message: 'The anchor has no measured reproducible tempo. No album track was queued.',
+      });
+    }
     const binding = bindAlbumDropInput({
       genre: anchor.project.genre,
-      bpm: anchor.project.bpm ?? beat.bpm ?? 103,
+      bpm: anchorBpm,
       provider: beat.provider,
       pinnedReferenceId: pinnedReference?.id ?? null,
-      requiresExactVoice: !!leadVocal,
-      voiceProfileId: leadVocal?.voiceProfileId ?? null,
+      requiresExactVoice: lineage.vocalRenderIds.length > 0,
+      voiceProfileId: null,
       styleBrief: typeof album.styleBrief === 'string' ? album.styleBrief : '',
       requestedTheme: theme,
       languages: languages.length ? languages : anchor.project.artist.languages,

@@ -982,13 +982,23 @@ export default async function uploads(app: FastifyInstance) {
             project.id,
             input.title ?? `${project.title} — import`
           ));
+        const directOwnedUpload = {
+          schemaVersion: 1,
+          sourceKind: 'url_import',
+          rightsConfirmation: input.rightsConfirmation,
+          recordedAt: new Date().toISOString(),
+          sourceUrl: provenanceUrl(input.url),
+        };
         const mix = await prisma.mix.create({
           data: {
             projectId: project.id,
             songId,
             preset: 'imported',
             url,
-            notes: `Imported song — ${provenanceUrl(input.url)}`,
+            notes: 'Imported song - ' + provenanceUrl(input.url),
+            qualityState: 'unmeasured',
+            approved: false,
+            meta: { directOwnedUpload, releaseLineageCertified: false } as never,
           },
         });
         // Same law as the finished-upload bridge (mixes.ts /upload): an OWNED

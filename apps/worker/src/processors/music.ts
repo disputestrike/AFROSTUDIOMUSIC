@@ -795,6 +795,9 @@ export async function processMusic(p: MusicPayload) {
           const masterVerifiedAt = new Date();
           const wavHash = createHash('sha256').update(wav).digest('hex');
           const mp3Hash = createHash('sha256').update(mp3).digest('hex');
+          // Provider full-song bytes are playable, but they are not release lineage.
+          // Approval stays closed until exact certified instrumental/vocal sources exist.
+          const releaseLineageCertified = false;
           await prisma.$transaction(async (tx) => {
             const mixRow = await tx.mix.create({
               data: {
@@ -809,9 +812,10 @@ export async function processMusic(p: MusicPayload) {
                 meta: {
                   qc: quality,
                   assetKind: 'full_mix',
+                  releaseLineageCertified,
                   vocalAlignment: winner.alignment ?? { state: 'unmeasured', required: alignmentRequired },
                 } as never,
-                approved: quality?.verdict === 'pass' && vocalIdentityAccepted,
+                approved: releaseLineageCertified,
               },
             });
             await tx.master.create({
@@ -825,9 +829,10 @@ export async function processMusic(p: MusicPayload) {
                 qualityState: 'passed',
                 contentHash: wavHash,
                 verifiedAt: masterVerifiedAt,
-                approved: true,
+                approved: releaseLineageCertified,
                 meta: {
                   qc: masterQc,
+                  releaseLineageCertified,
                   verifiedAt: masterVerifiedAt.toISOString(),
                   contentHash: wavHash,
                   deliveryMp3: { url: mp3Url, contentHash: mp3Hash },

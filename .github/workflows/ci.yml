@@ -77,6 +77,20 @@ jobs:
         run: pnpm --filter @afrohit/api test:distribution-lifecycle
       - name: Verify concurrent spend caps
         run: pnpm --filter @afrohit/api test:credit-caps
+      - name: Verify payment and media integrity
+        run: |
+          pnpm --filter @afrohit/api test:payment-lifecycle
+          pnpm --filter @afrohit/api test:drop-terminal-integrity
+          pnpm --filter @afrohit/api test:album-generation-integrity
+          pnpm --filter @afrohit/api test:current-playable-asset
+          pnpm --filter @afrohit/api test:rights-zap-ingress
+          pnpm --filter @afrohit/api test:release-artifact-integrity
+          pnpm --filter @afrohit/api test:platform-reliability
+          pnpm --filter @afrohit/api test:benchmark-pair-attestation
+          pnpm --filter @afrohit/api test:session-revocation
+          pnpm --filter @afrohit/web test:create-payment-cleanup
+          pnpm --filter @afrohit/db test:orphan-charge-recovery
+          pnpm --filter @afrohit/worker test:release-lineage-integrity
       - run: pnpm run lint
       - run: pnpm run verify
       - run: pnpm run build

@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import {
+  assetProducedByChild,
   dropChildTerminalState,
   isCertifiedPlayableAsset,
   passedDropQualityGate,
@@ -48,6 +49,65 @@ assert.equal(isCertifiedPlayableAsset({ ...certified, contentHash: 'not-a-sha256
 assert.equal(isCertifiedPlayableAsset({ ...certified, verifiedAt: null }), false);
 assert.equal(isCertifiedPlayableAsset({ ...certified, url: '' }), false);
 
+const childEvidence = {
+  id: 'job-1',
+  status: 'SUCCEEDED',
+  idempotencyKey: null,
+  inputJson: {},
+  outputJson: {},
+  errorJson: null,
+  createdAt: new Date('2026-07-15T11:59:00.000Z'),
+  startedAt: new Date('2026-07-15T12:00:00.000Z'),
+  finishedAt: new Date('2026-07-15T12:01:00.000Z'),
+};
+const playableEvidence = {
+  ...certified,
+  assetType: 'beat' as const,
+  id: 'beat-1',
+  projectId: 'project-1',
+  songId: 'song-1',
+  createdAt: new Date('2026-07-15T12:00:30.000Z'),
+  meta: {},
+};
+assert.equal(
+  assetProducedByChild(
+    playableEvidence,
+    { ...childEvidence, outputJson: { beatId: playableEvidence.id } },
+    'song-1'
+  ),
+  true
+);
+assert.equal(
+  assetProducedByChild(
+    playableEvidence,
+    { ...childEvidence, outputJson: { url: playableEvidence.url } },
+    'song-1'
+  ),
+  true
+);
+assert.equal(
+  assetProducedByChild(
+    { ...playableEvidence, id: 'beat-by-hash', url: 's3://different.wav' },
+    { ...childEvidence, outputJson: { contentHash: playableEvidence.contentHash } },
+    'song-1'
+  ),
+  true
+);
+assert.equal(
+  assetProducedByChild(playableEvidence, childEvidence, 'song-1'),
+  false,
+  'a timestamp overlap alone must never bind a playable asset to a child job'
+);
+assert.equal(
+  assetProducedByChild(
+    playableEvidence,
+    { ...childEvidence, outputJson: { beatId: playableEvidence.id } },
+    'another-song'
+  ),
+  false,
+  'exact evidence from a different song must fail closed'
+);
+
 assert.deepEqual(
   passedDropQualityGate({ willBlow: true, bestScore: 93, blowPasses: 1 }, 90),
   { willBlow: true, bestScore: 93, passes: 1, target: 90 }
@@ -70,12 +130,31 @@ const workerSource = readFileSync(
 );
 const pipelineAt = workerSource.lastIndexOf('const result = await runDropPipeline');
 const parentSuccessAt = workerSource.indexOf('status: "SUCCEEDED"', pipelineAt);
-const retryStateAt = workerSource.indexOf('status: finalAttempt ? "FAILED" : "QUEUED"', pipelineAt);
+const failureHelperAt = workerSource.indexOf('async function recordOrchestrationFailure');
+const retryStateAt = workerSource.indexOf(
+  'status: args.finalAttempt ? "FAILED" : "QUEUED"',
+  failureHelperAt
+);
+const dropFailureAt = workerSource.indexOf(
+  'fallbackMessage: "drop pipeline failed"',
+  parentSuccessAt
+);
+const finalAttemptAt = workerSource.lastIndexOf(
+  'finalAttempt: isFinalAttempt(bullJob)',
+  dropFailureAt
+);
 assert.ok(
   pipelineAt > 0 && parentSuccessAt > pipelineAt,
   'run-drop must write parent success only after the verified pipeline result'
 );
-assert.ok(retryStateAt > parentSuccessAt, 'run-drop must not expose intermediate retries as terminal failures');
+assert.ok(
+  failureHelperAt > 0 && retryStateAt > failureHelperAt,
+  'orchestration failures must persist retryable attempts as queued'
+);
+assert.ok(
+  finalAttemptAt > parentSuccessAt && finalAttemptAt < dropFailureAt,
+  'run-drop must pass BullMQ final-attempt state into durable failure handling'
+);
 
 const albumsSource = readFileSync(
   new URL('../../web/app/(app)/albums/page.tsx', import.meta.url),

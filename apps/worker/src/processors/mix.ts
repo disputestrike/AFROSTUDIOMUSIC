@@ -51,7 +51,7 @@ export function selectAudibleConsoleSettings<T extends { mute: boolean; solo: bo
   settings: readonly T[],
 ): T[] {
   const anySolo = settings.some((setting) => setting.solo);
-  return settings.filter((setting) => (anySolo ? setting.solo : !setting.mute));
+  return settings.filter((setting) => !setting.mute && (anySolo ? setting.solo : true));
 }
 
 export function buildMixSourceLineage(

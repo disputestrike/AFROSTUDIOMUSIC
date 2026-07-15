@@ -78,7 +78,11 @@ assert.match(
 );
 assert.match(workerJobs, /retryPendingFailedJobRefunds/);
 assert.match(workerIndex, /const refundRetryTimer = setInterval/);
-assert.match(workerIndex, /clearInterval\(refundRetryTimer\)/);
+assert.ok(workerIndex.includes("clearInterval(refundRetryTimer)"));
+assert.match(workerIndex, /refundOrphanedQueueBoundMediaCharges/);
+assert.match(workerIndex, /let orphanChargeSweepInFlight = false/);
+assert.match(workerIndex, /const orphanChargeRetryTimer = setInterval/);
+assert.ok(workerIndex.includes("clearInterval(orphanChargeRetryTimer)"));
 
 const failureTransaction = orchestrationWorker.indexOf(
   "const failed = await prisma.$transaction"

@@ -29,6 +29,7 @@ import {
   voiceTrainerConfig,
   type VoiceTrainerConfig,
 } from "../lib/voice-training";
+import { currentPlayableAsset } from "../lib/current-playable-asset";
 
 /**
  * The usable TRAINED MODEL FILE URL for a READY voice profile, read defensively:
@@ -2311,14 +2312,8 @@ export default async function voices(app: FastifyInstance) {
           },
         });
         if (!s) return reply.code(404).send({ error: "song_not_found" });
-        const cands = [s.masters[0], s.mixes[0], s.beats[0]].filter(
-          Boolean
-        ) as Array<{ url: string; createdAt: Date }>;
-        cands.sort(
-          (a, b) =>
-            new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
-        );
-        songInputUrl = cands[0]?.url ?? null;
+        const current = currentPlayableAsset(s);
+        songInputUrl = current?.url ?? null;
         if (!songInputUrl) {
           return reply.code(400).send({
             error: "song_has_no_audio",

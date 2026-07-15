@@ -212,18 +212,42 @@ export default async function mixes(app: FastifyInstance) {
         ).id;
 
       const uploadUrl = publicUrlFor(uploaded.key);
-      const mix =
-        (await prisma.mix.findFirst({ where: { projectId: project.id, songId, url: uploadUrl } })) ??
-        (await prisma.mix.create({
-          data: {
-            projectId: project.id,
-            songId,
-            preset: 'uploaded',
-            url: uploadUrl,
-            notes: `Uploaded finished song${input.title ? ` — ${input.title}` : ''} (artist master source)`,
-          },
-        }));
-
+      const directOwnedUpload = {
+        schemaVersion: 1,
+        sourceKind: 'workspace_upload',
+        rightsConfirmation: input.rightsConfirmation,
+        recordedAt: new Date().toISOString(),
+        objectKey: uploaded.key,
+      };
+      const existingMix = await prisma.mix.findFirst({
+        where: { projectId: project.id, songId, url: uploadUrl },
+      });
+      const existingMeta =
+        existingMix?.meta && typeof existingMix.meta === 'object' && !Array.isArray(existingMix.meta)
+          ? existingMix.meta as Record<string, unknown>
+          : {};
+      const mix = existingMix
+        ? await prisma.mix.update({
+            where: { id: existingMix.id },
+            data: {
+              meta: { ...existingMeta, directOwnedUpload } as never,
+            },
+          })
+        : await prisma.mix.create({
+            data: {
+              projectId: project.id,
+              songId,
+              preset: 'uploaded',
+              url: uploadUrl,
+              notes:
+                'Uploaded finished song' +
+                (input.title ? ' - ' + input.title : '') +
+                ' (artist master source)',
+              qualityState: 'unmeasured',
+              approved: false,
+              meta: { directOwnedUpload, releaseLineageCertified: false } as never,
+            },
+          });
       // LEARN from every finished song the artist brings back (Suno bridge or
       // any upload): the artist chose to push this sound into the studio, so it
       // must feed the lake like a /listen — otherwise "I pushed my Suno songs
