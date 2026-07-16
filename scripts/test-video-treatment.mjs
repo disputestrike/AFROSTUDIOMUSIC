@@ -199,10 +199,11 @@ assert.equal(normalizeVideoTreatment(modelOutput, { durationS: 0 }), null, "no d
   // A treatment object passed whole (the untouched chat render path) fails
   // CLOSED: no charge, no crashed worker job.
   assert.equal(videoRenderUsage(treatment), null);
-  // Legacy arrays keep the exact old behavior.
+  // Legacy arrays keep the exact old SELECTION behavior; billing now speaks
+  // the owner-approved per-scene class keys (no class → 'standard').
   const legacy = Array.from({ length: 6 }, () => ({ duration_s: 4 }));
   assert.deepEqual(videoRenderUsage(legacy, 0), {
-    creditKey: "video_8s",
+    creditKey: "video_shot_standard",
     billingUnits: 1,
     planUnits: 4,
     shotCount: 1,

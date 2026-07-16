@@ -498,6 +498,19 @@ export const renderVideoInputSchema = z.object({
   useLikeness: z.boolean().optional(),
 });
 
+/**
+ * ONE-CLICK FULL VIDEO — render every UNRENDERED scene of a concept in one
+ * request. Workspace scope comes from the concept's own project (no projectId
+ * needed); one upfront charge = per-scene class price × unrendered scenes
+ * (already-rendered scenes are never re-billed); the concept is stamped
+ * meta.autoAssemble so the worker assembles the full cut when coverage lands.
+ */
+export const renderAllVideoInputSchema = z.object({
+  conceptId: z.string().cuid(),
+  engineClass: z.enum(VIDEO_ENGINE_CLASSES).default('standard'),
+  useLikeness: z.boolean().optional(),
+});
+
 // ---------- Taste / Rights / Approval --------------------------------------
 
 export const tasteScoreSchema = z.object({

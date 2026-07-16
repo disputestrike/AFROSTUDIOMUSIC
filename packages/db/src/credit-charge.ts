@@ -14,6 +14,11 @@ const CATEGORY_BY_KEY: Partial<Record<CreditKey, PlanCategory>> = {
   voice_render_full: "monthlyVoiceRenders",
   video_8s: "monthlyVideoSeconds",
   video_20s: "monthlyVideoSeconds",
+  // Per-scene class keys (owner-approved pricing) still meter the SAME plan
+  // category in provider seconds — planUnits carries the real workload.
+  video_shot_draft: "monthlyVideoSeconds",
+  video_shot_standard: "monthlyVideoSeconds",
+  video_shot_flagship: "monthlyVideoSeconds",
   cover_art_low: "coverArt",
   cover_art_high: "coverArt",
 };
@@ -21,7 +26,13 @@ const CATEGORY_BY_KEY: Partial<Record<CreditKey, PlanCategory>> = {
 const KEYS_BY_CATEGORY: Record<PlanCategory, CreditKey[]> = {
   monthlyDemoSongs: ["full_song_demo", "beat_idea_short_30s"],
   monthlyVoiceRenders: ["voice_render_30s", "voice_render_full"],
-  monthlyVideoSeconds: ["video_8s", "video_20s"],
+  monthlyVideoSeconds: [
+    "video_8s",
+    "video_20s",
+    "video_shot_draft",
+    "video_shot_standard",
+    "video_shot_flagship",
+  ],
   coverArt: ["cover_art_low", "cover_art_high"],
 };
 
@@ -46,6 +57,9 @@ export const QUEUE_BOUND_MEDIA_CREDIT_KEYS = [
   "master_preset",
   "video_8s",
   "video_20s",
+  "video_shot_draft",
+  "video_shot_standard",
+  "video_shot_flagship",
   "release_export",
 ] as const satisfies readonly CreditKey[];
 

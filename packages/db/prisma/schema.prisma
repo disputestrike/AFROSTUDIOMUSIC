@@ -915,6 +915,11 @@ model VideoConcept {
   durationS  Int      @default(15)
   format     String   @default("vertical") // vertical | square | landscape
   notes      String?  @db.Text
+  // ONE-CLICK FULL VIDEO (Wave 10): meta.autoAssemble = { requested, kind,
+  // engineClass, ... } — stamped by POST /videos/render-all, single-fired by
+  // the worker when every sequence gains a render (or honestly marked
+  // 'incomplete' when terminal failures leave coverage short).
+  meta       Json?
   approved   Boolean  @default(false)
   createdAt  DateTime @default(now()) @db.Timestamptz(6)
 

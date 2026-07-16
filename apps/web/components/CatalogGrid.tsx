@@ -38,6 +38,7 @@ import {
   storyboardShots,
   videoTreatmentOf,
   videoRenderUsage,
+  videoRenderTotalCost,
   formatCredits,
   CREDIT_COSTS,
   type NormalizedVideoTreatment,
@@ -425,6 +426,25 @@ export default function CatalogGrid({ initial }: { initial: SongRow[] }) {
   } | null>(null);
   const [assembling, setAssembling] = useState<"full" | "teaser" | null>(null);
   const [assemblyStage, setAssemblyStage] = useState<string | null>(null);
+  // ONE-CLICK FULL VIDEO — armed confirm (the math comes from the SAME shared
+  // law the server bills by), in-flight lock, and a watcher that keeps the
+  // coverage chips + finished artifact fresh while the batch renders.
+  const [renderAllArmed, setRenderAllArmed] = useState(false);
+  const [renderAllBusy, setRenderAllBusy] = useState(false);
+  const [renderAllWatch, setRenderAllWatch] = useState<{
+    conceptId: string;
+    since: number;
+  } | null>(null);
+  // THE HOUSE SEES NO PRICE TAGS: /auth/me.firstParty is computed by the same
+  // billing detection the charge path uses, so the label and the (non-)bill
+  // can never disagree — first-party surfaces say 'free (house)', never '$'.
+  const [houseBilling, setHouseBilling] = useState(false);
+  useEffect(() => {
+    void api
+      .get<{ firstParty?: boolean }>("/auth/me")
+      .then(me => setHouseBilling(!!me.firstParty))
+      .catch(() => setHouseBilling(false));
+  }, [api]);
   const [downloads, setDownloads] = useState<{
     id: string;
     files: DownloadFile[];
@@ -1068,12 +1088,84 @@ export default function CatalogGrid({ initial }: { initial: SongRow[] }) {
     }
   }
 
-  /** The honest per-scene price from the SAME law the server bills by. */
+  /** The honest per-scene label from the SAME law the server bills by —
+   *  class-aware (owner-approved: draft $0.50 / standard $2.00 / flagship
+   *  $6.00 per scene). First-party sees 'free (house)', never a price. */
   function sceneCost(shots: VideoShot[], shotIndex: number): string {
-    const usage = videoRenderUsage(shots, shotIndex);
+    if (houseBilling) return "free (house)";
+    const usage = videoRenderUsage(shots, shotIndex, sceneEngine);
     if (!usage) return "";
     return formatCredits(CREDIT_COSTS[usage.creditKey] * usage.billingUnits);
   }
+
+  /** ONE-CLICK FULL VIDEO: POST /videos/render-all — one upfront charge for
+   *  the unrendered scenes only, then the worker auto-assembles the release
+   *  cut when every sequence holds a render. */
+  async function makeFullVideo(concept: VideoConceptRow) {
+    if (renderAllBusy) return;
+    setRenderAllBusy(true);
+    try {
+      const r = await api.post<{
+        jobIds: string[];
+        queuedShotIndexes: number[];
+      }>(`/videos/render-all`, {
+        conceptId: concept.id,
+        engineClass: sceneEngine,
+        ...(withLikeness && likenessTrained ? { useLikeness: true } : {}),
+      });
+      setRenderAllArmed(false);
+      setRenderAllWatch({ conceptId: concept.id, since: Date.now() });
+      flash(
+        `${r.queuedShotIndexes.length} scene${
+          r.queuedShotIndexes.length === 1 ? "" : "s"
+        } rendering on the ${sceneEngine} engine — the full video assembles itself when they finish.`
+      );
+      await loadAssembly(concept.id);
+    } catch (e) {
+      const message = (e as Error).message;
+      flash(
+        /nothing_to_render/.test(message)
+          ? "Every scene is already rendered — use “Assemble full video” below; assembly is free."
+          : /insufficient_credits|\b402\b/.test(message)
+            ? "Not enough credits for the full video — top up in Billing."
+            : /no_trained_likeness/.test(message)
+              ? "No trained likeness yet — train it under My Likeness first."
+              : `Couldn't start the full video: ${message.slice(0, 120)}`
+      );
+    } finally {
+      setRenderAllBusy(false);
+    }
+  }
+
+  // While a one-click batch renders, keep the coverage chips and the finished
+  // artifact fresh (the SAME GET assembly endpoint the panel already reads).
+  useEffect(() => {
+    if (!renderAllWatch) return;
+    if (!videoOpen) {
+      setRenderAllWatch(null);
+      return;
+    }
+    const conceptId = renderAllWatch.conceptId;
+    const timer = setInterval(() => void loadAssembly(conceptId), 10_000);
+    return () => clearInterval(timer);
+  }, [renderAllWatch, videoOpen]);
+  // Stop watching the moment a NEW assembled full cut lands — the Wave-9
+  // panel below renders it (playable <video> + download); nothing duplicated.
+  useEffect(() => {
+    if (!renderAllWatch) return;
+    const artifact =
+      assembly?.conceptId === renderAllWatch.conceptId &&
+      assembly.state === "ready"
+        ? assembly.data?.assemblies.full
+        : null;
+    if (
+      artifact &&
+      new Date(artifact.createdAt).getTime() >= renderAllWatch.since
+    ) {
+      setRenderAllWatch(null);
+      flash("The full video is ready — play it below.");
+    }
+  }, [assembly, renderAllWatch]);
 
   /** Per-shot render on the EXISTING /videos/renders route (same per-shot
    *  billing) — armed two-step confirm, first click shows the exact cost. */
@@ -1147,7 +1239,9 @@ export default function CatalogGrid({ initial }: { initial: SongRow[] }) {
             <Clapperboard className="h-3 w-3" />
           )}
           {armedScene === shotIndex
-            ? `Confirm — spends ${cost}`
+            ? houseBilling
+              ? "Confirm — free (house)"
+              : `Confirm — spends ${cost}`
             : jobId
               ? "Render again"
               : `Render this scene (${cost})`}
@@ -2050,6 +2144,88 @@ export default function CatalogGrid({ initial }: { initial: SongRow[] }) {
                     </span>
                   )}
                 </div>
+                {/* ONE-CLICK FULL VIDEO — render every missing scene in one
+                    go (one upfront charge, already-rendered scenes NEVER
+                    re-billed), then the worker assembles the release cut by
+                    itself. The confirm's math is the SAME shared law the
+                    server bills by (videoRenderTotalCost); the house sees
+                    'free (house)', never a number. */}
+                {(fullConcept => {
+                  const watching =
+                    renderAllWatch?.conceptId === fullConcept.id;
+                  const rendered =
+                    assembly?.conceptId === fullConcept.id &&
+                    assembly.state === "ready" &&
+                    assembly.data
+                      ? assembly.data.renderedShotIndexes.length
+                      : 0;
+                  const unrendered = Math.max(
+                    0,
+                    fullConcept.storyboard.length - rendered
+                  );
+                  const each = formatCredits(
+                    videoRenderTotalCost(1, sceneEngine)
+                  );
+                  const total = formatCredits(
+                    videoRenderTotalCost(unrendered, sceneEngine)
+                  );
+                  const scenes = `${unrendered} scene${unrendered === 1 ? "" : "s"}`;
+                  return (
+                    <div className="mb-3 rounded-lg border border-afrobrand-400/30 bg-afrobrand-400/5 px-3 py-2">
+                      {renderAllArmed ? (
+                        <div className="flex flex-wrap items-center gap-2 text-xs text-slate-300">
+                          <span>
+                            {unrendered === 0
+                              ? "Every scene already has a render — nothing to bill. Use “Assemble full video” below; assembly is free."
+                              : houseBilling
+                                ? `${scenes} to render on the ${sceneEngine} engine — free (house).`
+                                : `${scenes} × ${each} = ${total} on the ${sceneEngine} engine.`}
+                            {rendered > 0 && unrendered > 0
+                              ? ` ${rendered} already-rendered scene${rendered === 1 ? "" : "s"} won't be billed again.`
+                              : ""}
+                          </span>
+                          {unrendered > 0 ? (
+                            <button
+                              onClick={() => void makeFullVideo(fullConcept)}
+                              disabled={renderAllBusy}
+                              className="inline-flex items-center gap-1 rounded-full border border-amber-400/50 bg-amber-500/15 px-3 py-1 text-xs text-amber-200 hover:bg-amber-500/25 disabled:opacity-40"
+                            >
+                              {renderAllBusy ? (
+                                <Loader2 className="h-3 w-3 animate-spin" />
+                              ) : null}
+                              {houseBilling
+                                ? "Confirm — free (house)"
+                                : `Confirm — spends ${total}`}
+                            </button>
+                          ) : null}
+                          <button
+                            onClick={() => setRenderAllArmed(false)}
+                            className="rounded-full border border-white/15 px-3 py-1 text-xs text-slate-400 hover:bg-white/10"
+                          >
+                            Cancel
+                          </button>
+                        </div>
+                      ) : (
+                        <div className="flex flex-wrap items-center gap-2">
+                          <button
+                            onClick={() => setRenderAllArmed(true)}
+                            disabled={renderAllBusy || watching}
+                            className="rounded-full bg-brand-gradient px-4 py-2 text-sm font-medium text-ink shadow-glow disabled:opacity-40"
+                          >
+                            🎬 Make the full video
+                          </button>
+                          <span className="text-xs text-slate-500">
+                            {watching
+                              ? "Scenes are rendering — the full video assembles itself when they finish."
+                              : houseBilling
+                                ? "free (house) — renders every missing scene, then assembles the release cut."
+                                : `${scenes} × ${each} — renders every missing scene, then assembles the release cut.`}
+                          </span>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })(videoConcept.concept)}
                 {/* FULL-VIDEO ASSEMBLY (Wave 9) — once scenes have renders,
                     glue them + the song's current master into ONE release
                     file. FREE: local CPU on our worker; every scene was
@@ -2059,7 +2235,8 @@ export default function CatalogGrid({ initial }: { initial: SongRow[] }) {
                 {assembly?.conceptId === videoConcept.concept.id &&
                 assembly.state === "ready" &&
                 assembly.data &&
-                assembly.data.renderedShotIndexes.length > 0
+                (assembly.data.renderedShotIndexes.length > 0 ||
+                  renderAllWatch?.conceptId === videoConcept.concept.id)
                   ? (a => (
                       <div className="mb-3 rounded-lg border border-white/10 bg-black/20 px-3 py-2 text-xs">
                         <div className="mb-1.5 flex items-center gap-1.5 font-medium text-slate-200">

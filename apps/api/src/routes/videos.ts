@@ -6,11 +6,14 @@ import {
   generateStoryboardInputSchema,
   normalizeStoryboardShots,
   normalizeVideoTreatment,
+  perShotRenders,
   planVideoAssembly,
+  renderAllVideoInputSchema,
   renderVideoInputSchema,
   storyboardShots,
   treatmentSectionsFromBoundaries,
   videoAssemblyStatus,
+  videoRenderAllUsage,
   videoRenderUsage,
   type TreatmentSection,
 } from "@afrohit/shared";
@@ -22,6 +25,51 @@ import {
   playableArrangement,
   playableAssetHistory,
 } from "../lib/current-playable-asset";
+
+type LikenessRenderPayload = {
+  trainedModelRef: string;
+  triggerWord: string;
+  consentId: string;
+  rightsBasis: "user-attested-likeness";
+};
+
+/**
+ * LIKENESS (own-face keyframe → image-to-video). Only when a TRAINED likeness
+ * exists for the project's artist under an UNREVOKED consent — null otherwise
+ * so the caller can 409 honestly, never silently render without the face the
+ * user asked for. Shared by /renders and /render-all: one law, one query.
+ */
+async function resolveLikenessPayload(
+  workspaceId: string,
+  artistId: string
+): Promise<LikenessRenderPayload | null> {
+  const trained = await prisma.artistLikeness.findFirst({
+    where: {
+      workspaceId,
+      artistId,
+      deletedAt: null,
+      status: "trained",
+      trainedModelRef: { not: null },
+      consent: { workspaceId, revokedAt: null },
+    },
+    orderBy: { createdAt: "desc" },
+    select: { trainedModelRef: true, consentId: true, meta: true },
+  });
+  if (!trained?.trainedModelRef) return null;
+  const trainedMeta =
+    trained.meta && typeof trained.meta === "object" && !Array.isArray(trained.meta)
+      ? (trained.meta as Record<string, unknown>)
+      : {};
+  return {
+    trainedModelRef: trained.trainedModelRef,
+    triggerWord:
+      typeof trainedMeta.triggerWord === "string" && trainedMeta.triggerWord
+        ? trainedMeta.triggerWord
+        : "AFROHITFACE",
+    consentId: trained.consentId,
+    rightsBasis: "user-attested-likeness",
+  };
+}
 
 export default async function videos(app: FastifyInstance) {
   /**
@@ -276,59 +324,36 @@ export default async function videos(app: FastifyInstance) {
       }
 
       // ENGINE CLASS (public/internal wall): users pick a class, never a
-      // vendor. Absent = 'standard' — the default tier decision. Billing is
-      // untouched: videoRenderUsage below is identical for every class.
+      // vendor. Absent = 'standard' — the default tier decision, for routing
+      // AND billing (owner-approved per-scene pricing: draft $0.50 /
+      // standard $2.00 / flagship $6.00 per scene).
       const engineClass = input.engineClass ?? "standard";
 
       // LIKENESS (own-face keyframe → image-to-video). Only when explicitly
       // requested, only when a TRAINED likeness exists for THIS project's
       // artist under an UNREVOKED consent — otherwise an honest 409, never a
       // silent render without the face the user asked for.
-      let likenessPayload: {
-        trainedModelRef: string;
-        triggerWord: string;
-        consentId: string;
-        rightsBasis: "user-attested-likeness";
-      } | null = null;
+      let likenessPayload: LikenessRenderPayload | null = null;
       if (input.useLikeness) {
-        const trained = await prisma.artistLikeness.findFirst({
-          where: {
-            workspaceId,
-            artistId: concept.project.artistId,
-            deletedAt: null,
-            status: "trained",
-            trainedModelRef: { not: null },
-            consent: { workspaceId, revokedAt: null },
-          },
-          orderBy: { createdAt: "desc" },
-          select: { trainedModelRef: true, consentId: true, meta: true },
-        });
-        if (!trained?.trainedModelRef) {
+        likenessPayload = await resolveLikenessPayload(
+          workspaceId,
+          concept.project.artistId
+        );
+        if (!likenessPayload) {
           return reply.code(409).send({
             error: "no_trained_likeness",
             note: "Train your likeness first (My Likeness) — this render was asked to feature your face and there is no trained, consented likeness to use.",
           });
         }
-        const trainedMeta =
-          trained.meta && typeof trained.meta === "object" && !Array.isArray(trained.meta)
-            ? (trained.meta as Record<string, unknown>)
-            : {};
-        likenessPayload = {
-          trainedModelRef: trained.trainedModelRef,
-          triggerWord:
-            typeof trainedMeta.triggerWord === "string" && trainedMeta.triggerWord
-              ? trainedMeta.triggerWord
-              : "AFROHITFACE",
-          consentId: trained.consentId,
-          rightsBasis: "user-attested-likeness",
-        };
       }
 
       // Flat shots from EITHER storage shape — the legacy array or the
       // full-song treatment's compatibility view. Per-shot billing and the
       // worker payload keep the exact same shot element shape either way.
+      // CLASS-AWARE BILLING (owner-approved): the class the user picked
+      // decides the per-scene price — the same pure law the web modal shows.
       const shots = storyboardShots(concept.storyboard);
-      const usage = videoRenderUsage(shots, input.shotIndex);
+      const usage = videoRenderUsage(shots, input.shotIndex, engineClass);
       if (!usage) {
         return reply.code(400).send({ error: "invalid_video_shot_selection" });
       }
@@ -376,6 +401,172 @@ export default async function videos(app: FastifyInstance) {
 
       reply.code(202);
       return { jobId: job.jobId, replayed: job.replayed };
+    }
+  );
+
+  // ==========================================================================
+  // ONE-CLICK FULL VIDEO — "🎬 Make the full video". ONE upfront charge =
+  // per-scene class price × UNRENDERED scenes (already-rendered scenes are
+  // excluded by the shared videoRenderAllUsage law — double-billing is
+  // impossible by construction, and the web confirm shows the SAME totalCost
+  // this route charges). Every unrendered scene is queued as its own
+  // render-video job (identical payload shape to /renders), and the concept
+  // is stamped meta.autoAssemble so the worker enqueues the Wave-9 assembler
+  // the moment every sequence holds a successful render.
+  // ==========================================================================
+  app.post(
+    "/render-all",
+    { schema: { body: renderAllVideoInputSchema } },
+    async (req, reply) => {
+      const { workspaceId } = requireAuth(req);
+      const input = renderAllVideoInputSchema.parse(req.body);
+
+      // Workspace scope through the concept's OWN project — no projectId in
+      // the body means no projectId/conceptId mismatch class of bug either.
+      const concept = await prisma.videoConcept.findFirst({
+        where: { id: input.conceptId, project: { workspaceId } },
+        include: { project: { select: { artistId: true } } },
+      });
+      if (!concept) return reply.code(404).send({ error: "concept_not_found" });
+
+      let likenessPayload: LikenessRenderPayload | null = null;
+      if (input.useLikeness) {
+        likenessPayload = await resolveLikenessPayload(
+          workspaceId,
+          concept.project.artistId
+        );
+        if (!likenessPayload) {
+          return reply.code(409).send({
+            error: "no_trained_likeness",
+            note: "Train your likeness first (My Likeness) — this render was asked to feature your face and there is no trained, consented likeness to use.",
+          });
+        }
+      }
+
+      // Which scenes already have a successful render — the SAME pure law
+      // (perShotRenders) the assembly gate reads, so "rendered" can never
+      // mean two different things on the billing and assembly sides.
+      const shots = storyboardShots(concept.storyboard);
+      const renders = await prisma.videoRender.findMany({
+        where: { conceptId: concept.id },
+        orderBy: { createdAt: "asc" },
+        select: { id: true, url: true, createdAt: true, meta: true },
+      });
+      const rendered = perShotRenders(renders);
+      const usage = videoRenderAllUsage(shots, rendered.keys(), input.engineClass);
+      if (!usage) {
+        return reply.code(400).send({ error: "invalid_video_shot_selection" });
+      }
+      if (!usage.billingUnits) {
+        // HONEST 409 — nothing is missing, so nothing is billed or queued.
+        return reply.code(409).send({
+          error: "nothing_to_render",
+          note: "Every scene already has a render — assemble the full video instead; assembly is free.",
+          breakdown: {
+            shotCount: shots.length,
+            renderedShotIndexes: usage.renderedShotIndexes,
+            unrenderedShotIndexes: [],
+          },
+        });
+      }
+
+      // ONE upfront charge for the whole batch: costOf(class key) × unrendered
+      // scenes. The ledger row anchors to the FIRST queued job so the orphan-
+      // charge sweeper can see it is attached to real queued work.
+      const idempotencyKey = scopedRequestKey(
+        req.headers as Record<string, unknown>,
+        "video-render-all"
+      );
+      const charge = await app.chargeCredits({
+        workspaceId,
+        key: usage.creditKey,
+        multiplier: usage.billingUnits,
+        planUnits: usage.planUnits,
+        refTable: "VideoConcept",
+        refId: concept.id,
+        idempotencyKey,
+      });
+      if (!charge.ok)
+        return reply
+          .code(402)
+          .send({ error: "insufficient_credits", ...charge });
+
+      // Queue every unrendered scene — the exact per-shot payload /renders
+      // builds, one job per scene so progress/retries stay per-scene.
+      const jobIds: string[] = [];
+      for (let i = 0; i < usage.shotIndexes.length; i++) {
+        const shotIndex = usage.shotIndexes[i]!;
+        const job = await createQueuedProviderJob({
+          app,
+          queue: app.queues.video,
+          jobName: "render-video",
+          workspaceId,
+          projectId: concept.projectId,
+          kind: "video",
+          provider: process.env.VIDEO_PROVIDER ?? "unavailable",
+          inputJson: {
+            conceptId: concept.id,
+            projectId: concept.projectId,
+            shotIndex,
+            engineClass: input.engineClass,
+            useLikeness: input.useLikeness ?? false,
+            source: "render-all",
+          },
+          // The batch charge anchors to the first job (chargeLedgerId is
+          // unique — one ledger row cannot link to N jobs).
+          ...(i === 0 ? { charge } : {}),
+          ...(idempotencyKey
+            ? { idempotencyKey: `${idempotencyKey}:shot${shotIndex}` }
+            : {}),
+          payload: jobId => ({
+            jobId,
+            workspaceId,
+            projectId: concept.projectId,
+            conceptId: concept.id,
+            shotIndex,
+            shots,
+            format: concept.format,
+            engineClass: input.engineClass,
+            ...(likenessPayload ? { likeness: likenessPayload } : {}),
+          }),
+        });
+        jobIds.push(job.jobId);
+      }
+
+      // Stamp the auto-assemble request — the worker single-fires the Wave-9
+      // assembler when every sequence gains a render (video.ts trigger). Last
+      // step on purpose: if this write failed, the scenes still render and
+      // the user can assemble manually; nothing is stranded.
+      const existingMeta =
+        concept.meta && typeof concept.meta === "object" && !Array.isArray(concept.meta)
+          ? (concept.meta as Record<string, unknown>)
+          : {};
+      await prisma.videoConcept.update({
+        where: { id: concept.id },
+        data: {
+          meta: {
+            ...existingMeta,
+            autoAssemble: {
+              requested: true,
+              kind: "full",
+              engineClass: input.engineClass,
+              requestedAt: new Date().toISOString(),
+              queuedShotIndexes: usage.shotIndexes,
+            },
+          } as never,
+        },
+      });
+
+      reply.code(202);
+      return {
+        jobIds,
+        queuedShotIndexes: usage.shotIndexes,
+        renderedShotIndexes: usage.renderedShotIndexes,
+        creditKey: usage.creditKey,
+        billingUnits: usage.billingUnits,
+        totalCost: usage.totalCost,
+        autoAssemble: { requested: true, kind: "full" },
+      };
     }
   );
 

@@ -6,6 +6,12 @@ import { join } from "node:path";
 
 import { openSecret, prisma } from "@afrohit/db";
 import {
+  currentPlayableAsset,
+  planVideoAssembly,
+  playableArrangement,
+  playableAssetHistory,
+} from "@afrohit/shared";
+import {
   generateLikenessKeyframe,
   videoAdapter,
   videoAdapterForClass,
@@ -14,6 +20,7 @@ import {
   type VideoRenderOutput,
   type VideoShotInput,
 } from "@afrohit/ai";
+import { enqueueJob } from "../lib/enqueue";
 import { markFailed, markRunning, markSucceeded } from "../lib/jobs";
 import {
   downloadToBuffer,
@@ -571,6 +578,10 @@ export async function processVideo(p: VideoPayload) {
       },
       hasCostEvidence ? knownCostUsd : undefined
     );
+    // ONE-CLICK FULL VIDEO: a completed shot may be the last piece the
+    // assembler was waiting for. Never throws — the render's own success is
+    // already recorded and must not be disturbed by trigger trouble.
+    await maybeTriggerAutoAssemble(p);
   } catch (error) {
     if (hasCostEvidence) {
       await prisma.providerJob
@@ -586,5 +597,267 @@ export async function processVideo(p: VideoPayload) {
         );
     }
     await markFailed(p.jobId, error);
+    // A terminal shot FAILURE can also settle the auto-assemble question: if
+    // every queued shot has reached a terminal state and coverage is still
+    // short, the trigger writes an honest 'incomplete' outcome instead of
+    // waiting forever for a success event that will never come.
+    await maybeTriggerAutoAssemble(p);
+  }
+}
+
+// ===========================================================================
+// AUTO-ASSEMBLE TRIGGER (one-click full video). POST /videos/render-all
+// stamps concept meta.autoAssemble = { requested: true, kind: 'full', ... };
+// this trigger runs after EVERY terminal shot event for that concept and:
+//   - when the shared gating law (planVideoAssembly, the exact function the
+//     /videos/assemble route gates with) says every sequence now holds >=1
+//     successful render → enqueue ONE assemble-video job with the same
+//     payload shape the route builds, then clear the flag (single-fire);
+//   - when every queued shot job is terminal and coverage is still short →
+//     write meta.autoAssemble.outcome = 'incomplete' with the exact missing
+//     list. Honest, never spinning.
+// Single-fire is enforced by an ATOMIC conditional jsonb claim: only the
+// worker that flips requested:true→false proceeds, so two shots completing
+// at once cannot enqueue two assemblies.
+//
+// WHY WORKER-SIDE ENQUEUE (design choice): the /videos/assemble route
+// resolves auth + audio API-side, but its AUDIO and GATING laws are pure and
+// now live in @afrohit/shared (playable-asset.ts was moved there and the API
+// re-exports it), so the worker resolves the concept's audio through the
+// EXACT same law with its own prisma read and mirrors the route's payload
+// field-for-field. The job is made durable the same way the API makes jobs
+// durable: ProviderJob + JobOutbox in one transaction, then a direct BullMQ
+// publish under the dispatcher's stable id (provider-<jobId>) — if the
+// publish fails, the API's 15s outbox dispatcher republishes the row.
+// ===========================================================================
+
+const autoRecord = (value: unknown): Record<string, unknown> =>
+  value != null && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {};
+
+/** Flip meta.autoAssemble atomically; only one caller wins the claim. */
+async function claimAutoAssemble(
+  conceptId: string,
+  next: Record<string, unknown>
+): Promise<boolean> {
+  const affected = await prisma.$executeRaw`
+    UPDATE "VideoConcept"
+    SET "meta" = jsonb_set(
+      COALESCE("meta", '{}'::jsonb),
+      '{autoAssemble}',
+      ${JSON.stringify(next)}::jsonb
+    )
+    WHERE "id" = ${conceptId}
+      AND COALESCE("meta"->'autoAssemble'->>'requested', '') = 'true'
+  `;
+  return affected === 1;
+}
+
+/** The concept's CURRENT audio — the same playable-asset law the API uses
+ *  (shared module), fed by the worker's own scoped read. */
+async function resolveConceptAudio(
+  songId: string | null,
+  workspaceId: string
+): Promise<
+  | {
+      ok: true;
+      sourceId: string;
+      sourceType: "beat" | "mix" | "master";
+      url: string;
+      songId: string;
+      songDurationS: number | null;
+    }
+  | { ok: false; error: "no_song_bound" | "no_song_audio" }
+> {
+  if (!songId) return { ok: false, error: "no_song_bound" };
+  const song = await prisma.song.findFirst({
+    where: { id: songId, workspaceId },
+    include: {
+      masters: { orderBy: { createdAt: "desc" }, take: 20 },
+      mixes: { orderBy: { createdAt: "desc" }, take: 20 },
+      beats: { orderBy: { createdAt: "desc" }, take: 20 },
+    },
+  });
+  if (!song) return { ok: false, error: "no_song_bound" };
+  const history = playableAssetHistory(song);
+  const current = currentPlayableAsset(song);
+  if (!current) return { ok: false, error: "no_song_audio" };
+  const arrangement = playableArrangement(history, current);
+  return {
+    ok: true,
+    sourceId: current.id,
+    sourceType: current.type,
+    url: current.url,
+    songId: song.id,
+    songDurationS: arrangement?.durationS ?? current.durationS ?? null,
+  };
+}
+
+async function maybeTriggerAutoAssemble(p: {
+  jobId: string;
+  workspaceId: string;
+  projectId: string;
+  conceptId: string;
+}): Promise<void> {
+  try {
+    const concept = await prisma.videoConcept.findFirst({
+      where: { id: p.conceptId, project: { workspaceId: p.workspaceId } },
+      select: {
+        id: true,
+        projectId: true,
+        songId: true,
+        storyboard: true,
+        meta: true,
+      },
+    });
+    if (!concept) return;
+    const auto = autoRecord(autoRecord(concept.meta).autoAssemble);
+    if (auto.requested !== true) return;
+
+    const renders = await prisma.videoRender.findMany({
+      where: { conceptId: concept.id },
+      orderBy: { createdAt: "asc" },
+      select: { id: true, url: true, createdAt: true, meta: true },
+    });
+    const audio = await resolveConceptAudio(concept.songId, p.workspaceId);
+    const gate = planVideoAssembly({
+      kind: auto.kind === "teaser" ? "teaser" : "full",
+      storyboard: concept.storyboard,
+      renders,
+      songDurationS: audio.ok ? audio.songDurationS : null,
+    });
+
+    if (gate.ok) {
+      if (!audio.ok) {
+        // Coverage is complete but the song has no audio — an honest terminal
+        // outcome the modal can show; assembling would only fail later.
+        await claimAutoAssemble(concept.id, {
+          ...auto,
+          requested: false,
+          outcome: audio.error,
+          decidedAt: new Date().toISOString(),
+        });
+        return;
+      }
+      const firedAt = new Date().toISOString();
+      const claimed = await claimAutoAssemble(concept.id, {
+        ...auto,
+        requested: false,
+        outcome: "enqueued",
+        firedAt,
+      });
+      if (!claimed) return; // another shot's completion already fired it
+
+      // Durable enqueue — ProviderJob + JobOutbox in ONE transaction (the
+      // API's own durability pattern), then a direct publish under the
+      // dispatcher's stable BullMQ id. Payload mirrors POST /videos/assemble
+      // field-for-field. NO charge: assembly is local CPU, already-paid work.
+      const created = await prisma.$transaction(async tx => {
+        const job = await tx.providerJob.create({
+          data: {
+            workspaceId: p.workspaceId,
+            projectId: concept.projectId,
+            kind: "video",
+            provider: "assembler",
+            status: "QUEUED",
+            inputJson: {
+              conceptId: concept.id,
+              kind: gate.plan.kind,
+              trigger: "auto-assemble",
+            } as never,
+          },
+          select: { id: true },
+        });
+        const payload = {
+          jobId: job.id,
+          workspaceId: p.workspaceId,
+          projectId: concept.projectId,
+          conceptId: concept.id,
+          kind: gate.plan.kind,
+          clips: gate.plan.clips,
+          plannedS: gate.plan.plannedS,
+          maxDurationS: gate.plan.maxDurationS,
+          audio: {
+            url: audio.url,
+            sourceId: audio.sourceId,
+            sourceType: audio.sourceType,
+            startS: gate.plan.audioStartS,
+            songId: audio.songId,
+            songDurationS: audio.songDurationS,
+          },
+        };
+        await tx.jobOutbox.create({
+          data: {
+            workspaceId: p.workspaceId,
+            providerJobId: job.id,
+            queueName: "video",
+            jobName: "assemble-video",
+            payload: payload as never,
+          },
+        });
+        return { jobId: job.id, payload };
+      });
+      try {
+        await enqueueJob("video", "assemble-video", created.payload, {
+          jobId: `provider-${created.jobId}`,
+        });
+        await prisma.jobOutbox.update({
+          where: { providerJobId: created.jobId },
+          data: { status: "DISPATCHED", dispatchedAt: new Date() },
+        });
+      } catch (publishError) {
+        // Durable by design: the PENDING outbox row is republished by the
+        // API dispatcher within ~15s; the stable jobId dedupes any race.
+        console.warn(
+          `[video ${p.jobId}] auto-assemble publish deferred to the outbox dispatcher:`,
+          (publishError as Error).message
+        );
+      }
+      // Record which job carried the cut (best-effort bookkeeping).
+      await prisma.$executeRaw`
+        UPDATE "VideoConcept"
+        SET "meta" = jsonb_set(
+          COALESCE("meta", '{}'::jsonb),
+          '{autoAssemble,assembleJobId}',
+          ${JSON.stringify(created.jobId)}::jsonb
+        )
+        WHERE "id" = ${concept.id}
+      `.catch(() => undefined);
+      console.log(
+        `[video ${p.jobId}] auto-assemble fired for concept ${concept.id} (job ${created.jobId})`
+      );
+      return;
+    }
+
+    // Gate not passable yet. If ANY render job for this concept is still
+    // queued or running, more evidence is coming — do nothing. Only when
+    // every shot job is terminal and coverage is still short do we settle
+    // honestly with the exact missing list.
+    const pending = await prisma.providerJob.count({
+      where: {
+        workspaceId: p.workspaceId,
+        kind: "video",
+        status: { in: ["QUEUED", "RUNNING"] },
+        NOT: { provider: "assembler" },
+        inputJson: { path: ["conceptId"], equals: concept.id },
+      },
+    });
+    if (pending > 0) return;
+    await claimAutoAssemble(concept.id, {
+      ...auto,
+      requested: false,
+      outcome: "incomplete",
+      missing: gate.error === "shots_missing" ? gate.missing : [],
+      reason: gate.error,
+      decidedAt: new Date().toISOString(),
+    });
+  } catch (error) {
+    // Best-effort by contract: the shot render's own outcome is already
+    // recorded and a trigger fault must never disturb it.
+    console.warn(
+      `[video ${p.jobId}] auto-assemble trigger error:`,
+      (error as Error).message
+    );
   }
 }

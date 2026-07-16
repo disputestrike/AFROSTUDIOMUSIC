@@ -14,6 +14,7 @@ export * from "./runtime-safety";
 export * from "./memory-retrieval";
 export * from "./video-storyboard";
 export * from "./video-assembly";
+export * from "./playable-asset";
 export * from "./lane-engine";
 export * from "./engine-class";
 export * from "./reference-origin";
