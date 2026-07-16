@@ -17,11 +17,22 @@ export interface FillOverlayOpts {
   fillGain?: number;
   /** Ceiling for the peak limiter (0–1). */
   limit?: number;
+  /**
+   * Target-grid tempo. When present, the fill input is trimmed to exactly ONE
+   * bar ((60/bpm)*4 s) inside the filtergraph BEFORE the delays — a fill is a
+   * one-bar transition accent by definition (planFills places it one bar before
+   * each boundary). Without the trim, an 8-bar forged fill sample kept playing
+   * 7 bars PAST every section boundary at -6 dB, smearing every transition (the
+   * "scattered" diagnosis, 2026-07). Optional for back-compat: absent → the old
+   * untrimmed behavior, so existing callers/tests are unchanged until wired.
+   */
+  bpm?: number;
 }
 
 /**
- * Build the `-filter_complex` graph: split the fill (input 1) into N copies, delay
- * each to its placement, mix them under the track (input 0), then peak-limit.
+ * Build the `-filter_complex` graph: (optionally) trim the fill (input 1) to one
+ * bar, split it into N copies, delay each to its placement, mix them under the
+ * track (input 0), then peak-limit.
  * Returns null when there are no placements (caller skips the overlay entirely).
  */
 export function buildFillFilterGraph(placements: number[], opts?: FillOverlayOpts): string | null {
@@ -31,9 +42,17 @@ export function buildFillFilterGraph(placements: number[], opts?: FillOverlayOpt
   // -1 dB ceiling, same as the assembly bus — NOT 0.97, which left no true-peak
   // headroom and tripped the QC clipping gate.
   const limit = Math.max(0.1, Math.min(1, opts?.limit ?? 0.891));
+  // ONE-BAR LAW (see FillOverlayOpts.bpm): atrim to a single bar at the target
+  // tempo, with a 15 ms declick fade-out so the cut never pops (same edge
+  // treatment trimToLoop uses).
+  const bpm = Number.isFinite(opts?.bpm) && (opts!.bpm as number) > 0 ? (opts!.bpm as number) : null;
+  const barS = bpm ? (60 / bpm) * 4 : null;
+  const trim = barS
+    ? `atrim=0:${barS.toFixed(3)},afade=t=out:st=${Math.max(0, barS - 0.015).toFixed(3)}:d=0.015,`
+    : '';
   const n = pts.length;
   const labels = Array.from({ length: n }, (_, i) => `[f${i}]`).join('');
-  const parts = [`[1:a]volume=${gain},asplit=${n}${labels}`];
+  const parts = [`[1:a]${trim}volume=${gain},asplit=${n}${labels}`];
   const delayed: string[] = [];
   pts.forEach((t, i) => {
     const ms = Math.round(t * 1000);

@@ -4,10 +4,11 @@
  * Locally, install ffmpeg or mixes/masters will fail with a clear error.
  */
 import { spawn, type ChildProcess } from 'node:child_process';
+import { existsSync, readFileSync } from 'node:fs';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { grooveOffsetMs, parseStorageUri } from '@afrohit/shared';
+import { grooveOffsetMs, isMaterialRole, jobOf, parseStorageUri } from '@afrohit/shared';
 import { downloadToBuffer } from './storage';
 
 export const NATIVE_AUDIO_LIMITS = Object.freeze({
@@ -293,6 +294,12 @@ export interface AudioQuality {
   truePeakDb: number | null; // dBTP — > 0 means it clips on export
   crestFactorDb: number | null; // peak-to-RMS — LOW = squashed/lifeless
   flatFactor: number | null; // astats flatness — HIGH = digital silence/clipping runs
+  // MASTER REPORT metrics (the "billion-dollar studio" bar, stated honestly):
+  // measured spectral balance and stereo health, so a QC record is a real
+  // {lufs, dBTP, lra, crest, tilt, correlation} report, not just loudness.
+  spectralTiltDbPerOct: number | null; // slope of per-octave RMS — strongly negative = dull, ~0/positive = harsh
+  octaveRmsDb: number[] | null; // the measured per-octave band RMS (dB) behind the tilt, 63 Hz → 8 kHz — kept for reference deltas
+  stereoCorrelation: number | null; // +1 = mono-safe, 0 = decorrelated, <0 = phase trouble on mono fold-down
   flags: string[]; // e.g. ["flat","too_quiet","clipping"]
   verdict: 'pass' | 'weak' | 'fail';
   ok: boolean; // back-compat: verdict !== 'fail'
@@ -359,6 +366,9 @@ function durationOnlyAudioQuality(durationS: number): AudioQuality {
     truePeakDb: null,
     crestFactorDb: null,
     flatFactor: null,
+    spectralTiltDbPerOct: null,
+    octaveRmsDb: null,
+    stereoCorrelation: null,
     flags: ['unmeasured'],
     verdict,
     ok: verdict !== 'fail',
@@ -412,10 +422,110 @@ export function audioQualityFromFfmpegCapture(
     truePeakDb,
     crestFactorDb,
     flatFactor,
+    // Spectral/stereo metrics come from a SECOND measurement pass (see
+    // measureSpectralAndStereo) — a raw ebur128/astats capture can't provide
+    // them, so this parser honestly reports null and measureAudioQuality fills
+    // them in when its extra pass succeeds.
+    spectralTiltDbPerOct: null,
+    octaveRmsDb: null,
+    stereoCorrelation: null,
     flags,
     verdict,
     ok: verdict !== 'fail',
   };
+}
+
+/** Octave-band centers for the spectral-tilt measurement — 63 Hz to 8 kHz covers
+ *  the musically decisive range (sub anchor → air) in 8 one-octave bands. */
+const OCTAVE_CENTERS_HZ = [63, 125, 250, 500, 1000, 2000, 4000, 8000] as const;
+
+/**
+ * SECOND measurement pass — spectral tilt + stereo correlation, one ffmpeg run.
+ *
+ *   - Per-octave RMS: a bank of one-octave bandpass branches each ending in
+ *     volumedetect (its single `mean_volume` summary line is the most reliable
+ *     RMS readout ffmpeg prints — astats-per-band would print ~40 lines each
+ *     and make instance attribution fragile). Tilt = least-squares slope of
+ *     band dB vs octave index, in dB/octave.
+ *   - Stereo correlation: mid/side energy via stereotools lr>ms + ONE astats
+ *     (channel 1 = mid RMS, channel 2 = side RMS); correlation is the standard
+ *     meter quantity (M²−S²)/(M²+S²). Chosen over averaging aphasemeter frame
+ *     metadata deliberately: aphasemeter only exposes per-frame values, and
+ *     parsing thousands of metadata lines against the bounded stderr capture is
+ *     exactly the kind of fragile plumbing the honesty law forbids — this is
+ *     the same physical quantity from two summary numbers.
+ *
+ * Best-effort by contract: any failure returns nulls, never throws, never
+ * fails QC — an unmeasured tilt is honorably null.
+ */
+async function measureSpectralAndStereo(
+  path: string,
+  options: NativeAudioExecutionOptions = {},
+): Promise<{ tiltDbPerOct: number | null; octaveRmsDb: number[] | null; correlation: number | null }> {
+  const empty = { tiltDbPerOct: null, octaveRmsDb: null, correlation: null };
+  try {
+    const n = OCTAVE_CENTERS_HZ.length;
+    // asplit → n band branches + 1 mid/side branch + 1 passthrough the null
+    // muxer can map (a filtergraph must still produce one mapped output).
+    const splitLabels = ['[q_out]', ...OCTAVE_CENTERS_HZ.map((_, i) => `[q_b${i}]`), '[q_ms]'].join('');
+    const chains = [
+      `[0:a]aformat=channel_layouts=stereo,asplit=${n + 2}${splitLabels}`,
+      ...OCTAVE_CENTERS_HZ.map(
+        (hz, i) => `[q_b${i}]bandpass=f=${hz}:width_type=o:width=1,volumedetect,anullsink`,
+      ),
+      '[q_ms]stereotools=mode=lr>ms,astats=metadata=0,anullsink',
+    ];
+    const capture = await ffmpegCapture([
+      '-i', path,
+      '-filter_complex', chains.join(';'),
+      '-map', '[q_out]',
+      '-f', 'null', '-',
+    ], options);
+    if (capture.failure !== null || capture.exitCode !== 0) return empty;
+    const err = capture.stderr;
+
+    // volumedetect instances print in whatever order they flush, but every line
+    // carries its parse-order index — sort by it and the bands come back in the
+    // exact order the branches were written above.
+    const bandMatches = [...err.matchAll(/\[Parsed_volumedetect_(\d+) @ [^\]]+\] mean_volume:\s*(-?\d+(?:\.\d+)?) dB/g)]
+      .map((m) => ({ idx: Number.parseInt(m[1]!, 10), db: Number.parseFloat(m[2]!) }))
+      .filter((m) => Number.isFinite(m.idx) && Number.isFinite(m.db))
+      .sort((a, b) => a.idx - b.idx);
+    let tiltDbPerOct: number | null = null;
+    let octaveRmsDb: number[] | null = null;
+    if (bandMatches.length === n) {
+      octaveRmsDb = bandMatches.map((m) => Math.round(m.db * 10) / 10);
+      // Least-squares slope of band dB against octave index (bands are exactly
+      // one octave apart, so the index IS the octave axis).
+      const xs = octaveRmsDb.map((_, i) => i);
+      const meanX = xs.reduce((a, b) => a + b, 0) / n;
+      const meanY = octaveRmsDb.reduce((a, b) => a + b, 0) / n;
+      const cov = xs.reduce((a, x, i) => a + (x - meanX) * (octaveRmsDb![i]! - meanY), 0);
+      const varX = xs.reduce((a, x) => a + (x - meanX) ** 2, 0);
+      tiltDbPerOct = varX > 0 ? Math.round((cov / varX) * 100) / 100 : null;
+    }
+
+    // The single astats in the graph reports Channel 1 (mid) then Channel 2
+    // (side) then Overall — take the first two RMS levels. A pure-mono side
+    // channel prints "-inf": treat as zero energy (correlation exactly +1).
+    const rmsMatches = [...err.matchAll(/RMS level dB:\s*(-?\d+(?:\.\d+)?|-inf)/g)].map((m) => m[1]!);
+    let correlation: number | null = null;
+    if (rmsMatches.length >= 2) {
+      const toPower = (s: string): number | null => {
+        if (s === '-inf') return 0;
+        const db = Number.parseFloat(s);
+        return Number.isFinite(db) ? Math.pow(10, db / 10) : null;
+      };
+      const mid = toPower(rmsMatches[0]!);
+      const side = toPower(rmsMatches[1]!);
+      if (mid !== null && side !== null && mid + side > 0) {
+        correlation = Math.round(((mid - side) / (mid + side)) * 100) / 100;
+      }
+    }
+    return { tiltDbPerOct, octaveRmsDb, correlation };
+  } catch {
+    return empty;
+  }
 }
 
 export async function measureAudioQuality(
@@ -433,7 +543,14 @@ export async function measureAudioQuality(
       '-af', 'ebur128=peak=true,astats=metadata=0',
       '-f', 'null', '-',
     ], options);
-    return audioQualityFromFfmpegCapture(durationS, capture);
+    const quality = audioQualityFromFfmpegCapture(durationS, capture);
+    // MASTER REPORT pass — tilt + correlation ride the same staged file. Failure
+    // leaves the fields null and never degrades the loudness verdict.
+    const spectral = await measureSpectralAndStereo(staged.path, options);
+    quality.spectralTiltDbPerOct = spectral.tiltDbPerOct;
+    quality.octaveRmsDb = spectral.octaveRmsDb;
+    quality.stereoCorrelation = spectral.correlation;
+    return quality;
   } catch {
     return durationOnlyAudioQuality(durationS);
   } finally {
@@ -514,8 +631,23 @@ export async function measureVocalActivity(input: string): Promise<{
 // MATERIAL LAYER — the arranger's hands. Real loops in, a real beat out.
 // ---------------------------------------------------------------------------
 
-/** Trim raw audio to an exact N-bar loop at the given BPM (4/4), gentle edges. */
-export async function trimToLoop(input: Buffer, bpm: number, bars: number, startS = 0.5): Promise<Buffer> {
+/** Trim raw audio to an exact N-bar loop at the given BPM (4/4), gentle edges.
+ *
+ * DOWNBEAT LAW (scattered-beat diagnosis 2026-07): the old fixed startS=0.5 cut
+ * every provider render at an arbitrary half-second — whatever transient
+ * happened to sit there became "beat one", so separately-forged loops landed
+ * with different phase and the assembled kit never locked. opts.startS lets the
+ * caller pass the MEASURED first downbeat (DSP-detected for provider renders;
+ * 0 for synth loops, which start exactly on the grid by construction). The 0.5s
+ * default is kept ONLY as the legacy fallback for callers that have no
+ * measurement yet — unknown is honorable, but measured wins. */
+export async function trimToLoop(
+  input: Buffer,
+  bpm: number,
+  bars = 8,
+  opts: { startS?: number } = {},
+): Promise<Buffer> {
+  const startS = Number.isFinite(opts.startS) && (opts.startS as number) >= 0 ? (opts.startS as number) : 0.5;
   const dur = (60 / bpm) * 4 * bars;
   const dir = await mkdtemp(join(tmpdir(), 'loop-'));
   const inPath = join(dir, 'in');
@@ -553,6 +685,24 @@ export interface AssemblySection {
   layerIdx: number[];
 }
 
+/** The musical job a layer's role serves — the SAME mapping the arranger and
+ *  own-engine use (jobOf for taxonomy roles, the legacy coarse-role table for
+ *  the stem-separator names), so the mix bus and the arrangement never disagree
+ *  about what counts as low end. */
+function layerJobOf(role: string | undefined): string | null {
+  if (!role) return null; // unknown is honorable — never carve blind
+  if (isMaterialRole(role)) return jobOf(role);
+  return (
+    {
+      drums: 'rhythm',
+      percussion: 'rhythm',
+      bass: 'low_end',
+      log_drum: 'low_end',
+      chords: 'harmony',
+    } as Record<string, string>
+  )[role] ?? null;
+}
+
 /**
  * Assemble a full beat from real material: each section loops its layers to the
  * section length (time-stretched to the target BPM), mixes them, then sections
@@ -575,21 +725,40 @@ export async function assembleBeat(opts: {
       const chains: string[] = [];
       const labels: string[] = [];
       active.forEach((l, i) => {
-        // -stream_loop -1 + -t: loop the material to the section length.
-        inputs.push('-stream_loop', '-1', '-t', (secDur + 1).toFixed(3), '-i', l.path);
         // Time-stretch to the target tempo (atempo valid 0.5–2.0 per stage).
         const ratio = Math.min(Math.max(opts.targetBpm / l.sourceBpm, 0.5), 2.0);
+        // -stream_loop -1 + -t: loop the material to the section length. The -t
+        // here measures PRE-stretch input time, but atempo=ratio>1 CONSUMES it
+        // faster — a plain (secDur+1) read shrank to (secDur+1)/ratio of output
+        // and the layer went SILENT before the section ended (the "layers
+        // randomly vanish / scattered beat" defect, confirmed 2026-07). Read
+        // ratio× more input so the post-stretch output always covers the
+        // section; the output-side -t secDur below trims the excess exactly.
+        inputs.push('-stream_loop', '-1', '-t', ((secDur + 1) * Math.max(1, ratio)).toFixed(3), '-i', l.path);
         // PAN (producer doctrine): shakers wide, congas/bells off-center, low end
         // center — the width that makes a layered kit read as a real mix.
         const pan = Math.max(-1, Math.min(1, l.pan ?? 0));
         const panF = pan !== 0 ? `,stereotools=balance_out=${pan.toFixed(2)}` : '';
+        // FREQUENCY CARVING (mud diagnosis 2026-07): every loop used to occupy
+        // the full spectrum, so chord beds, leads and vocals all dumped energy
+        // into the lows on top of the bass — the "mud". Only the low-end anchor
+        // family (bass/log_drum/808-class) and the rhythm family (kicks NEED
+        // their fundamentals) keep the lows; every other KNOWN role is high-
+        // passed at 170 Hz so exactly one family owns the foundation. Unknown
+        // roles stay full-range — carving what we can't identify could gut a
+        // mislabeled bass (unknown is honorable). Deterministic and modest by
+        // design. TODO(diagnosis follow-up): no kick→bass sidechain this pass —
+        // that needs a keyed split of the kick as a sidechain source per section
+        // graph, a structural change to this filtergraph, not a one-line filter.
+        const job = layerJobOf(l.role);
+        const carveF = job && job !== 'low_end' && job !== 'rhythm' ? ',highpass=f=170' : '';
         // GROOVE (the PDF's law: "Afrobeats doesn't sit perfectly on the grid"):
         // timekeepers stay dead-on, hand percussion sits a few ms behind —
         // deterministic per role, ≤10ms, so layered kits breathe like players,
         // never like a sequencer.
         const groove = l.role ? Math.min(10, Math.max(0, grooveOffsetMs(l.role))) : 0;
         const grooveF = groove > 0 ? `,adelay=${groove}|${groove}` : '';
-        chains.push(`[${i}:a]aformat=channel_layouts=stereo,atempo=${ratio.toFixed(4)},volume=${l.gain.toFixed(2)}${panF}${grooveF}[l${i}]`);
+        chains.push(`[${i}:a]aformat=channel_layouts=stereo,atempo=${ratio.toFixed(4)},volume=${l.gain.toFixed(2)}${carveF}${panF}${grooveF}[l${i}]`);
         labels.push(`[l${i}]`);
       });
       const outPath = join(dir, `sec${s}.wav`);
@@ -753,46 +922,201 @@ export function loudnormTrim(
 }
 
 /**
+ * GENRE TONE CURVES (owner-approved mastering upgrade, 2026-07): ONE fixed EQ
+ * used to master every lane — amapiano's log-drum low-mids and afrobeats'
+ * percussion top got the identical curve, so neither sounded like its lane's
+ * commercial references. Declarative per-genre curves, each a list of ffmpeg
+ * EQ stages; anything unmapped (afro_fusion included, deliberately) falls back
+ * to the proven default curve — graceful, never a failure.
+ */
+const MASTER_TONE_CURVES: Record<string, string[]> = {
+  amapiano: [
+    'equalizer=f=225:width_type=q:width=1.2:g=-1.5', // low-mid control — the 200-250 Hz build-up where stacked log drums go woolly
+    'bass=g=1.5:f=45', // sub shelf — the log-drum foundation the lane is named for
+    'equalizer=f=4000:width_type=q:width=1.5:g=1', // presence so the top of the kit reads over the sub weight
+  ],
+  afrobeats: [
+    'equalizer=f=3500:width_type=q:width=1.5:g=1.5', // percussion presence — shaker/conga articulation
+    'equalizer=f=350:width_type=q:width=1.4:g=-1', // boxiness cut
+    'treble=g=1:f=11000', // air
+  ],
+};
+/** The pre-upgrade curve, unchanged — the default for every unmapped lane. */
+const DEFAULT_TONE_CURVE = [
+  'bass=g=1.2:f=110', // low-end warmth
+  'equalizer=f=3000:width_type=q:width=1.5:g=1', // vocal/lead presence
+  'treble=g=1.8:f=9000', // air
+];
+
+/**
  * Automated mastering chain — now a real LOUDNESS chain, not a polite one:
  *   1. subsonic high-pass (kill rumble that steals headroom)
- *   2. gentle tonal shaping — low warmth, vocal presence, top-end air
+ *   2. per-genre tonal shaping (MASTER_TONE_CURVES; default curve when unmapped)
  *   3. glue bus compression (2:1, slow) to round the whole thing together
- *   4. DRIVE (loud targets only): measured volume push + tanh soft-clip INTO the
+ *   4. 3-band multiband compression (180 Hz / 3.5 kHz crossovers, gentle 2:1) —
+ *      densifies the low end WITHOUT the wideband glue pumping the mids every
+ *      time the sub hits; the stage commercial Afro masters have.
+ *   5. stereo bus: modest mid-side width (+15% side) then MONO below 120 Hz —
+ *      wide highs, anchored lows, mono-safe sub (club systems sum the lows).
+ *   6. DRIVE (loud targets only): measured volume push + tanh soft-clip INTO the
  *      limiter — the density stage commercial Afrobeats masters have and the old
  *      chain never did; loudnorm alone cannot create it.
- *   5. brickwall limiter as the hard ceiling
- *   6. two-pass LINEAR loudnorm trim landing on the exact preset target — the
+ *   7. brickwall limiter as the hard ceiling
+ *   8. two-pass LINEAR loudnorm trim landing on the exact preset target — the
  *      old ONE-PASS dynamic loudnorm undershot 1-3 LU and pumped; THAT was the
  *      "crusher"/"weak" defect, not the -9 number.
- * Everything before the trim (steps 1-5) lives in masterPreChain so pass 1 can
- * measure EXACTLY the signal the trim will receive.
+ * Everything before the trim (steps 1-7) lives in masterPreChain so pass 1 can
+ * measure EXACTLY the signal the trim will receive — the two-pass discipline is
+ * untouched: pass 1b re-measures WHATEVER pre-chain exists, multiband included.
+ *
+ * NOTE on the graph shape: the multiband/mono-low stages use labeled acrossover
+ * splits, so the returned string is a multi-chain filtergraph ("a;b;c"), not a
+ * flat filter list. That stays legal everywhere this string goes (-af and the
+ * `${preChain},loudnorm` composition) because the graph keeps exactly one open
+ * input at the front and one open output at the end. Bands recombine with
+ * amix=normalize=0 — the sample-accurate SUM that reconstructs a crossover.
+ * (amerge would CONCATENATE the channels: three stereo bands become six
+ * channels, and the later -ac 2 downmix would recombine them at non-unity
+ * coefficients — measurably wrong, so we deliberately don't use it.)
  */
-export function masterPreChain(target: { lufs: number; tp: number }, rawI: number | null): string {
+export function masterPreChain(
+  target: { lufs: number; tp: number },
+  rawI: number | null,
+  genre?: string,
+): string {
   const tpLinear = Math.pow(10, target.tp / 20).toFixed(4); // dBTP → linear amplitude
-  const parts = [
+  const tone = MASTER_TONE_CURVES[genre ?? ''] ?? DEFAULT_TONE_CURVE;
+  const head = [
     'highpass=f=28',
-    'bass=g=1.2:f=110', // low-end warmth
-    'equalizer=f=3000:width_type=q:width=1.5:g=1', // vocal/lead presence
-    'treble=g=1.8:f=9000', // air
-    'acompressor=threshold=-16dB:ratio=2:attack=20:release=200:makeup=1.5', // glue
-  ];
+    ...tone,
+    'acompressor=threshold=-16dB:ratio=2:attack=20:release=200:makeup=1.5', // wideband glue
+  ].join(',');
+  // 3-BAND MULTIBAND — gentle 2:1 per band; the low band gets the deepest
+  // threshold + slowest attack so the bass densifies while mids/highs are
+  // barely touched (no pumping), then the bands SUM back (see NOTE above).
+  const multiband = [
+    `${head},acrossover=split=180|3500:order=4th[mb_lo][mb_mid][mb_hi]`,
+    '[mb_lo]acompressor=threshold=-21dB:ratio=2:attack=25:release=180[mb_lo_c]',
+    '[mb_mid]acompressor=threshold=-18dB:ratio=2:attack=20:release=200[mb_mid_c]',
+    '[mb_hi]acompressor=threshold=-18dB:ratio=2:attack=10:release=120[mb_hi_c]',
+    '[mb_lo_c][mb_mid_c][mb_hi_c]amix=inputs=3:normalize=0',
+  ].join(';');
+  // STEREO BUS — width first (so the widener never touches what we then mono),
+  // then crossover at 120 Hz, fold the low band to dual-mono, sum back.
+  const stereo = [
+    'stereotools=slev=1.15,acrossover=split=120:order=4th[st_lo][st_hi]',
+    '[st_lo]pan=stereo|c0=0.5*c0+0.5*c1|c1=0.5*c0+0.5*c1[st_lo_m]',
+    '[st_lo_m][st_hi]amix=inputs=2:normalize=0',
+  ].join(';');
+  const tail: string[] = [];
   // Loud targets get DRIVEN into the ceiling; quiet ("breathe") targets don't —
   // saturating a dynamics-first master defeats its whole point.
   const gain = rawI === null ? 0 : driveGainDb(target.lufs, rawI);
   if (target.lufs >= -11 && gain > 0.05) {
-    parts.push(`volume=${gain.toFixed(2)}dB`); // measured drive, never a blind boost
-    parts.push('asoftclip=type=tanh:threshold=0.85'); // analog-style density before the wall
+    tail.push(`volume=${gain.toFixed(2)}dB`); // measured drive, never a blind boost
+    tail.push('asoftclip=type=tanh:threshold=0.85'); // analog-style density before the wall
   }
-  parts.push(`alimiter=level=false:limit=${tpLinear}:attack=2:release=80`); // brickwall ceiling
-  return parts.join(',');
+  tail.push(`alimiter=level=false:limit=${tpLinear}:attack=2:release=80`); // brickwall ceiling
+  return `${multiband},${stereo},${tail.join(',')}`;
 }
 
 /** Full mastering filtergraph: pre-chain + two-pass linear trim (see above). */
 export function masterChain(
   target: { lufs: number; tp: number },
-  m?: { raw: LoudnormStats | null; driven: LoudnormStats | null }
+  m?: { raw: LoudnormStats | null; driven: LoudnormStats | null },
+  genre?: string,
 ): string {
-  return [masterPreChain(target, m?.raw?.input_i ?? null), loudnormTrim(target, 11, m?.driven ?? null)].join(',');
+  return [masterPreChain(target, m?.raw?.input_i ?? null, genre), loudnormTrim(target, 11, m?.driven ?? null)].join(',');
+}
+
+// ---------------------------------------------------------------------------
+// REFERENCE SEAM — measured deltas against rights-cleared reference masters.
+//
+// CONTRACT: apps/worker/py/fixtures/master-references.json holds ONLY measured
+// NUMBERS taken from rights-cleared reference masters — per-genre loudness,
+// tilt, correlation, octave RMS vectors. NEVER audio, never a fingerprint that
+// could reconstruct audio. The file does not exist yet by design: this seam
+// no-ops cleanly (null) until an operator measures references and commits the
+// manifest. A reference delta is a REPORT line, never a gate — it must not and
+// cannot fail a render.
+// ---------------------------------------------------------------------------
+
+export interface MasterReferenceVector {
+  lufs?: number;
+  truePeakDb?: number;
+  loudnessRangeLra?: number;
+  crestFactorDb?: number;
+  spectralTiltDbPerOct?: number;
+  stereoCorrelation?: number;
+  octaveRmsDb?: number[];
+}
+
+/** Memoized manifest load — the fixture can't change within a process lifetime,
+ *  and a missing/corrupt file is an honest empty map, never a throw. */
+let _masterRefsCache: Record<string, MasterReferenceVector> | null = null;
+function loadMasterReferences(): Record<string, MasterReferenceVector> {
+  if (_masterRefsCache) return _masterRefsCache;
+  // dist/lib/ffmpeg.js -> package root; src/lib/ffmpeg.ts -> package root (both ../../).
+  const candidates = [
+    join(__dirname, '..', '..', 'py', 'fixtures', 'master-references.json'),
+    join(process.cwd(), 'py', 'fixtures', 'master-references.json'),
+    join(process.cwd(), 'apps', 'worker', 'py', 'fixtures', 'master-references.json'),
+  ];
+  let refs: Record<string, MasterReferenceVector> = {};
+  for (const path of candidates) {
+    try {
+      if (!existsSync(path)) continue;
+      const parsed = JSON.parse(readFileSync(path, 'utf8')) as unknown;
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        refs = parsed as Record<string, MasterReferenceVector>;
+      }
+      break;
+    } catch {
+      break; // corrupt manifest → empty map; the delta is honorably absent
+    }
+  }
+  _masterRefsCache = refs;
+  return refs;
+}
+
+/**
+ * Delta of a measured master vs its genre's reference vector. Null whenever the
+ * manifest, the genre entry, or a comparable measured value is absent — the
+ * caller records "no reference" honestly instead of a fabricated comparison.
+ * Positive delta = the render is ABOVE the reference on that axis.
+ */
+export function masterReferenceDelta(
+  genre: string | undefined,
+  measured: AudioQuality,
+): { genre: string; reference: MasterReferenceVector; delta: Record<string, number | number[]> } | null {
+  if (!genre) return null;
+  try {
+    const reference = loadMasterReferences()[genre];
+    if (!reference) return null;
+    const delta: Record<string, number | number[]> = {};
+    const diff = (key: string, ours: number | null | undefined, theirs: number | undefined) => {
+      if (typeof ours === 'number' && Number.isFinite(ours) && typeof theirs === 'number' && Number.isFinite(theirs)) {
+        delta[key] = Math.round((ours - theirs) * 100) / 100;
+      }
+    };
+    diff('lufs', measured.integratedLufs, reference.lufs);
+    diff('truePeakDb', measured.truePeakDb, reference.truePeakDb);
+    diff('loudnessRangeLra', measured.loudnessRangeLra, reference.loudnessRangeLra);
+    diff('crestFactorDb', measured.crestFactorDb, reference.crestFactorDb);
+    diff('spectralTiltDbPerOct', measured.spectralTiltDbPerOct, reference.spectralTiltDbPerOct);
+    diff('stereoCorrelation', measured.stereoCorrelation, reference.stereoCorrelation);
+    if (
+      Array.isArray(measured.octaveRmsDb) && Array.isArray(reference.octaveRmsDb)
+      && measured.octaveRmsDb.length === reference.octaveRmsDb.length
+      && reference.octaveRmsDb.every((v) => Number.isFinite(v))
+    ) {
+      delta.octaveRmsDb = measured.octaveRmsDb.map((v, i) => Math.round((v - reference.octaveRmsDb![i]!) * 10) / 10);
+    }
+    if (!Object.keys(delta).length) return null;
+    return { genre, reference, delta };
+  } catch {
+    return null; // the report line disappears; the render never does
+  }
 }
 
 /**
@@ -1049,6 +1373,12 @@ export async function master(opts: {
    * user Re-master path omit this flag and keep the full chain they need.
    */
   finished?: boolean;
+  /**
+   * Lane for the per-genre tonal curve (MASTER_TONE_CURVES). Only the FULL
+   * mastering path uses it — the finished/conform path stays tone-neutral by
+   * doctrine. Absent/unmapped → the default curve, never a failure.
+   */
+  genre?: string;
 }): Promise<{ wav: Buffer; mp3: Buffer }> {
   const target = MASTER_TARGETS[opts.preset] ?? MASTER_TARGETS['afro_stream_-9']!;
   const dir = await mkdtemp(join(tmpdir(), 'afrohit-master-'));
@@ -1061,7 +1391,7 @@ export async function master(opts: {
     const raw = await measureLoudnorm(inPath, target);
     const pre = opts.finished
       ? conformPreChain(target, raw?.input_i ?? null)
-      : masterPreChain(target, raw?.input_i ?? null);
+      : masterPreChain(target, raw?.input_i ?? null, opts.genre);
     // PASS 1b — measure the signal as it LEAVES the drive/limiter stage: the
     // trim must know its OWN input, not the raw take, or the drive gain gets
     // applied twice. Same deterministic pre-chain as the render below.

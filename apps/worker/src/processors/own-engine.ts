@@ -49,7 +49,7 @@ import {
   resolveAssetForProvider,
   uploadBytes,
 } from "../lib/storage";
-import { mixBuffers } from "../lib/ffmpeg";
+import { measureAudioBufferQuality, mixBuffers } from "../lib/ffmpeg";
 import { certifyAudioBytes } from "../lib/certified-assets";
 import { deleteUnreferencedAssetRefs } from "./asset-cleanup";
 import { renderMelodyGuide } from "../lib/melody-guide";
@@ -107,18 +107,16 @@ async function pickKit(
   return selectMaterialRows(eligibleRows, roles, bpm, key, { varietySeed });
 }
 
+/** Hard ceiling on CONCURRENT roles in one section. The collected+forged kit
+ *  can be 12+ roles; twelve loops at once is a wall of sound no producer would
+ *  print — density comes from the ARRANGEMENT, not from stacking everything. */
+const SECTION_ROLE_CAP = 7;
+
 function sectionsFrom(
   blueprint: SongBlueprint | null | undefined,
   roles: string[]
 ) {
-  const bed = roles.filter(r => r !== "fill");
-  if (blueprint?.sections?.length) {
-    return blueprint.sections.map((s, i) => ({
-      name: `S${i + 1}`,
-      bars: Math.max(2, s.bars ?? 8),
-      roles: bed,
-    }));
-  }
+  const bed = [...new Set(roles.filter(r => r !== "fill"))];
   // CRAFT LAW at the grid level: textures EVOLVE — no section repeats unchanged.
   const roleJob = (role: string) =>
     isMaterialRole(role)
@@ -132,19 +130,79 @@ function sectionsFrom(
             chords: "harmony",
           } as Record<string, string>
         )[role];
-  const lite = bed.filter(role => roleJob(role) !== "low_end");
-  const noBass = bed.filter(role => roleJob(role) !== "low_end");
-  const strip = bed.filter(
-    role => roleJob(role) === "harmony" || roleJob(role) === "melody"
+  // FAMILY PRIORITY (the cap's pecking order): rhythm anchors + low end are the
+  // groove and can never be the roles a cap drops; harmony carries the record;
+  // melody colour / vocal layers / fx are texture — first in, first cut.
+  const jobRank: Record<string, number> = {
+    rhythm: 0,
+    low_end: 1,
+    harmony: 2,
+    melody: 3,
+    vocal: 4,
+    transition: 5,
+  };
+  const rank = (role: string) => jobRank[roleJob(role) ?? ""] ?? 3;
+  // Stable sort on a deduped copy → deterministic: same kit in, same arrangement
+  // out, with roles of equal priority keeping their pick order.
+  const prioritized = [...bed].sort((a, b) => rank(a) - rank(b));
+  const cap = (list: string[]) =>
+    list.length <= SECTION_ROLE_CAP
+      ? list
+      : [...list].sort((a, b) => rank(a) - rank(b)).slice(0, SECTION_ROLE_CAP);
+  const byJob = (job: string) => prioritized.filter(role => roleJob(role) === job);
+  const rhythm = byJob("rhythm");
+  const harmony = byJob("harmony");
+  const texture = prioritized.filter(role => {
+    const job = roleJob(role);
+    return job !== "rhythm" && job !== "low_end" && job !== "harmony";
+  });
+
+  // The section densities. `lite` used to equal `noBass` (both "everything but
+  // low end") — a 10-role "sparse intro" that was a no-op wall of sound
+  // (confirmed 2026-07). Now:
+  //   lite = 2 rhythm roles + 1 harmony role — a real sparse open/close;
+  //   mid  = the bed minus its 2-3 least-essential texture roles, anchors kept;
+  //   full = the bed, capped — the hook's arrival.
+  const full = cap(prioritized);
+  const litePick = [...rhythm.slice(0, 2), ...harmony.slice(0, 1)];
+  const lite = litePick.length ? litePick : full;
+  const textureDrop = texture.slice(-Math.min(3, texture.length));
+  const midPick = prioritized.filter(role => !textureDrop.includes(role));
+  const mid = midPick.length >= 2 ? cap(midPick) : full;
+
+  if (blueprint?.sections?.length) {
+    // A measured blueprint carries bar counts but NO kind labels (structure is
+    // measured, kinds are not) — derive the producer arc positionally instead
+    // of mapping every section to the full bed (the old no-op): first/last =
+    // sparse intro/outro, interior alternates verse (mid) → hook (full). A
+    // single interior section is the record's core — it gets the full band.
+    const n = blueprint.sections.length;
+    return blueprint.sections.map((s, i) => {
+      let sectionRoles = full;
+      if (n >= 3 && (i === 0 || i === n - 1)) sectionRoles = lite;
+      else if (n === 2) sectionRoles = i === 0 ? mid : full;
+      else if (n >= 4 && (i - 1) % 2 === 0) sectionRoles = mid;
+      return {
+        name: `S${i + 1}`,
+        bars: Math.max(2, s.bars ?? 8),
+        roles: sectionRoles,
+      };
+    });
+  }
+  const noBassPick = cap(prioritized.filter(role => roleJob(role) !== "low_end"));
+  const strip = cap(
+    prioritized.filter(
+      role => roleJob(role) === "harmony" || roleJob(role) === "melody"
+    )
   );
   return [
-    { name: "intro", bars: 4, roles: lite.length ? lite : bed },
-    { name: "verse", bars: 16, roles: noBass.length >= 2 ? noBass : bed }, // bass held back
-    { name: "hook", bars: 8, roles: bed }, // full band arrives
-    { name: "verse2", bars: 16, roles: bed }, // fuller than verse 1
+    { name: "intro", bars: 4, roles: lite }, // real sparse open — 2 rhythm + 1 harmony
+    { name: "verse", bars: 16, roles: noBassPick.length >= 2 ? noBassPick : full }, // bass held back
+    { name: "hook", bars: 8, roles: full }, // full band arrives
+    { name: "verse2", bars: 16, roles: full }, // fuller than verse 1
     { name: "bridge", bars: 8, roles: strip.length ? strip : lite }, // energy flip: strip-back
-    { name: "hook2", bars: 8, roles: bed },
-    { name: "outro", bars: 4, roles: lite.length ? lite : bed },
+    { name: "hook2", bars: 8, roles: full },
+    { name: "outro", bars: 4, roles: lite },
   ];
 }
 
@@ -226,6 +284,112 @@ export async function melodyLayer(
       note: `melody skipped: ${(err as Error)?.message?.slice(0, 120)}`,
     };
   }
+}
+
+/** Enharmonic pitch classes for the melody key check — flats and sharps land on
+ *  the same class so "Db" and "C#" never read as a mismatch. */
+const PITCH_CLASSES: Record<string, number> = {
+  "b#": 0, c: 0, "c#": 1, db: 1, d: 2, "d#": 3, eb: 3, e: 4, fb: 4,
+  "e#": 5, f: 5, "f#": 6, gb: 6, g: 7, "g#": 8, ab: 8, a: 9, "a#": 10,
+  bb: 10, b: 11, cb: 11,
+};
+
+function parseKeySignature(s: string): { pc: number; minor: boolean } | null {
+  const match = /^\s*([A-Ga-g][#b]?)\s*(major|minor|maj|min|m)?\s*$/i.exec(s);
+  if (!match) return null;
+  const pc = PITCH_CLASSES[match[1]!.toLowerCase()];
+  if (pc == null) return null;
+  return { pc, minor: /^m(in(or)?)?$/i.test(match[2] ?? "major") };
+}
+
+/** True = same key or a directly-compatible pair; false = HARD mismatch; null =
+ *  one side unparseable (unknown is honorable — never skip on a guess).
+ *  Compatible by design: same tonic in either mode (parallel keys share the
+ *  tonic and borrow freely) and the relative major/minor pair (identical pitch
+ *  set). Anything else is a hard mismatch worth skipping a 0.85-gain lead over. */
+function keysCompatible(a: string, b: string): boolean | null {
+  const ka = parseKeySignature(a);
+  const kb = parseKeySignature(b);
+  if (!ka || !kb) return null;
+  if (ka.pc === kb.pc) return true; // same tonic (parallel major/minor included)
+  if (ka.minor !== kb.minor) {
+    const minor = ka.minor ? ka : kb;
+    const major = ka.minor ? kb : ka;
+    return minor.pc === (major.pc + 9) % 12; // relative pair (A minor ↔ C major)
+  }
+  return false;
+}
+
+/**
+ * HONESTY GATE for the conditioned melody layer (diagnosis 2026-07: a MusicGen
+ * render was mixed in at 0.85 gain with ZERO tempo/key verification against the
+ * bed — conditioning STEERS the model, it guarantees nothing). Measure the lead
+ * with the same DSP ear the material shelf uses:
+ *   - tempo: skip when the detected BPM deviates >5% from the grid. Detectors
+ *     are octave-ambiguous, so half/double-time readings fold back onto the
+ *     grid first — a half-time lead over the groove IS the same grid.
+ *   - key: skip only on a HARD mismatch (see keysCompatible) when both keys
+ *     measured; an unreadable key never skips.
+ * Fail-open stays the law: when the DSP ear is unavailable we measure at least
+ * duration/energy with ffmpeg and disclose that tempo/key went unverified.
+ */
+async function verifyMelodyAgainstGrid(
+  lead: Buffer,
+  gridBpm: number,
+  homeKey: string
+): Promise<{ ok: boolean; note: string }> {
+  const mval = <T>(
+    field: { value?: T | null; source?: string } | undefined
+  ): T | null =>
+    field && field.source !== "unknown" && field.value != null
+      ? field.value
+      : null;
+  if (await dspAvailable().catch(() => false)) {
+    const measured = await measureAudio(lead).catch(() => null);
+    const leadBpm = measured?.engineOk ? mval(measured.tempoBpm) : null;
+    if (leadBpm && leadBpm > 0) {
+      const folded = [leadBpm, leadBpm * 2, leadBpm / 2];
+      const deviation = Math.min(
+        ...folded.map(c => Math.abs(c - gridBpm) / gridBpm)
+      );
+      if (deviation > 0.05) {
+        return {
+          ok: false,
+          note: `melody fights the grid: measured ~${Math.round(leadBpm)} BPM vs ${gridBpm} BPM (${Math.round(deviation * 100)}% off, >5% tolerance)`,
+        };
+      }
+      const leadKeyName = mval(measured!.key);
+      const leadMode = mval(measured!.mode);
+      if (leadKeyName && leadMode) {
+        const leadKey = `${leadKeyName} ${leadMode}`;
+        if (keysCompatible(homeKey, leadKey) === false) {
+          return {
+            ok: false,
+            note: `melody key mismatch: measured ${leadKey} against the bed's ${homeKey}`,
+          };
+        }
+        return {
+          ok: true,
+          note: `melody grid check: ~${Math.round(leadBpm)} BPM / ${leadKey} vs ${gridBpm} BPM / ${homeKey} — within tolerance`,
+        };
+      }
+      return {
+        ok: true,
+        note: `melody grid check: ~${Math.round(leadBpm)} BPM vs ${gridBpm} BPM — within tolerance (key unmeasured)`,
+      };
+    }
+    return {
+      ok: true,
+      note: "melody grid check: tempo unmeasurable — mixed fail-open, disclosed",
+    };
+  }
+  const qc = await measureAudioBufferQuality(lead).catch(() => null);
+  return {
+    ok: true,
+    note: qc
+      ? `melody grid check unavailable (no DSP ear): ${qc.durationS}s at ${qc.integratedLufs ?? "?"} LUFS — tempo/key unverified`
+      : "melody grid check unavailable (no DSP ear, ffmpeg QC failed) — tempo/key unverified",
+  };
 }
 
 export async function processOwnEngine(p: OwnEnginePayload): Promise<void> {
@@ -479,6 +643,16 @@ export async function processOwnEngine(p: OwnEnginePayload): Promise<void> {
             downloadToBuffer(out.url),
             downloadToBuffer(mel.url),
           ]);
+          // HONESTY GATE — verify the render against the grid BEFORE it can
+          // touch the bed. A hard tempo/key mismatch throws into the existing
+          // fail-open catch below, which files the measured reason as the
+          // note: the beat ships clean, the skip is on the record.
+          const grid = await verifyMelodyAgainstGrid(lead, bpm, homeKey);
+          if (!grid.ok) {
+            console.warn(`[own-engine] melody layer skipped: ${grid.note}`);
+            throw new Error(grid.note);
+          }
+          notes.push(grid.note);
           const mixed = await mixBuffers(bed, lead, 0.85);
           const certified = await certifyAudioBytes({
             workspaceId: p.workspaceId,
