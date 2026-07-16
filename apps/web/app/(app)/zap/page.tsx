@@ -1,4 +1,5 @@
 'use client';
+import { OperatorGate } from '@/components/OperatorGate';
 
 /**
  * ZAP — the real Shazam layer. Hear a song → identify it → play its licensed
@@ -36,7 +37,7 @@ interface Match {
 
 const MAX_SECS = 12;
 
-export default function ZapPage() {
+function ZapPageInner() {
   const api = useApi();
   const router = useRouter();
   const [history, setHistory] = useState<ZapHist[]>([]);
@@ -312,5 +313,16 @@ export default function ZapPage() {
         </div>
       )}
     </div>
+  );
+}
+
+// TENANT SURFACE ISOLATION (Wave 8a): operator-only page. The gate is a
+// polite presentation wrapper for deep links; the API routes behind this page
+// are independently requireAdmin-gated server-side.
+export default function ZapPage() {
+  return (
+    <OperatorGate>
+      <ZapPageInner />
+    </OperatorGate>
   );
 }

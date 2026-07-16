@@ -5,6 +5,7 @@ import { scoreItems } from '@afrohit/ai';
 import { referenceOrigin } from '@afrohit/shared';
 import { lexiconStats } from '../lib/lexicon';
 import { requireAuth } from '../middleware/auth';
+import { requireAdmin } from './admin';
 import { scopedRequestKey } from '../lib/queued-job';
 import { operationErrorBody, runIdempotentOperation } from '../lib/idempotent-operation';
 import { queueAssetDeletion } from '../lib/asset-lifecycle';
@@ -73,6 +74,7 @@ export default async function taste(app: FastifyInstance) {
    * "what do we have and are we orchestrating from it" answer, live.
    */
   app.get('/data-lake', async (req) => {
+    await requireAdmin(req); // TENANT SURFACE ISOLATION (Wave 8a): the lake is the operator's engine room
     const { workspaceId } = requireAuth(req);
     // Exact totals come from COUNT queries (a take-N page would silently freeze
     // the numbers as the lake grows); the page below only feeds the per-genre
@@ -183,6 +185,7 @@ export default async function taste(app: FastifyInstance) {
    * renders' trainingUsage (counted in memory — never a query per reference).
    */
   app.get('/utilization', async (req) => {
+    await requireAdmin(req); // TENANT SURFACE ISOLATION (Wave 8a): lake dashboard — operator-only
     const { workspaceId } = requireAuth(req);
     const [refs, usageRows, materials] = await Promise.all([
       prisma.soundReference.findMany({
@@ -308,6 +311,7 @@ export default async function taste(app: FastifyInstance) {
    * (workspace-scoped; a delete STICKS, same doctrine as everywhere else).
    */
   app.patch<{ Params: { refId: string } }>('/references/:refId/classification', async (req, reply) => {
+    await requireAdmin(req); // TENANT SURFACE ISOLATION (Wave 8a): lake curation — operator-only
     const { workspaceId } = requireAuth(req);
     const { rightsBasis } = classifyReferenceSchema.parse(req.body);
     const reference = await prisma.soundReference.findFirst({
@@ -369,6 +373,7 @@ export default async function taste(app: FastifyInstance) {
   });
 
   app.delete<{ Params: { refId: string } }>('/references/:refId', async (req, reply) => {
+    await requireAdmin(req); // TENANT SURFACE ISOLATION (Wave 8a): lake curation — operator-only
     const { workspaceId } = requireAuth(req);
     const gone = await prisma.soundReference.updateMany({
       where: { id: req.params.refId, workspaceId, active: true },

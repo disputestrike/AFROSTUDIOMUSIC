@@ -1,4 +1,5 @@
 'use client';
+import { OperatorGate } from '@/components/OperatorGate';
 
 /**
  * The Instrumental Library — every instrumental you own in one findable place.
@@ -21,7 +22,7 @@ interface Instrumental {
   createdAt: string;
 }
 
-export default function InstrumentalsPage() {
+function InstrumentalsPageInner() {
   const api = useApi();
   const router = useRouter();
   const [items, setItems] = useState<Instrumental[]>([]);
@@ -114,5 +115,16 @@ export default function InstrumentalsPage() {
         </div>
       )}
     </div>
+  );
+}
+
+// TENANT SURFACE ISOLATION (Wave 8a): operator-only page. The gate is a
+// polite presentation wrapper for deep links; the API routes behind this page
+// are independently requireAdmin-gated server-side.
+export default function InstrumentalsPage() {
+  return (
+    <OperatorGate>
+      <InstrumentalsPageInner />
+    </OperatorGate>
   );
 }

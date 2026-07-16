@@ -12,6 +12,7 @@ import {
   type CompetitorPairEvidence,
 } from "@afrohit/shared";
 import { requireAuth, requireRole } from "../middleware/auth";
+import { requireAdmin } from "./admin";
 import { fingerprintUploadedAudio, presignAssetRef } from "../lib/storage";
 
 /**
@@ -220,6 +221,13 @@ function freshestUrl(s: {
 }
 
 export default async function benchmark(app: FastifyInstance) {
+  // TENANT SURFACE ISOLATION (Wave 8a): the ear-vs-machine benchmark is the
+  // operator's calibration bench (competitor evidence included). Scoped hook =
+  // every route in this plugin is server-enforced operator-only.
+  app.addHook("preValidation", async req => {
+    await requireAdmin(req);
+  });
+
   // Record one rating.
   app.post("/rate", { schema: { body: rateSchema } }, async (req, reply) => {
     const { workspaceId } = requireAuth(req);

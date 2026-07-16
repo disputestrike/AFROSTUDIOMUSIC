@@ -3,40 +3,47 @@
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { useEffect, useState } from 'react';
-import { Menu, X } from 'lucide-react';
+import { CreditCard, Eye, LogOut, Menu, Settings as SettingsIcon, Undo2, User, X } from 'lucide-react';
 import { useApi } from '@/lib/api';
+import { navItemsFor } from '@/lib/nav-manifest';
+import { useOperatorView } from '@/components/OperatorGate';
 
-const LINKS = [
-  { href: '/create', label: 'Create' },
-  { href: '/zap', label: 'Zap' },
-  { href: '/voice', label: 'My Voice' },
-  { href: '/likeness', label: 'My Likeness' },
-  { href: '/listen', label: 'Listen' },
-  { href: '/studio', label: 'Chat' },
-  { href: '/projects', label: 'Projects' },
-  { href: '/catalog', label: 'Catalog' },
-  { href: '/materials', label: 'Materials' },
-  { href: '/instrumentals', label: 'Instrumentals' },
-  { href: '/lake', label: 'Data Lake' },
-  { href: '/lexicon', label: 'Word Bank' },
-  { href: '/albums', label: 'Albums' },
-  { href: '/billing', label: 'Billing' },
-  { href: '/settings', label: 'Settings' },
-  { href: '/benchmark', label: 'Benchmark' },
-  { href: '/admin', label: 'Admin' },
-];
-
+/**
+ * TENANT SURFACE ISOLATION (Wave 8a): the nav renders from the manifest by
+ * role — consumers get the Suno-shaped set, the operator gets the engine room
+ * too. This is presentation only; every operator route group is requireAdmin-
+ * gated server-side.
+ */
 export function NavBar() {
   const api = useApi();
   const path = usePathname();
   const [open, setOpen] = useState(false);
-  // null = unknown, matching the server-rendered markup until /auth/me resolves.
-  const [signedIn, setSignedIn] = useState<boolean | null>(null);
+  const [accountOpen, setAccountOpen] = useState(false);
+  const [signingOut, setSigningOut] = useState(false);
+  const view = useOperatorView();
+
+  // Until /auth/me resolves, render the consumer manifest — it matches the
+  // server-rendered markup and never flashes operator surfaces at a tenant.
+  const links = navItemsFor(view.effectiveOperator);
+
   useEffect(() => {
-    let active = true;
-    api.get('/auth/me').then(() => { if (active) setSignedIn(true); }).catch(() => { if (active) setSignedIn(false); });
-    return () => { active = false; };
-  }, [api]);
+    setOpen(false);
+    setAccountOpen(false);
+  }, [path]);
+
+  async function signOut() {
+    if (signingOut) return;
+    setSigningOut(true);
+    try {
+      // No body: JSON.stringify(undefined) yields no payload, so the client
+      // sends a clean body-less POST (avoids Fastify's empty-JSON-body guard).
+      await api.post('/auth/logout', undefined);
+    } catch {
+      /* the session may already be gone — still land on sign-in */
+    }
+    window.location.href = '/signin';
+  }
+
   const isActive = (href: string) => path === href || path.startsWith(href + '/');
 
   const linkClass = (href: string, mobile = false) =>
@@ -45,6 +52,97 @@ export function NavBar() {
         ? 'bg-white/10 text-white shadow-[inset_0_0_0_1px_rgba(249,115,22,.35)]'
         : 'text-slate-400 hover:bg-white/5 hover:text-slate-100'
     }`;
+
+  const initial = (view.me?.name || view.me?.email || '?').trim().charAt(0).toUpperCase() || '?';
+
+  const viewingBadge = view.viewingAsUser && (
+    <button
+      type="button"
+      onClick={() => view.setViewAsUser(false)}
+      title="You're previewing the consumer app. Click to switch back to operator view."
+      className="shrink-0 rounded-full border border-afrobrand-500/40 bg-afrobrand-500/10 px-3 py-1 text-xs text-afrobrand-300 hover:bg-afrobrand-500/20"
+    >
+      Viewing as user — switch back
+    </button>
+  );
+
+  const accountMenu = view.signedIn && (
+    <div className="relative shrink-0">
+      <button
+        type="button"
+        onClick={() => setAccountOpen((o) => !o)}
+        aria-label="Account menu"
+        aria-expanded={accountOpen}
+        className="inline-flex h-8 w-8 items-center justify-center rounded-full border border-white/10 bg-white/5 font-grotesk text-sm text-slate-200 hover:bg-white/10"
+      >
+        {view.loading ? <User className="h-4 w-4 text-slate-400" /> : initial}
+      </button>
+      {accountOpen && (
+        <>
+        {/* Backdrop closes the menu on any outside click/tap (the menu renders
+            in both the desktop and mobile containers — a shared ref can't). */}
+        <button
+          type="button"
+          aria-hidden
+          tabIndex={-1}
+          onClick={() => setAccountOpen(false)}
+          className="fixed inset-0 z-40 cursor-default"
+        />
+        <div className="absolute right-0 top-10 z-50 w-60 rounded-2xl border border-white/10 bg-ink/95 p-1.5 shadow-xl backdrop-blur">
+          {(view.me?.name || view.me?.email) && (
+            <div className="px-3 pb-1.5 pt-2">
+              {view.me?.name && <div className="truncate text-sm text-slate-200">{view.me.name}</div>}
+              {view.me?.email && <div className="truncate text-xs text-slate-500">{view.me.email}</div>}
+            </div>
+          )}
+          <Link
+            href="/settings"
+            onClick={() => setAccountOpen(false)}
+            className="flex items-center gap-2.5 rounded-xl px-3 py-2 text-sm text-slate-300 hover:bg-white/5 hover:text-slate-100"
+          >
+            <SettingsIcon className="h-4 w-4 text-slate-500" /> Profile
+          </Link>
+          <Link
+            href="/billing"
+            onClick={() => setAccountOpen(false)}
+            className="flex items-center gap-2.5 rounded-xl px-3 py-2 text-sm text-slate-300 hover:bg-white/5 hover:text-slate-100"
+          >
+            <CreditCard className="h-4 w-4 text-slate-500" /> Subscription
+          </Link>
+          {view.operator && (
+            <button
+              type="button"
+              onClick={() => {
+                view.setViewAsUser(!view.viewingAsUser);
+                setAccountOpen(false);
+              }}
+              className="flex w-full items-center gap-2.5 rounded-xl px-3 py-2 text-left text-sm text-slate-300 hover:bg-white/5 hover:text-slate-100"
+            >
+              {view.viewingAsUser ? (
+                <>
+                  <Undo2 className="h-4 w-4 text-afrobrand-400" /> Back to operator view
+                </>
+              ) : (
+                <>
+                  <Eye className="h-4 w-4 text-slate-500" /> View as user
+                </>
+              )}
+            </button>
+          )}
+          <div className="mx-2 my-1 border-t border-white/5" />
+          <button
+            type="button"
+            onClick={() => void signOut()}
+            disabled={signingOut}
+            className="flex w-full items-center gap-2.5 rounded-xl px-3 py-2 text-left text-sm text-slate-300 hover:bg-white/5 hover:text-slate-100 disabled:opacity-50"
+          >
+            <LogOut className="h-4 w-4 text-slate-500" /> {signingOut ? 'Signing out…' : 'Sign out'}
+          </button>
+        </div>
+        </>
+      )}
+    </div>
+  );
 
   return (
     <header className="sticky top-0 z-40 glass-strong border-b border-white/5">
@@ -64,30 +162,29 @@ export function NavBar() {
 
         {/* Desktop nav — full horizontal row only where it fits (xl+). */}
         <nav className="hidden items-center gap-0.5 font-grotesk text-sm xl:flex">
-          {LINKS.slice(0, -1).map((l) => (
+          {links.map((l) => (
             <Link key={l.href} href={l.href} className={linkClass(l.href)}>
               {l.label}
             </Link>
           ))}
-          <Link href="/admin" className={`ml-0.5 rounded-full px-3 py-1.5 text-slate-600 transition-colors hover:text-slate-300 ${isActive('/admin') ? 'text-slate-300' : ''}`}>
-            Admin
-          </Link>
-          <span className="ml-2 shrink-0 rounded-full border border-white/10 bg-white/5 px-3 py-1 text-xs text-slate-400">Internal</span>
-          {signedIn === false && (
+          {viewingBadge && <span className="ml-2">{viewingBadge}</span>}
+          {view.signedIn === false && (
             <Link href="/signin" className="ml-1 shrink-0 rounded-full border border-afrobrand-500/40 bg-afrobrand-500/10 px-3 py-1 text-xs text-afrobrand-300 hover:bg-afrobrand-500/20">
               Sign in
             </Link>
           )}
+          {accountMenu && <span className="ml-2">{accountMenu}</span>}
         </nav>
 
         {/* Mobile / tablet — hamburger. */}
         <div className="flex items-center gap-2 xl:hidden">
-          {signedIn === false && (
+          {viewingBadge}
+          {view.signedIn === false && (
             <Link href="/signin" className="rounded-full border border-afrobrand-500/40 bg-afrobrand-500/10 px-2.5 py-1 text-[11px] text-afrobrand-300">
               Sign in
             </Link>
           )}
-          <span className="rounded-full border border-white/10 bg-white/5 px-2.5 py-1 text-[11px] text-slate-400">Internal</span>
+          {accountMenu}
           <button
             onClick={() => setOpen((o) => !o)}
             aria-label={open ? 'Close menu' : 'Open menu'}
@@ -103,7 +200,7 @@ export function NavBar() {
       {open && (
         <nav className="border-t border-white/5 px-3 pb-3 pt-2 font-grotesk xl:hidden">
           <div className="grid grid-cols-2 gap-1">
-            {LINKS.map((l) => (
+            {links.map((l) => (
               <Link key={l.href} href={l.href} onClick={() => setOpen(false)} className={linkClass(l.href, true)}>
                 {l.label}
               </Link>

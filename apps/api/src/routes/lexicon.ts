@@ -2,6 +2,7 @@ import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { prisma } from '@afrohit/db';
 import { requireAuth } from '../middleware/auth';
+import { requireAdmin } from './admin';
 import { searchLexicon, lexiconStats } from '../lib/lexicon';
 
 /**
@@ -9,6 +10,13 @@ import { searchLexicon, lexiconStats } from '../lib/lexicon';
  * terms and add your own. Shared library (workspaceId null) + private additions.
  */
 export default async function lexicon(app: FastifyInstance) {
+  // TENANT SURFACE ISOLATION (Wave 8a): the word bank is studio training
+  // infrastructure — generation consumes it server-side (lexiconPalette), so
+  // consumers lose nothing. Server-enforced operator-only for every route.
+  app.addHook('preValidation', async (req) => {
+    await requireAdmin(req);
+  });
+
   app.get<{ Querystring: { q?: string; language?: string; category?: string; take?: string } }>('/', async (req) => {
     const { workspaceId } = requireAuth(req);
     const entries = await searchLexicon({

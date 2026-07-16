@@ -1,4 +1,5 @@
 "use client";
+import { OperatorGate } from '@/components/OperatorGate';
 
 /**
  * MATERIALS — the studio's shelf of real, rights-classified musical material.
@@ -94,7 +95,7 @@ const ROLE_LABEL: Record<string, string> = {
   other: "🎛 Other",
 };
 
-export default function MaterialsPage() {
+function MaterialsPageInner() {
   const api = useApi();
   const [materials, setMaterials] = useState<Material[] | null>(null);
   const [integrity, setIntegrity] = useState<Integrity | null>(null);
@@ -575,5 +576,16 @@ export default function MaterialsPage() {
         </section>
       ))}
     </div>
+  );
+}
+
+// TENANT SURFACE ISOLATION (Wave 8a): operator-only page. The gate is a
+// polite presentation wrapper for deep links; the API routes behind this page
+// are independently requireAdmin-gated server-side.
+export default function MaterialsPage() {
+  return (
+    <OperatorGate>
+      <MaterialsPageInner />
+    </OperatorGate>
   );
 }

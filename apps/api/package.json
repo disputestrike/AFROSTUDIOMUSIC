@@ -20,6 +20,7 @@
     "test:platform-reliability": "tsx scripts/test-platform-reliability.ts",
     "test:benchmark-pair-attestation": "tsx scripts/test-benchmark-pair-attestation.ts",
     "test:session-revocation": "tsx scripts/test-session-revocation.ts",
+    "test:tenant-surface-isolation": "tsx scripts/test-tenant-surface-isolation.ts",
     "test:source-mix-lineage": "tsx scripts/test-source-mix-lineage.ts",
     "test:direct-upload-release": "tsx scripts/test-direct-upload-release.ts",
     "test:chat-error-humanizer": "tsx scripts/test-chat-error-humanizer.ts"

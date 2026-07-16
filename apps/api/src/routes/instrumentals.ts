@@ -2,6 +2,7 @@ import type { FastifyInstance } from 'fastify';
 import { prisma } from '@afrohit/db';
 import { z } from 'zod';
 import { requireAuth } from '../middleware/auth';
+import { requireAdmin } from './admin';
 
 const reuseInstrumentalSchema = z.object({ title: z.string().trim().min(1).max(100).optional() });
 
@@ -15,6 +16,13 @@ const reuseInstrumentalSchema = z.object({ title: z.string().trim().min(1).max(1
  * all in one place and lets him load one into a NEW song to work over.
  */
 export default async function instrumentals(app: FastifyInstance) {
+  // TENANT SURFACE ISOLATION (Wave 8a): operator-only surface (Suno-shaped
+  // consumer app has no instrumental library). Server-enforced for every
+  // route in this plugin, not just an unrendered nav item.
+  app.addHook('preValidation', async (req) => {
+    await requireAdmin(req);
+  });
+
   /** Every instrumental the artist owns (stripped from a song or uploaded). */
   app.get('/', async (req) => {
     const { workspaceId } = requireAuth(req);
