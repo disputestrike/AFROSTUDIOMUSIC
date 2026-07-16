@@ -240,7 +240,17 @@ async function main() {
     /waitForTerminalJobs\(\s*workspaceId,\s*\[assemblyJobId\]/
   );
   assert.doesNotMatch(materialAuto, /if \(!charge\.ok\) break/);
-  assert.match(orchestration, /material batch refund failed/);
+  // 160f2db ("Harden job redelivery and refund retries") replaced the old
+  // fire-and-forget `console.warn('material batch refund failed')` with a
+  // DURABLE refund outbox: a failed refund is now marked, backed off and
+  // retried instead of being logged once and dropped. That is strictly better —
+  // but this assertion tracked the log STRING rather than the behaviour, so it
+  // now demands the exact line the hardening deleted, while
+  // test-job-durability.ts:110 asserts that same line must be GONE. Two tests,
+  // opposite demands, one file: whichever way the code goes, one of them fails.
+  // Assert the property that actually protects the artist's money.
+  assert.match(orchestration, /REFUND_OUTBOX_MARKER/);
+  assert.match(orchestration, /refundWorkspaceCharge/);
   assert.match(
     materialWorker,
     /approved:\s*false[\s\S]*assessLaneCompliance[\s\S]*approved:\s*true/

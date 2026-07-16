@@ -502,6 +502,15 @@ const AUDIO_FORMATS = [
   "m4a",
   "ogg",
   "webm",
+  // .mpeg/.mpg ARE MPEG audio — the same family as .mp3 — and ffmpeg decodes
+  // them like any other input. Widening the browser file picker's accept=
+  // attribute (as an earlier change did) only got the file as far as this
+  // schema, which then rejected it: `ext` failed the enum, and `contentType`
+  // failed the audio-only regex below because browsers tag .mpeg as
+  // "video/mpeg". The upload reached the server and 400'd. Both halves had to
+  // move for the picker change to mean anything.
+  "mpeg",
+  "mpg",
 ] as const;
 
 export const MAX_PRESIGNED_UPLOAD_BYTES = 80 * 1024 * 1024;
@@ -509,9 +518,15 @@ export const MAX_PRESIGNED_UPLOAD_BYTES = 80 * 1024 * 1024;
 export const presignUploadSchema = z
   .object({
     kind: z.enum(UPLOAD_KINDS),
+    // audio/* — plus the narrow video/mpeg family ONLY. Browsers report MPEG
+    // AUDIO (.mpeg/.mpg) with a video/* MIME type, so an audio-only regex
+    // rejects a legitimate audio upload on a technicality of MIME registration.
+    // Enumerated rather than allowing video/* wholesale, so this stays an audio
+    // ingest and doesn't quietly become a video one. The real content check is
+    // the magic-byte sniff at upload time — this only screens the claim.
     contentType: z
       .string()
-      .regex(/^audio\/[a-z0-9.+-]+$/i)
+      .regex(/^(audio\/[a-z0-9.+-]+|video\/(x-)?mpe?g)$/i)
       .max(120),
     ext: z.enum(AUDIO_FORMATS),
     sizeBytes: z.number().int().min(1_000).max(MAX_PRESIGNED_UPLOAD_BYTES),

@@ -32,7 +32,7 @@ import {
   researchTrends,
   type HitPrediction,
 } from '@afrohit/ai';
-import { genreSignature, pickLawfulTitle } from '@afrohit/shared';
+import { genreSignature, pickLawfulTitle, detectCatalogueContamination } from '@afrohit/shared';
 import { learnedReferenceBrief } from './learned';
 import { laneContext } from './lane-context';
 import { laneDna, laneDnaBrief } from './lane-pipeline';
@@ -193,6 +193,30 @@ async function resing(
   // impossible for the artist's own words, not merely unlikely.
   if ((song.lyric as { artistAuthored?: boolean }).artistAuthored) {
     console.warn(`[resing] ${song.id}: artist-authored lyric — refusing to rewrite/re-sing (verbatim law)`);
+    return null;
+  }
+  // CONTAMINATION LAW — this rewrite is OUR words (artist-authored drafts are
+  // already refused above), it is persisted with approved: true, and it is sung
+  // immediately. This path ran NO contamination check whatsoever, and
+  // make-it-bigger fires automatically on every drop — so a lyric that PASSED
+  // the gate when it was written could be rewritten INTO contamination here and
+  // ship approved. It was the one writer path routing around the gate that
+  // every other writer honours, and it was the writer most likely to run.
+  //
+  // Checked before ANY spend: detectCatalogueContamination is self-contained
+  // (the catalogue is only needed for duplicate detection, not this), so a
+  // rejection costs a pure local call rather than a refunded render.
+  const contamination = detectCatalogueContamination({
+    title,
+    body,
+    languageMix: (song.lyric as { languageMix?: Record<string, number> | null }).languageMix ?? undefined,
+  });
+  if (contamination.decision) {
+    console.warn(
+      `[resing] ${song.id}: rewrite REJECTED — catalogue contamination [${contamination.patterns
+        .map(p => p.code)
+        .join(', ')}] resembles ${contamination.resembles} (${contamination.decision}). Not persisted, not sung.`
+    );
     return null;
   }
   const genre = song.project.genre;

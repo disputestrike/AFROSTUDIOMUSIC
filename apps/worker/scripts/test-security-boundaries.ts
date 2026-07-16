@@ -206,7 +206,13 @@ async function main() {
     join(process.cwd(), "..", "api", "src", "index.ts"),
     "utf8"
   );
-  assert.match(apiIndexSource, /redis: app\.redis/);
+  // The property under test is that the rate limiter is backed by a SHARED
+  // Redis client (so the abuse boundary holds across replicas) rather than the
+  // per-process Map banned below — not what that client is named. 6ecc150
+  // renamed app.redis -> app.rateLimitRedis and this assertion, which pinned the
+  // identifier instead of the behaviour, has failed ever since while the
+  // security property never regressed. Match either name.
+  assert.match(apiIndexSource, /redis: app\.\w*[Rr]edis\b/);
   assert.match(apiIndexSource, /skipOnError: false/);
   assert.doesNotMatch(
     apiIndexSource,

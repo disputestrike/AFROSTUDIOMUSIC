@@ -49,9 +49,13 @@ interface BeatProfile {
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const baseName = (n: string) => n.replace(/\.[^.]+$/, '');
+/** Format from the filename. .mpeg/.mpg are MPEG audio — the same family as
+ *  .mp3 — so they normalize to mp3 rather than falling through to the 'wav'
+ *  default, which recorded them as a format they are not. */
 function guessFormat(name: string): string {
-  const ext = name.split('.').pop()?.toLowerCase();
-  return ['wav', 'mp3', 'flac', 'aiff', 'm4a', 'ogg'].includes(ext ?? '') ? ext! : 'wav';
+  const ext = name.split('.').pop()?.toLowerCase() ?? '';
+  if (ext === 'mpeg' || ext === 'mpg') return 'mp3';
+  return ['wav', 'mp3', 'flac', 'aiff', 'm4a', 'ogg', 'webm'].includes(ext) ? ext : 'wav';
 }
 /** beats/generate + drop take int 60–180 only — the ear can report floats. */
 const clampBpm = (n: number | null | undefined, fallback: number) =>

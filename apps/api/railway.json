@@ -7,7 +7,7 @@
   "deploy": {
     "preDeployCommand": "pnpm --filter @afrohit/db migrate:safe",
     "startCommand": "pnpm --filter @afrohit/api start",
-    "healthcheckPath": "/health/ready",
+    "healthcheckPath": "/health",
     "healthcheckTimeout": 90,
     "restartPolicyType": "ON_FAILURE",
     "restartPolicyMaxRetries": 5

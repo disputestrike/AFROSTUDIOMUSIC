@@ -430,6 +430,15 @@ model Song {
   // the audit evidence survives. Reason kept for the Truth report.
   quarantined      Boolean    @default(false)
   quarantineReason String?
+  // NEVER LOSE A SONG. Deleting a song is a soft delete: the row, its lyric, its
+  // takes and its audio all survive, and the catalog's "Show ALL songs" view can
+  // always bring it back. DELETE /songs/:id used to run a real tx.song.delete(),
+  // which cascaded through LyricDraft/BeatAsset/Stem/VocalRender/Mix/Master/
+  // Export/RightsReceipt/Release — one misclick, irreversible, no tombstone.
+  // Same doctrine the `quarantined` flag above already states; the delete route
+  // simply never honoured it.
+  deletedAt        DateTime?  @db.Timestamptz(6)
+  deletedReason    String?
   // A&R read — every produced song gets scored BEFORE it's considered done.
   hitScore         Int? // 0-100 from the Will-it-hit engine
   viralScore       Int? // 0-100

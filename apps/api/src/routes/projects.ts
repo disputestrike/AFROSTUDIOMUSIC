@@ -193,6 +193,21 @@ export default async function projects(app: FastifyInstance) {
       },
     });
     if (project) {
+      // NEVER LOSE A SONG — a project is a folder; songs are the work.
+      // Song.projectId cascades, so tx.project.delete() below silently destroyed
+      // EVERY song in the project — lyrics, takes, masters, exports and all —
+      // with no tombstone and no undo. Because reuse-beat/reuse-instrumental put
+      // several unrelated songs in one project, deleting one project could wipe
+      // work the owner never associated with it. A folder may not take the music
+      // with it: refuse, and say exactly what is in the way.
+      const songCount = await prisma.song.count({ where: { projectId: project.id } });
+      if (songCount > 0) {
+        return reply.code(409).send({
+          error: 'project_has_songs',
+          songCount,
+          message: `This project holds ${songCount} song${songCount === 1 ? '' : 's'}. Songs are never destroyed with a project — delete them individually first (that is reversible), then delete the project.`,
+        });
+      }
       const refs = uniqueAssetRefs([
         ...project.songs.flatMap(song => [
           song.instrumentalUrl,

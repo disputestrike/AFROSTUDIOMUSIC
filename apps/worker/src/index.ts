@@ -584,7 +584,7 @@ async function writeWorkerHeartbeat(): Promise<void> {
         updatedAt: { lt: new Date(Date.now() - 10 * 60_000) },
       },
     })
-    .catch(err => log.warn({ err }, "stale heartbeat prune failed"));
+    .catch((err: unknown) => log.warn({ err }, "stale heartbeat prune failed"));
 }
 void writeWorkerHeartbeat().catch(err =>
   log.warn({ err }, "worker heartbeat write failed")

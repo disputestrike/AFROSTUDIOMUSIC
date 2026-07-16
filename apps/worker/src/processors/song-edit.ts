@@ -516,24 +516,18 @@ export async function processSongEdit(p: SongEditPayload): Promise<void> {
     // The edit just became the song's current audio — a stale instrumental/
     // acapella must never be served for the changed record. Clear; re-separate on demand.
     await prisma.song.update({ where: { id: p.songId }, data: { instrumentalUrl: null, acapellaUrl: null, instrumentalMeta: Prisma.DbNull } }).catch(() => undefined);
-    // VERSION DISCIPLINE — chat edits never pile up an endless version list:
-    // keep the CURRENT edit + ONE previous chat version; older chat versions
-    // are pruned. The ORIGINAL render/master (non-chat presets) is never
-    // touched, so "do it to the original" and full revert always survive.
-    try {
-      const chatVersions = await prisma.master.findMany({
-        where: { songId: p.songId, preset: { startsWith: 'chat ' } },
-        orderBy: { createdAt: 'desc' },
-        select: { id: true },
-      });
-      const stale = chatVersions.slice(2);
-      if (stale.length) {
-        await prisma.master.deleteMany({ where: { id: { in: stale.map((m: { id: string }) => m.id) } } });
-        console.log(`[song-edit] pruned ${stale.length} old chat version(s) — current + 1 previous kept, original untouched`);
-      }
-    } catch (err) {
-      console.warn('[song-edit] version prune failed (non-fatal):', (err as Error)?.message);
-    }
+    // NEVER LOSE A TAKE — the chat-version prune used to live here and it has
+    // been removed deliberately.
+    //
+    // It ran `master.deleteMany` on every chat version older than the newest two,
+    // automatically, with no user action: takes the artist made simply stopped
+    // existing, and Compare Versions could never show them again. It also only
+    // deleted the DB rows, leaving the audio orphaned in R2 — so it destroyed the
+    // record while still paying to store the bytes.
+    //
+    // Its goal ("chat edits never pile up an endless version list") is a DISPLAY
+    // problem, and destroying data is the one solution that can never be undone.
+    // Every take is kept; the versions API and UI decide how many to show.
     console.log(`[song-edit] ${p.songId}: ${label}`);
   } catch (err) {
     if (storedUrl) await deleteObjectByUrl(storedUrl).catch(() => undefined);

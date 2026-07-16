@@ -1396,12 +1396,11 @@ async function createBeatJob(
       },
     });
     songId = song?.id;
-    const lyric =
-      song?.lyric ??
-      (await prisma.lyricDraft.findFirst({
-        where: { projectId: ctx.projectId },
-        orderBy: { createdAt: "desc" },
-      }));
+    // SONG SCOPE LAW (parity with the REST path in routes/songs.ts) — a song's
+    // lyric is ONLY the draft bound to it. The project-scoped fallback here made
+    // chat sing whichever lyric was newest anywhere in the project, which for a
+    // multi-song project is somebody else's song.
+    const lyric = song?.lyric ?? null;
     // VERBATIM LAW (parity with the REST path — this path used to sing the AI
     // cleanVersion of an artist-authored draft and then enrich it): the
     // artist's own words reach the engine EXACTLY as written — body, never

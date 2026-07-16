@@ -78,6 +78,31 @@ const STATUS_LABEL: Record<string, string> = {
   RELEASED: "Released",
 };
 
+/**
+ * When the song was made — date AND time, on every song, always.
+ * Song.createdAt has always been stored and returned by the API; the catalog
+ * simply never rendered it.
+ *
+ * Rendered in the VIEWER's own timezone, because "when did I make this" only
+ * means anything in the time the artist was actually living in. That makes the
+ * string differ between the server (UTC) and the browser, and these cards are
+ * server-rendered from `initial` — so every element printing one carries
+ * suppressHydrationWarning. That attribute is correct here rather than a
+ * workaround: the mismatch is intended and one-level-deep (text only).
+ */
+function madeAt(iso: string | null | undefined): string {
+  if (!iso) return "";
+  const d = new Date(iso);
+  if (!Number.isFinite(d.getTime())) return "";
+  return d.toLocaleString(undefined, {
+    year: "numeric",
+    month: "short",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
 // STUDIO TRUTH — the per-song proof pack from GET /songs/:id/proof. Everything
 // in it is STORED fact (the API never recomputes or invents), and engines
 // arrive as CLASSES only — no vendor name ever reaches this component (§1.11).
@@ -754,6 +779,16 @@ export default function CatalogGrid({ initial }: { initial: SongRow[] }) {
                 {s.bpm ? ` · ${s.bpm} bpm` : ""}
                 {s.stemCount ? ` · ${s.stemCount} stems` : ""}
               </div>
+              {/* Every song carries the date AND time it was made. */}
+              {madeAt(s.createdAt) ? (
+                <div
+                  className="mt-1 text-[11px] text-slate-500"
+                  suppressHydrationWarning
+                  title={`Created ${new Date(s.createdAt).toISOString()}`}
+                >
+                  Made {madeAt(s.createdAt)}
+                </div>
+              ) : null}
               {s.audioUrl ? (
                 <audio
                   controls
