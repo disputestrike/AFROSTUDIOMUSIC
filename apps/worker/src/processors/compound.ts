@@ -27,6 +27,9 @@ import {
   genreSignature,
   synthKitFor,
   forgeKitFor,
+  getGenreKit,
+  isMaterialRole,
+  jobOf,
   scoreLaneCompliance,
   planRepairs,
   promotionEligible,
@@ -1284,8 +1287,14 @@ export async function processGlossPass(opts?: {
  *  coverage is not depth: one loop per role meant pickMaterial served the SAME
  *  loop on every assemble and the lane sang one beat forever ("every beat sounds
  *  identical" — Benjamin heard it). Rotation follows the kit's own order
- *  (signature + rhythm families first), capped at MATERIAL_VARIANTS_PER_ROLE
- *  (default 3) per workspace+genre, same pacing, same nightly budget. */
+ *  (signature + rhythm families first), capped per role (see variantCapFor:
+ *  6 for signature/rhythm/fill, 3 for the rest, MATERIAL_VARIANTS_PER_ROLE
+ *  overrides all) per workspace+genre, same pacing, same nightly budget.
+ *  FILLS forge on the real engine like every other role — they used to be
+ *  excluded from BOTH tiers here, so the only fill a workspace ever owned was
+ *  the one eternal code-synth primitive and every transition in every song was
+ *  the same math fill. Fills forge at bars=1: they are one-bar transition HITS
+ *  the overlay stretches and drops at section boundaries, not 8-bar loops. */
 export async function ensureSignatureKits(): Promise<void> {
   try {
     const projects = await prisma.project.findMany({
@@ -1335,12 +1344,15 @@ export async function ensureSignatureKits(): Promise<void> {
           where: { id: pr.workspaceId },
           select: { musicApiKey: true },
         });
-        const richMissing = forgeKitFor(pr.genre).filter(
-          r => !have.has(r) && r !== "fill"
-        );
+        const richMissing = forgeKitFor(pr.genre).filter(r => !have.has(r));
         const bpm = genreSignature(pr.genre).bpm;
         // Melodic roles forge in the genre's HOME key so separately-forged loops fit.
         const dnaKey = getSoundDNA(pr.genre)?.commonKeys?.[0] ?? "A minor";
+        // A fill is a one-bar transition HIT (the overlay drops it at section
+        // boundaries), so it forges at bars=1 — the default 8 bars would file
+        // an 8-bar loop under 'fill' and smear every transition it touches.
+        const barsFor = (role: string) =>
+          role === "fill" ? { bars: 1 } : {};
         let queued = 0;
         for (const role of richMissing) {
           if (forgeBudget <= 0) break;
@@ -1355,6 +1367,7 @@ export async function ensureSignatureKits(): Promise<void> {
                 genre: pr.genre,
                 role,
                 bpm,
+                ...barsFor(role),
                 auto: "nightly-kit",
               } as never,
             },
@@ -1368,6 +1381,7 @@ export async function ensureSignatureKits(): Promise<void> {
               genre: pr.genre,
               role,
               bpm,
+              ...barsFor(role),
               keySignature: dnaKey,
               apiKeyHint: !!ws?.musicApiKey,
             },
@@ -1386,15 +1400,35 @@ export async function ensureSignatureKits(): Promise<void> {
         // (the prompt library turns that into "variation B/C/D — a different
         // pattern, never a re-render"). Same 30s pacing, same nightly budget.
         if (!richMissing.length) {
-          const maxVariants = Math.max(
-            1,
-            parseInt(process.env.MATERIAL_VARIANTS_PER_ROLE ?? "3", 10) || 3
+          // COST MATH: a real-engine loop is ~$0.10, so a 30-role kit at depth 3
+          // is ~$9/genre once, and deepening the identity-carrying roles to 6
+          // adds ~$0.30/role — pennies against a lane that sings ONE beat
+          // forever. Signature roles, the rhythm family, and the fill carry the
+          // genre's identity and groove variety, so they get depth 6; harmony/
+          // melody/vocal-texture/fx beds repeat far less audibly and stay at 3.
+          // MATERIAL_VARIANTS_PER_ROLE, when set, overrides BOTH tiers — the
+          // operator's explicit cap is law.
+          const envCap = parseInt(
+            process.env.MATERIAL_VARIANTS_PER_ROLE ?? "",
+            10
           );
+          const signatureRoles = new Set<string>(
+            getGenreKit(pr.genre)?.signatureRoles ?? []
+          );
+          const variantCapFor = (role: string): number => {
+            if (Number.isFinite(envCap) && envCap >= 1) return envCap;
+            const deep =
+              signatureRoles.has(role) ||
+              role === "fill" ||
+              role === "drums" ||
+              role === "percussion" ||
+              (isMaterialRole(role) && jobOf(role) === "rhythm");
+            return deep ? 6 : 3;
+          };
           for (const role of forgeKitFor(pr.genre)) {
             if (forgeBudget <= 0) break;
-            if (role === "fill") continue;
             const depth = counts.get(role) ?? 0;
-            if (depth >= maxVariants) continue;
+            if (depth >= variantCapFor(role)) continue;
             forgeBudget--;
             const variant = depth + 1;
             const job = await prisma.providerJob.create({
@@ -1407,6 +1441,7 @@ export async function ensureSignatureKits(): Promise<void> {
                   genre: pr.genre,
                   role,
                   bpm,
+                  ...barsFor(role),
                   variant,
                   auto: "nightly-variant",
                 } as never,
@@ -1421,6 +1456,7 @@ export async function ensureSignatureKits(): Promise<void> {
                 genre: pr.genre,
                 role,
                 bpm,
+                ...barsFor(role),
                 keySignature: dnaKey,
                 apiKeyHint: !!ws?.musicApiKey,
                 variant,
@@ -1431,7 +1467,7 @@ export async function ensureSignatureKits(): Promise<void> {
           }
           if (queued)
             console.log(
-              `[kits] ${pr.genre}: kit covered — deepening the shelf with ${queued} variant forge(s), max ${maxVariants}/role (nightly budget left: ${forgeBudget})`
+              `[kits] ${pr.genre}: kit covered — deepening the shelf with ${queued} variant forge(s), depth 6 signature/rhythm/fill, 3 elsewhere (nightly budget left: ${forgeBudget})`
             );
         }
       }

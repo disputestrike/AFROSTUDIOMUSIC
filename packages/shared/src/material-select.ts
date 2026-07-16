@@ -98,6 +98,12 @@ const SOURCE_RANK: Record<string, number> = {
   forged: 2,
   provider_stem: 3,
 };
+/** RIGHTS_RANK measures LEGAL confidence only, never sonic quality — that is
+ * why 'code-generated' (our own numpy synth, legally spotless) still outranks
+ * 'provider-generated' here. The sonic demotion of synth loops lives in the
+ * bridge tier + ROLE_EVIDENCE_RANK below, both of which sort BEFORE rights in
+ * selectMaterialRows, so this legal ordering can never resurrect a test tone
+ * over a real forged loop. */
 const RIGHTS_RANK: Record<string, number> = {
   "user-attested": 0,
   "code-generated": 1,
@@ -105,16 +111,23 @@ const RIGHTS_RANK: Record<string, number> = {
   "provider-generated": 3,
   unknown: 4,
 };
+/** 'synth-code' is PROOF the file serves its role (the code wrote the part),
+ * but it is also the sound of numpy: sine-pure test-tone loops. It used to sit
+ * at rank 0 alongside real stems, so the math loops outranked AI-forged loops
+ * for the song's foundation — the literal "test tones in real songs" the owner
+ * hears. Synth loops are BRIDGE material now: rank below every forged/licensed
+ * evidence class, and the bridge tier in selectMaterialRows only lets them win
+ * when no non-synth candidate passed the gates at all. */
 const ROLE_EVIDENCE_RANK: Record<string, number> = {
-  "synth-code": 0,
   "stem-separated": 0,
   "human-confirmed": 0,
   "licensed-metadata": 1,
   "provider-prompted-dsp-consistent": 1,
   "provider-prompted-technical-only": 2,
-  "provider-prompted-unconfirmed": 3,
-  "provider-prompted": 3,
-  unknown: 4,
+  "synth-code": 3,
+  "provider-prompted-unconfirmed": 4,
+  "provider-prompted": 4,
+  unknown: 5,
 };
 
 export type MaterialRoleEvidenceLevel =
@@ -175,6 +188,69 @@ export function materialCanAutoAssemble(
 }
 
 /**
+ * Canonical genre form for material matching — the SAME normalization as
+ * lane-material.ts's norm() (lowercase, trim, collapse whitespace/slash/hyphen
+ * runs to '_'), so 'Afrobeats', 'afro-beats' and 'afrobeats' are one genre.
+ * Production kit selection used exact string equality in Prisma where-clauses,
+ * which made artist stems tagged 'Afrobeats' invisible to a lane tagged
+ * 'afrobeats' — the shelf looked empty while the material sat right there.
+ *
+ * WIRING NOTE (follow-up agent): the genre filters live in Prisma where-clauses
+ * UPSTREAM of selectMaterialRows, so they must be rewired to fetch by
+ * workspace+role and compare genres with materialGenreMatches() in JS (or the
+ * genre column must be normalized at write time + backfilled). Call sites:
+ *   - apps/worker/src/processors/own-engine.ts (~84-94, `genre` equality)
+ *   - apps/worker/src/processors/song-edit.ts (~285-295 add_fill, ~338-342 resing)
+ *   - apps/worker/src/processors/compound.ts (~1309-1318 nightly kit counts)
+ *   - apps/api/src/services/chat-tools.ts (~2584-2588 assemble tool)
+ *   - apps/api/src/lib/material-plan.ts (~55-64 readiness count)
+ *   - apps/api/src/routes/materials.ts (~40-49 shelf listing filter)
+ * (music.ts's fill-selection query is already wired to this helper.)
+ */
+export function normalizeMaterialGenre(genre?: string | null): string {
+  return (genre ?? "").toLowerCase().trim().replace(/[\s/-]+/g, "_");
+}
+
+/** True when both genres are present and canonically equal. Null/empty never
+ * matches — callers decide whether an untagged row is acceptable (e.g. the
+ * fill overlay treats genre-null fills as workspace-wide). */
+export function materialGenreMatches(
+  a?: string | null,
+  b?: string | null
+): boolean {
+  const na = normalizeMaterialGenre(a);
+  const nb = normalizeMaterialGenre(b);
+  return !!na && !!nb && na === nb;
+}
+
+/** The musical job a selection role serves, including the legacy coarse roles
+ * and the section fill (which is drum material and must land on the grid even
+ * though it lives outside the taxonomy). Mirrors materialCoverage's mapping. */
+const COARSE_JOB: Record<string, string> = {
+  drums: "rhythm",
+  percussion: "rhythm",
+  bass: "low_end",
+  log_drum: "low_end",
+  chords: "harmony",
+  fill: "rhythm",
+};
+function selectionJobOf(role: string): string | null {
+  if (isMaterialRole(role)) return jobOf(role);
+  return COARSE_JOB[role] ?? null;
+}
+
+/** Jobs where a loop at the WRONG tempo wrecks the groove outright. fx/vocal
+ * textures survive a free-running overlay; the pocket does not. */
+const TEMPO_CRITICAL_JOBS = new Set(["rhythm", "low_end", "harmony"]);
+
+/** Synth-code loops are bridge material (see ROLE_EVIDENCE_RANK): honest,
+ * legally clean, and audibly a math demo. They may only win when nothing
+ * forged/licensed/stem-separated passed the gates for the role. */
+function isSynthBridge(row: SelectableMaterial): boolean {
+  return effectiveMaterialRoleEvidence(row) === "synth-code";
+}
+
+/**
  * One deterministic selector for API assembly and the AfroHit-controlled engine.
  * Rejected/failed/duplicate and rights-unclassified rows can never be selected.
  * Pending legacy assets may be selected, but the worker must technically verify
@@ -190,7 +266,12 @@ export function selectMaterialRows(
   const picks: SelectedMaterial[] = [];
   for (let roleIndex = 0; roleIndex < roles.length; roleIndex += 1) {
     const role = roles[roleIndex]!;
-    const candidates = rows
+    // Unmeasured tempo cannot be conformed honestly: sourceBpm would default to
+    // the target (ratio 1.0) and the loop would be assembled at whatever its
+    // real tempo is — a groove-wrecker for rhythm/low-end/harmony. fx and vocal
+    // textures remain selectable at bpm-null (they ride the bed, not the grid).
+    const tempoCritical = TEMPO_CRITICAL_JOBS.has(selectionJobOf(role) ?? "");
+    const gated = rows
       .filter(row => row.role === role)
       .filter(
         row =>
@@ -200,22 +281,51 @@ export function selectMaterialRows(
       )
       .filter(row => !!row.rightsBasis && row.rightsBasis !== "unknown")
       .filter(row => materialCanAutoAssemble(row))
-      .filter(row => row.bpm == null || Math.abs(row.bpm - bpm) / bpm <= 0.15)
+      // ±5% (was ±15%): smaller atempo ratios mean fewer stretch artifacts and
+      // less drift when the stored bpm is slightly off the true tempo.
+      .filter(row =>
+        row.bpm == null
+          ? !tempoCritical
+          : Math.abs(row.bpm - bpm) / bpm <= 0.05
+      );
+    // Key is a GATE for keyed roles, not just a sort: whenever any candidate
+    // with a compatible/unknown key passed the other gates, wrong-key rows
+    // (score 3) are disqualified outright — a wrong-key chords loop must never
+    // ride a variety rotation into the mix. If ONLY wrong-key rows exist the
+    // role stays coverable (the caller sees the key in the receipt).
+    const keyScoreOf = (row: SelectableMaterial) =>
+      materialKeyScore(role, row.keySignature, keySignature);
+    const anyBetterKey = gated.some(row => keyScoreOf(row) < 3);
+    const candidates = gated
+      .filter(row => !anyBetterKey || keyScoreOf(row) < 3)
       .sort(
         (a, b) =>
+          (isSynthBridge(a) ? 1 : 0) - (isSynthBridge(b) ? 1 : 0) ||
           (a.readiness === "ready" ? 0 : 1) -
             (b.readiness === "ready" ? 0 : 1) ||
-          materialKeyScore(role, a.keySignature, keySignature) -
-            materialKeyScore(role, b.keySignature, keySignature) ||
-          (ROLE_EVIDENCE_RANK[effectiveMaterialRoleEvidence(a)] ?? 4) -
-            (ROLE_EVIDENCE_RANK[effectiveMaterialRoleEvidence(b)] ?? 4) ||
+          keyScoreOf(a) - keyScoreOf(b) ||
+          (ROLE_EVIDENCE_RANK[effectiveMaterialRoleEvidence(a)] ?? 5) -
+            (ROLE_EVIDENCE_RANK[effectiveMaterialRoleEvidence(b)] ?? 5) ||
           (RIGHTS_RANK[a.rightsBasis ?? "unknown"] ?? 5) -
             (RIGHTS_RANK[b.rightsBasis ?? "unknown"] ?? 5) ||
           (SOURCE_RANK[a.source] ?? 4) - (SOURCE_RANK[b.source] ?? 4) ||
           Math.abs((a.bpm ?? bpm) - bpm) - Math.abs((b.bpm ?? bpm) - bpm) ||
           a.id.localeCompare(b.id)
       );
-    const window = Math.min(3, candidates.length);
+    // Variety must never trade key fit or realness for novelty: the rotation
+    // window is the leading run of candidates TIED with the winner on both the
+    // synth-bridge tier and the key score (previously a flat top-3, which let
+    // a worse-key or test-tone loop rotate over an exact-key forged one).
+    let tiedRun = candidates.length ? 1 : 0;
+    while (
+      tiedRun > 0 &&
+      tiedRun < candidates.length &&
+      keyScoreOf(candidates[tiedRun]!) === keyScoreOf(candidates[0]!) &&
+      isSynthBridge(candidates[tiedRun]!) === isSynthBridge(candidates[0]!)
+    ) {
+      tiedRun += 1;
+    }
+    const window = Math.min(3, tiedRun);
     const selected =
       opts?.varietySeed != null && window > 1
         ? candidates[

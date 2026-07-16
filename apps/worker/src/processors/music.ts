@@ -14,7 +14,7 @@ import {
   materializeStemAudio,
   resolveMusicStemSources,
 } from '../lib/demucs-local';
-import { genreSignature, planFills, scoreLaneCompliance, scoreLyricAudioAlignment, engineAdequacy, structureMatch, blueprintFromMeasured, isFirstPartyWorkspace, resolveEngineForWorkspace, promotionEligible, selectMaterialRows, type LaneComplianceScore, type LyricAudioAlignmentScore, type MeasuredAnalysis, type SongBlueprint } from '@afrohit/shared';
+import { genreSignature, planFills, scoreLaneCompliance, scoreLyricAudioAlignment, engineAdequacy, structureMatch, blueprintFromMeasured, isFirstPartyWorkspace, resolveEngineForWorkspace, promotionEligible, selectMaterialRows, materialGenreMatches, type LaneComplianceScore, type LyricAudioAlignmentScore, type MeasuredAnalysis, type SongBlueprint } from '@afrohit/shared';
 
 /** Minimum measured coverage before a lane score is allowed to influence ranking. */
 const MIN_COVERAGE_FOR_RANKING = 0.5;
@@ -453,15 +453,27 @@ export async function processMusic(p: MusicPayload) {
     try {
       if (process.env.FILL_OVERLAY !== '0' && !placeholder && beatBpm > 0 && durationS > 12) {
         try {
-          const fillRows = await prisma.materialAsset.findMany({
+          // Same hard shelf rules as every other selector (song-edit.ts add_fill):
+          // this query used to filter on workspace+role+genre only, so a
+          // rejected/failed/rights-unclassified fill could be overlaid on a
+          // PASSING render. Genre matching moves to JS (materialGenreMatches)
+          // because Prisma exact-equality hid an 'Afrobeats'-tagged fill from an
+          // 'afrobeats' lane; genre-null fills stay workspace-wide, and the
+          // fetch window widens to 40 so other-genre rows can't crowd it out.
+          const fillShelf = await prisma.materialAsset.findMany({
             where: {
               workspaceId: p.workspaceId,
               role: 'fill',
-              OR: [{ genre: p.input.genre ?? undefined }, { genre: null }],
+              readiness: 'ready',
+              qualityState: 'passed',
+              rightsBasis: { not: 'unknown' },
             },
             orderBy: { createdAt: 'desc' },
-            take: 20,
+            take: 40,
           });
+          const fillRows = fillShelf.filter(
+            (row) => row.genre == null || !p.input.genre || materialGenreMatches(row.genre, p.input.genre)
+          );
           const fillMat = selectMaterialRows(fillRows, ['fill'], beatBpm)[0];
           const placements = fillMat ? planFills(beatBpm, durationS, null, genreSignature(p.input.genre).fillBars) : [];
           if (fillMat && placements.length) {
