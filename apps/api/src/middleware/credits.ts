@@ -64,7 +64,12 @@ const firstPartyCache = new Map<string, { value: boolean; at: number }>();
 let houseWorkspaceId: string | null | undefined;
 async function oldestWorkspaceId(): Promise<string | null> {
   if (houseWorkspaceId !== undefined) return houseWorkspaceId;
+  // Oldest workspace THAT HOLDS SONGS — plain oldest failed live within the
+  // hour: an empty dev-era workspace row can predate the real original studio
+  // and steal the crown while the owner's catalog workspace pays retail. The
+  // house is where the songs are.
   const oldest = await prisma.workspace.findFirst({
+    where: { songs: { some: {} } },
     orderBy: { createdAt: "asc" },
     select: { id: true },
   });
@@ -76,8 +81,14 @@ export async function isFirstPartyBilling(workspaceId: string): Promise<boolean>
   if (isFirstPartyWorkspace(workspaceId)) return true;
   if (workspaceId === (await oldestWorkspaceId())) return true;
 
-  const adminEmails = (process.env.ADMIN_EMAILS ?? "")
-    .split(",")
+  // BOOTSTRAP_OWNER_EMAIL is the email the operator provisioned their own
+  // account with — the strongest possible "this is the master account"
+  // signal, and it survives ADMIN_EMAILS typos/mismatches because the owner
+  // LOGS IN with exactly this address.
+  const adminEmails = [
+    ...(process.env.ADMIN_EMAILS ?? "").split(","),
+    process.env.BOOTSTRAP_OWNER_EMAIL ?? "",
+  ]
     .map(entry => entry.trim().toLowerCase())
     .filter(Boolean);
   if (!adminEmails.length) return false;
