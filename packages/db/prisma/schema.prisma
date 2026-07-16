@@ -474,6 +474,7 @@ model Song {
   materialUsages      MaterialUsage[]
   referenceUsages     ReferenceUsage[]
   shareLinks          ShareLink[]
+  videoConcepts       VideoConcept[]       @relation("SongVideoConcept")
   release             Release?             @relation("ReleaseSong")
   album               Album?               @relation(fields: [albumId], references: [id], onDelete: SetNull)
   benchmarkPairs      BenchmarkPair[]
@@ -835,6 +836,13 @@ model ImageAsset {
 model VideoConcept {
   id         String   @id @default(cuid())
   projectId  String
+  // EVERY SONG GETS A VIDEO RECOMMENDATION — the piece that sits beside its
+  // lyrics. This was project-scoped only, so a concept could not name the song
+  // it was for: a project holds many songs, and the generator read the artist
+  // lane and the project brief but never the song and never its words. Nullable
+  // because older concepts were written before songs could be named, and a
+  // project-level concept is still a legitimate thing to have.
+  songId     String?
   title      String
   storyboard Json // [{shot:1, prompt:"...", duration_s:3, motion:"slow push-in"}]
   durationS  Int      @default(15)
@@ -844,9 +852,12 @@ model VideoConcept {
   createdAt  DateTime @default(now()) @db.Timestamptz(6)
 
   project Project       @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  song    Song?         @relation("SongVideoConcept", fields: [songId], references: [id], onDelete: Cascade)
   renders VideoRender[]
 
   @@index([projectId])
+  // Newest concept for a song is the hot read (the panel beside its lyrics).
+  @@index([songId, createdAt(sort: Desc)])
 }
 
 model VideoRender {

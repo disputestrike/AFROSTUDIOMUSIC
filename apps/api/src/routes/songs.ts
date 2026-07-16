@@ -310,6 +310,26 @@ export default async function songs(app: FastifyInstance) {
     return prisma.lyricDraft.findUnique({ where: { id: orphan.id } });
   }
 
+  // ---- Video recommendation: the piece that sits beside the lyrics ----------
+  // Every song gets a recommended video treatment of its own. The storyboard
+  // GENERATOR already existed and was already hardened + billed
+  // (shared/video-storyboard.ts, routes/videos.ts) — but it was keyed to the
+  // PROJECT and read the artist lane and project brief without ever reading the
+  // song or its words, so a project holding several songs got one generic
+  // treatment belonging to none of them. This surfaces the concept bound to
+  // THIS song, newest first.
+  app.get<{ Params: { id: string } }>('/:id/video-concept', async (req, reply) => {
+    const { workspaceId } = requireAuth(req);
+    const song = await prisma.song.findFirst({ where: { id: req.params.id, workspaceId }, select: { id: true } });
+    if (!song) return reply.code(404).send({ error: 'song_not_found' });
+    const concept = await prisma.videoConcept.findFirst({
+      where: { songId: song.id },
+      orderBy: { createdAt: 'desc' },
+    });
+    // No concept yet is a normal state, not an error — the UI offers to make one.
+    return { concept: concept ?? null };
+  });
+
   // ---- Lyrics: view + EDIT (persist) ----
   app.get<{ Params: { id: string } }>('/:id/lyrics', async (req, reply) => {
     const { workspaceId } = requireAuth(req);

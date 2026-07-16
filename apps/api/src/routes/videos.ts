@@ -30,6 +30,22 @@ export default async function videos(app: FastifyInstance) {
         },
       });
 
+      // THE SONG IS THE SUBJECT. This route read the artist lane and the project
+      // brief and stopped — so for a project holding several songs it produced
+      // one generic treatment that belonged to none of them, and never once read
+      // the words being sung. A video recommendation that hasn't heard the song
+      // is a stock brief. Scoped through the project we already authorized, so
+      // it cannot reach another workspace's song.
+      const song = input.songId
+        ? await prisma.song.findFirst({
+            where: { id: input.songId, projectId: project.id, workspaceId },
+            include: { lyric: true },
+          })
+        : null;
+      if (input.songId && !song) {
+        return reply.code(404).send({ error: "song_not_found" });
+      }
+
       const result = await responsesJson<{
         title: string;
         shots: Array<{
@@ -49,6 +65,20 @@ export default async function videos(app: FastifyInstance) {
             lane: project.artist.laneSummary,
           },
           brief: project.briefs[0] ?? {},
+          // The song itself: its title, its lane, its tempo and its actual
+          // WORDS. The treatment should come from what this record is about —
+          // that is the whole difference between a recommendation for THIS song
+          // and a generic one for the artist. cleanVersion is preferred so an
+          // explicit take doesn't drive the imagery; body is the fallback.
+          song: song
+            ? {
+                title: song.title,
+                genre: project.genre,
+                bpm: project.bpm,
+                lyrics: song.lyric?.cleanVersion ?? song.lyric?.body ?? null,
+                madeAt: song.createdAt.toISOString(),
+              }
+            : undefined,
           totalDurationS: input.durationS,
           format: input.format,
           extraPrompt: input.prompt,
@@ -67,6 +97,10 @@ export default async function videos(app: FastifyInstance) {
       const concept = await prisma.videoConcept.create({
         data: {
           projectId: project.id,
+          // Bound to the song, so the recommendation can be found beside its
+          // lyrics instead of floating at project level where a multi-song
+          // project makes it ambiguous which record it describes.
+          songId: song?.id ?? null,
           title: result.title,
           storyboard: storyboard as never,
           durationS: storyboard.reduce((sum, shot) => sum + shot.duration_s, 0),

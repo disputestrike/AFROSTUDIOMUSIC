@@ -15,6 +15,7 @@ import {
   X,
   Loader2,
   Music2,
+  Clapperboard,
   Layers,
   TrendingUp,
   RefreshCw,
@@ -172,6 +173,23 @@ type LyricVer = {
   at: string;
   label?: string;
 };
+/** A song's recommended video treatment — shot list as the API stores it. */
+type VideoShot = {
+  index: number;
+  prompt: string;
+  duration_s: number;
+  motion?: string;
+  lighting?: string;
+  subjects?: string[];
+};
+type VideoConceptRow = {
+  id: string;
+  title: string;
+  storyboard: VideoShot[];
+  durationS: number;
+  format: string;
+  createdAt: string;
+};
 interface VersionsResp {
   songId: string;
   versionLabel: string | null;
@@ -207,6 +225,13 @@ export default function CatalogGrid({ initial }: { initial: SongRow[] }) {
     title: string;
     body: string;
     versions?: LyricVer[];
+  } | null>(null);
+  // Keyed by songId so a treatment can never be shown against the wrong song —
+  // the same discipline the lyrics themselves now follow server-side.
+  const [videoConcept, setVideoConcept] = useState<{
+    songId: string;
+    state: "loading" | "ready";
+    concept?: VideoConceptRow | null;
   } | null>(null);
   const [downloads, setDownloads] = useState<{
     id: string;
@@ -592,6 +617,25 @@ export default function CatalogGrid({ initial }: { initial: SongRow[] }) {
     }
   }
 
+  /**
+   * The song's recommended VIDEO TREATMENT — the piece that sits beside its
+   * lyrics. Fetched per song and keyed to `editing.id`, exactly like the lyrics
+   * themselves, so switching songs can never leave another song's treatment on
+   * screen. Deliberately non-blocking: a song with no concept yet is a normal
+   * state, not an error, so a failure here never stops the lyrics opening.
+   */
+  async function loadVideoConcept(songId: string) {
+    setVideoConcept({ songId, state: "loading" });
+    try {
+      const r = await api.get<{ concept: VideoConceptRow | null }>(
+        `/songs/${songId}/video-concept`
+      );
+      setVideoConcept({ songId, state: "ready", concept: r.concept });
+    } catch {
+      setVideoConcept({ songId, state: "ready", concept: null });
+    }
+  }
+
   async function openLyrics(s: SongRow) {
     setBusy(`${s.id}:lyrics`);
     try {
@@ -610,6 +654,7 @@ export default function CatalogGrid({ initial }: { initial: SongRow[] }) {
         body: r.lyric?.body ?? "",
         versions: r.lyric?.versions ?? [],
       });
+      void loadVideoConcept(s.id);
     } catch (e) {
       flash((e as Error).message || "Could not load lyrics");
     } finally {
@@ -976,6 +1021,68 @@ export default function CatalogGrid({ initial }: { initial: SongRow[] }) {
             className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 font-mono text-xs leading-relaxed"
             placeholder="[Hook]…"
           />
+
+          {/* VIDEO RECOMMENDATION — its own piece, right beside the lyrics.
+              Guarded on songId so a stale fetch from a previously-opened song
+              can never paint its treatment onto this one. */}
+          {videoConcept?.songId === editing.id && (
+            <div className="mt-3 rounded-lg border border-white/10 bg-black/20 p-2.5">
+              <div className="mb-1.5 flex items-center gap-1.5 text-[11px] font-medium text-slate-300">
+                <Clapperboard className="h-3 w-3 text-afrobrand-400" /> Video
+                treatment
+                {videoConcept.concept ? (
+                  <span className="font-normal text-slate-500">
+                    · {videoConcept.concept.durationS}s ·{" "}
+                    {videoConcept.concept.format}
+                  </span>
+                ) : null}
+              </div>
+              {videoConcept.state === "loading" ? (
+                <div className="flex items-center gap-1.5 text-[11px] text-slate-500">
+                  <Loader2 className="h-3 w-3 animate-spin" /> Loading…
+                </div>
+              ) : videoConcept.concept ? (
+                <div>
+                  <div className="mb-1.5 text-xs font-medium text-slate-200">
+                    {videoConcept.concept.title}
+                  </div>
+                  <ol className="space-y-1.5">
+                    {videoConcept.concept.storyboard.map(shot => (
+                      <li
+                        key={shot.index}
+                        className="rounded border border-white/5 bg-black/20 px-2 py-1.5 text-[11px] leading-relaxed text-slate-400"
+                      >
+                        <span className="font-medium text-slate-300">
+                          Shot {shot.index + 1}
+                        </span>
+                        <span className="text-slate-600">
+                          {" "}
+                          · {shot.duration_s}s
+                        </span>
+                        <div className="mt-0.5 text-slate-400">
+                          {shot.prompt}
+                        </div>
+                        {shot.motion || shot.lighting ? (
+                          <div className="mt-0.5 text-slate-600">
+                            {[shot.motion, shot.lighting]
+                              .filter(Boolean)
+                              .join(" · ")}
+                          </div>
+                        ) : null}
+                      </li>
+                    ))}
+                  </ol>
+                </div>
+              ) : (
+                <div className="text-[11px] text-slate-500">
+                  No video treatment for this song yet — build one from the
+                  project&apos;s video console and it will appear here, written
+                  from this song&apos;s own words.
+                </div>
+              )}
+            </div>
+          )}
+
           {editing.versions && editing.versions.length > 0 && (
             <div className="mt-3 rounded-lg border border-white/10 bg-black/20 p-2.5">
               <div className="mb-1.5 flex items-center gap-1.5 text-[11px] font-medium text-slate-300">

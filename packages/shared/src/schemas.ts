@@ -398,6 +398,11 @@ export const generateCoverArtInputSchema = z.object({
 
 export const generateStoryboardInputSchema = z.object({
   projectId: z.string().cuid(),
+  // Name the SONG this video is for. Optional so project-level concepts still
+  // work, but when present the recommendation is built from that song's own
+  // words and lane rather than the project brief alone — and it is stored
+  // against the song so it can sit beside its lyrics.
+  songId: z.string().cuid().optional(),
   durationS: z.number().int().min(8).max(60).default(15),
   format: z.enum(["vertical", "square", "landscape"]).default("vertical"),
   prompt: z.string().max(2000).optional(),
