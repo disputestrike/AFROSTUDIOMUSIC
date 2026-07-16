@@ -900,12 +900,24 @@ export default function CreatePage() {
 
   // ---- Error ----
   if (phase === 'error') {
-    const isLimit = /insufficient_credits|daily limit/i.test(err);
+    // HONEST 402s: a capped workspace and an out-of-credits workspace are
+    // different problems with different fixes — the old screen told everyone
+    // 'daily cap' (the live incident: the owner was out of CREDITS, not
+    // capped, and the copy sent them chasing a cap that never fired).
+    const isCap = /"reason":"(daily_cap|monthly_cap)"|daily limit/i.test(err);
+    const isCredits = !isCap && /insufficient_credits/i.test(err);
+    const isLimit = isCap || isCredits;
     return (
       <div className="mx-auto max-w-lg px-6 py-16 text-center">
-        <div className="font-display text-2xl">{isLimit ? 'You’ve hit today’s limit' : 'Couldn’t finish that one'}</div>
+        <div className="font-display text-2xl">
+          {isCap ? 'You’ve hit today’s limit' : isCredits ? 'Out of credits' : 'Couldn’t finish that one'}
+        </div>
         <p className="mt-2 text-sm text-red-400">
-          {isLimit ? 'The daily generation cap protects your budget. It resets at midnight UTC — or top up / raise the cap.' : err}
+          {isCap
+            ? 'The daily generation cap protects your budget. It resets at midnight UTC — or top up / raise the cap.'
+            : isCredits
+              ? 'This song needs more credits than the studio has left. Top up or upgrade to keep creating.'
+              : err}
         </p>
         <div className="mt-6 flex flex-wrap justify-center gap-3">
           {isLimit ? (
