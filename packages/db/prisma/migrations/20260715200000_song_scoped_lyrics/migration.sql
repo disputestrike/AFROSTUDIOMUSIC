@@ -113,7 +113,24 @@ WHERE NOT EXISTS (
 -- the lyric, and that no read has ever consulted — meaning it can silently
 -- disagree with LyricDraft.songId. Point it at the real binding so the two
 -- cannot contradict each other for anyone who trusts it.
+--
+-- 3a MUST run before 3b: Song.lyricId is UNIQUE via a plain (non-deferrable)
+-- index, which Postgres checks PER ROW within a single UPDATE. The fallback era
+-- left stale pointers (song B holding the id of a draft bound to song A), so
+-- assigning A its own draft's id while B still holds that same id is a
+-- transient duplicate — whether it errors depends on physical row order. 3a
+-- clears every pointer that does not match the song's own bound draft, so 3b
+-- can only ever write values nothing else is holding.
 -- ---------------------------------------------------------------------------
+UPDATE "Song" s
+SET "lyricId" = NULL
+WHERE s."lyricId" IS NOT NULL
+  AND NOT EXISTS (
+    SELECT 1 FROM "LyricDraft" ld
+    WHERE ld."id" = s."lyricId"
+      AND ld."songId" = s."id"
+  );
+
 UPDATE "Song" s
 SET "lyricId" = ld."id"
 FROM "LyricDraft" ld

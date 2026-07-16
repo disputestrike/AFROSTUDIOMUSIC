@@ -1,5 +1,6 @@
 import { spawnSync } from "node:child_process";
 import { readdir } from "node:fs/promises";
+import { existsSync } from "node:fs";
 import { createRequire } from "node:module";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -11,6 +12,55 @@ const migrationsRoot = resolve(packageRoot, "prisma", "migrations");
 const prismaCli = createRequire(import.meta.url).resolve("prisma");
 const baselineKey = "database.migrationBaseline.v1";
 const lockId = 2_026_071_306_000;
+
+/**
+ * THE BASELINE ANCHOR — why a vendored schema exists.
+ *
+ * Production predates the migrations directory: it was maintained by
+ * `db push` until 4cc3d10 (Jul 14), the commit that both AUTHORED the whole
+ * migration history and switched preDeploy to this script. Its baseline
+ * `db push` of the CURRENT schema then failed on Prisma's unique-constraint
+ * data-loss warnings, freezing every deploy since.
+ *
+ * The original design pushed the current schema and marked EVERY migration
+ * applied without executing it. That is correct for schema (push built it) and
+ * silently, permanently wrong for everything schema.prisma cannot express:
+ * 20260715143000's billing-history backfills, 20260715190000's identifier
+ * canonicalization + conflict ledger + revision seeding + 7 functions +
+ * 6 triggers (the DB-side enforcement of release immutability and
+ * never-lose-a-song), and 20260715200000's lyric backfill. None of those would
+ * ever have run on production, with no error to reveal it.
+ *
+ * So the baseline now anchors to the BOUNDARY, not the tip:
+ *
+ *   1. Push prisma/baseline/schema-4cc3d10.prisma — the schema at the exact
+ *      commit the migration history was authored to describe. This bridges
+ *      production's unknown drift (its last successful push is some commit in
+ *      the Jul 13–14 window) to a KNOWN state. Verified purely additive: a
+ *      set-level diff of (model, scalar column) pairs between every window
+ *      state and the vendored schema shows nothing dropped, so this push
+ *      cannot destroy data. --accept-data-loss only waives the warnings for
+ *      the unique constraints deduplicated below.
+ *   2. Mark ONLY the migrations up to that boundary (<= 20260713072000) as
+ *      applied — those are the ones whose schema the push just materialized.
+ *   3. Let `prisma migrate deploy` EXECUTE everything after the boundary
+ *      exactly as authored and exactly as CI runs it from an empty database:
+ *      triggers, functions, backfills, conflict recording, lyric backfill.
+ *   4. Run the legacy data fixups (reclassifications for rows that predate the
+ *      provenance columns), then mark the baseline complete.
+ *
+ * Interruption at any point resumes: the marker is written only after the
+ * push; resolve and the fixups are idempotent; migrate deploy keeps its own
+ * bookkeeping (a failed migration is loud and requires an explicit resolve,
+ * never silent skipping).
+ */
+const BASELINE_BOUNDARY = "20260713072000_credit_usage_units";
+const baselineSchemaPath = resolve(
+  packageRoot,
+  "prisma",
+  "baseline",
+  "schema-4cc3d10.prisma"
+);
 
 function runPrisma(args) {
   const result = spawnSync(process.execPath, [prismaCli, ...args], {
@@ -51,21 +101,228 @@ async function baselineState(prisma) {
   return rows[0]?.value ?? null;
 }
 
+/**
+ * Duplicate resolution for the unique constraints the VENDORED push adds.
+ *
+ * Prisma's --accept-data-loss waives the warning, but Postgres still fails the
+ * constraint if duplicate values actually exist. Only constraints introduced by
+ * the vendored schema need this — everything later (Song.isrc/upc,
+ * Release.upc) is created by migration 20260715190000, which handles its own
+ * duplicates CANONICALLY: canonicalize, record every displaced value in
+ * ReleaseIdentifierConflict, retain the oldest. Nothing here may shadow that.
+ *
+ * Dedup doctrine: NEVER delete a row. The OLDEST row keeps the value — it is
+ * the original owner of an identifier or link, and the row other tables'
+ * usage rows are most likely to reference — and later duplicates have the
+ * column cleared (Postgres unique treats NULLs as distinct). Two exceptions:
+ *   - Export keeps the NEWEST fingerprint: the freshest export is the current
+ *     release package; an older duplicate losing its fingerprint just marks a
+ *     stale bundle as stale.
+ *   - VoiceDataset.contentHash is NOT NULL, so clearing is impossible; later
+ *     duplicates get the hash suffixed with ':dup:<id>' — still unique, row
+ *     preserved, original hash visibly embedded for forensics.
+ *
+ * Residual risk, accepted and documented: a ProviderJob whose chargeLedgerId
+ * was cleared could, if it later fails, refund via its legacy inputJson charge
+ * marker while the retained job also refunds — but two jobs sharing one charge
+ * is already an anomaly the unique constraint exists to end, and refunds are
+ * idempotency-guarded upstream.
+ */
+const BASELINE_UNIQUE_DEDUP = [
+  { table: "VoiceDataset", column: "contentHash", partitionBy: ["workspaceId", "contentHash"], strategy: "suffix", keep: "oldest" },
+  { table: "MaterialAsset", column: "contentHash", partitionBy: ["workspaceId", "contentHash"], strategy: "null", keep: "oldest" },
+  { table: "SoundReference", column: "contentHash", partitionBy: ["workspaceId", "contentHash"], strategy: "null", keep: "oldest" },
+  { table: "Export", column: "sourceFingerprint", partitionBy: ["songId", "sourceFingerprint"], strategy: "null", keep: "newest" },
+  { table: "Release", column: "isrc", partitionBy: ["isrc"], strategy: "null", keep: "oldest" },
+  { table: "Release", column: "externalId", partitionBy: ["externalId"], strategy: "null", keep: "oldest" },
+  { table: "ProviderJob", column: "chargeLedgerId", partitionBy: ["chargeLedgerId"], strategy: "null", keep: "oldest" },
+  { table: "ProviderJob", column: "idempotencyKey", partitionBy: ["workspaceId", "kind", "idempotencyKey"], strategy: "null", keep: "oldest" },
+  { table: "CreditLedger", column: "reversalOfId", partitionBy: ["reversalOfId"], strategy: "null", keep: "oldest" },
+  { table: "CreditLedger", column: "idempotencyKey", partitionBy: ["workspaceId", "idempotencyKey"], strategy: "null", keep: "oldest" },
+];
+
+async function dedupeForBaselineUniqueConstraints(prisma) {
+  for (const target of BASELINE_UNIQUE_DEDUP) {
+    const columns = [
+      ...new Set([...target.partitionBy, target.column, "createdAt"]),
+    ];
+    const partition = target.partitionBy.map(col => `"${col}"`).join(", ");
+    const notNull = target.partitionBy
+      .map(col => `"${col}" IS NOT NULL`)
+      .join(" AND ");
+    const order = target.keep === "newest" ? "DESC" : "ASC";
+    const assignment =
+      target.strategy === "suffix"
+        ? `"${target.column}" = "${target.column}" || ':dup:' || "id"`
+        : `"${target.column}" = NULL`;
+    // Guarded on column existence: production sits at an unknown commit in the
+    // Jul 13-14 window, so any of these columns may not exist yet. Absent
+    // column (or absent table) makes this a no-op instead of an error.
+    await prisma.$executeRawUnsafe(`
+      DO $$
+      BEGIN
+        IF (
+          SELECT COUNT(*) FROM information_schema.columns
+          WHERE table_schema = 'public'
+            AND table_name = '${target.table}'
+            AND column_name IN (${columns.map(col => `'${col}'`).join(", ")})
+        ) = ${columns.length}
+        THEN
+          UPDATE "${target.table}" SET ${assignment}
+          WHERE "id" IN (
+            SELECT "id" FROM (
+              SELECT "id",
+                     ROW_NUMBER() OVER (
+                       PARTITION BY ${partition}
+                       ORDER BY "createdAt" ${order}, "id" ${order}
+                     ) AS rn
+              FROM "${target.table}"
+              WHERE ${notNull}
+            ) ranked
+            WHERE ranked.rn > 1
+          );
+        END IF;
+      END $$;
+    `);
+  }
+}
+
+/**
+ * PHASE 1 — anchor the legacy database to the baseline boundary.
+ * Lock, sanity-check, dedupe, push the vendored schema, set the marker.
+ */
 async function reconcileLegacyDatabase(prisma) {
+  if (!existsSync(baselineSchemaPath)) {
+    throw new Error(
+      `baseline schema missing at ${baselineSchemaPath} — it is vendored in the repo and required to anchor a legacy database`
+    );
+  }
   await prisma.$transaction(
     async tx => {
       await tx.$queryRawUnsafe(
         `SELECT 1::int AS locked FROM pg_advisory_xact_lock(${lockId})`
       );
 
-      // The lock is held before schema reconciliation so concurrent deploys
-      // cannot race through the one-time db-push transition.
-      runPrisma(["db", "push", "--skip-generate"]);
-
+      // A concurrent deploy may have advanced the baseline while this one
+      // waited on the lock.
       const state = await baselineState(tx);
       if (state === "resolving" || state === "complete") return;
       if (state !== null) {
         throw new Error(`Unknown migration baseline state: ${state}`);
+      }
+
+      // SENTINELS — this path must only ever run against the frozen legacy
+      // database it was written for. CreditLedger is ancient and must exist;
+      // BillingSubscription is created by post-boundary migration
+      // 20260715143000, so its presence means the database is already beyond
+      // the boundary and anchoring it again could corrupt it. Abort loudly and
+      // leave everything untouched.
+      if (!(await relationExists(prisma, "CreditLedger"))) {
+        throw new Error(
+          "legacy baseline sanity check failed: CreditLedger does not exist — this does not look like the production database this baseline was written for. Refusing to touch it."
+        );
+      }
+      if (await relationExists(prisma, "BillingSubscription")) {
+        throw new Error(
+          "legacy baseline sanity check failed: BillingSubscription already exists, so post-boundary migrations have already run here. Set the baseline marker manually after verifying state; refusing to re-anchor."
+        );
+      }
+
+      // Duplicate resolution runs on the OUTER client, not tx: each statement
+      // autocommits, because `db push` below is a CHILD PROCESS on its own
+      // connection and would never see rows updated inside this still-open
+      // transaction. The advisory lock (held by tx) serializes concurrent
+      // deploys around the whole phase.
+      await dedupeForBaselineUniqueConstraints(prisma);
+
+      // Anchor to the boundary schema (see header). --accept-data-loss waives
+      // only the unique-constraint warnings — the vendored diff is proven
+      // additive, and duplicates were just resolved above.
+      runPrisma([
+        "db",
+        "push",
+        "--skip-generate",
+        "--accept-data-loss",
+        "--schema",
+        baselineSchemaPath,
+      ]);
+
+      // Marker written ONLY after the push succeeded: a resume at 'resolving'
+      // may safely assume the boundary schema is in place.
+      await tx.$executeRawUnsafe(
+        `
+          INSERT INTO "SystemSetting" ("key", "value", "updatedAt")
+          VALUES ($1, 'resolving', CURRENT_TIMESTAMP)
+          ON CONFLICT ("key") DO UPDATE
+          SET "value" = 'resolving', "updatedAt" = CURRENT_TIMESTAMP
+        `,
+        baselineKey
+      );
+    },
+    { maxWait: 30_000, timeout: 900_000 }
+  );
+}
+
+async function listMigrationNames() {
+  const entries = await readdir(migrationsRoot, { withFileTypes: true });
+  return entries
+    .filter(entry => entry.isDirectory())
+    .map(entry => entry.name)
+    .sort();
+}
+
+/**
+ * Mark ONLY the boundary migrations (<= 20260713072000) as applied — the ones
+ * whose schema the vendored push just materialized. Everything after the
+ * boundary is deliberately left unresolved so `prisma migrate deploy` EXECUTES
+ * it. This is the fix for the original design's silent gap: resolve-without-
+ * execute is only ever legitimate for schema the push actually built.
+ *
+ * Idempotent: already-recorded migrations are skipped. If two deploys race
+ * here despite the phase-1 lock, `migrate resolve` fails loudly on the loser
+ * and the next push retries cleanly.
+ */
+async function resolveBaselineMigrations(prisma) {
+  const names = (await listMigrationNames()).filter(
+    name => name <= BASELINE_BOUNDARY
+  );
+  let applied = await appliedMigrations(prisma);
+  for (const migration of names) {
+    if (applied.has(migration)) continue;
+    runPrisma(["migrate", "resolve", "--applied", migration]);
+    applied = await appliedMigrations(prisma);
+    if (!applied.has(migration)) {
+      throw new Error(`Prisma did not record resolved migration ${migration}`);
+    }
+  }
+}
+
+/**
+ * PHASE 2 — legacy data fixups, then mark the baseline complete.
+ *
+ * These reclassify rows that predate the provenance/lifecycle columns; they
+ * assume the CURRENT schema, so they run after `migrate deploy`. Every
+ * statement is idempotent (guarded by "only rows still in the legacy state"
+ * predicates), and the whole phase is one transaction with the marker write,
+ * so an interruption resumes cleanly.
+ *
+ * Note: the Release triggers created by 20260715190000 are live by the time
+ * these UPDATEs run, so legacy releases gain revision snapshots as a side
+ * effect — which is correct: their pre-fixup state is preserved as history.
+ */
+async function legacyDataFixups(prisma) {
+  await prisma.$transaction(
+    async tx => {
+      await tx.$queryRawUnsafe(
+        `SELECT 1::int AS locked FROM pg_advisory_xact_lock(${lockId})`
+      );
+
+      const state = await baselineState(tx);
+      if (state === "complete") return;
+      if (state !== "resolving") {
+        throw new Error(
+          `Cannot run legacy data fixups from baseline state: ${state ?? "missing"}`
+        );
       }
 
       await tx.$executeRawUnsafe(
@@ -325,77 +582,15 @@ async function reconcileLegacyDatabase(prisma) {
         END $$
       `);
 
-      await tx.$executeRawUnsafe(
-        `
-          INSERT INTO "SystemSetting" ("key", "value", "updatedAt")
-          VALUES ($1, 'resolving', CURRENT_TIMESTAMP)
-          ON CONFLICT ("key") DO UPDATE
-          SET "value" = 'resolving', "updatedAt" = CURRENT_TIMESTAMP
-        `,
-        baselineKey
-      );
+      await tx.systemSetting.update({
+        where: { key: baselineKey },
+        data: { value: "complete" },
+      });
     },
-    { maxWait: 30_000, timeout: 900_000 }
+    { maxWait: 30_000, timeout: 1_800_000 }
   );
 }
 
-async function listMigrationNames() {
-  const entries = await readdir(migrationsRoot, { withFileTypes: true });
-  return entries
-    .filter(entry => entry.isDirectory())
-    .map(entry => entry.name)
-    .sort();
-}
-
-async function finishBaseline(prisma) {
-  const observer = new PrismaClient();
-  try {
-    await prisma.$transaction(
-      async tx => {
-        await tx.$queryRawUnsafe(
-          `SELECT 1::int AS locked FROM pg_advisory_xact_lock(${lockId})`
-        );
-
-        const state = await baselineState(tx);
-        if (state !== "resolving" && state !== "complete") {
-          throw new Error(
-            `Cannot resolve migration baseline from state: ${state ?? "missing"}`
-          );
-        }
-
-        const migrationNames = await listMigrationNames();
-        let applied = await appliedMigrations(observer);
-        const missing = migrationNames.filter(
-          migration => !applied.has(migration)
-        );
-
-        if (state === "complete" && missing.length > 0) {
-          throw new Error(
-            `Migration baseline is marked complete but is missing: ${missing.join(", ")}`
-          );
-        }
-
-        for (const migration of missing) {
-          runPrisma(["migrate", "resolve", "--applied", migration]);
-          applied = await appliedMigrations(observer);
-          if (!applied.has(migration)) {
-            throw new Error(
-              `Prisma did not record resolved migration ${migration}`
-            );
-          }
-        }
-
-        await tx.systemSetting.update({
-          where: { key: baselineKey },
-          data: { value: "complete" },
-        });
-      },
-      { maxWait: 30_000, timeout: 1_800_000 }
-    );
-  } finally {
-    await observer.$disconnect();
-  }
-}
 async function main() {
   if (!process.env.DATABASE_URL) throw new Error("DATABASE_URL is required");
 
@@ -433,16 +628,19 @@ async function main() {
 
     if (!isBaseline) {
       console.log(
-        "Legacy db-push database detected; creating a one-time migration baseline."
+        "Legacy db-push database detected; anchoring it to the migration baseline."
       );
       await reconcileLegacyDatabase(prisma);
-    } else if (state === "resolving") {
+    } else {
       console.log("Resuming an interrupted migration baseline.");
     }
 
-    await finishBaseline(prisma);
-    await prisma.$disconnect();
+    // Boundary migrations are recorded as applied (their schema came from the
+    // vendored push); everything AFTER the boundary now genuinely EXECUTES.
+    await resolveBaselineMigrations(prisma);
     runPrisma(["migrate", "deploy"]);
+    await legacyDataFixups(prisma);
+    await prisma.$disconnect();
     console.log(
       "Migration baseline complete; future deploys use Prisma migrate deploy."
     );
