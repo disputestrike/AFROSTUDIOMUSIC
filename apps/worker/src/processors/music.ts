@@ -417,11 +417,16 @@ export async function processMusic(p: MusicPayload) {
       return;
     }
     if (alignmentRequired && !winner.alignment) {
-      await markFailed(
-        p.jobId,
-        'music_generation_failed: vocal lyric verification was unavailable; no unverified song was approved',
-      );
-      return;
+      // VERIFIER-DOWN IS NOT VERIFICATION-FAILED. When the checker itself is
+      // unavailable (transcription outage — live incident 2026-07-16: a good,
+      // already-paid render was destroyed and refunded because the verifier
+      // couldn't be reached), the take ships HONESTLY UNVERIFIED: approval is
+      // withheld (vocalIdentityAccepted stays false), meta.vocalAlignment
+      // records state 'unmeasured' with required:true, and the release gates
+      // still demand verification before anything ships publicly. A mismatch
+      // the verifier actually MEASURED (the gate above) remains a hard fail —
+      // that is a broken song; this is merely an unchecked one.
+      console.warn('[music] lyric verification unavailable — shipping the take UNVERIFIED (approval withheld; release gates still enforce)');
     }
     let quality: AudioQuality | null = winner.qc;
     const winnerLane = winner.lane;
