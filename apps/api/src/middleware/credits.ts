@@ -50,8 +50,32 @@ declare module "fastify" {
 const FIRST_PARTY_CACHE_MS = 5 * 60 * 1000;
 const firstPartyCache = new Map<string, { value: boolean; at: number }>();
 
+/**
+ * THE ORIGINAL STUDIO IS THE HOUSE — unconditionally. The admin-email rule
+ * shipped first and immediately failed live (2026-07-16): the owner operates
+ * under two emails, and whether ADMIN_EMAILS held the one they logged in with
+ * was unknowable from outside. A first-party rule that depends on
+ * configuration matching is a rule that fails at 2 AM. The OLDEST workspace
+ * is the internal-mode-era original — the owner's entire catalog lives there,
+ * every public signup creates a NEW workspace, so this can never leak to a
+ * customer, and it needs zero configuration. Its id is immutable, cached
+ * forever after first read.
+ */
+let houseWorkspaceId: string | null | undefined;
+async function oldestWorkspaceId(): Promise<string | null> {
+  if (houseWorkspaceId !== undefined) return houseWorkspaceId;
+  const oldest = await prisma.workspace.findFirst({
+    orderBy: { createdAt: "asc" },
+    select: { id: true },
+  });
+  houseWorkspaceId = oldest?.id ?? null;
+  return houseWorkspaceId;
+}
+
 async function isFirstPartyBilling(workspaceId: string): Promise<boolean> {
   if (isFirstPartyWorkspace(workspaceId)) return true;
+  if (workspaceId === (await oldestWorkspaceId())) return true;
+
   const adminEmails = (process.env.ADMIN_EMAILS ?? "")
     .split(",")
     .map(entry => entry.trim().toLowerCase())
