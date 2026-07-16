@@ -335,6 +335,7 @@ async function runOfflineTests(): Promise<void> {
     ["Video engine tiers (class wall + payloads)", "test-video-engine-tiers.ts"],
     ["Likeness laws (consent/photos/status)", "test-likeness-laws.ts"],
     ["Video shot billing", "test-video-storyboard.ts"],
+    ["Video class pricing + render-all parity", "test-video-pricing.ts"],
     ["Video assembly gating (full/teaser)", "test-video-assembly.ts"],
     ["Video render evidence", "test-video-evidence.ts"],
     ["Media adapters fail closed", "test-media-adapter-safety.ts"],

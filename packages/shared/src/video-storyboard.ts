@@ -1,4 +1,8 @@
-import type { CreditKey } from "./credits";
+import { CREDIT_COSTS, type CreditKey } from "./credits";
+import {
+  DEFAULT_VIDEO_ENGINE_CLASS,
+  type VideoEngineClass,
+} from "./likeness";
 
 export interface NormalizedStoryboardShot {
   index: number;
@@ -593,23 +597,72 @@ export function videoTreatmentOf(
   return row as unknown as NormalizedVideoTreatment;
 }
 
+// ===========================================================================
+// OWNER-APPROVED PER-CLASS PRICING (verbatim, 2026-07-16: "I like your
+// pricing"): Draft $0.50/scene, Standard $2.00/scene, Flagship $6.00/scene.
+// ONE pure law prices every surface — the /renders route, /render-all's
+// upfront charge, and the web confirm dialog all call the same functions, so
+// what the user is shown and what the ledger debits can never disagree.
+// ===========================================================================
+
+/** The credit key a scene render bills against, per engine class. */
+export type VideoShotCreditKey = Extract<
+  CreditKey,
+  "video_shot_draft" | "video_shot_standard" | "video_shot_flagship"
+>;
+
+const VIDEO_SHOT_CREDIT_KEYS: Record<VideoEngineClass, VideoShotCreditKey> = {
+  draft: "video_shot_draft",
+  standard: "video_shot_standard",
+  flagship: "video_shot_flagship",
+};
+
+/** Class → credit key. Legacy callers without a class bill as 'standard'. */
+export function videoShotCreditKey(
+  engineClass?: VideoEngineClass | null
+): VideoShotCreditKey {
+  return VIDEO_SHOT_CREDIT_KEYS[engineClass ?? DEFAULT_VIDEO_ENGINE_CLASS];
+}
+
+/**
+ * TOTAL COST of rendering `shotCount` scenes at a class, in 1/100-cent units.
+ * Exported for BOTH sides of the wire: the server charges exactly
+ * costOf(key) × count and the web confirm dialog displays this same number —
+ * parity is proven by the worker suite, not promised.
+ */
+export function videoRenderTotalCost(
+  shotCount: number,
+  engineClass?: VideoEngineClass | null
+): number {
+  const count = Number.isFinite(shotCount)
+    ? Math.max(0, Math.floor(shotCount))
+    : 0;
+  return CREDIT_COSTS[videoShotCreditKey(engineClass)] * count;
+}
+
 export interface VideoRenderUsage {
-  creditKey: Extract<CreditKey, "video_8s" | "video_20s">;
+  creditKey: VideoShotCreditKey;
+  /** Scenes billed — per-scene pricing: one unit per selected shot. */
   billingUnits: number;
+  /** Provider seconds requested — plan caps still meter real workload. */
   planUnits: number;
   shotCount: number;
 }
 
 /**
- * Convert selected shots into the provider workload used for billing/caps.
- * Fails closed on anything that is not a shot ARRAY (a treatment object passed
- * whole returns null — no charge, no crashed worker job). Render-ALL keeps the
- * legacy 15-shot cost guard; single-shot renders work across a full treatment
- * (up to MAX_TREATMENT_SHOTS) so per-shot billing survives the full-song shape.
+ * Convert selected shots into the billing workload. CLASS-AWARE (owner-
+ * approved per-scene pricing): the credit key is the engine class's shot key
+ * and billingUnits is the number of scenes; legacy callers that pass no class
+ * default to 'standard'. Fails closed on anything that is not a shot ARRAY
+ * (a treatment object passed whole returns null — no charge, no crashed
+ * worker job). Render-ALL-in-one-job keeps the legacy 15-shot cost guard;
+ * single-shot renders work across a full treatment (up to
+ * MAX_TREATMENT_SHOTS) so per-shot billing survives the full-song shape.
  */
 export function videoRenderUsage(
   shots: Array<{ duration_s?: number }>,
-  shotIndex?: number
+  shotIndex?: number,
+  engineClass?: VideoEngineClass | null
 ): VideoRenderUsage | null {
   if (!Array.isArray(shots) || shots.length === 0) return null;
   const maxSelectable = shotIndex == null ? MAX_SHOTS : MAX_TREATMENT_SHOTS;
@@ -621,10 +674,63 @@ export function videoRenderUsage(
   const durations = selected.map(shot => providerDuration(shot.duration_s));
   const planUnits = durations.reduce((sum, duration) => sum + duration, 0);
   if (!Number.isInteger(planUnits) || planUnits <= 0) return null;
-  const creditKey = planUnits <= 8 ? "video_8s" : "video_20s";
-  const billingUnits =
-    creditKey === "video_8s"
-      ? Math.ceil(planUnits / 8)
-      : Math.ceil(planUnits / 20);
-  return { creditKey, billingUnits, planUnits, shotCount: selected.length };
+  return {
+    creditKey: videoShotCreditKey(engineClass),
+    billingUnits: selected.length,
+    planUnits,
+    shotCount: selected.length,
+  };
+}
+
+export interface VideoRenderAllUsage {
+  creditKey: VideoShotCreditKey;
+  /** Scenes billed = UNRENDERED scenes only — rendered ones are never re-billed. */
+  billingUnits: number;
+  /** Provider seconds across the unrendered scenes (plan caps). */
+  planUnits: number;
+  /** The shot indexes that will actually be queued. */
+  shotIndexes: number[];
+  /** Excluded from the bill — already have a successful render. */
+  renderedShotIndexes: number[];
+  /** costOf(creditKey) × billingUnits, in 1/100-cent units. */
+  totalCost: number;
+}
+
+/**
+ * ONE-CLICK FULL VIDEO billing law: charge per-shot cost × UNRENDERED shots
+ * only. Already-rendered scenes (by shot index) are excluded — double-billing
+ * is impossible by construction, and totalCost === videoRenderTotalCost(
+ * shotIndexes.length, class) so the client confirm and the server charge are
+ * the same number. Null only for a shotless/oversized/non-array storyboard;
+ * "everything already rendered" returns billingUnits 0 so the route can 409
+ * with an honest breakdown instead of a vague no.
+ */
+export function videoRenderAllUsage(
+  shots: Array<{ duration_s?: number }>,
+  renderedShotIndexes: Iterable<number>,
+  engineClass?: VideoEngineClass | null
+): VideoRenderAllUsage | null {
+  if (!Array.isArray(shots) || shots.length === 0) return null;
+  if (shots.length > MAX_TREATMENT_SHOTS) return null;
+  const rendered = new Set(
+    [...renderedShotIndexes].filter(
+      index => Number.isInteger(index) && index >= 0 && index < shots.length
+    )
+  );
+  const shotIndexes: number[] = [];
+  let planUnits = 0;
+  shots.forEach((shot, index) => {
+    if (rendered.has(index)) return;
+    shotIndexes.push(index);
+    planUnits += providerDuration(shot.duration_s);
+  });
+  const creditKey = videoShotCreditKey(engineClass);
+  return {
+    creditKey,
+    billingUnits: shotIndexes.length,
+    planUnits,
+    shotIndexes,
+    renderedShotIndexes: [...rendered].sort((a, b) => a - b),
+    totalCost: videoRenderTotalCost(shotIndexes.length, engineClass),
+  };
 }

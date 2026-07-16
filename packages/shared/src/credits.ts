@@ -37,9 +37,16 @@ export const CREDIT_COSTS = {
   mix_preset: 10_000, // $1.00
   master_preset: 15_000, // $1.50
 
-  // Video
+  // Video — LEGACY duration keys. Kept ONLY so historical ledger rows keep
+  // resolving; no new charge is written against them (never re-key history).
   video_8s: 100_000, // $10.00
   video_20s: 250_000, // $25.00
+
+  // Video — OWNER-APPROVED per-scene class pricing (verbatim, 2026-07-16:
+  // "I like your pricing"). One scene render = one unit of its engine class.
+  video_shot_draft: 5_000, // $0.50 / scene
+  video_shot_standard: 20_000, // $2.00 / scene
+  video_shot_flagship: 60_000, // $6.00 / scene
 
   // Certified release bundle
   release_export: 5_000, // $0.50
