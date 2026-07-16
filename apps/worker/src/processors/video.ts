@@ -59,6 +59,13 @@ interface VideoPayload {
     consentId: string;
     rightsBasis: "user-attested-likeness";
   };
+  /** POST-RENDER SALVAGE (recover-only): this run exists ONLY to pull down
+   *  work the engine already finished and was already paid for — submitted
+   *  predictions are re-polled and their outputs committed; a shot with no
+   *  submitted prediction is skipped honestly. A recovery run NEVER calls
+   *  renderShot and NEVER generates a keyframe: zero new provider spend,
+   *  by construction. */
+  recoverOnly?: boolean;
 }
 
 interface VideoProgress {
@@ -75,6 +82,11 @@ interface VideoProgress {
   /** Keyframe provenance (likeness path): stored ref + provider run id. */
   keyframeRef?: string;
   keyframeExternalId?: string;
+  /** Set by a recovery run that PROVED this shot cannot be salvaged (link
+   *  expired, engine-side failure). The salvage law skips marked entries so
+   *  a dead prediction can never trap the scene in a recover-forever loop —
+   *  the next render press bills and renders fresh, honestly. */
+  unrecoverable?: string;
 }
 
 const ASPECT: Record<VideoPayload["format"], VideoShotInput["aspectRatio"]> = {
@@ -276,6 +288,11 @@ export async function processVideo(p: VideoPayload) {
       );
     if (!selected.length) throw new Error("video shot selection is empty");
 
+    // Recovery bookkeeping — every shot a recover-only run could NOT deliver
+    // is recorded with its reason and surfaced in the job output. Honest,
+    // never silent.
+    const recoverySkipped: Array<{ shotIndex: number; reason: string }> = [];
+
     const results: Array<{
       shotIndex: number;
       url: string;
@@ -363,6 +380,19 @@ export async function processVideo(p: VideoPayload) {
         continue;
       }
 
+      // RECOVER-ONLY GATE: no submitted prediction (or an engine that cannot
+      // re-poll) means there is nothing paid-for to pull down. Skip — a
+      // recovery run must never trigger fresh provider spend.
+      if (p.recoverOnly && !(existing?.externalId && adapter.poll)) {
+        recoverySkipped.push({
+          shotIndex,
+          reason: existing?.externalId
+            ? "this engine cannot re-poll a finished render"
+            : "no submitted render to recover — this scene needs a fresh render",
+        });
+        continue;
+      }
+
       const input = shotInput(shot, p.format);
 
       // LIKENESS KEYFRAME (own-face path): generate the shot's first frame
@@ -376,7 +406,10 @@ export async function processVideo(p: VideoPayload) {
           entry = { shotIndex, state: "submitted" };
           progress.push(entry);
         }
-        if (!entry.keyframeRef) {
+        // A recovery run never regenerates a keyframe (that is billable
+        // image spend) — the submitted prediction already carries the frame
+        // it was rendered from.
+        if (!entry.keyframeRef && !p.recoverOnly) {
           const keyframe = await generateLikenessKeyframe(
             {
               trainedModelRef: p.likeness.trainedModelRef,
@@ -405,16 +438,40 @@ export async function processVideo(p: VideoPayload) {
           entry.keyframeExternalId = keyframe.externalId;
           await save(entry.externalId);
         }
-        input.keyframeUrl = await resolveAssetForProvider(
-          entry.keyframeRef,
-          3600
-        );
+        if (entry.keyframeRef) {
+          input.keyframeUrl = await resolveAssetForProvider(
+            entry.keyframeRef,
+            3600
+          );
+        }
       }
 
-      let render =
-        existing?.externalId && adapter.poll
-          ? await adapter.poll(existing.externalId, input)
-          : await adapter.renderShot(input);
+      // On a recovery run a shot-level fault is tolerated: mark the entry
+      // unrecoverable (so the salvage law never re-tries a proven-dead
+      // prediction) and move on to salvage the sibling shots.
+      const recoverySkip = async (reason: string): Promise<void> => {
+        recoverySkipped.push({ shotIndex, reason });
+        if (existing) {
+          existing.unrecoverable = reason;
+          await save(existing.externalId);
+        }
+      };
+
+      let render: Awaited<ReturnType<typeof adapter.renderShot>>;
+      try {
+        render =
+          existing?.externalId && adapter.poll
+            ? await adapter.poll(existing.externalId, input)
+            : await adapter.renderShot(input);
+      } catch (pollError) {
+        if (p.recoverOnly) {
+          await recoverySkip(
+            `could not re-poll the finished render: ${(pollError as Error).message}`
+          );
+          continue;
+        }
+        throw pollError;
+      }
 
       let reportedCostUsd = render.estimatedCostUsd;
       if (render.externalId) {
@@ -426,11 +483,24 @@ export async function processVideo(p: VideoPayload) {
       }
 
       let attempts = 0;
+      let stillRunning = false;
       while (render.status === "queued" || render.status === "running") {
         if (!adapter.poll || !render.externalId) {
           throw new Error("video provider cannot resume its queued job");
         }
         if (attempts >= maxPollAttempts) {
+          if (p.recoverOnly) {
+            // The prediction is ALIVE — no unrecoverable marker, so the next
+            // recovery pass keeps waiting on the same paid render instead of
+            // abandoning it and paying for a fresh one.
+            recoverySkipped.push({
+              shotIndex,
+              reason:
+                "the engine is still finishing this render — recover again shortly",
+            });
+            stillRunning = true;
+            break;
+          }
           throw new Error(
             "video provider timed out before confirmed completion"
           );
@@ -444,7 +514,15 @@ export async function processVideo(p: VideoPayload) {
           reportedCostUsd = render.estimatedCostUsd;
         }
       }
+      if (stillRunning) continue;
       if (render.status !== "succeeded" || !render.output) {
+        if (p.recoverOnly) {
+          await recoverySkip(
+            render.error ??
+              `the engine reports ${render.status} — nothing finished to recover`
+          );
+          continue;
+        }
         throw new Error(
           render.error ?? "video provider failed without a reason"
         );
@@ -475,12 +553,26 @@ export async function processVideo(p: VideoPayload) {
         hasCostEvidence = true;
       }
       await save(entry.externalId);
-      const stored = await storeVideo(
-        p.workspaceId,
-        p.format,
-        render.output,
-        shot.duration_s
-      );
+      let stored: Awaited<ReturnType<typeof storeVideo>>;
+      try {
+        stored = await storeVideo(
+          p.workspaceId,
+          p.format,
+          render.output,
+          shot.duration_s
+        );
+      } catch (downloadError) {
+        if (p.recoverOnly) {
+          // Engine delivery links expire (~1 hour). A dead link is proven
+          // unrecoverable — mark it so the salvage law releases this scene
+          // for an honest fresh render instead of looping forever.
+          await recoverySkip(
+            `the finished render's download link is no longer live: ${(downloadError as Error).message}`
+          );
+          continue;
+        }
+        throw downloadError;
+      }
       const renderId = `video_${createHash("sha256")
         .update(`${p.jobId}:${shotIndex}`)
         .digest("hex")
@@ -557,6 +649,22 @@ export async function processVideo(p: VideoPayload) {
       });
     }
 
+    if (p.recoverOnly && !results.length) {
+      // Recovery that delivered nothing is a FAILURE, stated plainly — with
+      // the per-scene reasons, so "why" is never a mystery. Dead entries are
+      // already marked unrecoverable; the next render press bills fresh.
+      await markFailed(
+        p.jobId,
+        `recovery found nothing downloadable — ${
+          recoverySkipped
+            .map(s => `scene ${s.shotIndex + 1}: ${s.reason}`)
+            .join("; ") || "no salvageable shots"
+        }`
+      );
+      await maybeTriggerAutoAssemble(p);
+      return;
+    }
+
     await markSucceeded(
       p.jobId,
       {
@@ -575,6 +683,16 @@ export async function processVideo(p: VideoPayload) {
           costEvidenceComplete && hasCostEvidence ? knownCostUsd : null,
         knownCostUsd: hasCostEvidence ? knownCostUsd : null,
         costEvidenceComplete: costEvidenceComplete && hasCostEvidence,
+        // RECOVERY RECEIPT — which paid scenes were pulled back in, and
+        // which could not be (with reasons). Zero new provider spend.
+        ...(p.recoverOnly
+          ? {
+              recovery: {
+                recoveredShotIndexes: results.map(r => r.shotIndex),
+                skipped: recoverySkipped,
+              },
+            }
+          : {}),
       },
       hasCostEvidence ? knownCostUsd : undefined
     );

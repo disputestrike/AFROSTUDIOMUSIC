@@ -19,7 +19,15 @@ import {
 } from "@afrohit/shared";
 import { prompts, generateJson } from "@afrohit/ai";
 import { requireAuth } from "../middleware/auth";
-import { createQueuedProviderJob, scopedRequestKey } from "../lib/queued-job";
+import {
+  createQueuedProviderJob,
+  scopedRequestKey,
+  type SuccessfulCharge,
+} from "../lib/queued-job";
+import {
+  requeueVideoRecovery,
+  salvageableVideoShots,
+} from "../lib/video-salvage";
 import {
   currentPlayableAsset,
   playableArrangement,
@@ -357,6 +365,33 @@ export default async function videos(app: FastifyInstance) {
       if (!usage) {
         return reply.code(400).send({ error: "invalid_video_shot_selection" });
       }
+
+      // POST-RENDER SALVAGE: if this scene's last attempt failed AFTER the
+      // engine finished (a paid prediction survives in the failed job's
+      // progress), recover THAT render — no new charge, no new engine spend.
+      // "You never pay twice for work that already ran."
+      if (input.shotIndex != null) {
+        const salvage = await salvageableVideoShots(workspaceId, concept.id);
+        const claim = salvage.get(input.shotIndex);
+        if (claim) {
+          await requeueVideoRecovery(app, {
+            job: claim,
+            workspaceId,
+            projectId: concept.projectId,
+            conceptId: concept.id,
+            shots,
+            format: concept.format,
+          });
+          reply.code(202);
+          return {
+            jobId: claim.jobId,
+            replayed: false,
+            recovered: true,
+            note: "This scene already has a finished, paid render at the engine — recovering it instead of billing a new one.",
+          };
+        }
+      }
+
       const idempotencyKey = scopedRequestKey(
         req.headers as Record<string, unknown>,
         "video-render"
@@ -470,32 +505,76 @@ export default async function videos(app: FastifyInstance) {
         });
       }
 
-      // ONE upfront charge for the whole batch: costOf(class key) × unrendered
-      // scenes. The ledger row anchors to the FIRST queued job so the orphan-
-      // charge sweeper can see it is attached to real queued work.
+      // POST-RENDER SALVAGE: scenes whose last attempt failed AFTER the
+      // engine finished still hold paid predictions — those are recovered
+      // for free, and ONLY the scenes with nothing to salvage are billed.
+      // The billed number comes from the SAME shared law, fed with salvaged
+      // scenes treated as already-rendered, so it can never drift from the
+      // per-scene price the modal shows.
+      const salvage = await salvageableVideoShots(workspaceId, concept.id);
+      const salvagedShotIndexes = usage.shotIndexes.filter(index =>
+        salvage.has(index)
+      );
+      const billUsage = videoRenderAllUsage(
+        shots,
+        [...usage.renderedShotIndexes, ...salvagedShotIndexes],
+        input.engineClass
+      );
+      if (!billUsage) {
+        return reply.code(400).send({ error: "invalid_video_shot_selection" });
+      }
+
+      // ONE upfront charge for the whole batch: costOf(class key) × scenes
+      // that actually need fresh renders. The ledger row anchors to the
+      // FIRST queued job so the orphan-charge sweeper can see it is attached
+      // to real queued work. All-salvage batches charge NOTHING.
       const idempotencyKey = scopedRequestKey(
         req.headers as Record<string, unknown>,
         "video-render-all"
       );
-      const charge = await app.chargeCredits({
-        workspaceId,
-        key: usage.creditKey,
-        multiplier: usage.billingUnits,
-        planUnits: usage.planUnits,
-        refTable: "VideoConcept",
-        refId: concept.id,
-        idempotencyKey,
-      });
-      if (!charge.ok)
-        return reply
-          .code(402)
-          .send({ error: "insufficient_credits", ...charge });
+      let charge: SuccessfulCharge | null = null;
+      if (billUsage.billingUnits > 0) {
+        const attempt = await app.chargeCredits({
+          workspaceId,
+          key: billUsage.creditKey,
+          multiplier: billUsage.billingUnits,
+          planUnits: billUsage.planUnits,
+          refTable: "VideoConcept",
+          refId: concept.id,
+          idempotencyKey,
+        });
+        if (!attempt.ok)
+          return reply
+            .code(402)
+            .send({ error: "insufficient_credits", ...attempt });
+        charge = attempt;
+      }
 
-      // Queue every unrendered scene — the exact per-shot payload /renders
-      // builds, one job per scene so progress/retries stay per-scene.
-      const jobIds: string[] = [];
-      for (let i = 0; i < usage.shotIndexes.length; i++) {
-        const shotIndex = usage.shotIndexes[i]!;
+      // Requeue the salvage claims FIRST — engine delivery links expire by
+      // the minute, and these downloads cost nothing.
+      const recoveredJobIds: string[] = [];
+      const requeuedClaims = new Set<string>();
+      for (const index of salvagedShotIndexes) {
+        const claim = salvage.get(index)!;
+        if (requeuedClaims.has(claim.jobId)) continue;
+        requeuedClaims.add(claim.jobId);
+        await requeueVideoRecovery(app, {
+          job: claim,
+          workspaceId,
+          projectId: concept.projectId,
+          conceptId: concept.id,
+          shots,
+          format: concept.format,
+        });
+        recoveredJobIds.push(claim.jobId);
+      }
+
+      // Queue every scene that needs a FRESH render — the exact per-shot
+      // payload /renders builds, one job per scene so progress/retries stay
+      // per-scene.
+      const jobIds: string[] = [...recoveredJobIds];
+      for (let i = 0; i < billUsage.shotIndexes.length; i++) {
+        const shotIndex = billUsage.shotIndexes[i]!;
         const job = await createQueuedProviderJob({
           app,
           queue: app.queues.video,
@@ -514,7 +593,7 @@ export default async function videos(app: FastifyInstance) {
           },
           // The batch charge anchors to the first job (chargeLedgerId is
           // unique — one ledger row cannot link to N jobs).
-          ...(i === 0 ? { charge } : {}),
+          ...(i === 0 && charge ? { charge } : {}),
           ...(idempotencyKey
             ? { idempotencyKey: `${idempotencyKey}:shot${shotIndex}` }
             : {}),
@@ -562,9 +641,11 @@ export default async function videos(app: FastifyInstance) {
         jobIds,
         queuedShotIndexes: usage.shotIndexes,
         renderedShotIndexes: usage.renderedShotIndexes,
-        creditKey: usage.creditKey,
-        billingUnits: usage.billingUnits,
-        totalCost: usage.totalCost,
+        // Paid-but-undelivered scenes pulled back in for FREE this batch.
+        recoveredShotIndexes: salvagedShotIndexes,
+        creditKey: billUsage.creditKey,
+        billingUnits: billUsage.billingUnits,
+        totalCost: billUsage.totalCost,
         autoAssemble: { requested: true, kind: "full" },
       };
     }
