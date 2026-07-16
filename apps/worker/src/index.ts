@@ -80,6 +80,8 @@ import {
   processWiktionaryHarvest,
   processGlossPass,
   processVerifyLexicon,
+  processRecertifySweep,
+  processMasterReferenceIngest,
 } from "./processors/compound";
 import {
   isTerminalProviderJobStatus,
@@ -147,6 +149,8 @@ const LAKE_JOBS = new Set([
   "wiktionary-burst",
   "lexicon-gloss",
   "lexicon-verify",
+  "recert-sweep",
+  "master-reference-ingest",
   "vocal-qc-backfill",
   "beat-qc-backfill",
   "voice-dataset-purge-backfill",
@@ -398,6 +402,12 @@ const workers = [
                 else if (job.name === "lexicon-gloss") await processGlossPass();
                 else if (job.name === "lexicon-verify")
                   await processVerifyLexicon();
+                // Local-ffmpeg lake work (no LLM; the bulk-brain wrapper is a
+                // no-op for both): legacy re-certification + reference ingest.
+                else if (job.name === "recert-sweep")
+                  await processRecertifySweep();
+                else if (job.name === "master-reference-ingest")
+                  await processMasterReferenceIngest(job.data as never);
                 else if (job.name === "vocal-qc-backfill")
                   await processVocalQcBackfill();
                 else if (job.name === "beat-qc-backfill")

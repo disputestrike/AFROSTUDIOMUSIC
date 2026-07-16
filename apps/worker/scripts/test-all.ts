@@ -358,6 +358,7 @@ async function runOfflineTests(): Promise<void> {
     ["Security boundaries", "test-security-boundaries.ts"],
     ["Durable jobs + billing receipts", "test-durable-workflows.ts"],
     ["Job redelivery + refund durability", "test-job-durability.ts"],
+    ["Master report (density/match-EQ)", "test-master-report.ts"],
     ["Mix source lineage", "test-mix-lineage.ts"],
     ["Generated full-song lineage", "test-generated-full-song-lineage.ts"],
     ["Voice singing lineage", "test-voice-sing-lineage.ts"],

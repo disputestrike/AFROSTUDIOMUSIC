@@ -18,9 +18,10 @@ const { allAutonomyFlags, setAutonomyEnabled } = db as unknown as {
 };
 import { isInternalMode, requireAuth } from '../middleware/auth';
 import { validAdminGrant } from '../lib/session';
-import { isFirstPartyWorkspace, resolveEngineForWorkspace } from '@afrohit/shared';
+import { GENRES, isFirstPartyWorkspace, resolveEngineForWorkspace } from '@afrohit/shared';
 import { createQueuedProviderJob, scopedRequestKey } from '../lib/queued-job';
 import { operationErrorBody, runIdempotentOperation } from '../lib/idempotent-operation';
+import { assertOwnedKey, assertWorkspaceAsset, publicUrlFor } from '../lib/storage';
 
 export async function hasAdminAccess(req: FastifyRequest): Promise<boolean> {
   const { userId, workspaceId } = requireAuth(req);
@@ -58,7 +59,7 @@ export default async function admin(app: FastifyInstance) {
   app.get('/status', async (req) => ({ admin: await hasAdminAccess(req) }));
 
   // One-tap compounding: run the lake jobs NOW instead of waiting for tonight.
-  const runSchema = z.object({ task: z.enum(['nightly-compound', 'measure-backfill', 'learn-backfill', 'listen-back', 'refile-references', 'mine-lexicon', 'lexicon-research', 'wiktionary-harvest', 'wiktionary-burst', 'lexicon-gloss', 'lexicon-verify']) });
+  const runSchema = z.object({ task: z.enum(['nightly-compound', 'measure-backfill', 'learn-backfill', 'listen-back', 'refile-references', 'mine-lexicon', 'lexicon-research', 'wiktionary-harvest', 'wiktionary-burst', 'lexicon-gloss', 'lexicon-verify', 'recert-sweep']) });
   app.post('/run', { schema: { body: runSchema } }, async (req, reply) => {
     await requireAdmin(req);
     const { workspaceId } = requireAuth(req);
@@ -78,6 +79,100 @@ export default async function admin(app: FastifyInstance) {
     });
     reply.code(202);
     return { queued: task, jobId: job.jobId, replayed: job.replayed, note: 'Running on the worker now; results land in /lanes/inventory.' };
+  });
+
+  // MASTER-REFERENCE INGESTION — the door for the owner's rights-cleared
+  // reference tracks (3 per core genre by doctrine). The API half validates +
+  // enqueues; the WORKER half (processors/compound.ts) downloads, measures,
+  // and stores ONLY the measured tonal vector + rights attestation in the
+  // SystemSetting bank below. NUMBERS ONLY: no audio is ever persisted by this
+  // path, and the fixture manifest stays as a read-only fallback (the DB bank
+  // wins — see the reference-seam contract in worker lib/ffmpeg.ts).
+  const MASTER_REFERENCES_SETTING_KEY = 'master.references.v1'; // mirrors worker lib/ffmpeg.ts
+  const masterRefSchema = z
+    .object({
+      genre: z.string().min(2).max(40),
+      title: z.string().min(1).max(200),
+      // A REAL attestation sentence, not a checkbox — it is stored verbatim
+      // beside the numbers as the rights record for this reference.
+      rightsAttestation: z.string().min(10).max(500),
+      audioUrl: z.string().min(4).max(2048).optional(),
+      uploadKey: z.string().min(4).max(1024).optional(),
+    })
+    .refine((b) => !!b.audioUrl !== !!b.uploadKey, {
+      message: 'provide exactly one of audioUrl or uploadKey',
+    });
+  app.post('/master-references', { schema: { body: masterRefSchema } }, async (req, reply) => {
+    await requireAdmin(req);
+    const { workspaceId } = requireAuth(req);
+    const body = masterRefSchema.parse(req.body);
+    if (!(GENRES as readonly string[]).includes(body.genre)) {
+      return reply.code(400).send({ error: 'unknown_genre', message: `genre must be one of the studio lanes (e.g. ${GENRES.slice(0, 6).join(', ')}, …)` });
+    }
+    // Resolve the audio source to something the worker can download: an owned
+    // upload key becomes a canonical storage URI; a storage URI must belong to
+    // this workspace; plain https passes through (admin-gated route).
+    let audioUrl: string;
+    if (body.uploadKey) {
+      audioUrl = publicUrlFor(assertOwnedKey(workspaceId, body.uploadKey));
+    } else if (/^storage:/i.test(body.audioUrl!)) {
+      assertWorkspaceAsset(workspaceId, body.audioUrl!);
+      audioUrl = body.audioUrl!;
+    } else if (/^https?:\/\//i.test(body.audioUrl!)) {
+      audioUrl = body.audioUrl!;
+    } else {
+      return reply.code(400).send({ error: 'unsupported_audio_source', message: 'audioUrl must be https or an owned storage reference' });
+    }
+    const idempotencyKey = scopedRequestKey(req.headers as Record<string, unknown>, `admin-master-ref:${body.genre}:${body.title}`);
+    const job = await createQueuedProviderJob({
+      app,
+      queue: app.queues.lake,
+      jobName: 'master-reference-ingest',
+      workspaceId,
+      kind: 'lake',
+      provider: 'internal',
+      inputJson: { genre: body.genre, title: body.title, rightsAttestation: body.rightsAttestation, audioUrl },
+      idempotencyKey,
+      payload: (jobId) => ({
+        jobId,
+        workspaceId,
+        genre: body.genre,
+        title: body.title,
+        rightsAttestation: body.rightsAttestation,
+        audioUrl,
+      }),
+    });
+    reply.code(202);
+    return {
+      queued: true,
+      jobId: job.jobId,
+      replayed: job.replayed,
+      genre: body.genre,
+      title: body.title,
+      note: 'The worker measures the audio and stores numbers + attestation only — the recording itself is never kept. Re-ingesting the same genre+title replaces its measurement.',
+    };
+  });
+
+  // The current reference bank — measured vectors + attestations, verbatim
+  // from the SystemSetting store (the worker computes per-genre aggregates
+  // from these tracks at render time; nothing here is recomputed or invented).
+  app.get('/master-references', async (req) => {
+    await requireAdmin(req);
+    const row = await prisma.systemSetting.findUnique({ where: { key: MASTER_REFERENCES_SETTING_KEY } });
+    let store: { version?: number; genres?: Record<string, { tracks?: unknown[] }> } | null = null;
+    try {
+      store = row ? JSON.parse(row.value) : null;
+    } catch {
+      store = null; // corrupt store reads as empty; the next ingest rebuilds it
+    }
+    const genres = store?.genres ?? {};
+    return {
+      key: MASTER_REFERENCES_SETTING_KEY,
+      updatedAt: row?.updatedAt ?? null,
+      trackCounts: Object.fromEntries(Object.entries(genres).map(([g, e]) => [g, e?.tracks?.length ?? 0])),
+      genres,
+      note: 'Numbers only — measured tonal vectors + rights attestations. Masters report deltas (and clamped match-EQ) against these lanes automatically once tracks exist.',
+    };
   });
 
   // WRITER A/B — blind bench: same hook/brief/polish, Claude vs OpenAI writer

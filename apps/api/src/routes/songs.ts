@@ -58,6 +58,62 @@ type CatalogRow = {
 };
 
 /**
+ * MASTER REPORT CARD — the compact, honest read of the newest master, lifted
+ * VERBATIM from the meta.masterReport the worker persisted at render (or
+ * legacy re-certification) time. Nothing here is recomputed or invented: a
+ * master without a persisted report returns null and the UI shows nothing.
+ * Reference deltas / drive passes / match-EQ ride along only when the render
+ * actually measured/applied them.
+ */
+type MasterReportSummary = {
+  preset: string;
+  measuredAt: Date;
+  lufs: number | null;
+  dBTP: number | null;
+  lra: number | null;
+  crest: number | null;
+  tiltDbPerOct: number | null;
+  correlation: number | null;
+  drivePasses: Array<Record<string, unknown>> | null;
+  appliedMatchEq: Record<string, unknown> | null;
+  referenceDelta: { genre: string; delta: Record<string, unknown> } | null;
+};
+
+function masterReportSummary(
+  master: (PlayableAssetRow & { preset?: string | null }) | undefined,
+): MasterReportSummary | null {
+  if (!master) return null;
+  const meta = master.meta && typeof master.meta === 'object' && !Array.isArray(master.meta)
+    ? master.meta as Record<string, unknown>
+    : null;
+  const report = meta?.masterReport && typeof meta.masterReport === 'object' && !Array.isArray(meta.masterReport)
+    ? meta.masterReport as Record<string, unknown>
+    : null;
+  if (!report) return null;
+  const num = (v: unknown): number | null => (typeof v === 'number' && Number.isFinite(v) ? v : null);
+  const rec = (v: unknown): Record<string, unknown> | null =>
+    v && typeof v === 'object' && !Array.isArray(v) ? v as Record<string, unknown> : null;
+  const refDelta = rec(report.referenceDelta);
+  return {
+    preset: master.preset ?? 'unknown',
+    measuredAt: master.verifiedAt ?? master.createdAt,
+    lufs: num(report.lufs),
+    dBTP: num(report.dBTP),
+    lra: num(report.lra),
+    crest: num(report.crest),
+    tiltDbPerOct: num(report.tilt),
+    correlation: num(report.correlation),
+    drivePasses: Array.isArray(report.drivePasses)
+      ? report.drivePasses.filter((p): p is Record<string, unknown> => !!rec(p))
+      : null,
+    appliedMatchEq: rec(report.appliedMatchEq),
+    referenceDelta: refDelta && typeof refDelta.genre === 'string' && rec(refDelta.delta)
+      ? { genre: refDelta.genre, delta: rec(refDelta.delta)! }
+      : null,
+  };
+}
+
+/**
  * Catalog — the artist's songs as a real WORKSTATION, not a read-only shelf.
  *
  * Nothing is "gone once made": every song can be reused, edited, re-mastered,
@@ -143,6 +199,8 @@ export default async function songs(app: FastifyInstance) {
         viralScore: s.viralScore,
         coverUrl: coverByProject.get(s.projectId) ?? null,
         createdAt: s.createdAt,
+        // Newest master's measured report card (null when it carries none).
+        masterReport: masterReportSummary(s.masters[0] as (PlayableAssetRow & { preset?: string | null }) | undefined),
         // Recovery truth: the UI can only offer Restore / Un-quarantine if the
         // list says which rows need it (booleans + the stored reasons).
         deleted: !!s.deletedAt,
@@ -178,6 +236,8 @@ export default async function songs(app: FastifyInstance) {
       audioUrl: currentAudio?.url ?? null,
       currentAudio: playableAssetRef(currentAudio),
       coverUrl: cover?.url ?? null,
+      // Newest master's measured report card (null when it carries none).
+      masterReport: masterReportSummary(song.masters[0] as (PlayableAssetRow & { preset?: string | null }) | undefined),
     };
   });
 

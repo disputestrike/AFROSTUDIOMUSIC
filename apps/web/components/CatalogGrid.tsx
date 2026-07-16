@@ -46,6 +46,37 @@ interface HitPrediction {
   tiktokMoment: string | null;
 }
 
+/** The newest master's measured report card — every number MEASURED by the
+ *  worker at render/re-certification time and served verbatim by the API
+ *  (masterReportSummary in routes/songs.ts). Absent = that master carries no
+ *  persisted report; nothing is recomputed or invented client-side. */
+export interface MasterReportRow {
+  preset?: string | null;
+  measuredAt?: string | null;
+  lufs?: number | null;
+  dBTP?: number | null;
+  lra?: number | null;
+  crest?: number | null;
+  tiltDbPerOct?: number | null;
+  correlation?: number | null;
+  drivePasses?: Array<{
+    pass?: number;
+    stage?: string;
+    driveDb?: number;
+    reason?: string;
+    measured?: { lufs?: number; truePeakDb?: number; lra?: number } | null;
+  }> | null;
+  appliedMatchEq?: {
+    bandsDb?: number[];
+    clampDb?: number;
+    referenceGenre?: string;
+  } | null;
+  referenceDelta?: {
+    genre?: string;
+    delta?: Record<string, number | number[]>;
+  } | null;
+}
+
 export interface SongRow {
   id: string;
   title: string;
@@ -58,6 +89,7 @@ export interface SongRow {
   bpm: number | null;
   audioUrl: string | null;
   currentAudio?: { certification?: { certified?: boolean } } | null;
+  masterReport?: MasterReportRow | null;
   masterUrl?: string | null;
   mixUrl?: string | null;
   beatUrl?: string | null;
@@ -110,6 +142,83 @@ function madeAt(iso: string | null | undefined): string {
     hour: "2-digit",
     minute: "2-digit",
   });
+}
+
+/** Render a measured number or nothing — an unmeasured axis simply doesn't
+ *  print (honesty law: no dashes pretending to be data). */
+function measuredNum(n: number | null | undefined, digits = 1): string | null {
+  return typeof n === "number" && Number.isFinite(n) ? n.toFixed(digits) : null;
+}
+
+/** The clean one-line stat row of the master report — measured axes only. */
+function masterReportLine(r: MasterReportRow): string {
+  const parts: string[] = [];
+  const lufs = measuredNum(r.lufs);
+  const tp = measuredNum(r.dBTP);
+  const lra = measuredNum(r.lra);
+  const tilt = measuredNum(r.tiltDbPerOct);
+  const corr = measuredNum(r.correlation, 2);
+  if (lufs) parts.push(`Loudness ${lufs} LUFS`);
+  if (tp) parts.push(`True peak ${tp} dB`);
+  if (lra) parts.push(`Dynamics LRA ${lra}`);
+  if (tilt) parts.push(`Tilt ${tilt} dB/oct`);
+  if (corr) parts.push(`Stereo ${corr}`);
+  return parts.join(" · ");
+}
+
+/**
+ * One honest verdict line. Thresholds (all measured against commercial Afro
+ * chart masters — the same law the mastering chain targets):
+ *   - integrated loudness: -11..-8 LUFS is the commercial window (the -9
+ *     preset's home); quieter loses every A/B, hotter risks crush.
+ *   - LRA: commercial Afro sits ~6-8; > 8.5 reads as more dynamic than
+ *     commercial (the chain's own density ceiling), < 3 as very dense.
+ *   - true peak: above -0.8 dBTP risks clipping on lossy transcode (chain
+ *     targets -1.0).
+ *   - stereo correlation: < 0.5 warns of phase loss when clubs fold to mono.
+ * No loudness measurement → no verdict claimed.
+ */
+function masterReportVerdict(r: MasterReportRow): string {
+  const lufs = typeof r.lufs === "number" && Number.isFinite(r.lufs) ? r.lufs : null;
+  if (lufs === null) return "Loudness unmeasured — no verdict claimed.";
+  let verdict =
+    lufs > -8
+      ? "Hotter than commercial Afro loudness"
+      : lufs < -11
+        ? "Quieter than commercial Afro loudness"
+        : "Within commercial Afro loudness range";
+  const lra = typeof r.lra === "number" && Number.isFinite(r.lra) ? r.lra : null;
+  if (lra !== null && lra > 8.5) verdict += " · more dynamic than commercial (LRA > 8.5)";
+  else if (lra !== null && lra < 3) verdict += " · very dense (LRA < 3)";
+  const tp = typeof r.dBTP === "number" && Number.isFinite(r.dBTP) ? r.dBTP : null;
+  if (tp !== null && tp > -0.8) verdict += " · true peak may clip on lossy transcode";
+  const corr = typeof r.correlation === "number" && Number.isFinite(r.correlation) ? r.correlation : null;
+  if (corr !== null && corr < 0.5) verdict += " · stereo phase risk on mono systems";
+  return verdict;
+}
+
+/** Compact 'vs reference' line — rendered ONLY when the render carried a real
+ *  measured reference delta (rights-cleared lane references on file). */
+function masterReferenceLine(r: MasterReportRow): string | null {
+  const delta = r.referenceDelta?.delta;
+  if (!delta || !r.referenceDelta?.genre) return null;
+  const label: Record<string, string> = {
+    lufs: "LUFS",
+    truePeakDb: "dBTP",
+    loudnessRangeLra: "LRA",
+    crestFactorDb: "crest dB",
+    spectralTiltDbPerOct: "tilt dB/oct",
+    stereoCorrelation: "stereo",
+  };
+  const parts: string[] = [];
+  for (const [key, name] of Object.entries(label)) {
+    const v = delta[key];
+    if (typeof v === "number" && Number.isFinite(v)) {
+      parts.push(`${v >= 0 ? "+" : ""}${v.toFixed(key === "stereoCorrelation" ? 2 : 1)} ${name}`);
+    }
+  }
+  if (!parts.length) return null;
+  return `vs ${r.referenceDelta.genre.replace(/_/g, " ")} reference: ${parts.join(" · ")}`;
 }
 
 // STUDIO TRUTH — the per-song proof pack from GET /songs/:id/proof. Everything
@@ -332,6 +441,9 @@ export default function CatalogGrid({ initial }: { initial: SongRow[] }) {
   // ---- PLAYER QUALITY-OF-LIFE (owner-requested, 2026-07-16) ----
   // Loop per card = the native audio `loop` attribute, nothing clever.
   const [looping, setLooping] = useState<Record<string, boolean>>({});
+  // MASTER REPORT expander — per-card, only rendered when the newest master
+  // carries a persisted measured report (server decides; see SongRow).
+  const [reportOpen, setReportOpen] = useState<Record<string, boolean>>({});
   // PLAY ALL — the visible songs in card order, advanced on 'ended'. The
   // app-wide AudioSolo listener already enforces one-audio-at-a-time, so
   // starting the next element IS the discipline; no new deps, no new player.
@@ -1060,6 +1172,70 @@ export default function CatalogGrid({ initial }: { initial: SongRow[] }) {
               ) : (
                 <div className="mt-3 text-xs text-slate-600">
                   No audio rendered yet.
+                </div>
+              )}
+
+              {/* MASTER REPORT CARD — the measured verdict of the newest
+                  master (worker-persisted, served verbatim). Rendered only
+                  when a report exists; every line is measurement, the verdict
+                  thresholds live in masterReportVerdict above. */}
+              {s.masterReport && (
+                <div className="mt-2">
+                  <button
+                    onClick={() =>
+                      setReportOpen(cur => ({ ...cur, [s.id]: !cur[s.id] }))
+                    }
+                    title="Measured loudness, dynamics, tilt and stereo health of the newest master"
+                    className="rounded-full border border-white/10 bg-white/5 px-2 py-0.5 text-[10px] text-slate-400 hover:bg-white/10"
+                  >
+                    📊 Master report {reportOpen[s.id] ? "▴" : "▾"}
+                  </button>
+                  {reportOpen[s.id] && (
+                    <div className="mt-1.5 space-y-1 rounded-lg border border-white/10 bg-black/20 p-2 text-[11px] leading-relaxed text-slate-400">
+                      {masterReportLine(s.masterReport) ? (
+                        <div>{masterReportLine(s.masterReport)}</div>
+                      ) : null}
+                      <div className="text-slate-300">
+                        {masterReportVerdict(s.masterReport)}
+                      </div>
+                      {/* Density iteration — shown only when the chain earned
+                          its single extra gentle pass. */}
+                      {(() => {
+                        const density = (s.masterReport.drivePasses ?? []).find(
+                          p => p?.stage === "density" && (p.driveDb ?? 0) > 0
+                        );
+                        if (!density) return null;
+                        const after = measuredNum(density.measured?.lra);
+                        return (
+                          <div className="text-slate-500">
+                            Density: one extra gentle drive pass +
+                            {(density.driveDb ?? 0).toFixed(1)} dB
+                            {after ? ` → LRA ${after}` : ""}
+                          </div>
+                        );
+                      })()}
+                      {/* Match-EQ — only when a rights-cleared reference vector
+                          actually shaped this render. */}
+                      {s.masterReport.appliedMatchEq?.bandsDb ? (
+                        <div className="text-slate-500">
+                          Match-EQ: ±
+                          {s.masterReport.appliedMatchEq.clampDb ?? 3} dB-clamped
+                          correction toward the{" "}
+                          {(s.masterReport.appliedMatchEq.referenceGenre ?? s.genre).replace(/_/g, " ")}{" "}
+                          reference (
+                          {s.masterReport.appliedMatchEq.bandsDb.filter(b => b !== 0).length}{" "}
+                          bands)
+                        </div>
+                      ) : null}
+                      {/* vs reference — deltas print ONLY when a reference
+                          exists; absence is stated by absence. */}
+                      {masterReferenceLine(s.masterReport) ? (
+                        <div className="text-slate-500">
+                          {masterReferenceLine(s.masterReport)}
+                        </div>
+                      ) : null}
+                    </div>
+                  )}
                 </div>
               )}
 

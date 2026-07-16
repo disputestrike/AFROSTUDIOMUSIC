@@ -43,6 +43,18 @@ import {
 } from "../lib/lane-assess";
 import { measureAudio, dspAvailable } from "../lib/dsp";
 import { processSynthMaterial } from "./synth-material";
+import { sha256Bytes } from "../lib/certified-assets";
+import {
+  ffmpegAvailable,
+  measureAudioBufferQuality,
+  refreshMasterReferences,
+  MASTER_REFERENCES_SETTING_KEY,
+  NATIVE_AUDIO_LIMITS,
+  type MasterReferenceTrack,
+  type MasterReferenceVector,
+} from "../lib/ffmpeg";
+import { downloadToBuffer } from "../lib/storage";
+import { buildMasterReport } from "./master";
 
 // 'zap:' rows are METADATA-learned lanes (no audio behind the sourceUrl) — the
 // measure-backfill was retrying them forever and wasting its whole batch.
@@ -1617,6 +1629,367 @@ export async function processVerifyLexicon(opts?: {
   }
 }
 
+/**
+ * LEGACY RE-CERTIFICATION SWEEP — makes 'certified' true for the paid catalog
+ * WITHOUT re-mastering a single take. Assets rendered before the certification
+ * era (approved audio missing contentHash/verifiedAt/qualityState) play fine
+ * but wear the 'Legacy render' tag forever, because the only path that
+ * certified them was a paid re-master. This pass walks those rows nightly,
+ * downloads the bytes, hashes them, runs the same measureAudioQuality ear the
+ * certification path uses, and stamps qualityState from the QC verdict +
+ * contentHash + verifiedAt — local CPU only, zero credits, zero re-rendering.
+ * Verdict law mirrors certifyAudioBytes: only a 'pass' verdict earns
+ * approved+passed (the certified state); weak/fail are stamped honestly and
+ * stay uncertified. Release lineage meta is NEVER touched — certification
+ * gates release through its own strict lineage checks, and this sweep cannot
+ * loosen them. Bounded per night (RECERT_PER_NIGHT), gated (RECERT_ENABLED),
+ * with per-row attempt caps + 404 tombstones so broken rows never spin.
+ */
+export async function processRecertifySweep(opts?: {
+  limit?: number;
+}): Promise<void> {
+  if ((process.env.RECERT_ENABLED ?? "1") === "0") {
+    console.log("[recert] disabled (RECERT_ENABLED=0) — skipped");
+    return;
+  }
+  const limit = Math.max(
+    1,
+    Math.min(
+      200,
+      opts?.limit ?? (parseInt(process.env.RECERT_PER_NIGHT ?? "20", 10) || 20)
+    )
+  );
+  try {
+    if (!(await ffmpegAvailable())) {
+      console.log("[recert] ffmpeg unavailable on this host — skipped");
+      return;
+    }
+    // Master report deltas read the DB-first reference bank when it exists.
+    await refreshMasterReferences().catch(() => undefined);
+    // Rows younger than an hour may be mid-pipeline (a wrapper mix awaiting its
+    // master worker) — never race an in-flight certification. Workspace-scoped
+    // through the project relation; suspended/deleted workspaces are skipped
+    // (same citizenship rule the crons follow).
+    const uncertifiedWhere = {
+      createdAt: { lt: new Date(Date.now() - 60 * 60_000) },
+      project: { workspace: { suspendedAt: null, deletedAt: null } },
+      OR: [
+        { contentHash: null },
+        { verifiedAt: null },
+        { qualityState: "unmeasured" },
+      ],
+    };
+    const select = {
+      id: true,
+      url: true,
+      approved: true,
+      qualityState: true,
+      contentHash: true,
+      verifiedAt: true,
+      meta: true,
+      createdAt: true,
+      project: { select: { workspaceId: true, genre: true } },
+    };
+    type RecertRow = {
+      id: string;
+      url: string;
+      approved: boolean;
+      qualityState: string;
+      contentHash: string | null;
+      verifiedAt: Date | null;
+      meta: unknown;
+      createdAt: Date;
+      project: { workspaceId: string; genre: string | null } | null;
+    };
+    // Masters first (the user-facing tag lives on them), then mixes, then beats.
+    const [masters, mixes, beats] = await Promise.all([
+      prisma.master.findMany({
+        where: uncertifiedWhere as never,
+        orderBy: { createdAt: "desc" },
+        take: 200,
+        select,
+      }),
+      prisma.mix.findMany({
+        where: uncertifiedWhere as never,
+        orderBy: { createdAt: "desc" },
+        take: 200,
+        select,
+      }),
+      prisma.beatAsset.findMany({
+        where: uncertifiedWhere as never,
+        orderBy: { createdAt: "desc" },
+        take: 200,
+        select,
+      }),
+    ]);
+    type Kind = "master" | "mix" | "beat";
+    const update = (kind: Kind, id: string, data: Record<string, unknown>) =>
+      kind === "master"
+        ? prisma.master.update({ where: { id }, data: data as never })
+        : kind === "mix"
+          ? prisma.mix.update({ where: { id }, data: data as never })
+          : prisma.beatAsset.update({ where: { id }, data: data as never });
+    const queue: Array<{ kind: Kind; row: RecertRow }> = [
+      ...(masters as RecertRow[]).map(row => ({ kind: "master" as const, row })),
+      ...(mixes as RecertRow[]).map(row => ({ kind: "mix" as const, row })),
+      ...(beats as RecertRow[]).map(row => ({ kind: "beat" as const, row })),
+    ];
+    const counts = {
+      certified: 0,
+      weak: 0,
+      failed: 0,
+      unmeasurable: 0,
+      missing: 0,
+      skipped: 0,
+    };
+    let processed = 0;
+    for (const { kind, row } of queue) {
+      if (processed >= limit) break;
+      const meta = (row.meta ?? {}) as Record<string, unknown> & {
+        recert?: {
+          attempts?: number;
+          exhausted?: boolean;
+          audioMissing?: boolean;
+        };
+      };
+      // Tombstoned/exhausted rows never spin the nightly batch again.
+      if (meta.recert?.exhausted || meta.recert?.audioMissing) {
+        counts.skipped++;
+        continue;
+      }
+      if (!row.url || !/^(https?:\/\/|storage:)/i.test(row.url)) {
+        counts.skipped++;
+        continue;
+      }
+      processed++;
+      const now = new Date();
+      const attempts = (meta.recert?.attempts ?? 0) + 1;
+      try {
+        const bytes = await downloadToBuffer(row.url, {
+          maxBytes: NATIVE_AUDIO_LIMITS.remoteInputMaxBytes,
+          timeoutMs: NATIVE_AUDIO_LIMITS.remoteInputTimeoutMs,
+        });
+        const contentHash = sha256Bytes(bytes);
+        const qc = await measureAudioBufferQuality(bytes);
+        if (qc.flags.includes("unmeasured") || qc.integratedLufs === null) {
+          // Downloaded but the ear couldn't decode it — count the attempt,
+          // retire after 3 so a corrupt file can't eat the batch nightly.
+          await update(kind, row.id, {
+            meta: {
+              ...meta,
+              recert: {
+                ...(meta.recert ?? {}),
+                attempts,
+                lastAt: now.toISOString(),
+                ...(attempts >= 3
+                  ? { exhausted: true, error: "unmeasurable after 3 attempts" }
+                  : {}),
+              },
+            },
+          });
+          counts.unmeasurable++;
+          continue;
+        }
+        // The existing QC verdict IS the law: pass → certified state; weak and
+        // fail are stamped as measured and remain honestly uncertified.
+        const qualityState =
+          qc.verdict === "pass"
+            ? "passed"
+            : qc.verdict === "weak"
+              ? "weak"
+              : "failed";
+        await update(kind, row.id, {
+          contentHash,
+          verifiedAt: now,
+          qualityState,
+          ...(qc.verdict === "pass" ? { approved: true } : {}),
+          meta: {
+            ...meta,
+            qc,
+            // Masters get the same measured report card the render path writes
+            // (reference delta included when the bank has this lane) — the
+            // catalog's report expander lights up for the legacy catalog too.
+            ...(kind === "master"
+              ? {
+                  masterReport: buildMasterReport(
+                    qc,
+                    row.project?.genre ?? undefined
+                  ),
+                }
+              : {}),
+            // A stale pre-era hash that disagrees with the measured bytes is
+            // preserved as evidence, never silently overwritten-and-forgotten.
+            ...(row.contentHash && row.contentHash !== contentHash
+              ? { recertPreviousContentHash: row.contentHash }
+              : {}),
+            recert: {
+              at: now.toISOString(),
+              verdict: qc.verdict,
+              sweep: "nightly",
+              attempts,
+            },
+          },
+        });
+        if (qc.verdict === "pass") counts.certified++;
+        else if (qc.verdict === "weak") counts.weak++;
+        else counts.failed++;
+      } catch (err) {
+        const msg = (err as Error)?.message ?? "";
+        if (
+          /\b40[34]\b|not found|nosuchkey|does not exist|download_too_large/i.test(
+            msg
+          )
+        ) {
+          // The bytes are gone (expired provider URL, purged object) — the row
+          // still plays whatever the player can reach, but this sweep can never
+          // certify it. Tombstone so it never re-queues.
+          await update(kind, row.id, {
+            meta: {
+              ...meta,
+              recert: {
+                ...(meta.recert ?? {}),
+                audioMissing: true,
+                error: msg.slice(0, 200),
+                lastAt: now.toISOString(),
+              },
+            },
+          }).catch(() => undefined);
+          counts.missing++;
+        } else {
+          await update(kind, row.id, {
+            meta: {
+              ...meta,
+              recert: {
+                ...(meta.recert ?? {}),
+                attempts,
+                lastAt: now.toISOString(),
+                error: msg.slice(0, 200),
+                ...(attempts >= 3 ? { exhausted: true } : {}),
+              },
+            },
+          }).catch(() => undefined);
+          counts.unmeasurable++;
+        }
+      }
+    }
+    // The per-night summary line — the ledger of tags removed while he slept.
+    console.log(
+      `[recert] certified=${counts.certified} weak=${counts.weak} failed=${counts.failed} unmeasurable=${counts.unmeasurable} missing=${counts.missing} skipped=${counts.skipped} — processed ${processed}/${limit} of ${queue.length} uncertified rows (masters=${masters.length} mixes=${mixes.length} beats=${beats.length})`
+    );
+  } catch (err) {
+    console.warn("[recert] failed (non-fatal):", (err as Error)?.message);
+  }
+}
+
+/**
+ * MASTER-REFERENCE INGESTION — the door for the owner's 9 rights-cleared
+ * tracks (3 per core genre). Admin-gated at the API; this worker half
+ * downloads the audio, measures it with the SAME ear the master report uses,
+ * and stores ONLY the measured tonal vector + the rights attestation in the
+ * SystemSetting reference bank ('master.references.v1'). NUMBERS ONLY
+ * doctrine: the audio lives in memory for the measurement pass and is
+ * discarded — never uploaded, never persisted, never fingerprintable. The
+ * fixture file stays as a read-only fallback; the DB bank wins (see
+ * masterReferenceVectorFor in lib/ffmpeg.ts).
+ */
+export interface MasterReferenceIngestPayload {
+  jobId?: string;
+  workspaceId: string;
+  genre: string;
+  title: string;
+  rightsAttestation: string;
+  audioUrl: string;
+}
+
+export async function processMasterReferenceIngest(
+  p: MasterReferenceIngestPayload
+): Promise<void> {
+  const genre = (p.genre ?? "").trim();
+  const title = (p.title ?? "").trim().slice(0, 200);
+  const attestation = (p.rightsAttestation ?? "").trim().slice(0, 500);
+  if (!genre || !title || !attestation || !p.audioUrl) {
+    throw new Error("master_reference_ingest_invalid_payload");
+  }
+  if (!(await ffmpegAvailable())) {
+    throw new Error("ffmpeg binary not found on worker host");
+  }
+  const bytes = await downloadToBuffer(p.audioUrl, {
+    maxBytes: NATIVE_AUDIO_LIMITS.remoteInputMaxBytes,
+    timeoutMs: NATIVE_AUDIO_LIMITS.remoteInputTimeoutMs,
+  });
+  const qc = await measureAudioBufferQuality(bytes);
+  if (qc.flags.includes("unmeasured") || qc.integratedLufs === null) {
+    throw new Error(
+      "master_reference_unmeasurable: the ear could not decode this audio — nothing was stored"
+    );
+  }
+  // Measured fields only; an axis the ear couldn't read is absent, never faked.
+  const vector: MasterReferenceVector = {};
+  const put = (
+    key: Exclude<keyof MasterReferenceVector, "octaveRmsDb">,
+    value: number | null
+  ) => {
+    if (typeof value === "number" && Number.isFinite(value)) vector[key] = value;
+  };
+  put("lufs", qc.integratedLufs);
+  put("truePeakDb", qc.truePeakDb);
+  put("loudnessRangeLra", qc.loudnessRangeLra);
+  put("crestFactorDb", qc.crestFactorDb);
+  put("spectralTiltDbPerOct", qc.spectralTiltDbPerOct);
+  put("stereoCorrelation", qc.stereoCorrelation);
+  if (
+    Array.isArray(qc.octaveRmsDb) &&
+    qc.octaveRmsDb.every(n => Number.isFinite(n))
+  ) {
+    vector.octaveRmsDb = qc.octaveRmsDb;
+  } else {
+    console.warn(
+      `[master-refs] ${genre} · "${title}": octave read unavailable — reference deltas work, match-EQ needs a re-ingest of this track`
+    );
+  }
+  const row = await prisma.systemSetting.findUnique({
+    where: { key: MASTER_REFERENCES_SETTING_KEY },
+  });
+  type Store = {
+    version: 1;
+    genres: Record<string, { tracks: MasterReferenceTrack[] }>;
+  };
+  let store: Store = { version: 1, genres: {} };
+  if (row) {
+    try {
+      const parsed = JSON.parse(row.value) as Store;
+      if (parsed && typeof parsed === "object" && parsed.genres) store = parsed;
+    } catch {
+      /* corrupt store → rebuilt from this ingest; nothing measurable is lost */
+    }
+  }
+  const lane = (store.genres[genre] ??= { tracks: [] });
+  // Re-ingesting the same title REPLACES its measurement — never duplicates.
+  lane.tracks = lane.tracks.filter(
+    t => t.title.toLowerCase() !== title.toLowerCase()
+  );
+  lane.tracks.push({
+    title,
+    rightsAttestation: attestation,
+    measuredAt: new Date().toISOString(),
+    vector,
+  });
+  lane.tracks = lane.tracks.slice(-8); // 3/genre by doctrine; 8 is the hard cap
+  await prisma.systemSetting.upsert({
+    where: { key: MASTER_REFERENCES_SETTING_KEY },
+    create: {
+      key: MASTER_REFERENCES_SETTING_KEY,
+      value: JSON.stringify(store),
+    },
+    update: { value: JSON.stringify(store) },
+  });
+  // This worker process starts answering from the new bank immediately.
+  await refreshMasterReferences(0).catch(() => undefined);
+  console.log(
+    `[master-refs] ${genre}: "${title}" measured into the reference bank (${lane.tracks.length} track(s) on file; axes: ${Object.keys(vector).join(",")})`
+  );
+}
+
 /** Roadmap #3 — the nightly compounding job. Cost-capped by the batch limits. */
 export async function processNightlyCompound(): Promise<void> {
   // NIGHT LAW (owner): the ENTIRE nightly pass — kits, report card, backfills,
@@ -1664,6 +2037,9 @@ export async function processNightlyCompound(): Promise<void> {
       await processRefileReferences({ limit: 25 });
       await processListenBack({ limit: 20 });
       await processMeasureBackfill({ refLimit: 20, beatLimit: 8 });
+      // Legacy re-certification: local ffmpeg only, no LLM, no credits — the
+      // 'Legacy render' tags disappear a batch a night without re-mastering.
+      await processRecertifySweep();
       await processMineLexicon({ refLimit: 4 });
       await processLexiconResearch({ queries: 6 });
       await processWiktionaryHarvest();
