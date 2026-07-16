@@ -3,6 +3,7 @@ import { assertStoredContentHash, certifyAudioBytes } from '../lib/certified-ass
 import {
   ffmpegAvailable,
   master as ffmpegMaster,
+  masterReferenceDelta,
   MASTER_TARGETS,
   NATIVE_AUDIO_LIMITS,
 } from '../lib/ffmpeg';
@@ -117,10 +118,19 @@ export async function processMaster(payload: MasterPayload): Promise<void> {
     }
     const finished =
       payload.finished || mix.preset === 'uploaded' || mix.preset === 'imported';
+    // The project's lane drives the per-genre mastering tone curve (amapiano's
+    // low-mid control is not afrobeats' percussion presence). Best-effort read:
+    // a missing project/genre falls back to the default curve inside master().
+    const project = await prisma.project.findUnique({
+      where: { id: payload.projectId },
+      select: { genre: true },
+    });
+    const genre = project?.genre ?? undefined;
     const rendered = await ffmpegMaster({
       mix: sourceBytes,
       preset: payload.preset,
       finished,
+      genre,
     });
     const certified = await certifyAudioBytes({
       workspaceId: payload.workspaceId,
@@ -137,7 +147,25 @@ export async function processMaster(payload: MasterPayload): Promise<void> {
     });
     uploaded.push(certifiedMp3.url);
 
-    const target = MASTER_TARGETS[payload.preset] ?? MASTER_TARGETS['streaming_lufs_-14']!;
+    // Fallback preset MUST match what ffmpeg.ts master() actually renders with
+    // ('afro_stream_-9'). It used to record 'streaming_lufs_-14' here while the
+    // render ran the -9 chain — the stored target was a fabricated number the
+    // audio never aimed at (honesty law: the record states what happened).
+    const target = MASTER_TARGETS[payload.preset] ?? MASTER_TARGETS['afro_stream_-9']!;
+    // MASTER REPORT — the measured verdict of what shipped: loudness, peak,
+    // dynamics, spectral tilt, stereo correlation, plus the delta against this
+    // lane's rights-cleared reference vector when the manifest exists (numbers
+    // only, see the reference-seam contract in ffmpeg.ts). Null fields mean
+    // "unmeasured", never a guess.
+    const masterReport = {
+      lufs: certified.qc.integratedLufs,
+      dBTP: certified.qc.truePeakDb,
+      lra: certified.qc.loudnessRangeLra,
+      crest: certified.qc.crestFactorDb,
+      tilt: certified.qc.spectralTiltDbPerOct,
+      correlation: certified.qc.stereoCorrelation,
+      referenceDelta: masterReferenceDelta(genre, certified.qc),
+    };
     const master = await prisma.$transaction(async (tx) => {
       const created = await tx.master.create({
         data: {
@@ -153,6 +181,8 @@ export async function processMaster(payload: MasterPayload): Promise<void> {
           approved: true,
           meta: {
             qc: certified.qc,
+            masterReport,
+            genre: genre ?? null,
             sourceMixId: mix.id,
             sourceContentHash: mix.contentHash,
             releaseLineageCertified:
