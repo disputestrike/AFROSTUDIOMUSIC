@@ -139,6 +139,13 @@ def chord_prog(scale, is_minor, use7):
 def render(role, bpm, seed=7, genre='afrobeats', key='A minor', four_on_floor=False):
     beat = 60.0 / bpm
     total = beat * 8  # 2 bars of 4/4
+    # RENDER PAD vs LOOP LENGTH (source-truth wave, arithmetic certainty): the
+    # buffer keeps a 0.25s scratch tail so hits placed near bar-end have room to
+    # ring while we synthesize, but the RETURNED loop is sliced to EXACTLY
+    # int(total*SR) samples below. The old code returned the padded buffer, so
+    # every loop was 0.25s longer than its bars claimed and each repeat drifted
+    # a quarter-second further off the grid — the assembler's -stream_loop math
+    # trusts the file length, so the pad shifted every repeat off-beat.
     buf = np.zeros(int(total * SR) + SR // 4)
     rng = np.random.default_rng(seed)
     root_semi, is_minor = parse_key(key)
@@ -205,6 +212,12 @@ def render(role, bpm, seed=7, genre='afrobeats', key='A minor', four_on_floor=Fa
     else:
         raise SystemExit(f"unknown role: {role}")
 
+    # EXACT BARS LAW: slice the scratch pad away so the file is sample-exactly
+    # bars * 4 * (60/bpm) seconds. A ringing tail that crosses the loop seam is
+    # cut hard here; the TS side's trimToLoop pass adds the declick fade so the
+    # seam never pops. Normalize AFTER the slice so peak math matches the bytes
+    # that actually ship.
+    buf = buf[: int(total * SR)]
     peak = np.max(np.abs(buf)) or 1.0
     return (buf / peak * 0.89).astype(np.float32), total
 

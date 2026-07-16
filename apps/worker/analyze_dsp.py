@@ -784,6 +784,36 @@ def analyze(audio_path, stems):
     fd = safe(_first_drop, "firstDrop")
     out["firstDropAtS"] = fd
 
+    # ---------- firstDownbeatS (DOWNBEAT-TRUE CUTS — material source-truth wave) ----------
+    # Where "bar one" actually lands. The forge used to cut every provider render
+    # at a blind fixed 0.5s, so whatever transient sat there became beat one and
+    # separately-forged loops never phase-locked. beat_track can open on a weak
+    # pickup/ghost hit, so we don't blindly take beat_times[0]: walk the first
+    # bar's worth of tracked beats and take the FIRST whose local onset energy is
+    # strong (>= 50% of the median beat-onset strength across the whole grid).
+    # Defensive by contract: no stable grid -> honest unknown, never a guess.
+    def _first_downbeat():
+        if not grid_ok:
+            return UNK("firstDownbeat:no-stable-grid")
+        # onset strength sampled AT each tracked beat (±1 frame max, for jitter)
+        def beat_strength(frame):
+            lo = max(0, frame - 1); hi = min(len(onset_env), frame + 2)
+            return float(onset_env[lo:hi].max()) if hi > lo else 0.0
+        strengths = [beat_strength(bf) for bf in beat_frames]
+        med = float(np.median(strengths)) if strengths else 0.0
+        if med <= 0:
+            return UNK("firstDownbeat:silent-grid")
+        for bt, s in zip(beat_times[: min(8, n_beats)], strengths[: min(8, n_beats)]):
+            if s >= 0.5 * med:
+                # confidence rides the grid regularity plus how decisive the hit is
+                decisive = min(1.0, s / (med + 1e-9))
+                return M(round(float(bt), 3), grid_conf * (0.5 + 0.5 * decisive),
+                         "first tracked beat with onset>=50% of median beat strength")
+        # every early beat is weak (long ambient intro) — the grid's own first
+        # beat is still the most honest cut point we can measure
+        return M(round(float(beat_times[0]), 3), grid_conf * 0.4, "beat_track first beat (no strong early onset)")
+    out["firstDownbeatS"] = safe(_first_downbeat, "firstDownbeat")
+
     def _intro_bars():
         if fd.get("source") != "measured" or not grid_ok:
             return UNK("introBars:needs-drop+grid")

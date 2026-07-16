@@ -14,7 +14,8 @@ import {
   materializeStemAudio,
   resolveMusicStemSources,
 } from '../lib/demucs-local';
-import { genreSignature, planFills, scoreLaneCompliance, scoreLyricAudioAlignment, engineAdequacy, structureMatch, blueprintFromMeasured, isFirstPartyWorkspace, resolveEngineForWorkspace, promotionEligible, selectMaterialRows, materialGenreMatches, type LaneComplianceScore, type LyricAudioAlignmentScore, type MeasuredAnalysis, type SongBlueprint } from '@afrohit/shared';
+import { genreSignature, planFills, scoreLaneCompliance, scoreLyricAudioAlignment, engineAdequacy, structureMatch, blueprintFromMeasured, isFirstPartyWorkspace, resolveEngineForWorkspace, promotionEligible, selectMaterialRows, materialGenreMatches, normalizeMaterialGenre, type LaneComplianceScore, type LyricAudioAlignmentScore, type MeasuredAnalysis, type SongBlueprint } from '@afrohit/shared';
+import { enqueueJob } from '../lib/enqueue';
 
 /** Minimum measured coverage before a lane score is allowed to influence ranking. */
 const MIN_COVERAGE_FOR_RANKING = 0.5;
@@ -482,7 +483,10 @@ export async function processMusic(p: MusicPayload) {
             const fillBytes = Math.abs(stretchRatio - 1) > 0.001
               ? await transformAudio(rawFillBytes, { tempo: stretchRatio })
               : rawFillBytes;
-            const mixed = await overlayFills(songBytes, fillBytes, placements.map((f) => f.atS));
+            // bpm rides along so the fill is trimmed to exactly ONE bar inside
+            // the filtergraph (fills.ts ONE-BAR LAW) — an 8-bar forged fill no
+            // longer smears 7 bars past every section boundary.
+            const mixed = await overlayFills(songBytes, fillBytes, placements.map((f) => f.atS), { bpm: beatBpm });
             const mixedUrl = await uploadBytes({ workspaceId: p.workspaceId, kind: 'beats', bytes: mixed, contentType: 'audio/wav', ext: 'wav' });
             const mixedQc = await measureAudioQuality(mixedUrl).catch(() => null);
             if (!mixedQc || mixedQc.verdict !== 'pass') {
@@ -773,6 +777,9 @@ export async function processMusic(p: MusicPayload) {
     // MASTERED file from now on. A full-song job only succeeds after this exact
     // artifact passes QC; the raw source remains unapproved audit evidence.
     let masteredUrl: string | null = null;
+    // WAV master URL kept for the self-feeding harvest below — Demucs separates
+    // the lossless artifact, not the delivery mp3.
+    let masteredWavUrl: string | null = null;
     if (wantsVocals && !placeholder && p.songId) {
       let uncommittedMasterUrls: string[] = [];
       try {
@@ -786,7 +793,18 @@ export async function processMusic(p: MusicPayload) {
           // light-touch conform vs full EQ/glue chain inside master()).
           // 'breathe_-16.5' remains the honest dynamics-first OPT-IN, not the default.
           const preset = 'afro_stream_-9';
-          const { wav, mp3 } = await ffmpegMaster({ mix: sourceBytes, preset, finished });
+          // GENRE-CURVE WIRING (source-truth wave item 7): the per-genre tone
+          // curves (amapiano low-mid control / afrobeats percussion presence)
+          // existed in master() but no caller ever passed the genre — every
+          // lane got the default curve. Canonicalized so 'Amapiano' still hits
+          // its curve. The finished/conform path stays tone-neutral by
+          // doctrine; genre is inert there.
+          const { wav, mp3 } = await ffmpegMaster({
+            mix: sourceBytes,
+            preset,
+            finished,
+            genre: normalizeMaterialGenre(p.input.genre) || undefined,
+          });
           const [wavUrl, mp3Url] = await Promise.all([
             uploadBytes({ workspaceId: p.workspaceId, kind: 'masters', bytes: wav, contentType: 'audio/wav', ext: 'wav' }),
             uploadBytes({ workspaceId: p.workspaceId, kind: 'masters', bytes: mp3, contentType: 'audio/mpeg', ext: 'mp3' }),
@@ -861,6 +879,7 @@ export async function processMusic(p: MusicPayload) {
           });
           uncommittedMasterUrls = [];
           masteredUrl = mp3Url;
+          masteredWavUrl = wavUrl;
       } catch (err) {
         await Promise.allSettled(uncommittedMasterUrls.map((url) => deleteObjectByUrl(url)));
         throw new Error(`music_generation_failed: ${(err as Error)?.message || 'automatic mastering failed'}`);
@@ -872,6 +891,80 @@ export async function processMusic(p: MusicPayload) {
     // in-lane. Gated (LANE_ASSESS=1 + ear available); a no-op otherwise, never fatal.
     if (!placeholder) {
       await assessLaneCompliance({ workspaceId: p.workspaceId, genre: p.input.genre, beatId: beat.id, audioUrl: masteredUrl ?? ingestedMain, songId: p.songId ?? null });
+    }
+
+    // SELF-FEEDING LIBRARY (owner's law: "every song created becomes ours").
+    // LEGAL BOUNDARY, non-negotiable: only songs CREATED in this studio enter
+    // this path (the render above IS ours), it is workspace-scoped, and no
+    // external audio can reach it. A render that PASSES the same promotion
+    // gate that feeds the reference lake gets its winning MASTER stem-harvested
+    // into workspace material (source 'self_stem', rightsBasis
+    // 'self-generated') — passing songs' drums/bass/instrumental join the
+    // shelf the own-engine assembles from.
+    //
+    // COST: one Demucs separation per promoted song (local CPU on the lake-
+    // starved container, or the paid Replicate route) — hence the env gate.
+    // Enqueued beat-LESS on purpose: the stems processor's beat-attached path
+    // REPLACES the beat's user-facing Stem rows, and this harvest must only
+    // grow the material shelf, never touch what the artist sees.
+    //
+    // Idempotency, three layers: the ProviderJob receipt below (one harvest
+    // per beat), the BullMQ jobId dedupe, and MaterialAsset's unique
+    // (workspaceId, contentHash) — stems.ts pre-checks the hash and skips
+    // duplicates gracefully, so a re-harvest can never double-file a loop.
+    const selfHarvestEligible =
+      wantsVocals &&
+      lanePromotable &&
+      (quality?.verdict === 'pass' || clipOnlyFinished) &&
+      masteredWavUrl != null &&
+      !placeholder &&
+      (process.env.SELF_HARVEST_ENABLED ?? '1') !== '0';
+    if (selfHarvestEligible) {
+      try {
+        const already = await prisma.providerJob.findFirst({
+          where: {
+            workspaceId: p.workspaceId,
+            kind: 'stems',
+            inputJson: { path: ['selfHarvestBeatId'], equals: beat.id },
+          },
+          select: { id: true },
+        });
+        if (!already) {
+          const harvestJob = await prisma.providerJob.create({
+            data: {
+              workspaceId: p.workspaceId,
+              projectId: p.projectId,
+              kind: 'stems',
+              provider: 'replicate',
+              status: 'QUEUED',
+              inputJson: {
+                mode: 'stems',
+                selfHarvest: true,
+                selfHarvestBeatId: beat.id,
+                songId: p.songId ?? null,
+                sourceUrl: masteredWavUrl,
+              } as never,
+            },
+          });
+          await enqueueJob(
+            'music',
+            'stems',
+            {
+              jobId: harvestJob.id,
+              workspaceId: p.workspaceId,
+              projectId: p.projectId,
+              mode: 'stems',
+              sourceUrl: masteredWavUrl,
+              selfHarvest: true,
+            },
+            { jobId: `self-harvest-${beat.id}` }
+          );
+          console.log(`[self-harvest] promoted render → stem harvest queued (beat ${beat.id})`);
+        }
+      } catch (err) {
+        // The song is already shipped — a harvest hiccup must never fail it.
+        console.warn('[self-harvest] enqueue failed (render unaffected):', (err as Error)?.message);
+      }
     }
 
     await markSucceeded(

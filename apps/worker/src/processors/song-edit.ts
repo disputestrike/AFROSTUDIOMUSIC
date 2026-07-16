@@ -8,7 +8,7 @@
  * those directly.
  */
 import { prisma, Prisma } from '@afrohit/db';
-import { forgeKitFor, materialCoverage, seedFrom, selectMaterialRows, withCoarseMaterialRoles } from '@afrohit/shared';
+import { forgeKitFor, materialCoverage, materialGenreMatches, seedFrom, selectMaterialRows, withCoarseMaterialRoles } from '@afrohit/shared';
 import { deleteObjectByUrl, downloadToBuffer } from '../lib/storage';
 import { assertStoredContentHash, certifyAudioBytes } from '../lib/certified-assets';
 import { mixBuffers, runFfmpeg } from '../lib/ffmpeg';
@@ -282,17 +282,26 @@ export async function processSongEdit(p: SongEditPayload): Promise<void> {
       out = await concatSlices(src, arrangementPlan.slices ?? []);
       label = `cut ${fromS.toFixed(1)}–${toS.toFixed(1)}s`;
     } else if (p.op.kind === 'add_fill') {
-      const fill = await prisma.materialAsset.findFirst({
+      // GENRE IN JS (source-truth wave item 8): the exact-equality `genre`
+      // filter hid an 'Afrobeats'-tagged fill from an 'afrobeats' song. Fetch
+      // the recent fill shelf and compare canonically. Original semantics
+      // preserved exactly: WITH a genre only genre-matching fills qualify
+      // (genre-null fills didn't match the old equality and still don't);
+      // WITHOUT a genre the newest fill of any tag wins, untagged included.
+      const fillShelf = await prisma.materialAsset.findMany({
         where: {
           workspaceId: p.workspaceId,
-          genre: p.genre ?? undefined,
           role: 'fill',
           readiness: 'ready',
           qualityState: 'passed',
           rightsBasis: { not: 'unknown' },
         },
         orderBy: { createdAt: 'desc' },
+        take: 40,
       });
+      const fill = p.genre
+        ? fillShelf.find((row) => materialGenreMatches(row.genre, p.genre))
+        : fillShelf[0];
       if (!fill) throw new Error('no fill on the shelf yet — the nightly kit forge stocks it, or run materials/synth');
       const hit = await downloadToBuffer(fill.url);
       out = await overlayAtTimes(src, hit, p.op.timesS);
@@ -335,11 +344,15 @@ export async function processSongEdit(p: SongEditPayload): Promise<void> {
       // primary material engine, so rejected or rights-unknown rows never enter.
       const genre = p.genre ?? 'afrobeats';
       const wantedRoles = withCoarseMaterialRoles(forgeKitFor(genre, 14));
-      const rows = await prisma.materialAsset.findMany({
-        where: { workspaceId: p.workspaceId, genre, role: { in: wantedRoles } },
+      // GENRE IN JS (source-truth wave item 8): wider window, canonical match,
+      // original 120-row budget after filtering; genre-null rows stay excluded
+      // exactly as the old equality excluded them.
+      const shelf = await prisma.materialAsset.findMany({
+        where: { workspaceId: p.workspaceId, role: { in: wantedRoles } },
         orderBy: { createdAt: 'desc' },
-        take: 120,
+        take: 360,
       });
+      const rows = shelf.filter((row) => materialGenreMatches(row.genre, genre)).slice(0, 120);
       const picks = selectMaterialRows(rows, wantedRoles, bpm, null, { varietySeed: seedFrom(p.jobId, p.op.index) });
       const coverage = materialCoverage(picks);
       if (!coverage.ready) {

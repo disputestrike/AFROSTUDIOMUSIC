@@ -30,6 +30,7 @@ import {
   seedFrom,
   selectMaterialRows,
   materialCoverage,
+  materialGenreMatches,
   type SongBlueprint,
   type MeasuredAnalysis,
   type MelodyScore,
@@ -81,17 +82,26 @@ async function pickKit(
   varietySeed: number,
   requestedRoles: readonly MaterialRole[] = []
 ) {
-  const rows = await prisma.materialAsset.findMany({
+  // GENRE MATCHING IN JS (source-truth wave item 8): the Prisma exact-equality
+  // `genre` filter hid 'Afrobeats'-tagged material from an 'afrobeats' lane —
+  // the shelf looked empty while the loops sat right there. Fetch a wider
+  // window (600 vs 240, so other-genre rows can't crowd the lane out of it),
+  // compare canonically with materialGenreMatches, and keep the original
+  // budget after filtering. Genre-null rows stay EXCLUDED — exactly what the
+  // old equality did: the kit is lane identity, untagged rows don't qualify.
+  const shelf = await prisma.materialAsset.findMany({
     where: {
       workspaceId,
-      genre,
       readiness: { not: "rejected" },
       qualityState: { notIn: ["failed", "duplicate"] },
       rightsBasis: { not: "unknown" },
     },
     orderBy: { createdAt: "desc" },
-    take: 240,
+    take: 600,
   });
+  const rows = shelf
+    .filter((row: { genre: string | null }) => materialGenreMatches(row.genre, genre))
+    .slice(0, 240);
   const exactRequested = new Set<string>(requestedRoles);
   const eligibleRows = rows.filter(
     (row: { role: string; roleEvidence?: string | null }) =>

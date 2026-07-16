@@ -32,6 +32,13 @@ interface StemsPayload {
    *  import bridge). Beat-less harvests carry provenance HERE — there is no beat
    *  row whose uploaded/imported flags could prove it. */
   owned?: boolean;
+  /** SELF-FEEDING LIBRARY (music.ts promotion gate): this audio is a song the
+   *  STUDIO ITSELF created and promoted — not an artist upload, not a raw
+   *  provider render being mislabeled. Harvested stems file as source
+   *  'self_stem' / rightsBasis 'self-generated'. LEGAL BOUNDARY: only the
+   *  worker's own render path sets this flag on its own masters; external
+   *  audio never carries it. */
+  selfHarvest?: boolean;
 }
 
 type CertifiedStem = Awaited<ReturnType<typeof materializeStemAudio>> & {
@@ -272,7 +279,19 @@ export async function processStems(p: StemsPayload) {
       beatMetaP.imported === true ||
       beat?.provider === "upload" ||
       beat?.provider === "import";
-    const stemSource = isOwned ? "artist_stem" : "provider_stem";
+    // 'self_stem' = the studio harvesting ITS OWN promoted song (see
+    // StemsPayload.selfHarvest) — honest third provenance, never a relabel of
+    // artist uploads (artist_stem) or raw provider renders (provider_stem).
+    const stemSource = p.selfHarvest
+      ? "self_stem"
+      : isOwned
+        ? "artist_stem"
+        : "provider_stem";
+    const stemRightsBasis = p.selfHarvest
+      ? "self-generated"
+      : isOwned
+        ? "user-attested"
+        : "provider-generated";
     const retainedMaterialUrls = new Set<string>();
     for (const stem of ingested.filter(item => item.role !== "vocals")) {
       try {
@@ -326,7 +345,7 @@ export async function processStems(p: StemsPayload) {
             readiness: inspection.readiness,
             qualityState: stem.certification.qualityState,
             roleEvidence: "stem-separated",
-            rightsBasis: isOwned ? "user-attested" : "provider-generated",
+            rightsBasis: stemRightsBasis,
             contentHash: stem.certification.contentHash,
             verifiedAt: stem.certification.verifiedAt,
             meta: {
@@ -336,8 +355,9 @@ export async function processStems(p: StemsPayload) {
               stemRole: stem.role,
               provider: beat?.provider ?? null,
               owned: isOwned,
+              ...(p.selfHarvest ? { selfHarvest: true } : {}),
               qc: inspection.qc,
-              rightsBasis: isOwned ? "user-attested" : "provider-generated",
+              rightsBasis: stemRightsBasis,
               sourceLineage,
               certification: audioCertificationReceipt(stem.certification),
             } as never,
