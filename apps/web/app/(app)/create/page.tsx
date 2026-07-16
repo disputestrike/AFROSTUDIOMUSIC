@@ -2,8 +2,14 @@
 import { genreSignature } from '@afrohit/shared';
 
 /**
- * The front door. Pick your sound → "Create the song" produces it RIGHT HERE
- * (hooks → A&R pick → lyrics → sung song) and plays it back. No navigation.
+ * The front door — THREE CREATOR DOORS (owner spec, 2026-07-16):
+ *   🎤 Make a song        — today's full flow, untouched (hooks → A&R → lyrics → sung song)
+ *   🎹 Make an instrumental — the beat path only (withVocals:false), producer-to-producer
+ *   🎬 Sounds for film & creators — scene-first sound design riding the SAME
+ *      instrumental machinery (scene + sound type lead the render's vibe prompt;
+ *      no hooks/lyrics/A&R anywhere near it)
+ * Each creator walks into their own room and never sees the other rooms'
+ * complexity. The chosen door is remembered per device.
  * "Bring my own" is a separate intent that opens the full studio.
  */
 
@@ -69,6 +75,37 @@ const INSTRUMENTS = [
   'warm sub bass', 'amapiano log bass', 'synth pads', 'kora',
 ];
 const STEPS = ['Setting up your session', 'Writing hooks + A&R picking the best', 'Writing the lyrics', 'Singing & producing your song'];
+// Door 2/3 producing steps — HONEST: no "writing lyrics" line when nothing is
+// being written. Instrumentals and film sounds skip the whole writing pipeline.
+const BEAT_STEPS = ['Setting up your session', 'Building the groove', 'Rendering & mastering'];
+const FILM_STEPS = ['Setting up your session', 'Scoring the scene', 'Rendering & mastering'];
+
+// THE THREE DOORS (owner spec 2026-07-16): "creators and movie creators create
+// SOUNDS, not songs… and people who just wanna create INSTRUMENTS. Three things."
+type Door = 'song' | 'instrumental' | 'film';
+const DOOR_KEY = 'afrohit.create.door.v1';
+const DOORS: Array<{ id: Door; emoji: string; title: string; sub: string }> = [
+  { id: 'song', emoji: '🎤', title: 'Make a song', sub: 'The full record — hooks, lyrics, vocals' },
+  { id: 'instrumental', emoji: '🎹', title: 'Make an instrumental', sub: 'A beat, a bed, a groove — no vocals' },
+  { id: 'film', emoji: '🎬', title: 'Sounds for film & creators', sub: 'Score beds, risers, stingers for your scenes' },
+];
+
+// FILM SOUND TYPES — each rides the EXISTING instrumental machinery. A genre is
+// a required render parameter (hard enum server-side), so every type maps to
+// the most NEUTRAL existing lane (rnb = pads/keys/sub textures; edm = risers &
+// impact energy) and the scene itself leads the engine's vibe prompt.
+const FILM_TYPES = [
+  { id: 'score_bed', label: 'Score bed', genre: 'rnb', bpm: 90, token: 'cinematic underscore bed' },
+  { id: 'ambient', label: 'Ambient texture', genre: 'rnb', bpm: 75, token: 'ambient texture bed' },
+  { id: 'riser', label: 'Riser / build', genre: 'edm', bpm: 128, token: 'cinematic riser build-up' },
+  { id: 'stinger', label: 'Stinger / hit', genre: 'edm', bpm: 120, token: 'cinematic stinger hit accent' },
+  { id: 'whoosh', label: 'Transition whoosh', genre: 'edm', bpm: 128, token: 'transition whoosh sweep' },
+] as const;
+type FilmTypeId = (typeof FILM_TYPES)[number]['id'];
+// 8s was in the ask, but the render contract's floor is 15s (schema min 15) —
+// offer only durations the machinery can honestly deliver.
+const FILM_DURATIONS = [15, 30, 60] as const;
+const FILM_MOODS = ['tense', 'warm', 'epic', 'playful', 'eerie', 'triumphant'];
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 function isExplicitPaymentRequired(error: unknown): boolean {
@@ -213,6 +250,27 @@ export default function CreatePage() {
   const [deconBusy, setDeconBusy] = useState(false);
   const [deconTitle, setDeconTitle] = useState('');
 
+  // WHICH DOOR — the big mode switch at the top, remembered per device.
+  // Restored in an effect (not the initializer) so the server-rendered HTML
+  // always matches the first client paint — no hydration mismatch.
+  const [door, setDoor] = useState<Door>('song');
+  useEffect(() => {
+    try {
+      const d = localStorage.getItem(DOOR_KEY);
+      if (d === 'instrumental' || d === 'film') setDoor(d);
+    } catch { /* storage unavailable — stay on the song door */ }
+  }, []);
+  const pickDoor = (d: Door) => {
+    setDoor(d);
+    try { localStorage.setItem(DOOR_KEY, d); } catch { /* noop */ }
+  };
+
+  // FILM DOOR state — scene-first sound design.
+  const [filmScene, setFilmScene] = useState('');
+  const [filmType, setFilmType] = useState<FilmTypeId>('score_bed');
+  const [filmDuration, setFilmDuration] = useState<(typeof FILM_DURATIONS)[number]>(30);
+  const [filmMoods, setFilmMoods] = useState<string[]>([]);
+
   // Start in 'producing' (no form flash) when EITHER an auto-create intent link
   // (?produce=1 from Zap/Lake) or a mid-render sticky marker (?resume=1) is
   // present. The resume effect validates the sticky state and falls back to the
@@ -255,6 +313,10 @@ export default function CreatePage() {
       const arr = lg.split(',').map((s) => s.trim()).filter((x) => LANGS.some((l) => l.value === x));
       if (arr.length) { setLangs(arr); langsTouched.current = true; }
     }
+    // Intent links (Zap/Listen "make it in this lane") are SONG intents — walk
+    // straight into the song door for THIS visit only. setDoor (not pickDoor):
+    // the device's remembered door choice stays untouched.
+    if (q.get('produce') === '1' || g || m || v || inf || pin || lg || (b >= 60 && b <= 180)) setDoor('song');
     // AUTO-CREATE only on an explicit intent link (?produce=1) AND only when no
     // render is already in flight — never double-create, never fire from a
     // restored tab (the sticky marker is ?resume=1 and never reaches here).
@@ -583,6 +645,169 @@ export default function CreatePage() {
     }
   }
 
+  /** Poll a render job to its audio URL (doors 2/3 only — door 1's loops are
+   *  untouched). Mirrors the door-1 semantics exactly: network blips retry and
+   *  never kill the render, FAILED throws with the server's reason, and a
+   *  still-cooking render past the window returns null (calm Catalog hand-off,
+   *  sticky state kept so reopening resumes the watch). */
+  async function pollRenderToUrl(jobId: string, projectId: string): Promise<string | null> {
+    let netFails = 0;
+    let lastJobError: string | null = null;
+    for (let i = 0; i < 144; i++) {
+      await sleep(5000);
+      let job: { status: string; error?: string | null; errorJson?: { message?: string } | null };
+      try { job = await api.get(`/jobs/${jobId}`); lastJobError = job.errorJson?.message ?? job.error ?? lastJobError; netFails = 0; }
+      catch { if (++netFails >= 24) break; continue; } // network blip → retry, render keeps going
+      if (job.status === 'SUCCEEDED') {
+        try {
+          const beats = await api.get<Array<{ url: string; createdAt: string }>>(`/projects/${projectId}/beats`);
+          return beats.sort((a, b) => +new Date(b.createdAt) - +new Date(a.createdAt))[0]?.url ?? null;
+        } catch { return null; /* beats fetch blip — calm Catalog hand-off */ }
+      }
+      if (job.status === 'FAILED') throw new Error(`The render failed — ${lastJobError ?? 'no reason recorded'}. Try again.`);
+    }
+    return null;
+  }
+
+  /** DOOR 2 — the instrumental room. The EXISTING beat path with
+   *  withVocals:false: no hooks, no lyrics, no A&R, no vocal machinery. */
+  async function createInstrumental() {
+    setErr('');
+    const own = engine === 'own';
+    // Our Engine assembles from the workspace's own + synthesized material — it
+    // needs no provider route. Every other engine does.
+    if (!own && !hasMusicRoute) {
+      setErr('No music engine is connected. Ask an owner to connect one in Settings.');
+      setPhase('error');
+      return;
+    }
+    // PRE-FLIGHT: refuse BEFORE the wait, same as the song door.
+    try {
+      const pf = await api.get<{ ok: boolean; mode: string }>('/billing/preflight');
+      if (!pf.ok) {
+        setErr(pf.mode === 'internal' ? 'Daily limit reached — resets at midnight UTC.' : 'insufficient_credits');
+        setPhase('error');
+        return;
+      }
+    } catch { /* preflight is advisory — if it can't be read, proceed */ }
+    setPhase('producing');
+    setStepIdx(0);
+    try {
+      const title = `${genreLabel} ${mood} instrumental`.slice(0, 120);
+      const project = await api.post<{ id: string }>('/projects', { title, genre, bpm });
+      setStepIdx(1);
+      let r: { jobId: string };
+      try {
+        r = await api.post<{ jobId: string }>(`/projects/${project.id}/beats/generate`, {
+          genre,
+          bpm,
+          withStems: false,
+          withVocals: false,
+          songEngine: engine === 'auto' ? undefined : engine,
+          instruments: instruments.length ? instruments : undefined,
+          // OUR ENGINE'S ROUTING CONTRACT (beats.ts resolveOwnEngineRouting):
+          // 'own' honors genre + tempo + exact instrument picks ONLY — mood,
+          // fusion and multi-takes are provider dials and would hard-422 the
+          // request. The door says so in the open; the payload matches.
+          ...(own ? {} : {
+            fusionGenres: fusion.length ? fusion : undefined,
+            mood,
+            candidates: takes > 1 ? takes : undefined,
+          }),
+        });
+      } catch (error) {
+        if (isExplicitPaymentRequired(error)) {
+          await api.del('/projects/' + project.id).catch(() => undefined);
+        }
+        throw error;
+      }
+      saveProduce({ renderJobId: r.jobId, projectId: project.id, title, hook: '', score: null });
+      setStepIdx(2);
+      const url = await pollRenderToUrl(r.jobId, project.id);
+      if (!url) {
+        setSong({ title, score: null, url: '', projectId: project.id });
+        setPhase('finishing');
+        return; // sticky state kept — reopening resumes the watch
+      }
+      setSong({ title, score: null, url, projectId: project.id });
+      setNowPlaying({ title, url });
+      setLibRefresh((n) => n + 1);
+      setPhase('form');
+      clearProduce();
+    } catch (e) {
+      setErr((e as Error).message);
+      setPhase('error');
+    }
+  }
+
+  /** DOOR 3 — sounds for film & creators. The SAME instrumental machinery: the
+   *  scene + sound type ride the render's vibe prompt in a neutral musical
+   *  lane; no hooks/lyrics/A&R involvement. Lands in the Catalog honestly
+   *  labeled — the title IS the scene. */
+  async function createFilmSound() {
+    setErr('');
+    const scene = filmScene.trim();
+    if (scene.length < 5) return;
+    if (!hasMusicRoute) {
+      setErr('No music engine is connected. Ask an owner to connect one in Settings.');
+      setPhase('error');
+      return;
+    }
+    try {
+      const pf = await api.get<{ ok: boolean; mode: string }>('/billing/preflight');
+      if (!pf.ok) {
+        setErr(pf.mode === 'internal' ? 'Daily limit reached — resets at midnight UTC.' : 'insufficient_credits');
+        setPhase('error');
+        return;
+      }
+    } catch { /* advisory */ }
+    setPhase('producing');
+    setStepIdx(0);
+    try {
+      const t = FILM_TYPES.find((x) => x.id === filmType) ?? FILM_TYPES[0];
+      const title = scene.slice(0, 120); // honest label: the scene names the sound
+      const project = await api.post<{ id: string }>('/projects', { title, genre: t.genre, bpm: t.bpm });
+      setStepIdx(1);
+      // The engine brief caps the vibe at ~160 chars — the sound TYPE leads
+      // (it's structural: a stinger is not a bed), then the scene, then moods
+      // (first to be truncated when the scene runs long).
+      const vibePrompt = `${t.token}: ${scene}${filmMoods.length ? ` — ${filmMoods.join(', ')} mood` : ''}`;
+      let r: { jobId: string };
+      try {
+        r = await api.post<{ jobId: string }>(`/projects/${project.id}/beats/generate`, {
+          genre: t.genre,
+          bpm: t.bpm,
+          durationS: filmDuration,
+          withStems: false,
+          withVocals: false,
+          mood: filmMoods[0],
+          vibePrompt,
+        });
+      } catch (error) {
+        if (isExplicitPaymentRequired(error)) {
+          await api.del('/projects/' + project.id).catch(() => undefined);
+        }
+        throw error;
+      }
+      saveProduce({ renderJobId: r.jobId, projectId: project.id, title, hook: '', score: null });
+      setStepIdx(2);
+      const url = await pollRenderToUrl(r.jobId, project.id);
+      if (!url) {
+        setSong({ title, score: null, url: '', projectId: project.id });
+        setPhase('finishing');
+        return; // sticky state kept — reopening resumes the watch
+      }
+      setSong({ title, score: null, url, projectId: project.id });
+      setNowPlaying({ title, url });
+      setLibRefresh((n) => n + 1);
+      setPhase('form');
+      clearProduce();
+    } catch (e) {
+      setErr((e as Error).message);
+      setPhase('error');
+    }
+  }
+
   async function openStudio() {
     const title = songName.trim().slice(0, 80) || vibe.trim().slice(0, 60) || `${genreLabel} ${mood}`;
     const project = await api.post<{ id: string }>('/projects', { title, genre, bpm });
@@ -591,17 +816,28 @@ export default function CreatePage() {
 
   // ---- Producing ----
   if (phase === 'producing') {
+    // Door-aware copy: the song door renders EXACTLY as before (steps === STEPS,
+    // cur === stepIdx). Doors 2/3 get honest steps — no "writing lyrics" line —
+    // and cur clamps a resumed stepIdx (the sticky state stores song-scale
+    // indices) onto the shorter lists.
+    const steps = door === 'instrumental' ? BEAT_STEPS : door === 'film' ? FILM_STEPS : STEPS;
+    const cur = Math.min(stepIdx, steps.length - 1);
+    const headline = door === 'instrumental'
+      ? `Cooking your ${genreLabel} instrumental…`
+      : door === 'film'
+        ? 'Designing your scene’s sound…'
+        : `Creating your ${genreLabel} song…`;
     return (
       <div className="mx-auto max-w-lg px-6 py-16 text-center">
-        <div className="animate-pulse font-display text-3xl text-gradient">Creating your {genreLabel} song…</div>
+        <div className="animate-pulse font-display text-3xl text-gradient">{headline}</div>
         <p className="mt-2 text-sm text-slate-400">This takes about a minute or two. Stay here — it’s making it now.</p>
         <ul className="mx-auto mt-8 max-w-sm space-y-3 text-left">
-          {STEPS.map((s, i) => (
+          {steps.map((s, i) => (
             <li key={s} className="flex items-center gap-3 text-sm">
-              <span className={`flex h-6 w-6 items-center justify-center rounded-full text-xs ${i < stepIdx ? 'bg-emerald-500/25 text-emerald-300' : i === stepIdx ? 'bg-brand-gradient text-ink' : 'bg-white/5 text-slate-500'}`}>
-                {i < stepIdx ? '✓' : i === stepIdx ? '●' : i + 1}
+              <span className={`flex h-6 w-6 items-center justify-center rounded-full text-xs ${i < cur ? 'bg-emerald-500/25 text-emerald-300' : i === cur ? 'bg-brand-gradient text-ink' : 'bg-white/5 text-slate-500'}`}>
+                {i < cur ? '✓' : i === cur ? '●' : i + 1}
               </span>
-              <span className={i <= stepIdx ? 'text-slate-200' : 'text-slate-500'}>{s}</span>
+              <span className={i <= cur ? 'text-slate-200' : 'text-slate-500'}>{s}</span>
             </li>
           ))}
         </ul>
@@ -644,7 +880,7 @@ export default function CreatePage() {
           </div>
           <h1 className="mt-5 font-display text-2xl">“{song.title}” is still cooking</h1>
           <p className="mt-2 text-sm text-slate-400">
-            The song is taking a little longer to render. It’s not lost — it finishes in the background and lands in your Catalog in a minute or two, fully mastered.
+            The {door === 'instrumental' ? 'instrumental' : door === 'film' ? 'sound' : 'song'} is taking a little longer to render. It’s not lost — it finishes in the background and lands in your Catalog in a minute or two, fully mastered.
           </p>
           <div className="mt-6 flex flex-wrap justify-center gap-3">
             <button onClick={() => router.push('/catalog')} className="rounded-full bg-brand-gradient px-5 py-2.5 text-sm font-medium text-ink shadow-glow">
@@ -690,6 +926,24 @@ export default function CreatePage() {
   return (
     <div className="mx-auto max-w-6xl px-6 py-10 lg:grid lg:grid-cols-[minmax(0,1fr)_340px] lg:items-start lg:gap-8">
     <div className="min-w-0">
+      {/* THE THREE DOORS — big, obvious, remembered on this device. Each creator
+          walks into their own room and never sees the other rooms' complexity. */}
+      <div className="mb-6 grid gap-2 sm:grid-cols-3">
+        {DOORS.map((d) => (
+          <button
+            key={d.id}
+            onClick={() => pickDoor(d.id)}
+            className={`rounded-2xl border p-4 text-left transition ${door === d.id ? 'border-transparent bg-brand-gradient text-ink shadow-glow' : 'border-white/10 bg-white/5 text-slate-300 hover:bg-white/10'}`}
+          >
+            <div className="text-2xl">{d.emoji}</div>
+            <div className="mt-1 font-display text-lg leading-tight">{d.title}</div>
+            <div className={`mt-0.5 text-xs ${door === d.id ? 'text-ink/70' : 'text-slate-500'}`}>{d.sub}</div>
+          </button>
+        ))}
+      </div>
+
+      {/* ═══ DOOR 1 — MAKE A SONG: today's flow EXACTLY as-is ═══ */}
+      {door === 'song' && (<>
       <div className="flex items-start justify-between gap-3">
         <div>
           <h1 className="font-display text-5xl">Make a song</h1>
@@ -904,6 +1158,169 @@ export default function CreatePage() {
           : 'It sings EXACTLY your words — deconstruct first so the production matches what your lyrics actually are.'}
         {' '}“Bring my own” opens the studio to upload a beat or record your voice.
       </p>
+      </>)}
+
+      {/* ═══ DOOR 2 — MAKE AN INSTRUMENTAL: the beat path, withVocals:false ═══ */}
+      {door === 'instrumental' && (<>
+      <div>
+        <h1 className="font-display text-5xl">Make an instrumental</h1>
+        <p className="mt-2 text-sm text-slate-400">A beat, a bed, a groove — yours. No lyrics, no vocals, no song machinery: pick the lane, set the pocket, hit cook.</p>
+      </div>
+
+      <Picker label={`Genre — pick one; tap a second to FUSE (${genreLabel})`} items={GENRES} selected={genres} onPick={toggleGenre} />
+
+      <div className="mt-6"><div className="mb-2 text-sm text-slate-400">Mood / feel</div>
+        <div className="flex flex-wrap gap-2">{MOODS.map((m) => (
+          <button key={m} onClick={() => setMood(m)} className={`rounded-full px-3.5 py-1.5 text-sm capitalize ${mood === m ? 'bg-white/15 text-white shadow-[inset_0_0_0_1px_rgba(249,115,22,.4)]' : 'border border-white/10 text-slate-400 hover:bg-white/5'}`}>{m}</button>
+        ))}</div>
+      </div>
+
+      <div className="mt-6">
+        <div className="mb-2 flex justify-between text-sm text-slate-400"><span>Tempo</span><span className="tabular-nums text-slate-200">{bpm} BPM</span></div>
+        <input type="range" min={60} max={180} value={bpm} onChange={(e) => { bpmTouched.current = true; setBpm(Number(e.target.value)); }} className="w-full accent-afrobrand-500" />
+      </div>
+
+      <div className="mt-6"><div className="mb-2 text-sm text-slate-400">Feature instruments (optional) <span className="text-xs text-slate-500">— pick up to 5; steering on provider engines, exact on Our Engine</span></div>
+        <div className="flex flex-wrap gap-2">
+          {INSTRUMENTS.map((inst) => {
+            const on = instruments.includes(inst);
+            return (
+              <button
+                key={inst}
+                onClick={() => setInstruments((cur) => (on ? cur.filter((x) => x !== inst) : cur.length >= 5 ? cur : [...cur, inst]))}
+                className={`rounded-full border px-3 py-1.5 text-sm ${on ? 'border-transparent bg-gradient-to-r from-orange-500 to-pink-500 text-white' : 'border-slate-700 bg-slate-900 text-slate-300 hover:border-slate-500'}`}
+              >
+                {inst}
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
+      <div className="mt-6"><div className="mb-2 text-sm text-slate-400">Engine</div>
+        <div className="flex flex-wrap gap-2">
+          {([
+            // OUR ENGINE FIRST — this door is its home turf: instrumental beds
+            // assembled from YOUR OWN + synthesized material are exactly what it
+            // does. External engines stay in CLASS language (§1.11 THE WALL).
+            { value: 'own', label: 'Our Engine', hint: 'Assembled from YOUR material — the studio’s own instrumental engine', available: true },
+            { value: 'auto', label: 'Auto', hint: 'Best engine available', available: hasMusicRoute },
+            { value: 'suno', label: 'Flagship', hint: 'Best quality (first-party releases)', available: musicRoutes?.flagship === true },
+            { value: 'eleven', label: 'Advanced', hint: 'Section-controlled, high realism', available: musicRoutes?.advanced === true },
+            { value: 'minimax', label: 'Standard A', hint: 'High realism', available: musicRoutes?.standard === true },
+            { value: 'ace_step', label: 'Standard B', hint: 'Fast draft', available: musicRoutes?.standard === true },
+          ] as const).filter((e) => e.available).map((e) => (
+            <button key={e.value} onClick={() => setEngine(e.value)} className={`rounded-full px-4 py-2 text-sm ${engine === e.value ? 'bg-brand-gradient text-ink shadow-glow' : 'border border-white/10 bg-white/5 text-slate-300 hover:bg-white/10'}`}>
+              {e.label} <span className="opacity-60">· {e.hint}</span>
+            </button>
+          ))}
+        </div>
+        {engine === 'own' && (
+          <p className="mt-2 text-xs text-amber-300/90">Our Engine builds strictly from your own + synthesized material: genre, tempo and exact instrument picks. Mood, fusion and extra takes are provider-engine dials — they don’t apply on this path.</p>
+        )}
+        {musicRoutes && !hasMusicRoute && engine !== 'own' && (
+          <p className="mt-2 text-sm text-amber-300">No provider engine is connected. Our Engine still works — or ask an owner to connect one in Settings.</p>
+        )}
+      </div>
+
+      <div className="mt-4"><div className="mb-2 text-sm text-slate-400">Takes <span className="text-xs text-slate-500">— more takes = more directions; the ear keeps the one most in your lane</span></div>
+        <div className="flex gap-2">
+          {([1, 2, 3] as const).map((n) => (
+            <button key={n} onClick={() => setTakes(n)} disabled={engine === 'own'} className={`rounded-full px-4 py-2 text-sm disabled:cursor-not-allowed disabled:opacity-40 ${takes === n ? 'bg-brand-gradient text-ink shadow-glow' : 'border border-white/10 bg-white/5 text-slate-300 hover:bg-white/10'}`}>
+              {n === 1 ? '1 · Draft' : `${n} directions`}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <div className="mt-8 flex flex-wrap gap-3">
+        <button
+          onClick={() => void createInstrumental()}
+          disabled={engine !== 'own' && !hasMusicRoute}
+          title={engine !== 'own' && !hasMusicRoute ? 'Pick Our Engine, or connect a provider engine in Settings' : undefined}
+          className="rounded-full bg-brand-gradient px-6 py-3 font-medium text-ink shadow-glow disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          🎹 Cook the instrumental
+        </button>
+      </div>
+      <p className="mt-3 text-xs text-slate-500">
+        Renders the instrumental only — no lyrics, no vocals — mastered and landing in your Catalog. Add vocals any time by upload or re-sing.
+      </p>
+      </>)}
+
+      {/* ═══ DOOR 3 — SOUNDS FOR FILM & CREATORS: scene-first sound design on
+          the same instrumental machinery (scene + type ride the vibe prompt) ═══ */}
+      {door === 'film' && (<>
+      <div>
+        <h1 className="font-display text-5xl">Sounds for film &amp; creators</h1>
+        <p className="mt-2 text-sm text-slate-400">Describe the scene — get the sound. Score beds, textures, risers, stingers and transitions, rendered for your cut.</p>
+      </div>
+
+      <div className="mt-6"><div className="mb-2 text-sm text-slate-400">The scene / purpose — brief it like you’d brief a composer</div>
+        <input
+          value={filmScene}
+          onChange={(e) => setFilmScene(e.target.value)}
+          maxLength={120}
+          placeholder="e.g. tense chase through Lagos traffic at night"
+          className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2.5 text-sm"
+        />
+      </div>
+
+      <div className="mt-6"><div className="mb-2 text-sm text-slate-400">Sound type</div>
+        <div className="flex flex-wrap gap-2">
+          {FILM_TYPES.map((t) => (
+            <button key={t.id} onClick={() => setFilmType(t.id)} className={`rounded-full px-4 py-2 text-sm ${filmType === t.id ? 'bg-brand-gradient text-ink shadow-glow' : 'border border-white/10 bg-white/5 text-slate-300 hover:bg-white/10'}`}>
+              {t.label}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <div className="mt-6"><div className="mb-2 text-sm text-slate-400">Duration</div>
+        <div className="flex gap-2">
+          {FILM_DURATIONS.map((d) => (
+            <button key={d} onClick={() => setFilmDuration(d)} className={`rounded-full px-4 py-2 text-sm tabular-nums ${filmDuration === d ? 'bg-brand-gradient text-ink shadow-glow' : 'border border-white/10 bg-white/5 text-slate-300 hover:bg-white/10'}`}>
+              {d}s
+            </button>
+          ))}
+        </div>
+        <p className="mt-1.5 text-xs text-slate-500">15s is the shortest cut the render contract delivers — trim tighter hits in your editor.</p>
+      </div>
+
+      <div className="mt-6"><div className="mb-2 text-sm text-slate-400">Mood (optional — up to 3)</div>
+        <div className="flex flex-wrap gap-2">
+          {FILM_MOODS.map((m) => {
+            const on = filmMoods.includes(m);
+            return (
+              <button
+                key={m}
+                onClick={() => setFilmMoods((cur) => (on ? cur.filter((x) => x !== m) : cur.length >= 3 ? cur : [...cur, m]))}
+                className={`rounded-full px-3.5 py-1.5 text-sm capitalize ${on ? 'bg-white/15 text-white shadow-[inset_0_0_0_1px_rgba(249,115,22,.4)]' : 'border border-white/10 text-slate-400 hover:bg-white/5'}`}
+              >
+                {m}
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
+      <div className="mt-8 flex flex-wrap gap-3">
+        <button
+          onClick={() => void createFilmSound()}
+          disabled={filmScene.trim().length < 5 || !hasMusicRoute}
+          title={!hasMusicRoute ? 'Connect a music engine in Settings first' : filmScene.trim().length < 5 ? 'Describe the scene first' : undefined}
+          className="rounded-full bg-brand-gradient px-6 py-3 font-medium text-ink shadow-glow disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          🎬 Create the sound
+        </button>
+      </div>
+      <p className="mt-3 text-xs text-slate-500">
+        Straight talk: your sound renders on the same music-engine classes that power the studio — your scene leads the brief in a neutral musical lane; nothing is sampled from a foley library. It lands in your Catalog titled after the scene.
+      </p>
+      {musicRoutes && !hasMusicRoute && (
+        <p className="mt-2 text-sm text-amber-300">No music engine is connected. An owner must connect one in Settings before rendering.</p>
+      )}
+      </>)}
 
       {/* THE CONSOLE PLAYER — on the left half, right under the Create button
           (the console layout). New songs auto-play here; library rows
@@ -928,7 +1345,9 @@ export default function CreatePage() {
 
       {/* BRING YOUR OWN — beat/chorus/vocal doors. All logic lives in the
           component; a chorus typed there lands in the from-lyrics flow above
-          (same hand-off as MumbleBooth). */}
+          (same hand-off as MumbleBooth). Song-door only: its chorus/vocal
+          hand-offs are song machinery the other rooms must never see. */}
+      {door === 'song' && (
       <BringYourOwn
         onChorusText={(lyric) => {
           setLyricsText(lyric);
@@ -937,6 +1356,7 @@ export default function CreatePage() {
           void deconstruct(lyric);
         }}
       />
+      )}
     </div>
 
     {/* Independent column: sticky with its OWN scrollbar so browsing the
