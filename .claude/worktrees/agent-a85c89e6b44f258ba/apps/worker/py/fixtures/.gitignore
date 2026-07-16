@@ -1,7 +1,0 @@
-# AfroHit HARD legal rule: never commit audio. Rights-cleared reference tracks +
-# their pre-separated Demucs stems live here for the Phase 0 acceptance test but
-# stay OUT of git. Only manifest.json (paths + ground truth) is committed.
-*
-!.gitignore
-!manifest.json
-!logdrum_calibration.json
