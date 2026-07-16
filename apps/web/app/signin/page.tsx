@@ -44,12 +44,21 @@ export default function SignInPage() {
   const [err, setErr] = useState('');
   const [busy, setBusy] = useState(false);
   const [touched, setTouched] = useState(false);
+  // FUNNEL (Wave 8b): the landing chat hero deep-links with &intent=<prompt>.
+  // The prompt survives BOTH signup and login submits and is handed to the
+  // EXISTING /create?vibe= prefill — it arrives VISIBLE in the vibe field and
+  // the user presses Create themselves. Never ?produce=1 (that auto-fires a
+  // paid render — the "re-creates for days" incident class).
+  const [intent, setIntent] = useState('');
 
-  // Landing CTAs deep-link to /signin?mode=signup. Read the param on mount
+  // Landing CTAs deep-link to /signin?mode=signup. Read the params on mount
   // (not useSearchParams — that would force a Suspense boundary for one flag)
   // so the server-rendered markup stays identical and hydration never differs.
   useEffect(() => {
-    if (new URLSearchParams(window.location.search).get('mode') === 'signup') setMode('signup');
+    const q = new URLSearchParams(window.location.search);
+    if (q.get('mode') === 'signup') setMode('signup');
+    const raw = q.get('intent');
+    if (raw) setIntent(raw.replace(/\s+/g, ' ').trim().slice(0, 200));
   }, []);
 
   const passwordShort = password.length > 0 && password.length < MIN_PASSWORD;
@@ -64,7 +73,9 @@ export default function SignInPage() {
       } else {
         await api.post('/auth/login', { email: email.trim(), password });
       }
-      router.push('/create');
+      // Carry the landing prompt into the studio via the existing ?vibe=
+      // prefill — visible in the form, never auto-firing a render.
+      router.push(intent ? `/create?vibe=${encodeURIComponent(intent)}` : '/create');
     } catch (e) {
       setErr(friendlyError((e as Error).message || '', mode));
     } finally {
@@ -79,6 +90,11 @@ export default function SignInPage() {
         <p className="mt-2 text-sm text-slate-400">
           {mode === 'signup' ? 'Your own AI studio — write, sing and master real records.' : 'Sign in to your studio.'}
         </p>
+        {intent && (
+          <div className="mt-3 rounded-xl border border-afrobrand-500/30 bg-afrobrand-500/10 px-3.5 py-2.5 text-xs leading-relaxed text-slate-300">
+            <span className="font-medium text-afrobrand-300">Coming with you into the studio:</span> “{intent}”
+          </div>
+        )}
 
         <form
           className="mt-6 space-y-3"

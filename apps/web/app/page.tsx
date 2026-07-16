@@ -1,6 +1,7 @@
 import Link from 'next/link';
 import { PLAN_LIMITS, PLAN_CREDIT_GRANT_CENTS, PLAN_TIERS, type PlanTier } from '@afrohit/shared';
 import { LandingSongWall } from '@/components/LandingSongWall';
+import { LandingHeroChat } from '@/components/LandingHeroChat';
 
 /**
  * PUBLIC LANDING — the studio's front door (Wave 6).
@@ -146,19 +147,19 @@ export default function Landing() {
           and rights-clean when it lands.
         </p>
 
-        <div className="mt-9 flex flex-col items-center justify-center gap-3 sm:flex-row sm:gap-4">
-          <Link
-            href="/signin?mode=signup"
-            className="w-full rounded-full bg-afrobrand-500 px-8 py-3.5 text-base font-semibold text-ink shadow-glow transition-all hover:-translate-y-0.5 hover:bg-afrobrand-400 sm:w-auto"
-          >
-            Create
-          </Link>
-          <a
-            href="#wall"
-            className="glass w-full rounded-full px-8 py-3.5 text-base text-slate-200 transition-all hover:-translate-y-0.5 hover:border-afrobrand-500/40 hover:text-white sm:w-auto"
-          >
-            Hear what it makes <span aria-hidden>↓</span>
-          </a>
+        {/* CHAT HERO (Wave 8b): the primary CTA is a chat box — the visitor's
+            idea rides through signup and lands prefilled in the studio. It
+            never renders anonymously and never promises free songs. */}
+        <div className="mt-9">
+          <LandingHeroChat />
+          <div className="mt-4 flex justify-center">
+            <a
+              href="#wall"
+              className="glass rounded-full px-8 py-3 text-sm text-slate-200 transition-all hover:-translate-y-0.5 hover:border-afrobrand-500/40 hover:text-white sm:text-base"
+            >
+              Hear what it makes <span aria-hidden>↓</span>
+            </a>
+          </div>
         </div>
 
         {/* Signature equalizer strip — pure decoration, respects reduced motion */}
