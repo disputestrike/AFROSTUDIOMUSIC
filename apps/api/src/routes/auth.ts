@@ -147,9 +147,16 @@ export default async function auth(app: FastifyInstance) {
     if (password.needsRehash) {
       await prisma.user.update({ where: { id: user.id }, data: { passwordHash: await hashPassword(input.password) } });
     }
+    // Land in the OLDEST WORKSPACE the user belongs to, not the oldest
+    // MEMBERSHIP. The difference is a live incident (2026-07-16): the owner's
+    // failed-login era produced a fresh empty signup workspace, then the
+    // bootstrap attached them to their original studio — ordering by
+    // membership.createdAt made the empty studio win every login ("hundreds of
+    // songs are missing"). A user's oldest workspace is where their catalog
+    // lives; single-membership users (every normal signup) are unaffected.
     const membership = await prisma.workspaceMember.findFirst({
       where: { userId: user.id },
-      orderBy: { createdAt: 'asc' },
+      orderBy: { workspace: { createdAt: 'asc' } },
     });
     if (!membership) return reply.code(403).send({ error: 'no_workspace' });
     const token = signSession({ sub: user.id, workspaceId: membership.workspaceId, role: membership.role });
