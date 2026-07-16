@@ -571,6 +571,20 @@ async function writeWorkerHeartbeat(): Promise<void> {
     create: { key: workerHeartbeatKey, value },
     update: { value },
   });
+  // PRUNE THE DEAD — the heartbeat key is per REPLICA, so every deploy strands
+  // another row that nothing ever removed. Unbounded, they used to push the LIVE
+  // worker's row out of the API's readiness window, reporting a healthy worker
+  // as dead. A row untouched for 10 minutes belongs to a replica that is long
+  // gone: a live worker rewrites its own on every beat. Best-effort by design —
+  // a prune failure must never take the heartbeat itself down with it.
+  await prisma.systemSetting
+    .deleteMany({
+      where: {
+        key: { startsWith: "worker:heartbeat:" },
+        updatedAt: { lt: new Date(Date.now() - 10 * 60_000) },
+      },
+    })
+    .catch(err => log.warn({ err }, "stale heartbeat prune failed"));
 }
 void writeWorkerHeartbeat().catch(err =>
   log.warn({ err }, "worker heartbeat write failed")

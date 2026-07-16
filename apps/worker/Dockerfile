@@ -26,10 +26,20 @@ RUN pip3 install --break-system-packages --no-cache-dir \
 # CPU-only torch (no GPU on Railway) + demucs, pinned; weights pre-baked into
 # the image so runs never re-download (~80MB) at 3am. Slow is fine at night;
 # cash cost ≈ $0.
+#
+# TORCH_HOME is load-bearing: the bake below runs as ROOT, so without it the
+# weights land in /root/.cache/torch — root's home, mode 0700 — which the
+# `USER node` runtime further down CANNOT READ. The weights were baked and then
+# orphaned: every cold start silently re-downloaded them, and when that download
+# failed, demucs-local.ts caught it and fell back to the PAID Replicate path —
+# reintroducing the exact per-track drain A3-4 exists to eliminate. Bake them
+# somewhere the runtime user owns.
+ENV TORCH_HOME=/opt/torch
 RUN pip3 install --break-system-packages --no-cache-dir \
   torch==2.4.1 torchaudio==2.4.1 --index-url https://download.pytorch.org/whl/cpu \
   && pip3 install --break-system-packages --no-cache-dir demucs==4.0.1 \
-  && python3 -c "from demucs.pretrained import get_model; get_model('htdemucs')"
+  && python3 -c "from demucs.pretrained import get_model; get_model('htdemucs')" \
+  && chown -R node:node /opt/torch
 
 RUN npm install -g pnpm@9.12.0
 

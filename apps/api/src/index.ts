@@ -331,9 +331,18 @@ async function bootstrap() {
       database = true;
       const [heartbeats, pending, oldest] = await withTimeout(
         Promise.all([
+          // Heartbeat keys are PER REPLICA (worker/src/index.ts uses
+          // RAILWAY_REPLICA_ID ?? HOSTNAME ?? pid), so every deploy leaves a new
+          // row behind forever. `take: 20` with NO orderBy asked Postgres for an
+          // ARBITRARY twenty of them — so past ~20 deploys the LIVE worker's row
+          // could fall outside the window and report the worker dead while it was
+          // perfectly healthy. Newest-first makes the freshest heartbeat always
+          // visible regardless of how many stale rows have piled up; the worker
+          // now prunes the dead ones as it beats.
           prisma.systemSetting.findMany({
             where: { key: { startsWith: "worker:heartbeat:" } },
             select: { value: true },
+            orderBy: { updatedAt: "desc" },
             take: 20,
           }),
           prisma.jobOutbox.count({
@@ -374,9 +383,26 @@ async function bootstrap() {
     } catch (error) {
       app.log.warn({ err: error }, "redis readiness check failed");
     }
-    const systemOk = database && redis && worker;
+    // READINESS IS PER-INSTANCE — IT IS NOT A SYSTEM-WIDE LIVENESS PROBE.
+    // Railway probes this exact path as the API's DEPLOY GATE (see
+    // apps/api/railway.json -> healthcheckPath), so whatever gates the status
+    // code decides whether the API is allowed to ship at all.
+    //
+    // This used to gate on `database && redis && worker`. That meant a dead
+    // WORKER failed the API's healthcheck, so Railway rejected the API deploy
+    // and kept serving the PREVIOUS build — turning any worker outage into a
+    // total, silent deploy freeze for a service that was itself perfectly
+    // healthy. With restartPolicyMaxRetries: 5 on the worker, one bad worker
+    // could permanently wedge the API.
+    //
+    // The API does not need the worker to serve: jobs queue durably in the
+    // outbox and drain when the worker returns. So the worker is REPORTED here,
+    // never gating. Alert on `systemOk`/`worker` in the body instead — that is
+    // an ops signal, not a deploy decision.
+    const apiReady = database && redis; // this instance's OWN hard dependencies
+    const systemOk = apiReady && worker; // whole-system view, for humans + alerts
     const response = {
-      ok: systemOk,
+      ok: apiReady,
       systemOk,
       service: "api",
       checkedAt: checkedAt.toISOString(),
@@ -388,7 +414,7 @@ async function bootstrap() {
         oldestPendingSeconds,
       },
     };
-    return reply.code(systemOk ? 200 : 503).send(response);
+    return reply.code(apiReady ? 200 : 503).send(response);
   });
 
   await app.register(

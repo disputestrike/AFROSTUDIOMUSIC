@@ -11,7 +11,10 @@ type AssetCleanupPayload = {
 
 type CleanupScope = { songId: string } | { projectId: string } | null;
 type AssetRefRow = { ref: string };
-type DeletionCandidateRow = { id: string; ref: string };
+// AssetDeletionCandidate.id is BigInt @default(autoincrement()) — not a string id
+// like the rest of the schema. Typing it as string made both the findMany result
+// and the deleteMany `id: { in: [...] }` filter reject at build time.
+type DeletionCandidateRow = { id: bigint; ref: string };
 
 export function cleanupScopeFromReason(reason: string): CleanupScope {
   const separator = reason.indexOf(":");
