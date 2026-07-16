@@ -190,3 +190,69 @@ export default async function auth(app: FastifyInstance) {
     return { userId, workspaceId, email: user?.email ?? null, name: user?.fullName ?? null, workspace };
   });
 }
+
+/**
+ * OWNER BOOTSTRAP — the one legitimate way into the ORIGINAL workspace now
+ * that AUTH_MODE=jwt closed internal mode. Signup provisions a brand-new empty
+ * tenant, so the owner (whose catalog predates auth entirely) could never
+ * reach their own studio through it.
+ *
+ * Runs at boot only when BOTH BOOTSTRAP_OWNER_EMAIL and
+ * BOOTSTRAP_OWNER_PASSWORD are set (operator-only surface: Railway service
+ * variables). Idempotent; an existing password is NEVER overwritten, so a
+ * lingering variable cannot silently take over an account. The operator
+ * should remove both variables after the first successful sign-in.
+ */
+export async function bootstrapOwnerAccount(log: {
+  info: (obj: object, msg: string) => void;
+  error: (obj: object, msg: string) => void;
+}): Promise<void> {
+  const email = process.env.BOOTSTRAP_OWNER_EMAIL?.toLowerCase().trim();
+  const password = process.env.BOOTSTRAP_OWNER_PASSWORD;
+  if (!email || !password) return;
+  try {
+    if (password.length < 12) {
+      log.error({ email }, 'owner bootstrap SKIPPED: BOOTSTRAP_OWNER_PASSWORD must be at least 12 characters');
+      return;
+    }
+    const workspace = await prisma.workspace.findFirst({
+      orderBy: { createdAt: 'asc' },
+      select: { id: true, name: true },
+    });
+    if (!workspace) {
+      log.error({ email }, 'owner bootstrap SKIPPED: no workspace exists yet');
+      return;
+    }
+    let user = await prisma.user.findUnique({ where: { email } });
+    if (!user) {
+      user = await prisma.user.create({
+        data: {
+          clerkId: `local_${randomBytes(10).toString('hex')}`,
+          email,
+          passwordHash: await hashPassword(password),
+        },
+      });
+      log.info({ email }, 'owner bootstrap: account created');
+    } else if (!user.passwordHash) {
+      await prisma.user.update({
+        where: { id: user.id },
+        data: { passwordHash: await hashPassword(password) },
+      });
+      log.info({ email }, 'owner bootstrap: password set on existing account');
+    } else {
+      log.info({ email }, 'owner bootstrap: account already has a password (unchanged) — remove the BOOTSTRAP_OWNER_* variables');
+    }
+    const membership = await prisma.workspaceMember.findFirst({
+      where: { userId: user.id, workspaceId: workspace.id },
+      select: { id: true },
+    });
+    if (!membership) {
+      await prisma.workspaceMember.create({
+        data: { workspaceId: workspace.id, userId: user.id, role: 'OWNER' },
+      });
+      log.info({ email, workspace: workspace.name }, 'owner bootstrap: attached as OWNER of the original workspace');
+    }
+  } catch (error) {
+    log.error({ err: error }, 'owner bootstrap FAILED (app continues; fix and redeploy)');
+  }
+}

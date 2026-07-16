@@ -74,7 +74,7 @@ import drop from "./routes/drop";
 import producer from "./routes/producer";
 import release from "./routes/release";
 import benchmark from "./routes/benchmark";
-import authRoutes from "./routes/auth";
+import authRoutes, { bootstrapOwnerAccount } from "./routes/auth";
 import publicRoutes from "./routes/public";
 import debug from "./routes/debug";
 
@@ -234,6 +234,7 @@ async function bootstrap() {
       "ENCRYPTION_KEY is not configured; integration credentials cannot be saved in this development environment"
     );
   }
+  await bootstrapOwnerAccount(app.log);
   await app.register(sensible);
   await app.register(helmet, { contentSecurityPolicy: false });
   await app.register(cors, {
