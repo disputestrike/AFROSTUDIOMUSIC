@@ -57,6 +57,7 @@ export interface SongRow {
   genre: string;
   bpm: number | null;
   audioUrl: string | null;
+  currentAudio?: { certification?: { certified?: boolean } } | null;
   masterUrl?: string | null;
   mixUrl?: string | null;
   beatUrl?: string | null;
@@ -835,12 +836,21 @@ export default function CatalogGrid({ initial }: { initial: SongRow[] }) {
                 </div>
               ) : null}
               {s.audioUrl ? (
-                <audio
-                  controls
-                  preload="none"
-                  className="mt-3 w-full"
-                  src={s.audioUrl}
-                />
+                <>
+                  <audio
+                    controls
+                    preload="none"
+                    className="mt-3 w-full"
+                    src={s.audioUrl}
+                  />
+                  {/* HONESTY TAG: pre-certification-era renders play fine but
+                      haven't been hash-verified; say so instead of hiding them. */}
+                  {s.currentAudio && s.currentAudio.certification?.certified === false ? (
+                    <div className="mt-1 text-[10px] text-slate-500">
+                      Legacy render — plays fine; verifies automatically on next master.
+                    </div>
+                  ) : null}
+                </>
               ) : (
                 <div className="mt-3 text-xs text-slate-600">
                   No audio rendered yet.

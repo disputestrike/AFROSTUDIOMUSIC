@@ -172,7 +172,16 @@ export function currentPlayableAsset(collections: PlayableAssetCollections): Pla
     const asset = history[index]!;
     if (asset.certification.certified) return asset;
   }
-  return null;
+  // CERTIFICATION GATES RELEASE, NOT PLAYBACK. Every asset rendered before the
+  // certification era (no contentHash/verifiedAt — the owner's entire paid
+  // catalog) is honorably 'uncertified', but hiding it behind "no audio" is
+  // the dishonest claim: the audio exists and played fine the day it was made
+  // (live incident, 2026-07-16 — a whole catalog showed 'No audio rendered
+  // yet'). Fall back to the newest playable audio; its certification object
+  // travels with the ref so every surface can say 'unverified' truthfully.
+  // Release promotion keeps its own strict approved+hash+QC query and is
+  // unaffected by this fallback.
+  return history.at(-1) ?? null;
 }
 
 export function playableAssetRef(asset: PlayableAsset | null | undefined): PlayableAssetRef | null {
