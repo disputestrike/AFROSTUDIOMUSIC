@@ -182,10 +182,27 @@ export async function processMusic(p: MusicPayload) {
       ?? (wantsVocals
         ? (songOverride === 'replicate' ? 'minimax' : songOverride)
         : defaultInstrumentalEngine());
+    // PLAN-LOCK MEMORY: ElevenLabs' Music API is pay-walled on THEIR side — a
+    // free-tier key 402s with 'paid_plan_required' at render time, which is
+    // undetectable at resolution time. When a render proves the route locked
+    // (flag written in the failure branch below), Auto routes around it for
+    // 24h instead of dead-ending every take on the same locked door (live
+    // incident, 2026-07-16: all candidates failed on eleven 402 while minimax
+    // sat ready on the same workspace). An upgrade self-heals via expiry.
+    const elevenLockFlag = await prisma.systemSetting.findUnique({
+      where: { key: 'engine.eleven.planLocked.v1' },
+      select: { value: true },
+    });
+    const elevenPlanLocked = !!elevenLockFlag
+      && Date.now() - new Date(elevenLockFlag.value).getTime() < 24 * 60 * 60 * 1000
+      && p.input.songEngine !== 'eleven'; // an EXPLICIT eleven request still tries — it may be newly upgraded
+    if (elevenPlanLocked) {
+      console.log('[music] advanced route plan-locked (remembered) — auto routes to the standard engine');
+    }
     const resolved = resolveEngineForWorkspace(requestedEngine, {
       firstParty,
       sunoAvailable: !!credentials.suno,
-      elevenAvailable: !!credentials.eleven && elevenRouteApproved,
+      elevenAvailable: !!credentials.eleven && elevenRouteApproved && !elevenPlanLocked,
       replicateAvailable: !!credentials.replicate,
     });
     if (resolved.wallSubstituted) {
@@ -329,6 +346,19 @@ export async function processMusic(p: MusicPayload) {
       // §1.11 THE WALL: errorJson reaches the user's screen — vendor/route names
       // are INTERNAL. Log the real reason here; ship the class-level one.
       console.warn(`[music] all candidates failed — internal reason: ${reason}`);
+      // PLAN-LOCK LEARNING: a 'paid_plan_required' 402 from the advanced route
+      // means the connected account cannot use that engine at all — remember it
+      // (24h, see resolution above) so the very next create auto-routes to the
+      // standard engine instead of failing every take on the same locked door.
+      if (engine === 'eleven' && /paid_plan_required|not available for free users/i.test(reason)) {
+        await prisma.systemSetting.upsert({
+          where: { key: 'engine.eleven.planLocked.v1' },
+          create: { key: 'engine.eleven.planLocked.v1', value: new Date().toISOString(), updatedAt: new Date() },
+          update: { value: new Date().toISOString(), updatedAt: new Date() },
+        }).catch(() => undefined);
+        await markFailed(p.jobId, 'music_generation_failed: the advanced engine is plan-locked on the connected account — create again and the studio will render on the standard engine (or upgrade the advanced account to unlock it).');
+        return;
+      }
       const publicReason = reason
         .replace(/\bfal\b/gi, 'engine route')
         .replace(/suno|minimax|ace[-_ ]?step|replicate|eleven(labs)?|stable[_ ]?audio|musicgen/gi, 'engine');
