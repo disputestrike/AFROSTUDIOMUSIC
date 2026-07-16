@@ -3,7 +3,7 @@ import { z } from 'zod';
 import { prisma } from '@afrohit/db';
 import { costOf, PLAN_LIMITS } from '@afrohit/shared';
 import { requireAuth, requireRole } from '../middleware/auth';
-import { billingDiagnosis } from '../middleware/credits';
+import { billingDiagnosis, isFirstPartyBilling } from '../middleware/credits';
 import {
   approveUrlOf,
   cancelSubscription,
@@ -81,6 +81,52 @@ export default async function billing(app: FastifyInstance) {
   app.get('/preflight', async (req) => {
     const { workspaceId } = requireAuth(req);
     const { isInternalMode } = await import('../middleware/auth');
+    // THE MIRROR MUST TRACK THE LAW. chargeCredits gained the first-party
+    // rule and the pre-launch enforcement valve; this preflight kept
+    // answering with the OLD gate, so the UI refused creates that the charge
+    // itself would have allowed — the owner's final invisible blocker after
+    // every charge-side fix (2026-07-16). First-party: free and uncapped by
+    // FIRST_PARTY_* env (default unlimited). Beta valve off: internal-style
+    // caps at BETA_DAILY/MONTHLY_GENERATIONS for everyone else.
+    const firstParty = await isFirstPartyBilling(workspaceId);
+    const billingEnforced = process.env.BILLING_ENFORCEMENT === 'on';
+    if (firstParty || !billingEnforced) {
+      const dailyCap = firstParty
+        ? configuredCap(process.env.FIRST_PARTY_MAX_DAILY_GENERATIONS, 0)
+        : configuredCap(process.env.BETA_DAILY_GENERATIONS, 25);
+      const monthlyCap = firstParty
+        ? configuredCap(process.env.FIRST_PARTY_MAX_MONTHLY_GENERATIONS, 0)
+        : configuredCap(process.env.BETA_MONTHLY_GENERATIONS, 300);
+      const dayStart = new Date();
+      dayStart.setUTCHours(0, 0, 0, 0);
+      const monthStart = new Date();
+      monthStart.setUTCDate(1);
+      monthStart.setUTCHours(0, 0, 0, 0);
+      const [todayUsage, monthUsage] = await Promise.all([
+        prisma.creditLedger.aggregate({
+          where: { workspaceId, createdAt: { gte: dayStart }, delta: { lt: 0 }, reversal: { is: null } },
+          _sum: { units: true },
+        }),
+        prisma.creditLedger.aggregate({
+          where: { workspaceId, createdAt: { gte: monthStart }, delta: { lt: 0 }, reversal: { is: null } },
+          _sum: { units: true },
+        }),
+      ]);
+      const usedToday = todayUsage._sum.units ?? 0;
+      const usedMonth = monthUsage._sum.units ?? 0;
+      const remainingToday = dailyCap > 0 ? Math.max(0, dailyCap - usedToday) : Number.MAX_SAFE_INTEGER;
+      const remainingMonth = monthlyCap > 0 ? Math.max(0, monthlyCap - usedMonth) : Number.MAX_SAFE_INTEGER;
+      return {
+        ok: remainingToday > 0 && remainingMonth > 0,
+        mode: firstParty ? 'house' : 'beta',
+        usedToday,
+        usedMonth,
+        dailyCap,
+        monthlyCap,
+        remainingToday,
+        remainingMonth,
+      };
+    }
     if (isInternalMode()) {
       // Mirror chargeCredits exactly: caps are on by default and only the
       // explicit ENFORCE_GENERATION_CAP=0 development override disables them.
