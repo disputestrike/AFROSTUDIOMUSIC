@@ -10,13 +10,64 @@
  * performances are filtered by forgeKitFor, never listed here.
  *
  * Order matters: within each family, the first-listed role is forged first.
+ *
+ * -----------------------------------------------------------------------------
+ * AFRO PERCUSSION GAP ANALYSIS (owner's report, 2026-07: "there are drums and
+ * snares still missing… a lot of drums in Afro music that we don't have").
+ * Authored from organology/music-theory FACTS (instrument names, roles,
+ * characteristic playing styles — uncopyrightable facts); no artist recording
+ * is ever a material source.
+ *
+ * ALREADY COVERED before this pass (verified against material-roles.ts + these
+ * palettes + the 45 genre kits):
+ *  - Kit backbone: kick(×5 variants), snare, rimshot, clap, snap, hats(closed/
+ *    open/ride/crash), tom, tom_fill, snare_roll, drum_roll, brushes,
+ *    trap_hat_roll, drill_hat_slide — snare/clap/rimshot are REQUIRED kit roles
+ *    in nearly every Afro-core genre.
+ *  - African perc: talking_drum, dundun, sakara, bata, djembe, ashiko, udu,
+ *    shekere, agogo, cowbell, conga, bongo, cabasa, shaker, maraca, woodblock,
+ *    claves, kalimba, mbira, balafon, kora, ngoni.
+ *  - Amapiano low end: log_drum (bass workhorse).
+ *  - 'snare_roll_build' and 'drum_roll_fill' candidates were judged ALREADY
+ *    covered: snare_roll + drum_roll exist and drum_roll's forge prompt is
+ *    explicitly the rising build into a drop; 'rimshot_pattern' is covered by
+ *    rimshot.
+ *
+ * WAS MISSING → ADDED in this pass (17 new roles):
+ *  - West African/Nigerian instruments (african_perc): gbedu (deep Yoruba royal
+ *    drum — afrobeats/street_pop/fuji), gangan (small squeeze talking drum) +
+ *    omele (small high support drum) completing the dundun/talking-drum family
+ *    (fuji/juju/apala/afrobeats), ogene (Igbo twin bell), ekwe (Igbo slit
+ *    drum), igba (Igbo membrane drum) — Igbo highlife/afrobeats; kpanlogo
+ *    (Ghanaian peg drum — highlife/azonto), fontomfrom (Akan royal drum
+ *    ensemble — highlife), agidigbo (Yoruba bass lamellophone — apala/juju),
+ *    shaker_offbeat (the offbeat shaker FEEL as its own role vs the continuous
+ *    16ths 'shaker' — amapiano/afro_house/afrobeats).
+ *  - Modern Afrobeats drum PROGRAMMING roles (drumkit): afro_tom_roll (the
+ *    signature melodic tom pattern — afrobeats/afro_pop/afro_fusion/azonto),
+ *    military_snare (marching/parade snare — afrobeats/afro_gospel/praise/
+ *    afro_dancehall), snare_rush (programmed rapid rush into drops — street_pop/
+ *    amapiano/afrobeats), triplet_hat_roll (triplet-feel hat rolls vs the 32nd
+ *    trap_hat_roll — afrobeats/afro_fusion/street_pop), 808_roll (rolled 808
+ *    kick bursts — street_pop/gqom), percussion_break (all-drums breakdown —
+ *    afrobeats/amapiano/street_pop).
+ *  - Amapiano/SA: log_drum_lead (bass family, keyed — the melodic lead log-drum
+ *    line vs the log_drum bassline), gqom_drums (gqom's broken off-grid kick
+ *    pattern — gqom).
+ *  - Snare-backbone presence (owner: "snares are missing"): every Afro-core
+ *    palette/kit now carries >=2 distinct snare-class roles (snare/clap/rimshot/
+ *    snap/military_snare/snare_rush) and >=1 tom/roll-class role — enforced by
+ *    test-material-system's SNARE & TOM LAW. Genres whose kits only required
+ *    ONE snare-class role gained palette entries: highlife (+rimshot),
+ *    afro_dancehall (+snare/clap), afro_house (+rimshot/snap).
+ * -----------------------------------------------------------------------------
  */
 
 export const GENRE_PALETTES: Record<string, readonly string[]> = {
   // ---- Afro / diaspora core -------------------------------------------------
   afrobeats: [
-    'conga', 'bongo', 'cowbell', 'agogo', 'woodblock', 'udu', 'djembe',
-    'open_hat', 'tom_fill', 'kick_808',
+    'conga', 'bongo', 'gbedu', 'cowbell', 'agogo', 'gangan', 'woodblock', 'udu', 'djembe', 'shaker_offbeat', 'ogene', 'ekwe',
+    'open_hat', 'tom_fill', 'afro_tom_roll', 'kick_808', 'military_snare', 'snare_rush', 'triplet_hat_roll', 'percussion_break',
     'sub_bass', 'synth_bass',
     'piano', 'rhodes', 'guitar_chords', 'synth_pad', 'warm_pad',
     'flute', 'sax', 'brass_section', 'clean_guitar_riff', 'synth_lead', 'vocal_chop',
@@ -24,8 +75,8 @@ export const GENRE_PALETTES: Record<string, readonly string[]> = {
     'riser', 'reverse_cymbal', 'transition_fx',
   ],
   afro_fusion: [
-    'conga', 'bongo', 'cowbell', 'agogo', 'udu', 'kalimba', 'djembe',
-    'open_hat', 'kick_808',
+    'conga', 'bongo', 'cowbell', 'agogo', 'udu', 'kalimba', 'djembe', 'gbedu', 'gangan', 'ogene',
+    'open_hat', 'afro_tom_roll', 'kick_808', 'triplet_hat_roll', 'snare_rush',
     'sub_bass', 'synth_bass',
     'piano', 'rhodes', 'warm_pad', 'string_pad', 'highlife_guitar', 'guitar_chords',
     'flute', 'sax', 'strings_line', 'synth_lead', 'vocal_chop',
@@ -33,17 +84,17 @@ export const GENRE_PALETTES: Record<string, readonly string[]> = {
     'riser', 'transition_fx',
   ],
   amapiano: [
-    'conga', 'bongo', 'cowbell', 'woodblock', 'cabasa',
-    'open_hat', 'tom',
-    'sub_bass', 'synth_bass',
+    'conga', 'bongo', 'shaker_offbeat', 'cowbell', 'woodblock', 'cabasa',
+    'open_hat', 'tom', 'percussion_break', 'snare_rush',
+    'sub_bass', 'synth_bass', 'log_drum_lead',
     'warm_pad', 'string_pad', 'synth_pad', 'guitar_chords',
     'sax', 'flute', 'synth_lead', 'bell_lead', 'vocal_chop',
     'chant', 'humming',
     'riser', 'sweep', 'transition_fx', 'club_ambience',
   ],
   afro_dancehall: [
-    'conga', 'bongo', 'cowbell', 'agogo', 'woodblock',
-    'open_hat', 'kick_808', 'tom',
+    'conga', 'bongo', 'cowbell', 'agogo', 'woodblock', 'gangan',
+    'open_hat', 'snare', 'tom', 'clap', 'kick_808', 'military_snare',
     'sub_bass', 'bass_808',
     'piano', 'rhodes', 'guitar_chords', 'synth_pad',
     'brass_section', 'sax', 'synth_lead', 'vocal_chop',
@@ -51,8 +102,8 @@ export const GENRE_PALETTES: Record<string, readonly string[]> = {
     'siren', 'riser', 'transition_fx',
   ],
   street_pop: [
-    'conga', 'cowbell', 'agogo', 'woodblock', 'shekere',
-    'open_hat', 'tom_fill', 'kick_808',
+    'conga', 'gbedu', 'cowbell', 'agogo', 'woodblock', 'shekere', 'gangan',
+    'open_hat', 'tom_fill', 'snare_rush', 'kick_808', '808_roll', 'military_snare', 'percussion_break', 'triplet_hat_roll',
     'sub_bass', 'bass_808', 'log_drum',
     'piano', 'guitar_chords', 'synth_pad',
     'flute', 'synth_lead', 'bell_lead', 'vocal_chop',
@@ -78,8 +129,8 @@ export const GENRE_PALETTES: Record<string, readonly string[]> = {
     'riser', 'sweep',
   ],
   afro_gospel: [
-    'conga', 'shekere', 'cowbell', 'agogo', 'talking_drum', 'djembe',
-    'live_kick', 'tom_fill', 'open_hat',
+    'conga', 'shekere', 'cowbell', 'agogo', 'talking_drum', 'djembe', 'gangan',
+    'live_kick', 'tom_fill', 'open_hat', 'military_snare', 'drum_roll',
     'sub_bass', 'organ_bass',
     'piano', 'gospel_organ', 'hammond', 'rhodes', 'choir_pad', 'guitar_chords', 'highlife_guitar',
     'brass_section', 'trumpet', 'sax', 'flute',
@@ -96,8 +147,8 @@ export const GENRE_PALETTES: Record<string, readonly string[]> = {
     'sweep', 'riser',
   ],
   praise: [
-    'conga', 'shekere', 'cowbell', 'agogo', 'talking_drum',
-    'live_kick', 'tom_fill', 'open_hat', 'crash',
+    'conga', 'shekere', 'cowbell', 'agogo', 'talking_drum', 'gangan',
+    'live_kick', 'tom_fill', 'open_hat', 'military_snare', 'drum_roll', 'crash',
     'organ_bass', 'sub_bass',
     'piano', 'gospel_organ', 'hammond', 'choir_pad', 'guitar_chords', 'highlife_guitar',
     'brass_section', 'trumpet', 'sax',
@@ -114,8 +165,8 @@ export const GENRE_PALETTES: Record<string, readonly string[]> = {
     'nature_ambience', 'sweep',
   ],
   afro_pop: [
-    'conga', 'bongo', 'cowbell', 'agogo', 'udu',
-    'open_hat', 'tom_fill', 'kick_808',
+    'conga', 'bongo', 'cowbell', 'agogo', 'udu', 'gbedu', 'gangan',
+    'open_hat', 'tom_fill', 'afro_tom_roll', 'kick_808', 'snare_rush', 'triplet_hat_roll',
     'sub_bass', 'synth_bass',
     'piano', 'rhodes', 'guitar_chords', 'highlife_guitar', 'warm_pad', 'synth_pad',
     'flute', 'sax', 'brass_section', 'synth_lead', 'bell_lead', 'vocal_chop',
@@ -141,8 +192,8 @@ export const GENRE_PALETTES: Record<string, readonly string[]> = {
     'vinyl_noise', 'riser', 'reverse_cymbal', 'beat_stop',
   ],
   highlife: [
-    'conga', 'bongo', 'claves', 'agogo', 'woodblock', 'cowbell', 'maraca',
-    'live_kick', 'open_hat', 'ride',
+    'conga', 'bongo', 'claves', 'agogo', 'ogene', 'woodblock', 'cowbell', 'maraca', 'ekwe', 'igba', 'kpanlogo', 'fontomfrom',
+    'live_kick', 'rimshot', 'open_hat', 'tom_fill', 'ride',
     'upright_bass', 'sub_bass',
     'palmwine_guitar', 'guitar_chords', 'piano', 'organ',
     'trumpet', 'sax', 'trombone', 'flute', 'clean_guitar_riff',
@@ -170,7 +221,7 @@ export const GENRE_PALETTES: Record<string, readonly string[]> = {
   // ---- African continental ---------------------------------------------------
   gqom: [
     'conga', 'woodblock', 'cowbell', 'shaker', 'taiko',
-    'club_kick', 'tom', 'open_hat',
+    'club_kick', 'gqom_drums', 'tom', 'open_hat', '808_roll', 'percussion_break',
     'sub_bass', 'reese_bass', 'synth_bass',
     'synth_pad', 'string_pad',
     'synth_lead', 'bell_lead', 'vocal_chop',
@@ -187,8 +238,8 @@ export const GENRE_PALETTES: Record<string, readonly string[]> = {
     'riser', 'transition_fx',
   ],
   afro_house: [
-    'conga', 'bongo', 'djembe', 'shekere', 'cowbell', 'cabasa',
-    'club_kick', 'open_hat', 'ride',
+    'conga', 'bongo', 'djembe', 'shekere', 'cowbell', 'cabasa', 'shaker_offbeat',
+    'club_kick', 'open_hat', 'rimshot', 'drum_roll', 'ride', 'snap',
     'sub_bass', 'synth_bass',
     'warm_pad', 'synth_pad', 'string_pad', 'house_piano_stab', 'piano',
     'kalimba', 'marimba', 'flute', 'synth_lead', 'vocal_chop',
@@ -205,8 +256,8 @@ export const GENRE_PALETTES: Record<string, readonly string[]> = {
     'riser', 'transition_fx',
   ],
   azonto: [
-    'conga', 'cowbell', 'agogo', 'woodblock', 'claves', 'shaker',
-    'open_hat', 'kick_808', 'tom_fill',
+    'conga', 'kpanlogo', 'cowbell', 'agogo', 'woodblock', 'claves', 'shaker',
+    'open_hat', 'kick_808', 'tom_fill', 'afro_tom_roll',
     'sub_bass', 'synth_bass',
     'piano', 'guitar_chords', 'highlife_guitar', 'synth_pad',
     'brass_section', 'synth_lead', 'bell_lead', 'vocal_chop',
@@ -241,7 +292,7 @@ export const GENRE_PALETTES: Record<string, readonly string[]> = {
     'transition_fx',
   ],
   fuji: [
-    'sakara', 'dundun', 'bata', 'agogo', 'shekere', 'cowbell', 'woodblock',
+    'sakara', 'dundun', 'gangan', 'omele', 'gbedu', 'bata', 'agogo', 'shekere', 'cowbell', 'woodblock',
     'djembe', 'conga', 'claves', 'maraca', 'cabasa',
     'tom', 'tom_fill',
     'sub_bass',
@@ -251,7 +302,7 @@ export const GENRE_PALETTES: Record<string, readonly string[]> = {
     'transition_fx',
   ],
   juju: [
-    'dundun', 'agogo', 'shekere', 'claves', 'maraca', 'conga', 'woodblock', 'bata',
+    'dundun', 'gangan', 'omele', 'agogo', 'shekere', 'agidigbo', 'claves', 'maraca', 'conga', 'woodblock', 'bata',
     'open_hat', 'tom',
     'upright_bass', 'sub_bass',
     'guitar_chords', 'palmwine_guitar', 'organ', 'piano',
@@ -260,7 +311,7 @@ export const GENRE_PALETTES: Record<string, readonly string[]> = {
     'transition_fx',
   ],
   apala: [
-    'sakara', 'dundun', 'bata', 'agogo', 'shekere', 'claves', 'woodblock', 'cabasa', 'maraca', 'udu',
+    'sakara', 'dundun', 'agidigbo', 'gangan', 'omele', 'bata', 'agogo', 'shekere', 'claves', 'woodblock', 'cabasa', 'maraca', 'udu',
     'kalimba', 'kora',
     'sub_bass',
     'organ',
