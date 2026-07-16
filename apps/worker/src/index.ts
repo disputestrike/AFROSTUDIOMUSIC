@@ -51,6 +51,7 @@ import {
 import { processImage } from "./processors/image";
 import { processLikenessTrain } from "./processors/likeness-train";
 import { processVideo } from "./processors/video";
+import { processAssembleVideo } from "./processors/assemble-video";
 import { processMix } from "./processors/mix";
 import { processMaster } from "./processors/master";
 import { processExport } from "./processors/export";
@@ -456,8 +457,13 @@ const workers = [
       await processLikenessTrain(job.data as never);
     else await processImage(job.data as never);
   }),
-  makeWorker("video", async (job: { data: never }) => {
-    await processVideo(job.data as never);
+  makeWorker("video", async (job: { data: never; name: string }) => {
+    // LOCAL ASSEMBLY rides the video lane: already-rendered shots + the master
+    // become the release cut (assemble-video, no provider spend). Dispatch by
+    // job name — everything else stays the provider shot render.
+    if (job.name === "assemble-video")
+      await processAssembleVideo(job.data as never);
+    else await processVideo(job.data as never);
   }),
   makeWorker("mix", async (job: { data: never }) => {
     await processMix(job.data as never);

@@ -1788,3 +1788,325 @@ export async function mixBuffers(bed: Buffer, layer: Buffer, layerGain = 0.85): 
     await rm(dir, { recursive: true, force: true }).catch(() => {});
   }
 }
+
+// ---------------------------------------------------------------------------
+// MUSIC-VIDEO ASSEMBLY (Wave 9) — rendered shots + the mastered song become
+// ONE release file, entirely local ffmpeg (zero provider spend; the shots were
+// already billed per-shot when they rendered). ADDITIVE ONLY: nothing above
+// this line changed. The pure gating/EDL law lives in
+// @afrohit/shared/video-assembly; these helpers are the hands.
+// ---------------------------------------------------------------------------
+
+/** One CFR timebase for mixed AI renders (providers ship 24/25/30fps): 30fps
+ *  plays native on socials + web players and derives cleanly for broadcast;
+ *  xfade requires identical fps on both sides, so everything conforms here. */
+export const ASSEMBLY_FPS = 30;
+/** 15-frame crossfades at sequence boundaries — the owner's law. */
+export const ASSEMBLY_XFADE_FRAMES = 15;
+export const ASSEMBLY_XFADE_S = ASSEMBLY_XFADE_FRAMES / ASSEMBLY_FPS; // 0.5s
+
+/** THE TWO DELIVERABLES: 'full' = 1920x1080 landscape (YouTube/TV master),
+ *  letterboxed via scale+pad so no rendered pixel is ever cropped away;
+ *  'teaser' = 1080x1920 vertical (TikTok/Reels/Shorts), center-crop cover so
+ *  the frame is FULL — social feeds punish pillarboxed verticals. */
+export const ASSEMBLY_TARGETS = {
+  full: { width: 1920, height: 1080, fit: 'pad' as const },
+  teaser: { width: 1080, height: 1920, fit: 'crop' as const },
+};
+
+/** Shared encode settings for every assembly pass — H.264/yuv420p is the one
+ *  combination every player, CDN and TV ingest accepts; veryfast+CRF19 keeps a
+ *  3-minute 1080p multi-pass assembly inside the worker's render timeout. */
+const ASSEMBLY_ENCODE = [
+  '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '19', '-pix_fmt', 'yuv420p',
+];
+
+/** ffprobe duration in PRECISE seconds (float, no rounding) — the assembly
+ *  math (xfade offsets, min(video,audio) law) needs sub-second truth, unlike
+ *  probeDurationS above which rounds for display. Local paths only; 0 = unknown. */
+export async function probeMediaDurationPreciseS(path: string): Promise<number> {
+  const result = await runBoundedProcess({
+    command: 'ffprobe',
+    args: [
+      '-v', 'error',
+      '-show_entries', 'format=duration',
+      '-of', 'default=noprint_wrappers=1:nokey=1',
+      path,
+    ],
+    timeoutMs: NATIVE_AUDIO_LIMITS.probeTimeoutMs,
+    outputLimitBytes: NATIVE_AUDIO_LIMITS.probeOutputLimitBytes,
+    captureStdout: true,
+    captureStderr: true,
+  });
+  if (result.failure !== null || result.exitCode !== 0) return 0;
+  const durationS = Number.parseFloat(result.stdout.trim());
+  return Number.isFinite(durationS) && durationS > 0 ? durationS : 0;
+}
+
+/**
+ * Conform ONE rendered shot to the assembly timeline: common size (pad or
+ * crop), CFR ASSEMBLY_FPS, silent (-an — the ONLY sound on a music video is
+ * the mastered song; provider clips sometimes carry stray audio), and trimmed
+ * to `trimS`.
+ *
+ * THE TRIM LAW: the treatment's claimed duration is the edit decision list.
+ * Rendered shots run 5-10s while treatment slots claim 2-8s — the slot wins,
+ * so the timeline matches the treatment the user approved. A render SHORTER
+ * than its slot yields a shorter clip (never looped, never frozen — the
+ * covered duration is reported honestly downstream).
+ */
+export async function normalizeVideoClip(opts: {
+  input: string;
+  output: string;
+  width: number;
+  height: number;
+  fit: 'pad' | 'crop';
+  trimS: number;
+}): Promise<void> {
+  const { width, height } = opts;
+  const geometry =
+    opts.fit === 'pad'
+      ? `scale=${width}:${height}:force_original_aspect_ratio=decrease,pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2:color=black`
+      : `scale=${width}:${height}:force_original_aspect_ratio=increase,crop=${width}:${height}`;
+  await runFfmpeg([
+    '-i', opts.input,
+    '-t', Math.max(0.1, opts.trimS).toFixed(3),
+    '-vf', `${geometry},setsar=1,fps=${ASSEMBLY_FPS}`,
+    '-an',
+    ...ASSEMBLY_ENCODE,
+    opts.output,
+  ]);
+}
+
+/** Concat already-normalized clips (same codec/size/fps by construction) with
+ *  a RE-ENCODE — mixed provider sources make stream-copy concat a timestamp
+ *  minefield; one more CPU pass is free and deterministic. */
+export async function concatVideoClips(paths: string[], output: string): Promise<void> {
+  if (!paths.length) throw new Error('video concat needs at least one clip');
+  const dir = await mkdtemp(join(tmpdir(), 'vconcat-'));
+  try {
+    const listPath = join(dir, 'list.txt');
+    await writeFile(listPath, paths.map((f) => `file '${f.replace(/\\/g, '/')}'`).join('\n'));
+    await runFfmpeg([
+      '-f', 'concat', '-safe', '0', '-i', listPath,
+      '-an', ...ASSEMBLY_ENCODE,
+      output,
+    ]);
+  } finally {
+    await rm(dir, { recursive: true, force: true }).catch(() => {});
+  }
+}
+
+/** Crossfade two normalized videos: b starts at offsetS, blending for
+ *  ASSEMBLY_XFADE_S. Both inputs share size/fps/pixfmt by construction. */
+export async function xfadeVideos(
+  a: string,
+  b: string,
+  output: string,
+  opts: { offsetS: number },
+): Promise<void> {
+  await runFfmpeg([
+    '-i', a, '-i', b,
+    '-filter_complex',
+    `[0:v][1:v]xfade=transition=fade:duration=${ASSEMBLY_XFADE_S.toFixed(3)}:offset=${Math.max(0, opts.offsetS).toFixed(3)}[v]`,
+    '-map', '[v]',
+    ...ASSEMBLY_ENCODE,
+    output,
+  ]);
+}
+
+/** Mux the mastered song over the assembled timeline: audio starts at
+ *  audioStartS into the master (teaser hook law; 0 for the full cut), total
+ *  duration is the min(video, audio) law, and the last fadeOutS seconds fade
+ *  the audio so a truncated record never ends on a cliff. */
+export async function muxTimelineAudio(opts: {
+  video: string;
+  audio: string;
+  output: string;
+  audioStartS: number;
+  durationS: number;
+  fadeOutS?: number;
+}): Promise<void> {
+  const durationS = Math.max(0.5, opts.durationS);
+  const fadeOutS = Math.min(Math.max(0.1, opts.fadeOutS ?? 1), durationS / 2);
+  const fadeStartS = Math.max(0, durationS - fadeOutS);
+  await runFfmpeg([
+    '-i', opts.video,
+    ...(opts.audioStartS > 0 ? ['-ss', opts.audioStartS.toFixed(3)] : []),
+    '-i', opts.audio,
+    '-filter_complex',
+    `[1:a]atrim=0:${durationS.toFixed(3)},asetpts=PTS-STARTPTS,` +
+      `afade=t=out:st=${fadeStartS.toFixed(3)}:d=${fadeOutS.toFixed(3)},` +
+      'aformat=sample_rates=44100:channel_layouts=stereo[a]',
+    '-map', '0:v', '-map', '[a]',
+    '-t', durationS.toFixed(3),
+    ...ASSEMBLY_ENCODE,
+    '-c:a', 'aac', '-b:a', '192k',
+    '-movflags', '+faststart',
+    opts.output,
+  ]);
+}
+
+export interface AssemblyTimelineClip {
+  /** LOCAL path to the downloaded rendered shot. */
+  path: string;
+  /** The treatment's claimed duration — the EDL slot (see TRIM LAW). */
+  slotS: number;
+  sequenceIndex: number;
+  shotIndex: number;
+}
+
+export interface AssemblyTimelineResult {
+  /** LOCAL path of the finished muxed mp4 (inside workDir). */
+  path: string;
+  /** Measured duration of the assembled VIDEO timeline (before the audio min-law). */
+  coveredS: number;
+  /** Measured duration of the FINAL muxed output. */
+  durationS: number;
+  width: number;
+  height: number;
+  fps: number;
+  crossfadeCount: number;
+}
+
+/**
+ * THE ASSEMBLER — local files in, one finished mp4 out. Shared verbatim by the
+ * worker processor (downloads first) and the proof harness (synthetic clips),
+ * so what is proven is what ships.
+ *
+ * Timeline law:
+ *  - clips play in the given order, each trimmed to its treatment slot;
+ *  - 'full': 15-frame crossfades at SEQUENCE boundaries only, hard cuts within
+ *    a sequence. HANDLE LAW: the last clip of each non-final sequence keeps an
+ *    extra ASSEMBLY_XFADE_S of its RENDERED material beyond the slot (renders
+ *    run 5-10s vs 2-8s slots, so the material exists) and the crossfade
+ *    consumes exactly that handle — so every sequence still starts at its EDL
+ *    time and the total equals the sum of the slots, not sum minus fades;
+ *  - 'teaser': hard cuts only (a 15/30s social cut wants punch), center-crop
+ *    vertical;
+ *  - audio: the master from audioStartS, total = min(video, audio,
+ *    maxDurationS), 1s audio fade-out at the end.
+ * Nothing loops, nothing freezes, nothing is synthesized to fill gaps — a
+ * timeline shorter than the song ships at its honest covered length.
+ */
+export async function assembleMusicVideoTimeline(opts: {
+  workDir: string;
+  kind: 'full' | 'teaser';
+  clips: AssemblyTimelineClip[];
+  audioPath: string;
+  audioStartS: number;
+  maxDurationS?: number | null;
+  onStage?: (stage: 'normalizing' | 'concatenating' | 'muxing') => void | Promise<void>;
+}): Promise<AssemblyTimelineResult> {
+  if (!opts.clips.length) throw new Error('assembly has no clips');
+  const target = ASSEMBLY_TARGETS[opts.kind];
+  const crossfade = opts.kind === 'full';
+
+  // Group clips into sequences, preserving play order.
+  const groups: AssemblyTimelineClip[][] = [];
+  for (const clip of opts.clips) {
+    const current = groups[groups.length - 1];
+    if (current && current[0]!.sequenceIndex === clip.sequenceIndex) current.push(clip);
+    else groups.push([clip]);
+  }
+
+  // 1) NORMALIZE — common geometry/fps, slot trims (+ crossfade handle on the
+  //    last clip of each non-final sequence; see HANDLE LAW above).
+  await opts.onStage?.('normalizing');
+  const normalized: string[][] = [];
+  for (let g = 0; g < groups.length; g++) {
+    const group = groups[g]!;
+    const files: string[] = [];
+    for (let c = 0; c < group.length; c++) {
+      const clip = group[c]!;
+      const handleS =
+        crossfade && groups.length > 1 && g < groups.length - 1 && c === group.length - 1
+          ? ASSEMBLY_XFADE_S
+          : 0;
+      const output = join(opts.workDir, `norm-${g}-${c}.mp4`);
+      await normalizeVideoClip({
+        input: clip.path,
+        output,
+        width: target.width,
+        height: target.height,
+        fit: target.fit,
+        trimS: clip.slotS + handleS,
+      });
+      files.push(output);
+    }
+    normalized.push(files);
+  }
+
+  // 2) CONCAT within each sequence (hard cuts), then crossfade the sequences
+  //    together ('full'); the teaser is one hard-cut reel.
+  await opts.onStage?.('concatenating');
+  const sequenceFiles: string[] = [];
+  for (let g = 0; g < normalized.length; g++) {
+    const files = normalized[g]!;
+    if (files.length === 1) {
+      sequenceFiles.push(files[0]!);
+      continue;
+    }
+    const output = join(opts.workDir, `seq-${g}.mp4`);
+    await concatVideoClips(files, output);
+    sequenceFiles.push(output);
+  }
+
+  let timeline: string;
+  let crossfadeCount = 0;
+  if (!crossfade || sequenceFiles.length === 1) {
+    if (sequenceFiles.length === 1) {
+      timeline = sequenceFiles[0]!;
+    } else {
+      timeline = join(opts.workDir, 'timeline.mp4');
+      await concatVideoClips(sequenceFiles, timeline);
+    }
+  } else {
+    timeline = sequenceFiles[0]!;
+    for (let g = 1; g < sequenceFiles.length; g++) {
+      const currentDurationS = await probeMediaDurationPreciseS(timeline);
+      if (!currentDurationS) throw new Error('assembled sequence has no measurable duration');
+      const output = join(opts.workDir, `xfade-${g}.mp4`);
+      await xfadeVideos(timeline, sequenceFiles[g]!, output, {
+        offsetS: Math.max(0, currentDurationS - ASSEMBLY_XFADE_S),
+      });
+      timeline = output;
+      crossfadeCount += 1;
+    }
+  }
+
+  const coveredS = await probeMediaDurationPreciseS(timeline);
+  if (!coveredS) throw new Error('assembled timeline has no measurable duration');
+
+  // 3) MUX — min(video, audio, teaser cap) with the 1s audio fade-out.
+  await opts.onStage?.('muxing');
+  const audioTotalS = await probeMediaDurationPreciseS(opts.audioPath);
+  const audioAvailableS = audioTotalS - Math.max(0, opts.audioStartS);
+  if (audioAvailableS < 1) {
+    throw new Error('the song audio is shorter than the requested start offset');
+  }
+  const capS =
+    typeof opts.maxDurationS === 'number' && Number.isFinite(opts.maxDurationS) && opts.maxDurationS > 0
+      ? opts.maxDurationS
+      : Number.POSITIVE_INFINITY;
+  const durationS = Math.min(coveredS, audioAvailableS, capS);
+  const output = join(opts.workDir, `assembled-${opts.kind}.mp4`);
+  await muxTimelineAudio({
+    video: timeline,
+    audio: opts.audioPath,
+    output,
+    audioStartS: Math.max(0, opts.audioStartS),
+    durationS,
+    fadeOutS: 1,
+  });
+  const measuredS = await probeMediaDurationPreciseS(output);
+  return {
+    path: output,
+    coveredS: Math.round(coveredS * 1000) / 1000,
+    durationS: Math.round((measuredS || durationS) * 1000) / 1000,
+    width: target.width,
+    height: target.height,
+    fps: ASSEMBLY_FPS,
+    crossfadeCount,
+  };
+}
