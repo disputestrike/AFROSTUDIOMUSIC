@@ -1,4 +1,5 @@
 'use client';
+import { OperatorGate } from '@/components/OperatorGate';
 
 /**
  * WORD BANK — thousands of authentic African/diaspora terms across Pidgin,
@@ -17,7 +18,7 @@ interface Stats { total: number; byLanguage: Array<{ language: string; count: nu
 
 const LANG_LABEL: Record<string, string> = { pcm: 'Pidgin', yo: 'Yoruba', ig: 'Igbo', ha: 'Hausa', twi: 'Twi/Ga', sw: 'Swahili', en: 'English', mixed: 'Mixed', motif: 'Motif' };
 
-export default function LexiconPage() {
+function LexiconPageInner() {
   const api = useApi();
   const [entries, setEntries] = useState<Entry[] | null>(null);
   const [stats, setStats] = useState<Stats | null>(null);
@@ -144,5 +145,16 @@ export default function LexiconPage() {
         </div>
       )}
     </div>
+  );
+}
+
+// TENANT SURFACE ISOLATION (Wave 8a): operator-only page. The gate is a
+// polite presentation wrapper for deep links; the API routes behind this page
+// are independently requireAdmin-gated server-side.
+export default function LexiconPage() {
+  return (
+    <OperatorGate>
+      <LexiconPageInner />
+    </OperatorGate>
   );
 }

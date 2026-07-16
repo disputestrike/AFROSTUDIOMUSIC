@@ -1,4 +1,5 @@
 'use client';
+import { OperatorGate } from '@/components/OperatorGate';
 
 import { useEffect, useState } from 'react';
 import { useApi } from '@/lib/api';
@@ -28,7 +29,7 @@ interface WorkspaceRow {
  * Operator console. The API enforces ADMIN_EMAILS — non-admins get a 403
  * and this page shows the denial rather than pretending to work.
  */
-export default function AdminPage() {
+function AdminPageInner() {
   const api = useApi();
   const [stats, setStats] = useState<Stats | null>(null);
   const [rows, setRows] = useState<WorkspaceRow[]>([]);
@@ -543,5 +544,16 @@ function WriterAb() {
         </div>
       )}
     </div>
+  );
+}
+
+// TENANT SURFACE ISOLATION (Wave 8a): operator-only page. The gate is a
+// polite presentation wrapper for deep links; the API routes behind this page
+// are independently requireAdmin-gated server-side.
+export default function AdminPage() {
+  return (
+    <OperatorGate>
+      <AdminPageInner />
+    </OperatorGate>
   );
 }

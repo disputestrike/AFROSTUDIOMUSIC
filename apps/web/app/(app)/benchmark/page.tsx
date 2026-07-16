@@ -1,4 +1,5 @@
 "use client";
+import { OperatorGate } from '@/components/OperatorGate';
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
@@ -202,7 +203,7 @@ function ScoreControl({
   );
 }
 
-export default function BenchmarkPage() {
+function BenchmarkPageInner() {
   const api = useApi();
   const [view, setView] = useState<"competitive" | "calibration">(
     "competitive"
@@ -1144,5 +1145,16 @@ export default function BenchmarkPage() {
         </>
       )}
     </main>
+  );
+}
+
+// TENANT SURFACE ISOLATION (Wave 8a): operator-only page. The gate is a
+// polite presentation wrapper for deep links; the API routes behind this page
+// are independently requireAdmin-gated server-side.
+export default function BenchmarkPage() {
+  return (
+    <OperatorGate>
+      <BenchmarkPageInner />
+    </OperatorGate>
   );
 }

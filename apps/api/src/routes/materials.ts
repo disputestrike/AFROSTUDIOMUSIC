@@ -11,6 +11,7 @@ import {
 } from "@afrohit/shared";
 import { getSoundDNA } from "@afrohit/ai";
 import { requireAuth } from "../middleware/auth";
+import { requireAdmin } from "./admin";
 import { createQueuedProviderJob, scopedRequestKey } from "../lib/queued-job";
 import {
   operationErrorBody,
@@ -35,6 +36,14 @@ import { autoMaterialBeat } from "../lib/material-auto";
  */
 
 export default async function materials(app: FastifyInstance) {
+  // TENANT SURFACE ISOLATION (Wave 8a): the material forge is the operator's
+  // engine room — consumers reach beats through Create/Studio flows, which use
+  // lib/material-plan internally (never these HTTP routes). Scoped hook =
+  // every route in this plugin is server-enforced operator-only.
+  app.addHook("preValidation", async req => {
+    await requireAdmin(req);
+  });
+
   /** The library — what's on the shelf, grouped for the UI/chat. */
   app.get<{ Querystring: { genre?: string } }>("/", async req => {
     const { workspaceId } = requireAuth(req);

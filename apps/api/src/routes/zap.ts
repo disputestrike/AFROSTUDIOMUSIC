@@ -13,6 +13,7 @@ import { createQueuedProviderJob, scopedRequestKey } from '../lib/queued-job';
 import { laneBpm } from '../lib/lane-pipeline';
 import { GENRES, genreSignature } from '@afrohit/shared';
 import { requireAuth } from '../middleware/auth';
+import { requireAdmin } from './admin';
 import { presignAssetRef, publicUrlFor, verifyUploadedAudio } from '../lib/storage';
 import { assertSafeUrl } from '../lib/url-guard';
 import { operationErrorBody, runIdempotentOperation } from '../lib/idempotent-operation';
@@ -90,6 +91,13 @@ export function identitySafeZapFacts(rawGenre?: string | null): IdentitySafeZapF
 }
 
 export default async function zap(app: FastifyInstance) {
+  // TENANT SURFACE ISOLATION (Wave 8a): Zap spends research money (AudD
+  // fingerprinting + trend research) — operator-only for now. Scoped hook =
+  // every route in this plugin is server-enforced.
+  app.addHook('preValidation', async (req) => {
+    await requireAdmin(req);
+  });
+
   /** IDENTIFY — fingerprint a captured/uploaded clip → title/artist + licensed preview. */
   app.post('/identify', { schema: { body: identifySchema } }, async (req, reply) => {
     const { workspaceId } = requireAuth(req);

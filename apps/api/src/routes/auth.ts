@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { randomBytes, scrypt, timingSafeEqual } from 'node:crypto';
 import { prisma } from '@afrohit/db';
 import { isInternalMode, requireAuth } from '../middleware/auth';
+import { hasAdminAccess } from './admin';
 import {
   adminGrantCookie,
   assertSessionConfiguration,
@@ -194,11 +195,15 @@ export default async function auth(app: FastifyInstance) {
 
   app.get('/me', async (req) => {
     const { userId, workspaceId } = requireAuth(req);
-    const [user, workspace] = await Promise.all([
+    // TENANT SURFACE ISOLATION (Wave 8a): the web decides which nav manifest to
+    // render from this single boolean. It reuses the ADMIN_EMAILS allowlist via
+    // hasAdminAccess — the list itself is never sent to any client.
+    const [user, workspace, operator] = await Promise.all([
       prisma.user.findUnique({ where: { id: userId }, select: { email: true, fullName: true } }),
       prisma.workspace.findUnique({ where: { id: workspaceId }, select: { name: true, plan: true, creditsCents: true } }),
+      hasAdminAccess(req),
     ]);
-    return { userId, workspaceId, email: user?.email ?? null, name: user?.fullName ?? null, workspace };
+    return { userId, workspaceId, email: user?.email ?? null, name: user?.fullName ?? null, operator, workspace };
   });
 }
 

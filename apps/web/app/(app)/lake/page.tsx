@@ -1,4 +1,5 @@
 'use client';
+import { OperatorGate } from '@/components/OperatorGate';
 
 /**
  * DATA LAKE — the studio's whole memory, visible and manageable.
@@ -203,7 +204,7 @@ const KIND_META: Record<string, { label: string; icon: React.ReactNode; hint: st
   failed: { label: 'Failed', icon: <CircleX className="h-4 w-4" />, hint: 'analysis failed; visible for diagnosis and blocked from generation' },
 };
 
-export default function LakePage() {
+function LakePageInner() {
   const api = useApi();
   const router = useRouter();
   const [lake, setLake] = useState<Lake | null>(null);
@@ -370,5 +371,16 @@ export default function LakePage() {
         </>
       )}
     </div>
+  );
+}
+
+// TENANT SURFACE ISOLATION (Wave 8a): operator-only page. The gate is a
+// polite presentation wrapper for deep links; the API routes behind this page
+// are independently requireAdmin-gated server-side.
+export default function LakePage() {
+  return (
+    <OperatorGate>
+      <LakePageInner />
+    </OperatorGate>
   );
 }
