@@ -333,8 +333,13 @@ export default async function admin(app: FastifyInstance) {
     ]);
     const llmByTier = new Map<string, { calls: number; estCostUsd: number }>();
     const llmByTask = new Map<string, { calls: number; estCostUsd: number; tier: string }>();
+    // PER-BRAIN LATENCY + DEGRADATION — the lens the 2026-07-16 slowdown
+    // needed: an Anthropic overload night burned full retry budgets per call
+    // (7-8 min lyric stages) while the console showed nothing, and this
+    // surface could not say which brain was slow or why the ladder moved.
+    const llmByBrain = new Map<string, { calls: number; avgMs: number; maxMs: number; degraded: number; lastDegraded?: string }>();
     for (const e of llmEvents) {
-      const p = (e.properties ?? {}) as { tier?: string; task?: string; estCostUsd?: number | null };
+      const p = (e.properties ?? {}) as { tier?: string; task?: string; estCostUsd?: number | null; brain?: string; ms?: number; degraded?: string };
       const tier = p.tier ?? 'judgment';
       const t = llmByTier.get(tier) ?? { calls: 0, estCostUsd: 0 };
       t.calls++; t.estCostUsd += p.estCostUsd ?? 0;
@@ -343,6 +348,14 @@ export default async function admin(app: FastifyInstance) {
       const tk = llmByTask.get(taskKey) ?? { calls: 0, estCostUsd: 0, tier };
       tk.calls++; tk.estCostUsd += p.estCostUsd ?? 0;
       llmByTask.set(taskKey, tk);
+      const brainKey = p.brain ?? 'unknown';
+      const b = llmByBrain.get(brainKey) ?? { calls: 0, avgMs: 0, maxMs: 0, degraded: 0 };
+      const ms = Number(p.ms ?? 0);
+      b.avgMs = (b.avgMs * b.calls + ms) / (b.calls + 1);
+      b.maxMs = Math.max(b.maxMs, ms);
+      b.calls++;
+      if (p.degraded) { b.degraded++; b.lastDegraded = String(p.degraded).slice(0, 120); }
+      llmByBrain.set(brainKey, b);
     }
     const stemsByMode = new Map<string, { runs: number; estCostUsd: number; avgWallS: number }>();
     for (const e of stemEvents) {
@@ -363,6 +376,7 @@ export default async function admin(app: FastifyInstance) {
       llm: {
         byTier: Object.fromEntries([...llmByTier].map(([k, v]) => [k, { ...v, estCostUsd: Math.round(v.estCostUsd * 1000) / 1000, note: k === 'judgment' ? 'Anthropic costs read from billing, not estimated here — calls counted' : undefined }])),
         byTask: [...llmByTask].map(([task, v]) => ({ task, ...v, estCostUsd: Math.round(v.estCostUsd * 1000) / 1000 })).sort((a, b) => b.calls - a.calls).slice(0, 12),
+        byBrain: Object.fromEntries([...llmByBrain].map(([k, v]) => [k, { calls: v.calls, avgMs: Math.round(v.avgMs), maxMs: v.maxMs, degraded: v.degraded, ...(v.lastDegraded ? { lastDegraded: v.lastDegraded } : {}) }])),
       },
       stems: { byMode: Object.fromEntries([...stemsByMode].map(([k, v]) => [k, { ...v, estCostUsd: Math.round(v.estCostUsd * 100) / 100, avgWallS: Math.round(v.avgWallS) }])) },
       costEvidence: {

@@ -157,8 +157,20 @@ export async function generateJson<T>(opts: GenerateOptions): Promise<T> {
       const estCostUsd = (inTok * 3 + outTok * 15) / 1_000_000;
       recordLlmUsage({ tier: opts.tier ?? 'judgment', task: opts.task ?? 'unlabeled', brain: 'claude', ms: Date.now() - t0, estCostUsd });
       return data;
-    } catch {
+    } catch (err) {
       // Claude erred (transient/parse) → try OpenAI so we don't hard-fail.
+      // RECORD the degradation — a silent catch here made a whole Anthropic
+      // overload night look like "no calls anywhere" while lyrics crawled
+      // through full retry budgets (live incident, 2026-07-16). Telemetry must
+      // see the failure AND how long it burned before the ladder moved on.
+      recordLlmUsage({
+        tier: opts.tier ?? 'judgment',
+        task: opts.task ?? 'unlabeled',
+        brain: 'claude',
+        ms: Date.now() - t0,
+        estCostUsd: null,
+        degraded: (err as Error).message.slice(0, 160),
+      });
     }
   }
 

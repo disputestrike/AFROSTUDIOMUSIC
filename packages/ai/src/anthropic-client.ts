@@ -207,7 +207,13 @@ export async function claudeJson<T>(opts: {
       });
       clearTimeout(timer);
       if (res.status === 429 || res.status === 529 || res.status >= 500) {
-        if (attempt < 2) { await new Promise((r) => setTimeout(r, 1500 * (attempt + 1) ** 2)); continue; } // 1.5s, 6s
+        // 529 = Anthropic says "overloaded RIGHT NOW" — a third 90s attempt
+        // rarely lands and the user is waiting (live incident 2026-07-16:
+        // lyric writes took 7-8 minutes riding full retry budgets during an
+        // Anthropic overload event; the healthy OpenAI flagship fallback sat
+        // unused the whole time). One quick retry for 529, then ladder fast.
+        const maxAttempts = res.status === 529 ? 2 : 3;
+        if (attempt < maxAttempts - 1) { await new Promise((r) => setTimeout(r, 1500 * (attempt + 1) ** 2)); continue; } // 1.5s, 6s
         throw new Error(`anthropic ${res.status}: ${(await res.text()).slice(0, 200)}`);
       }
       if (!res.ok) throw new Error(`anthropic ${res.status}: ${(await res.text()).slice(0, 300)}`);
