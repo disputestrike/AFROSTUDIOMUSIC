@@ -198,7 +198,8 @@ SECTION MAP: ${sectionMap || 'not measured yet'}.\nParse the artist's instructio
 - {"kind":"transform","tempo":0.5-1.5?,"semitones":-6..6?}  // speed / key
 - {"kind":"remaster","preset":"warm|loud|club|radio"}       // tone/loudness feel incl reverb-ish "warm"
 - {"kind":"regen_beat"}                                      // new sound, SAME structure (self-clone)
-- {"kind":"add_layer","prompt":"<instrument direction>"}     // e.g. add snares/keys/strings texture
+- {"kind":"add_layer","role":"<material role e.g. military_snare|gbedu|talking_drum|shaker|afro_tom_roll>","intensity":0-1}  // add the missing drum: overlay that role's OWN-SHELF groove across the song (free, no render)
+- {"kind":"add_layer","prompt":"<instrument direction>"}     // fallback when no shelf role fits: forge the texture (provider-backed)
 - {"kind":"add_fill","timesS":[80]}                          // drum fill at timestamps (seconds)
 - {"kind":"cut","fromS":45,"toS":60}                         // remove a region
 - {"kind":"move_section","fromIndex":3,"toIndex":2}          // Arrange: move a section (1-based, see map)
@@ -287,7 +288,11 @@ ${song.lyric.body.slice(0, 4000)}`,
 
     // timeline ops -> the song-edit job
     const idempotencyKey = scopedRequestKey(req.headers as Record<string, unknown>, `song-edit:${op.kind}`);
-    const providerBacked = ['add_layer', 'stem_fx', 'vocal_drop', 'resing_section'].includes(op.kind);
+    // add_layer with a ROLE pulls a loop from the workspace's own shelf —
+    // zero provider spend, so no charge. Only the prompt-forged fallback
+    // (no role) costs a render credit like the other provider-backed ops.
+    const providerBacked = ['stem_fx', 'vocal_drop', 'resing_section'].includes(op.kind)
+      || (op.kind === 'add_layer' && !(op as { role?: unknown }).role);
     let charge: SuccessfulCharge | undefined;
     if (providerBacked) {
       const charged = await app.chargeCredits({ workspaceId, key: 'beat_idea_short_30s', refTable: 'Song', refId: song.id, idempotencyKey });
