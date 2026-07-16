@@ -229,6 +229,8 @@ export default function CatalogGrid({ initial }: { initial: SongRow[] }) {
   } | null>(null);
   // Keyed by songId so a treatment can never be shown against the wrong song —
   // the same discipline the lyrics themselves now follow server-side.
+  const [videoOpen, setVideoOpen] = useState<SongRow | null>(null);
+  const [makingVideo, setMakingVideo] = useState(false);
   const [videoConcept, setVideoConcept] = useState<{
     songId: string;
     state: "loading" | "ready";
@@ -625,6 +627,21 @@ export default function CatalogGrid({ initial }: { initial: SongRow[] }) {
    * screen. Deliberately non-blocking: a song with no concept yet is a normal
    * state, not an error, so a failure here never stops the lyrics opening.
    */
+  /** Write the video plan for a song ON DEMAND — cheap text generation from
+   *  the song's own words; never touches a video-render credit. Legacy songs
+   *  predate per-song treatments entirely, so this is how they get theirs. */
+  async function makeVideoPlan(s: SongRow) {
+    setMakingVideo(true);
+    try {
+      await api.post(`/videos/storyboards`, { projectId: s.projectId, songId: s.id });
+      await loadVideoConcept(s.id);
+    } catch {
+      setVideoConcept({ songId: s.id, state: "ready", concept: null });
+    } finally {
+      setMakingVideo(false);
+    }
+  }
+
   async function loadVideoConcept(songId: string) {
     setVideoConcept({ songId, state: "loading" });
     try {
@@ -893,13 +910,23 @@ export default function CatalogGrid({ initial }: { initial: SongRow[] }) {
                     onClick={() => void makeItBigger(s)}
                   />
                 )}
-                {/bigger/i.test(s.versionLabel ?? "") && (
-                  <Action
-                    label="⤢ Compare versions"
-                    icon={<GitCompare className="h-3.5 w-3.5" />}
-                    onClick={() => void openCompare(s)}
-                  />
-                )}
+                {/* Every song can hold multiple takes — comparing them was
+                    gated behind the "bigger" flow only, which read as the
+                    feature having vanished (owner report, 2026-07-16). The
+                    modal itself says when there is only one take. */}
+                <Action
+                  label="⤢ Compare versions"
+                  icon={<GitCompare className="h-3.5 w-3.5" />}
+                  onClick={() => void openCompare(s)}
+                />
+                <Action
+                  label="🎬 Video"
+                  icon={<Clapperboard className="h-3.5 w-3.5" />}
+                  onClick={() => {
+                    setVideoOpen(s);
+                    void loadVideoConcept(s.id);
+                  }}
+                />
                 <Action
                   label="Re-master"
                   icon={<Wand2 className="h-3.5 w-3.5" />}
@@ -1084,11 +1111,18 @@ export default function CatalogGrid({ initial }: { initial: SongRow[] }) {
                   </ol>
                 </div>
               ) : (
-                <div className="text-[11px] text-slate-500">
-                  No video treatment for this song yet — build one from the
-                  project&apos;s video console and it will appear here, written
-                  from this song&apos;s own words.
-                </div>
+                <button
+                  disabled={makingVideo}
+                  onClick={() => {
+                    const row = songs.find(x => x.id === editing.id);
+                    if (row) void makeVideoPlan(row);
+                  }}
+                  className="rounded-full border border-white/10 bg-white/5 px-3 py-1.5 text-[11px] text-slate-300 hover:bg-white/10 disabled:opacity-40"
+                >
+                  {makingVideo
+                    ? "Writing the treatment…"
+                    : "🎬 Write the video plan from this song's words"}
+                </button>
               )}
             </div>
           )}
@@ -1275,6 +1309,83 @@ export default function CatalogGrid({ initial }: { initial: SongRow[] }) {
             )
           }
         />
+      )}
+
+      {/* VIDEO TREATMENT — first-class per-song piece (owner law: "a piece for
+          the video recommendation just like you have lyrics"). It previously
+          lived only inside the lyrics editor, invisible unless you knew. */}
+      {videoOpen && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
+          onClick={() => setVideoOpen(null)}
+        >
+          <div
+            className="max-h-[85vh] w-full max-w-2xl overflow-y-auto rounded-2xl border border-white/10 bg-slate-950 p-5"
+            onClick={e => e.stopPropagation()}
+          >
+            <div className="mb-3 flex items-center justify-between">
+              <div className="flex items-center gap-2 font-display text-lg">
+                <Clapperboard className="h-4 w-4 text-afrobrand-400" /> Video —{" "}
+                {videoOpen.title}
+              </div>
+              <button
+                onClick={() => setVideoOpen(null)}
+                className="rounded-full border border-white/10 px-3 py-1 text-xs text-slate-400 hover:bg-white/10"
+              >
+                Close
+              </button>
+            </div>
+            {videoConcept?.songId !== videoOpen.id ||
+            videoConcept.state === "loading" ? (
+              <div className="flex items-center gap-1.5 text-sm text-slate-500">
+                <Loader2 className="h-4 w-4 animate-spin" /> Loading…
+              </div>
+            ) : videoConcept.concept ? (
+              <div>
+                <div className="mb-2 text-sm font-medium text-slate-200">
+                  {videoConcept.concept.title}
+                  <span className="ml-2 font-normal text-slate-500">
+                    · {videoConcept.concept.durationS}s ·{" "}
+                    {videoConcept.concept.format}
+                  </span>
+                </div>
+                <ol className="space-y-2">
+                  {videoConcept.concept.storyboard.map(shot => (
+                    <li
+                      key={shot.index}
+                      className="rounded-lg border border-white/5 bg-black/20 px-3 py-2 text-xs leading-relaxed text-slate-400"
+                    >
+                      <span className="font-medium text-slate-300">
+                        Scene {shot.index + 1}
+                      </span>
+                      <span className="text-slate-600"> · {shot.duration_s}s</span>
+                      <div className="mt-1 text-slate-400">{shot.prompt}</div>
+                      {shot.motion || shot.lighting ? (
+                        <div className="mt-1 text-slate-600">
+                          {[shot.motion, shot.lighting].filter(Boolean).join(" · ")}
+                        </div>
+                      ) : null}
+                    </li>
+                  ))}
+                </ol>
+              </div>
+            ) : (
+              <div>
+                <p className="mb-3 text-sm text-slate-400">
+                  No video plan for this song yet. Write one from this
+                  song&apos;s own words — text only, no video credits spent.
+                </p>
+                <button
+                  disabled={makingVideo}
+                  onClick={() => void makeVideoPlan(videoOpen)}
+                  className="rounded-full bg-brand-gradient px-4 py-2 text-sm font-medium text-ink shadow-glow disabled:opacity-40"
+                >
+                  {makingVideo ? "Writing the treatment…" : "🎬 Write the video plan"}
+                </button>
+              </div>
+            )}
+          </div>
+        </div>
       )}
 
       {compare && (
