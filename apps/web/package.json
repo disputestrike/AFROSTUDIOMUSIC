@@ -13,18 +13,18 @@
   },
   "dependencies": {
     "@afrohit/shared": "workspace:*",
-    "@tanstack/react-query": "^5.62.0",
+    "@tanstack/react-query": "^5.101.2",
     "clsx": "^2.1.1",
-    "lucide-react": "^0.460.0",
-    "next": "^15.2.3",
-    "react": "^19.0.3",
-    "react-dom": "^19.0.3",
-    "tailwind-merge": "^2.5.4",
-    "zustand": "^5.0.1"
+    "lucide-react": "^1.24.0",
+    "next": "^16.2.10",
+    "react": "^19.2.7",
+    "react-dom": "^19.2.7",
+    "tailwind-merge": "^3.6.0",
+    "zustand": "^5.0.14"
   },
   "devDependencies": {
     "@types/node": "^22.9.0",
-    "@types/react": "^19.0.0",
+    "@types/react": "^19.2.17",
     "@types/react-dom": "^19.0.0",
     "autoprefixer": "^10.4.20",
     "postcss": "^8.4.49",
