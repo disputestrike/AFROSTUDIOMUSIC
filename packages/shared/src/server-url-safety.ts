@@ -185,12 +185,26 @@ export async function safeFetch(
     const resolved = await resolveSafeUrl(current, { blockMediaHosts: init.blockMediaHosts });
     if (!resolved.check.ok) throw Object.assign(new Error(resolved.check.error), { urlCheck: resolved.check });
     const address = resolved.addresses[0]!;
+    // DNS-PINNING SHIM, NODE-20+ CORRECT. The original shim always answered
+    // the legacy single-address shape `(err, address, family)` — but modern
+    // Node's Happy-Eyeballs path (autoSelectFamily, default ON since 20) calls
+    // lookup with `options.all = true` and expects `(err, [{address, family}])`.
+    // The string landed where an array belonged and EVERY pinned connection
+    // died as a bare "fetch failed (ERR_INVALID_IP_ADDRESS)" — the 2026-07-16
+    // outage that ate paid video clips, music post-processing and the lyric
+    // verifier in one stroke (shipped inside the deploy freeze; first live
+    // contact was that day). Honor both callback shapes AND disable
+    // autoSelectFamily — with exactly one pinned address there is nothing to
+    // race, and the legacy path is the simpler contract.
+    const family = net.isIP(address) === 6 ? 6 : 4;
     const agent = new Agent({
       connect: {
-        lookup: ((_hostname: string, _options: unknown, callback: (error: Error | null, address: string, family: number) => void) => {
-          callback(null, address, net.isIP(address));
+        autoSelectFamily: false,
+        lookup: ((_hostname: string, options: { all?: boolean } | undefined, callback: (error: Error | null, result: unknown, family?: number) => void) => {
+          if (options?.all) callback(null, [{ address, family }]);
+          else callback(null, address, family);
         }) as never,
-      },
+      } as never,
     });
     const { maxHops: _maxHops, blockMediaHosts: _blockMediaHosts, ...requestInit } = init;
     let response: Response;
