@@ -983,12 +983,20 @@ export function masterPreChain(
   target: { lufs: number; tp: number },
   rawI: number | null,
   genre?: string,
+  matchEq?: string | null,
 ): string {
   const tpLinear = Math.pow(10, target.tp / 20).toFixed(4); // dBTP → linear amplitude
   const tone = MASTER_TONE_CURVES[genre ?? ''] ?? DEFAULT_TONE_CURVE;
   const head = [
     'highpass=f=28',
     ...tone,
+    // CLAMPED MATCH-EQ (reference seam): a measured, ±3 dB-clamped per-octave
+    // correction toward the lane's rights-cleared reference tilt, computed by
+    // masterMatchEqCorrection() from the RAW take's octave read. It sits after
+    // the genre curve and BEFORE the glue/multiband stages so the compressors
+    // react to the corrected balance. Absent references → absent filter — the
+    // chain string is byte-identical to the pre-match-EQ chain (provable no-op).
+    ...(matchEq ? [matchEq] : []),
     'acompressor=threshold=-16dB:ratio=2:attack=20:release=200:makeup=1.5', // wideband glue
   ].join(',');
   // 3-BAND MULTIBAND — gentle 2:1 per band; the low band gets the deepest
@@ -1032,13 +1040,18 @@ export function masterChain(
 // ---------------------------------------------------------------------------
 // REFERENCE SEAM — measured deltas against rights-cleared reference masters.
 //
-// CONTRACT: apps/worker/py/fixtures/master-references.json holds ONLY measured
-// NUMBERS taken from rights-cleared reference masters — per-genre loudness,
-// tilt, correlation, octave RMS vectors. NEVER audio, never a fingerprint that
-// could reconstruct audio. The file does not exist yet by design: this seam
-// no-ops cleanly (null) until an operator measures references and commits the
-// manifest. A reference delta is a REPORT line, never a gate — it must not and
-// cannot fail a render.
+// CONTRACT: reference vectors hold ONLY measured NUMBERS taken from rights-
+// cleared reference masters — per-genre loudness, tilt, correlation, octave
+// RMS vectors. NEVER audio, never a fingerprint that could reconstruct audio.
+//
+// TWO SOURCES, DB FIRST: the fixture file (apps/worker/py/fixtures/
+// master-references.json) is baked into the worker image and read-only at
+// runtime, so operator-supplied references land in the DATABASE instead — the
+// SystemSetting JSON key 'master.references.v1', written by the admin
+// reference-ingestion path (numbers + rights attestation, per genre). The
+// loader reads the DB snapshot first and falls back to the fixture; while BOTH
+// are absent this seam no-ops cleanly (null). A reference delta is a REPORT
+// line, never a gate — it must not and cannot fail a render.
 // ---------------------------------------------------------------------------
 
 export interface MasterReferenceVector {
@@ -1051,8 +1064,65 @@ export interface MasterReferenceVector {
   octaveRmsDb?: number[];
 }
 
-/** Memoized manifest load — the fixture can't change within a process lifetime,
- *  and a missing/corrupt file is an honest empty map, never a throw. */
+/** The SystemSetting key holding operator-ingested reference vectors. */
+export const MASTER_REFERENCES_SETTING_KEY = 'master.references.v1';
+
+/** One measured, rights-attested reference track inside the DB store. */
+export interface MasterReferenceTrack {
+  title: string;
+  rightsAttestation: string;
+  measuredAt: string;
+  vector: MasterReferenceVector;
+}
+
+/**
+ * Collapse the DB store ({ version, genres: { g: { tracks: [...] } } }) into
+ * per-genre AGGREGATE vectors: the element-wise MEAN over every track that
+ * measured that axis (3 tracks per genre by doctrine — the mean is the lane's
+ * commercial center, not any single record). Octave vectors average only when
+ * their lengths agree with the measurement bank. Pure + exported so the merge
+ * is assertable without a database.
+ */
+export function masterReferenceStoreToVectors(store: unknown): Record<string, MasterReferenceVector> {
+  const out: Record<string, MasterReferenceVector> = {};
+  if (!store || typeof store !== 'object' || Array.isArray(store)) return out;
+  const genres = (store as { genres?: unknown }).genres;
+  if (!genres || typeof genres !== 'object' || Array.isArray(genres)) return out;
+  const scalarKeys = [
+    'lufs', 'truePeakDb', 'loudnessRangeLra', 'crestFactorDb',
+    'spectralTiltDbPerOct', 'stereoCorrelation',
+  ] as const;
+  for (const [genre, entry] of Object.entries(genres as Record<string, unknown>)) {
+    const tracks = (entry as { tracks?: unknown })?.tracks;
+    if (!Array.isArray(tracks) || !tracks.length) continue;
+    const vectors = tracks
+      .map((t) => (t as { vector?: unknown })?.vector)
+      .filter((v): v is MasterReferenceVector => !!v && typeof v === 'object' && !Array.isArray(v));
+    if (!vectors.length) continue;
+    const agg: MasterReferenceVector = {};
+    for (const key of scalarKeys) {
+      const values = vectors
+        .map((v) => v[key])
+        .filter((n): n is number => typeof n === 'number' && Number.isFinite(n));
+      if (values.length) {
+        agg[key] = Math.round((values.reduce((a, b) => a + b, 0) / values.length) * 100) / 100;
+      }
+    }
+    const octaves = vectors
+      .map((v) => v.octaveRmsDb)
+      .filter((a): a is number[] =>
+        Array.isArray(a) && a.length === OCTAVE_CENTERS_HZ.length && a.every((n) => Number.isFinite(n)));
+    if (octaves.length) {
+      agg.octaveRmsDb = OCTAVE_CENTERS_HZ.map((_hz, i) =>
+        Math.round((octaves.reduce((a, v) => a + v[i]!, 0) / octaves.length) * 10) / 10);
+    }
+    if (Object.keys(agg).length) out[genre] = agg;
+  }
+  return out;
+}
+
+/** Memoized fixture load — the baked file can't change within a process
+ *  lifetime, and a missing/corrupt file is an honest empty map, never a throw. */
 let _masterRefsCache: Record<string, MasterReferenceVector> | null = null;
 function loadMasterReferences(): Record<string, MasterReferenceVector> {
   if (_masterRefsCache) return _masterRefsCache;
@@ -1079,6 +1149,101 @@ function loadMasterReferences(): Record<string, MasterReferenceVector> {
   return refs;
 }
 
+// DB snapshot state. `undefined` override = live mode; a test-set override
+// (even null) BOTH replaces the snapshot and disables DB reads, so the test
+// suite never touches (or hangs on) a database.
+let _masterRefsDbSnapshot: Record<string, MasterReferenceVector> | null = null;
+let _masterRefsDbCheckedAt = 0;
+let _masterRefsDbOverride: Record<string, MasterReferenceVector> | null | undefined;
+
+/** TEST SEAM: inject a DB snapshot (null = "DB has none"; undefined = restore
+ *  live behavior). Never used by production code paths. */
+export function _setMasterReferenceDbSnapshotForTest(
+  snapshot?: Record<string, MasterReferenceVector> | null,
+): void {
+  _masterRefsDbOverride = snapshot;
+}
+
+/**
+ * DB-FIRST refresh: read the SystemSetting reference store into the in-process
+ * snapshot, TTL-bounded so render loops don't hammer the DB. Best-effort by
+ * contract — no DB, no row, or a corrupt store leaves the previous snapshot
+ * (and the fixture fallback) in place; this can never fail a render. The
+ * dynamic import keeps this module DB-free for the offline test suite.
+ */
+export async function refreshMasterReferences(ttlMs = 5 * 60_000): Promise<void> {
+  if (_masterRefsDbOverride !== undefined) return; // test override — no DB
+  const now = Date.now();
+  if (_masterRefsDbCheckedAt && now - _masterRefsDbCheckedAt < ttlMs) return;
+  try {
+    const { prisma } = await import('@afrohit/db');
+    const row = await prisma.systemSetting.findUnique({
+      where: { key: MASTER_REFERENCES_SETTING_KEY },
+    });
+    _masterRefsDbSnapshot = row ? masterReferenceStoreToVectors(JSON.parse(row.value)) : null;
+    _masterRefsDbCheckedAt = now;
+  } catch {
+    // Unreachable DB / corrupt JSON: keep whatever we last knew; the fixture
+    // fallback (or an honest null) still answers. Stamp the check time so a
+    // dead DB is retried on the TTL, not on every render.
+    _masterRefsDbCheckedAt = now;
+  }
+}
+
+/** The genre's reference vector — DB snapshot first, fixture fallback, else null. */
+export function masterReferenceVectorFor(genre: string | undefined): MasterReferenceVector | null {
+  if (!genre) return null;
+  const db = _masterRefsDbOverride !== undefined ? _masterRefsDbOverride : _masterRefsDbSnapshot;
+  const fromDb = db?.[genre];
+  if (fromDb && Object.keys(fromDb).length) return fromDb;
+  return loadMasterReferences()[genre] ?? null;
+}
+
+/** Per-band clamp for the match-EQ correction — a reference is a compass, not
+ *  an autopilot; ±3 dB is the most a nightly chain may push any octave. */
+export const MASTER_MATCH_EQ_CLAMP_DB = 3;
+/** Corrections under this magnitude are dropped — sub-quarter-dB EQ moves are
+ *  measurement noise, and every band we don't touch is honesty preserved. */
+const MATCH_EQ_DEADBAND_DB = 0.25;
+
+/**
+ * CLAMPED MATCH-EQ toward the reference tilt: translate the per-octave delta
+ * (reference − measured raw take) into an equalizer-bank correction. Mean-
+ * removed first — overall LEVEL belongs to the loudnorm passes; this corrects
+ * SHAPE only. Each band clamps to ±MASTER_MATCH_EQ_CLAMP_DB. Returns null
+ * whenever either octave vector is absent/malformed or every corrected band
+ * lands in the deadband — the provable no-op while references are absent.
+ */
+export function masterMatchEqCorrection(
+  measuredOctaveRmsDb: number[] | null | undefined,
+  reference: MasterReferenceVector | null | undefined,
+): { filter: string; bandsDb: number[] } | null {
+  const ref = reference?.octaveRmsDb;
+  if (
+    !Array.isArray(measuredOctaveRmsDb) || !Array.isArray(ref)
+    || measuredOctaveRmsDb.length !== OCTAVE_CENTERS_HZ.length
+    || ref.length !== OCTAVE_CENTERS_HZ.length
+    || !measuredOctaveRmsDb.every((n) => Number.isFinite(n))
+    || !ref.every((n) => Number.isFinite(n))
+  ) {
+    return null;
+  }
+  const rawDelta = ref.map((r, i) => r - measuredOctaveRmsDb[i]!);
+  const mean = rawDelta.reduce((a, b) => a + b, 0) / rawDelta.length;
+  const bandsDb = rawDelta.map((d) => {
+    const shaped = d - mean; // shape correction only — level is loudnorm's job
+    const clamped = Math.max(-MASTER_MATCH_EQ_CLAMP_DB, Math.min(MASTER_MATCH_EQ_CLAMP_DB, shaped));
+    const rounded = Math.round(clamped * 10) / 10;
+    return Math.abs(rounded) < MATCH_EQ_DEADBAND_DB ? 0 : rounded;
+  });
+  if (bandsDb.every((g) => g === 0)) return null;
+  const filter = OCTAVE_CENTERS_HZ
+    .map((hz, i) => (bandsDb[i] === 0 ? null : `equalizer=f=${hz}:width_type=o:width=1:g=${bandsDb[i]!.toFixed(1)}`))
+    .filter(Boolean)
+    .join(',');
+  return { filter, bandsDb };
+}
+
 /**
  * Delta of a measured master vs its genre's reference vector. Null whenever the
  * manifest, the genre entry, or a comparable measured value is absent — the
@@ -1091,7 +1256,7 @@ export function masterReferenceDelta(
 ): { genre: string; reference: MasterReferenceVector; delta: Record<string, number | number[]> } | null {
   if (!genre) return null;
   try {
-    const reference = loadMasterReferences()[genre];
+    const reference = masterReferenceVectorFor(genre);
     if (!reference) return null;
     const delta: Record<string, number | number[]> = {};
     const diff = (key: string, ours: number | null | undefined, theirs: number | undefined) => {
@@ -1355,13 +1520,46 @@ export async function mixdownConsole(tracks: ConsoleTrack[]): Promise<Buffer> {
   }
 }
 
+/** Commercial Afro masters sit ~LRA 6-8; above this ceiling the -9 preset earns
+ *  its single extra density pass (see master() below). */
+export const MASTER_LRA_DENSITY_CEILING = 8.5;
+
+/** One loudness measurement inside the mastering run — verbatim numbers. */
+export interface MasterDrivePass {
+  pass: number;
+  /** raw = untouched program; drive = after the pass-1 pre-chain; density =
+   *  after the single extra LRA pass. */
+  stage: 'raw' | 'drive' | 'density';
+  /** measured drive applied by the stage's chain, dB (0 = chain drove nothing). */
+  driveDb?: number;
+  /** why the density stage ran (or why its render was skipped). */
+  reason?: string;
+  /** loudnorm pass-1 numbers of the signal at this point; null = unmeasurable. */
+  measured: { lufs: number; truePeakDb: number; lra: number } | null;
+}
+
+/** What the mastering run DID — measured passes + the match-EQ it applied.
+ *  Every field is measurement or a faithful record of the chain; never a guess. */
+export interface MasterRenderReport {
+  drivePasses: MasterDrivePass[];
+  appliedMatchEq: { bandsDb: number[]; clampDb: number; referenceGenre: string } | null;
+}
+
 /**
  * Master a mix — real TWO-PASS loudness. Pass 1 measures (raw take → sets the
  * drive gain; then the driven pre-chain → sets the trim's measured_* numbers),
  * pass 2 renders once with a LINEAR trim that lands ON the preset target. The
  * old one-pass dynamic loudnorm undershot 1-3 LU and pumped — the "masters
  * sound weak" defect, now retired to a fallback for unmeasurable input.
- * Encodes both WAV and 320k MP3. Returns both.
+ *
+ * LRA DENSITY ITERATION (afro_stream_-9 only): when the driven re-measure still
+ * reads LRA above MASTER_LRA_DENSITY_CEILING, ONE additional gentle drive pass
+ * (measured, clamped 0.5-2.5 dB, re-measured) densifies toward the commercial
+ * LRA 6-8 window. Never looped more than once — chasing LRA harder than one
+ * extra pass is how masters get crushed; whatever dynamics survive pass 2 are
+ * the record's own, reported honestly.
+ *
+ * Encodes both WAV and 320k MP3. Returns both plus the measured render report.
  */
 export async function master(opts: {
   mix: Buffer;
@@ -1374,13 +1572,15 @@ export async function master(opts: {
    */
   finished?: boolean;
   /**
-   * Lane for the per-genre tonal curve (MASTER_TONE_CURVES). Only the FULL
-   * mastering path uses it — the finished/conform path stays tone-neutral by
-   * doctrine. Absent/unmapped → the default curve, never a failure.
+   * Lane for the per-genre tonal curve (MASTER_TONE_CURVES) and the reference
+   * match-EQ. Only the FULL mastering path uses it — the finished/conform path
+   * stays tone-neutral by doctrine. Absent/unmapped → the default curve, never
+   * a failure.
    */
   genre?: string;
-}): Promise<{ wav: Buffer; mp3: Buffer }> {
-  const target = MASTER_TARGETS[opts.preset] ?? MASTER_TARGETS['afro_stream_-9']!;
+}): Promise<{ wav: Buffer; mp3: Buffer; report: MasterRenderReport }> {
+  const presetName = MASTER_TARGETS[opts.preset] ? opts.preset : 'afro_stream_-9';
+  const target = MASTER_TARGETS[presetName]!;
   const dir = await mkdtemp(join(tmpdir(), 'afrohit-master-'));
   try {
     const inPath = join(dir, 'in.bin');
@@ -1389,19 +1589,97 @@ export async function master(opts: {
     await writeFile(inPath, opts.mix);
     // PASS 1 — measure the raw program; its integrated loudness sets the drive.
     const raw = await measureLoudnorm(inPath, target);
+    const asPass = (m: LoudnormStats | null) =>
+      m ? { lufs: m.input_i, truePeakDb: m.input_tp, lra: m.input_lra } : null;
+    const drivePasses: MasterDrivePass[] = [{ pass: 0, stage: 'raw', measured: asPass(raw) }];
+
+    // MATCH-EQ (full chain only): measure the RAW take's octave balance and
+    // build the clamped correction toward the genre's reference vector. DB-first
+    // reference load rides a TTL'd best-effort refresh; no reference (today's
+    // state) → null → the chain is provably identical to the uncorrected one.
+    let appliedMatchEq: MasterRenderReport['appliedMatchEq'] = null;
+    let matchEqFilter: string | null = null;
+    if (!opts.finished && opts.genre) {
+      await refreshMasterReferences().catch(() => undefined);
+      const reference = masterReferenceVectorFor(opts.genre);
+      if (reference?.octaveRmsDb) {
+        const spectral = await measureSpectralAndStereo(inPath);
+        const correction = masterMatchEqCorrection(spectral.octaveRmsDb, reference);
+        if (correction) {
+          matchEqFilter = correction.filter;
+          appliedMatchEq = {
+            bandsDb: correction.bandsDb,
+            clampDb: MASTER_MATCH_EQ_CLAMP_DB,
+            referenceGenre: opts.genre,
+          };
+        }
+      }
+    }
+
+    const rawI = raw?.input_i ?? null;
     const pre = opts.finished
-      ? conformPreChain(target, raw?.input_i ?? null)
-      : masterPreChain(target, raw?.input_i ?? null, opts.genre);
+      ? conformPreChain(target, rawI)
+      : masterPreChain(target, rawI, opts.genre, matchEqFilter);
+    // Record the drive the pass-1 chain ACTUALLY applies (same conditions the
+    // chain builders use) — the report states what happened, never a formula.
+    const pass1Gain = rawI === null ? 0 : driveGainDb(target.lufs, rawI);
+    const pass1DriveDb = (opts.finished ? pass1Gain > 0.05 : target.lufs >= -11 && pass1Gain > 0.05)
+      ? Math.round(pass1Gain * 100) / 100
+      : 0;
     // PASS 1b — measure the signal as it LEAVES the drive/limiter stage: the
     // trim must know its OWN input, not the raw take, or the drive gain gets
     // applied twice. Same deterministic pre-chain as the render below.
     const driven = raw ? await measureLoudnorm(inPath, target, pre) : null;
+    if (driven) drivePasses.push({ pass: 1, stage: 'drive', driveDb: pass1DriveDb, measured: asPass(driven) });
+
+    // LRA DENSITY ITERATION — one extra gentle pass, afro_stream_-9 only.
+    let renderPre = pre;
+    let renderDriven = driven;
+    if (
+      !opts.finished
+      && presetName === 'afro_stream_-9'
+      && driven
+      && driven.input_lra > MASTER_LRA_DENSITY_CEILING
+    ) {
+      // Gentle by construction: half a dB per LU above the LRA-8 anchor,
+      // clamped 0.5-2.5 dB — enough to close a 1-3 LU gap, never a crusher.
+      const extraDb = Math.min(2.5, Math.max(0.5, Math.round((driven.input_lra - 8) * 5) / 10));
+      const tpLinear = Math.pow(10, target.tp / 20).toFixed(4);
+      const pre2 = `${pre},volume=${extraDb.toFixed(2)}dB,asoftclip=type=tanh:threshold=0.85,alimiter=level=false:limit=${tpLinear}:attack=2:release=80`;
+      const driven2 = await measureLoudnorm(inPath, target, pre2);
+      if (driven2) {
+        renderPre = pre2;
+        renderDriven = driven2;
+        drivePasses.push({
+          pass: 2,
+          stage: 'density',
+          driveDb: extraDb,
+          reason: `measured LRA ${driven.input_lra.toFixed(1)} > ${MASTER_LRA_DENSITY_CEILING} after pass 1 (commercial Afro sits ~6-8)`,
+          measured: asPass(driven2),
+        });
+      } else {
+        // The extra stage could not be measured — rendering through it would
+        // hand the trim wrong measured_* numbers, so pass 1's chain ships.
+        drivePasses.push({
+          pass: 2,
+          stage: 'density',
+          driveDb: 0,
+          reason: 'second-pass measurement failed — pass 1 chain shipped unchanged',
+          measured: null,
+        });
+      }
+    }
+
     // PASS 2 — the real render: pre-chain + linear trim (dynamic fallback only
     // when measurement failed; a master job should never die on analysis).
-    const filter = [pre, loudnormTrim(target, opts.finished ? 20 : 11, driven)].join(',');
+    const filter = [renderPre, loudnormTrim(target, opts.finished ? 20 : 11, renderDriven)].join(',');
     await runFfmpeg(['-i', inPath, '-af', filter, '-ar', '44100', '-ac', '2', wavPath]);
     await runFfmpeg(['-i', wavPath, '-codec:a', 'libmp3lame', '-b:a', '320k', mp3Path]);
-    return { wav: await readFile(wavPath), mp3: await readFile(mp3Path) };
+    return {
+      wav: await readFile(wavPath),
+      mp3: await readFile(mp3Path),
+      report: { drivePasses, appliedMatchEq },
+    };
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

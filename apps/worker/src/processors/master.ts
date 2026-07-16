@@ -6,6 +6,8 @@ import {
   masterReferenceDelta,
   MASTER_TARGETS,
   NATIVE_AUDIO_LIMITS,
+  type AudioQuality,
+  type MasterRenderReport,
 } from '../lib/ffmpeg';
 import { markFailed, markRunning } from '../lib/jobs';
 import { deleteObjectByUrl, downloadToBuffer } from '../lib/storage';
@@ -24,6 +26,34 @@ function record(value: unknown): Record<string, unknown> | null {
   return value && typeof value === 'object' && !Array.isArray(value)
     ? value as Record<string, unknown>
     : null;
+}
+
+/**
+ * MASTER REPORT — the measured verdict of what shipped: loudness, peak,
+ * dynamics, spectral tilt, stereo correlation, plus the delta against this
+ * lane's rights-cleared reference vector when one exists (numbers only — see
+ * the reference-seam contract in ffmpeg.ts). When the render itself supplied a
+ * MasterRenderReport, its measured drive passes and applied match-EQ ride
+ * along. Null fields mean "unmeasured", never a guess. Exported so the
+ * re-certification sweep and the test harness build the exact same shape.
+ */
+export function buildMasterReport(
+  qc: AudioQuality,
+  genre: string | undefined,
+  render?: MasterRenderReport | null,
+): Record<string, unknown> {
+  return {
+    lufs: qc.integratedLufs,
+    dBTP: qc.truePeakDb,
+    lra: qc.loudnessRangeLra,
+    crest: qc.crestFactorDb,
+    tilt: qc.spectralTiltDbPerOct,
+    correlation: qc.stereoCorrelation,
+    referenceDelta: masterReferenceDelta(genre, qc),
+    ...(render
+      ? { drivePasses: render.drivePasses, appliedMatchEq: render.appliedMatchEq }
+      : {}),
+  };
 }
 
 export function isAttestedDirectUpload(meta: unknown): boolean {
@@ -170,20 +200,10 @@ export async function processMaster(payload: MasterPayload): Promise<void> {
     // render ran the -9 chain — the stored target was a fabricated number the
     // audio never aimed at (honesty law: the record states what happened).
     const target = MASTER_TARGETS[payload.preset] ?? MASTER_TARGETS['afro_stream_-9']!;
-    // MASTER REPORT — the measured verdict of what shipped: loudness, peak,
-    // dynamics, spectral tilt, stereo correlation, plus the delta against this
-    // lane's rights-cleared reference vector when the manifest exists (numbers
-    // only, see the reference-seam contract in ffmpeg.ts). Null fields mean
-    // "unmeasured", never a guess.
-    const masterReport = {
-      lufs: certified.qc.integratedLufs,
-      dBTP: certified.qc.truePeakDb,
-      lra: certified.qc.loudnessRangeLra,
-      crest: certified.qc.crestFactorDb,
-      tilt: certified.qc.spectralTiltDbPerOct,
-      correlation: certified.qc.stereoCorrelation,
-      referenceDelta: masterReferenceDelta(genre, certified.qc),
-    };
+    // The report card of what shipped (see buildMasterReport above) — including
+    // the render's own measured drive passes (LRA density iteration) and the
+    // clamped match-EQ it applied (null while references are absent).
+    const masterReport = buildMasterReport(certified.qc, genre, rendered.report);
     const master = await prisma.$transaction(async (tx) => {
       const created = await tx.master.create({
         data: {
