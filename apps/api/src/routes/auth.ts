@@ -123,8 +123,12 @@ export default async function auth(app: FastifyInstance) {
       });
       const workspace = await tx.workspace.create({ data: { name: `${stage}'s Studio`, slug } });
       await tx.workspaceMember.create({ data: { workspaceId: workspace.id, userId: user.id, role: 'OWNER' } });
+      // Artist.name is REQUIRED — omitting it made every public signup 500 at
+      // runtime while the `as never` cast hid the compile error (live incident,
+      // 2026-07-16: signup had never once succeeded in production). No cast:
+      // the compiler now guards this create.
       await tx.artist.create({
-        data: { workspaceId: workspace.id, stageName: stage, languages: ['pcm', 'en'], vocalTone: ['smooth'] } as never,
+        data: { workspaceId: workspace.id, name: stage, stageName: stage, languages: ['pcm', 'en'], vocalTone: ['smooth'] },
       });
       return { user, workspace };
     });
