@@ -38,10 +38,18 @@ export function resolveEngineForWorkspace(
   }
 ): { engine: string; wallSubstituted: boolean; unavailableReason?: string } {
   const replicateAvailable = opts.replicateAvailable ?? false;
-  const bestResellable = opts.elevenAvailable
-    ? 'eleven'
-    : replicateAvailable
-      ? 'minimax'
+  // THE PROVEN ENGINE LEADS. The Jul-13 rewrite hardcoded eleven above
+  // minimax while the deploy was frozen, so the preference shipped untested —
+  // first live contact (2026-07-16) was a plan-locked 402 on an account whose
+  // key was only ever provisioned for VOICE features, dead-ending every take
+  // while the engine that sang the owner's entire catalog sat ready. Per this
+  // file's own doctrine ("quality rankings belong to the measured bake-off,
+  // not hardcoded vendor claims"): minimax holds the standard route until a
+  // bake-off measures otherwise; eleven remains an explicit pick.
+  const bestResellable = replicateAvailable
+    ? 'minimax'
+    : opts.elevenAvailable
+      ? 'eleven'
       : 'unavailable';
   const normalizedRequested = requested === 'replicate' ? 'minimax' : requested;
   const wanted = normalizedRequested && normalizedRequested !== 'auto'
