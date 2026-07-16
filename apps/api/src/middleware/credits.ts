@@ -72,7 +72,7 @@ async function oldestWorkspaceId(): Promise<string | null> {
   return houseWorkspaceId;
 }
 
-async function isFirstPartyBilling(workspaceId: string): Promise<boolean> {
+export async function isFirstPartyBilling(workspaceId: string): Promise<boolean> {
   if (isFirstPartyWorkspace(workspaceId)) return true;
   if (workspaceId === (await oldestWorkspaceId())) return true;
 

@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { randomBytes, scrypt, timingSafeEqual } from 'node:crypto';
 import { prisma } from '@afrohit/db';
 import { isInternalMode, requireAuth } from '../middleware/auth';
+import { isFirstPartyBilling } from '../middleware/credits';
 import { hasAdminAccess } from './admin';
 import {
   adminGrantCookie,
@@ -198,12 +199,18 @@ export default async function auth(app: FastifyInstance) {
     // TENANT SURFACE ISOLATION (Wave 8a): the web decides which nav manifest to
     // render from this single boolean. It reuses the ADMIN_EMAILS allowlist via
     // hasAdminAccess — the list itself is never sent to any client.
-    const [user, workspace, operator] = await Promise.all([
+    const [user, workspace, operator, firstParty] = await Promise.all([
       prisma.user.findUnique({ where: { id: userId }, select: { email: true, fullName: true } }),
       prisma.workspace.findUnique({ where: { id: workspaceId }, select: { name: true, plan: true, creditsCents: true } }),
       hasAdminAccess(req),
+      // THE HOUSE KNOWS ITSELF: first-party workspaces render free (no credit
+      // debit) — the UI must stop showing them price tags and 402 scares. Same
+      // detection the charge path uses, so the label and the bill can never
+      // disagree (live incident 2026-07-16: the owner saw '$10.00' on renders
+      // that would not have charged them a cent).
+      isFirstPartyBilling(workspaceId),
     ]);
-    return { userId, workspaceId, email: user?.email ?? null, name: user?.fullName ?? null, operator, workspace };
+    return { userId, workspaceId, email: user?.email ?? null, name: user?.fullName ?? null, operator, firstParty, workspace };
   });
 }
 
