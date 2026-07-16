@@ -326,6 +326,37 @@ type VideoConceptRow = {
   format: string;
   createdAt: string;
 };
+/** GET /videos/concepts/:id/assembly — render coverage + gates + artifacts. */
+type AssemblyMissing = { sequenceIndex: number; label: string; shotIndexes: number[] };
+type AssemblyArtifact = {
+  id: string;
+  kind: "full" | "teaser";
+  url: string;
+  durationS: number | null;
+  coveredS: number | null;
+  songDurationS: number | null;
+  createdAt: string;
+};
+type AssemblyStatusResp = {
+  conceptId: string;
+  shotCount: number;
+  renderedShotIndexes: number[];
+  sequences: Array<{
+    index: number;
+    label: string;
+    shotIndexes: number[];
+    renderedShotIndexes: number[];
+  }>;
+  full: { ready: boolean; error?: string; missing?: AssemblyMissing[] };
+  teaser: {
+    ready: boolean;
+    error?: string;
+    durationS: number | null;
+    missing?: AssemblyMissing[];
+  };
+  audio: { ready: boolean; sourceType?: string; reason?: string };
+  assemblies: { full: AssemblyArtifact | null; teaser: AssemblyArtifact | null };
+};
 interface VersionsResp {
   songId: string;
   versionLabel: string | null;
@@ -384,6 +415,16 @@ export default function CatalogGrid({ initial }: { initial: SongRow[] }) {
     state: "loading" | "ready";
     concept?: VideoConceptRow | null;
   } | null>(null);
+  // FULL-VIDEO ASSEMBLY (Wave 9) — modal-only state: per-sequence render
+  // coverage + gates from the server, the in-flight assemble job's honest
+  // stage, and the finished artifacts (playable inline).
+  const [assembly, setAssembly] = useState<{
+    conceptId: string;
+    state: "loading" | "ready";
+    data?: AssemblyStatusResp | null;
+  } | null>(null);
+  const [assembling, setAssembling] = useState<"full" | "teaser" | null>(null);
+  const [assemblyStage, setAssemblyStage] = useState<string | null>(null);
   const [downloads, setDownloads] = useState<{
     id: string;
     files: DownloadFile[];
@@ -939,6 +980,91 @@ export default function CatalogGrid({ initial }: { initial: SongRow[] }) {
     } catch {
       setLikenessTrained(false);
       setWithLikeness(false);
+    }
+  }
+
+  /** Render coverage + assembly gates for the OPEN concept — the server is
+   *  the single authority (same pure law the worker suite tests). */
+  async function loadAssembly(conceptId: string) {
+    setAssembly({ conceptId, state: "loading" });
+    try {
+      const data = await api.get<AssemblyStatusResp>(
+        `/videos/concepts/${conceptId}/assembly`
+      );
+      setAssembly({ conceptId, state: "ready", data });
+    } catch {
+      // No assembly state is a normal state for a concept with no renders —
+      // the panel simply doesn't show; scene rendering stays fully usable.
+      setAssembly({ conceptId, state: "ready", data: null });
+    }
+  }
+
+  // The assembly panel needs fresh coverage whenever the Video modal lands on
+  // a loaded concept (renders may have finished since the last look).
+  useEffect(() => {
+    const conceptId =
+      videoOpen &&
+      videoConcept?.songId === videoOpen.id &&
+      videoConcept.state === "ready"
+        ? videoConcept.concept?.id
+        : undefined;
+    if (!conceptId) return;
+    void loadAssembly(conceptId);
+  }, [videoOpen, videoConcept]);
+
+  /** Assemble the release cut ('full') or the vertical teaser — FREE (local
+   *  CPU on our worker; every shot was already billed when it rendered).
+   *  Polls the job and narrates its REAL stages until it finishes. */
+  async function assembleVideo(kind: "full" | "teaser") {
+    const concept = videoConcept?.concept;
+    if (!concept || assembling) return;
+    setAssembling(kind);
+    setAssemblyStage("queued");
+    try {
+      const r = await api.post<{ jobId: string }>(`/videos/assemble`, {
+        conceptId: concept.id,
+        kind,
+      });
+      // Local ffmpeg work — usually a couple of minutes; bounded at 10.
+      for (let attempt = 0; attempt < 120; attempt++) {
+        await new Promise(resolve => setTimeout(resolve, 5_000));
+        const job = await api.get<{
+          status: string;
+          outputJson?: { assemblyStage?: string } | null;
+          errorJson?: { message?: string } | null;
+        }>(`/jobs/${r.jobId}`);
+        if (job.status === "SUCCEEDED") {
+          flash(
+            kind === "full"
+              ? "Full video assembled — release-ready."
+              : "Teaser assembled."
+          );
+          break;
+        }
+        if (job.status === "FAILED" || job.status === "CANCELED") {
+          flash(
+            `Assembly failed: ${job.errorJson?.message?.slice(0, 140) ?? "see the Jobs page"}`
+          );
+          break;
+        }
+        setAssemblyStage(job.outputJson?.assemblyStage ?? "working");
+        if (attempt === 119)
+          flash("Assembly is still running — check back in a minute.");
+      }
+      await loadAssembly(concept.id);
+    } catch (e) {
+      const message = (e as Error).message;
+      flash(
+        /shots_missing/.test(message)
+          ? "Some scenes have no renders yet — render them first."
+          : /no_song_audio|no_song_bound/.test(message)
+            ? "This song has no audio yet — make the song first."
+            : `Couldn't assemble: ${message.slice(0, 120)}`
+      );
+      await loadAssembly(concept.id);
+    } finally {
+      setAssembling(null);
+      setAssemblyStage(null);
     }
   }
 
@@ -1924,6 +2050,152 @@ export default function CatalogGrid({ initial }: { initial: SongRow[] }) {
                     </span>
                   )}
                 </div>
+                {/* FULL-VIDEO ASSEMBLY (Wave 9) — once scenes have renders,
+                    glue them + the song's current master into ONE release
+                    file. FREE: local CPU on our worker; every scene was
+                    already billed when it rendered. Honest by law: the gate
+                    names exactly which passages still lack renders, and a
+                    timeline shorter than the song says so instead of looping. */}
+                {assembly?.conceptId === videoConcept.concept.id &&
+                assembly.state === "ready" &&
+                assembly.data &&
+                assembly.data.renderedShotIndexes.length > 0
+                  ? (a => (
+                      <div className="mb-3 rounded-lg border border-white/10 bg-black/20 px-3 py-2 text-xs">
+                        <div className="mb-1.5 flex items-center gap-1.5 font-medium text-slate-200">
+                          <Clapperboard className="h-3.5 w-3.5 text-afrobrand-400" />
+                          Assemble the release cut
+                          <span className="font-normal text-slate-500">
+                            · {a.renderedShotIndexes.length}/{a.shotCount} scenes
+                            rendered · free (your scenes are already paid for)
+                          </span>
+                        </div>
+                        {a.sequences.length > 1 ? (
+                          <div className="mb-2 flex flex-wrap gap-1.5">
+                            {a.sequences.map(sq => (
+                              <span
+                                key={sq.index}
+                                className={`rounded-full border px-2 py-0.5 text-[11px] ${
+                                  sq.renderedShotIndexes.length
+                                    ? "border-emerald-400/40 text-emerald-300"
+                                    : "border-white/10 text-slate-500"
+                                }`}
+                              >
+                                {sq.label} {sq.renderedShotIndexes.length}/
+                                {sq.shotIndexes.length}
+                              </span>
+                            ))}
+                          </div>
+                        ) : null}
+                        <div className="flex flex-wrap items-center gap-2">
+                          <button
+                            onClick={() => void assembleVideo("full")}
+                            disabled={
+                              !a.full.ready || !a.audio.ready || assembling !== null
+                            }
+                            className="inline-flex items-center gap-1 rounded-full border border-afrobrand-400/40 bg-afrobrand-400/10 px-2.5 py-1 text-[11px] text-afrobrand-300 hover:bg-afrobrand-400/20 disabled:opacity-40"
+                          >
+                            {assembling === "full" ? (
+                              <Loader2 className="h-3 w-3 animate-spin" />
+                            ) : (
+                              <Clapperboard className="h-3 w-3" />
+                            )}
+                            {a.assemblies.full
+                              ? "Re-assemble full video (1080p)"
+                              : "Assemble full video (1080p)"}
+                          </button>
+                          <button
+                            onClick={() => void assembleVideo("teaser")}
+                            disabled={
+                              !a.teaser.ready || !a.audio.ready || assembling !== null
+                            }
+                            className="inline-flex items-center gap-1 rounded-full border border-white/15 px-2.5 py-1 text-[11px] text-slate-300 hover:bg-white/10 disabled:opacity-40"
+                          >
+                            {assembling === "teaser" ? (
+                              <Loader2 className="h-3 w-3 animate-spin" />
+                            ) : (
+                              <Clapperboard className="h-3 w-3" />
+                            )}
+                            {a.assemblies.teaser ? "Re-assemble" : "Assemble"}{" "}
+                            {a.teaser.durationS ?? 15}s vertical teaser
+                          </button>
+                          {assembling ? (
+                            <span className="text-[11px] text-slate-400">
+                              {assemblyStage ?? "working"}…
+                            </span>
+                          ) : null}
+                        </div>
+                        {/* HONEST DISABLED REASONS — never a dead button. */}
+                        {!a.audio.ready ? (
+                          <div className="mt-1 text-[11px] text-amber-300/80">
+                            {a.audio.reason ??
+                              "No song audio yet — make the song first."}
+                          </div>
+                        ) : null}
+                        {!a.full.ready && a.full.missing?.length ? (
+                          <div className="mt-1 text-[11px] text-slate-500">
+                            Full video needs at least one rendered scene in:{" "}
+                            {a.full.missing.map(m => m.label).join(", ")}
+                          </div>
+                        ) : null}
+                        {!a.teaser.ready ? (
+                          <div className="mt-1 text-[11px] text-slate-500">
+                            {a.teaser.error === "no_teaser_cut"
+                              ? "This plan has no teaser cut — rewrite the treatment to get one."
+                              : a.teaser.missing?.length
+                                ? `Teaser still needs renders for: ${a.teaser.missing.map(m => m.label).join(", ")}`
+                                : null}
+                          </div>
+                        ) : null}
+                        {/* FINISHED CUTS — playable inline + download. */}
+                        {(["full", "teaser"] as const).map(kind => {
+                          const artifact = a.assemblies[kind];
+                          if (!artifact) return null;
+                          const covers =
+                            kind === "full" &&
+                            artifact.songDurationS != null &&
+                            artifact.durationS != null &&
+                            artifact.durationS < artifact.songDurationS - 1;
+                          return (
+                            <div key={artifact.id} className="mt-2">
+                              <div className="mb-1 text-[11px] font-medium text-slate-300">
+                                {kind === "full"
+                                  ? "Full video (1920×1080)"
+                                  : "Teaser (1080×1920)"}
+                                {artifact.durationS != null
+                                  ? ` · ${mmss(artifact.durationS)}`
+                                  : ""}
+                              </div>
+                              <video
+                                controls
+                                preload="metadata"
+                                src={artifact.url}
+                                className={`w-full rounded-lg border border-white/10 bg-black ${
+                                  kind === "teaser" ? "max-h-72" : ""
+                                }`}
+                              />
+                              <div className="mt-1 flex flex-wrap items-center gap-2 text-[11px] text-slate-400">
+                                <a
+                                  href={artifact.url}
+                                  download
+                                  className="underline hover:text-slate-200"
+                                >
+                                  Download {kind === "full" ? "full video" : "teaser"}
+                                </a>
+                                {covers ? (
+                                  <span className="text-amber-300/80">
+                                    Video covers {mmss(artifact.durationS!)} of{" "}
+                                    {mmss(artifact.songDurationS!)} — render more
+                                    scenes to extend.
+                                  </span>
+                                ) : null}
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    ))(assembly.data)
+                  : null}
                 {videoConcept.concept.treatment ? (
                   ((t, conceptRow) => (
                     <div>

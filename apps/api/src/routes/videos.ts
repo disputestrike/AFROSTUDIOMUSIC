@@ -1,13 +1,16 @@
 import type { FastifyInstance } from "fastify";
+import { z } from "zod";
 import { prisma } from "@afrohit/db";
 import {
   assumedThreeActSections,
   generateStoryboardInputSchema,
   normalizeStoryboardShots,
   normalizeVideoTreatment,
+  planVideoAssembly,
   renderVideoInputSchema,
   storyboardShots,
   treatmentSectionsFromBoundaries,
+  videoAssemblyStatus,
   videoRenderUsage,
   type TreatmentSection,
 } from "@afrohit/shared";
@@ -368,6 +371,228 @@ export default async function videos(app: FastifyInstance) {
           format: concept.format,
           engineClass,
           ...(likenessPayload ? { likeness: likenessPayload } : {}),
+        }),
+      });
+
+      reply.code(202);
+      return { jobId: job.jobId, replayed: job.replayed };
+    }
+  );
+
+  // ==========================================================================
+  // FULL MUSIC-VIDEO ASSEMBLY (Wave 9) — rendered shots + the song's current
+  // master become ONE release file ('full' 1920x1080 for YouTube/TV, 'teaser'
+  // 1080x1920 for socials). Local ffmpeg on the worker: NO charge — the shots
+  // were billed per-shot when they rendered and the master when it was made;
+  // gluing them together spends no provider money, only CPU we already own.
+  // ==========================================================================
+
+  /** The song's CURRENT audio for a concept — the same newest-master-first
+   *  resolution every playback surface uses (currentPlayableAsset), resolved
+   *  HERE because auth/workspace scope and the playable-asset law live
+   *  API-side; the worker receives plain URLs and adds no new DB read paths. */
+  async function resolveConceptAudio(
+    concept: { songId: string | null },
+    workspaceId: string
+  ): Promise<
+    | {
+        ok: true;
+        sourceId: string;
+        sourceType: "beat" | "mix" | "master";
+        url: string;
+        songId: string;
+        songDurationS: number | null;
+      }
+    | { ok: false; error: "no_song_bound" | "no_song_audio" }
+  > {
+    if (!concept.songId) return { ok: false, error: "no_song_bound" };
+    const song = await prisma.song.findFirst({
+      where: { id: concept.songId, workspaceId },
+      include: {
+        masters: { orderBy: { createdAt: "desc" }, take: 20 },
+        mixes: { orderBy: { createdAt: "desc" }, take: 20 },
+        beats: { orderBy: { createdAt: "desc" }, take: 20 },
+      },
+    });
+    if (!song) return { ok: false, error: "no_song_bound" };
+    const history = playableAssetHistory(song);
+    const current = currentPlayableAsset(song);
+    if (!current) return { ok: false, error: "no_song_audio" };
+    const arrangement = playableArrangement(history, current);
+    return {
+      ok: true,
+      sourceId: current.id,
+      sourceType: current.type,
+      url: current.url,
+      songId: song.id,
+      songDurationS: arrangement?.durationS ?? current.durationS ?? null,
+    };
+  }
+
+  /** Extract the honest assembly record from a VideoRender row, if it is one. */
+  function assemblyOf(row: {
+    id: string;
+    url: string;
+    durationS: number | null;
+    createdAt: Date;
+    meta: unknown;
+  }) {
+    const meta =
+      row.meta && typeof row.meta === "object" && !Array.isArray(row.meta)
+        ? (row.meta as Record<string, unknown>)
+        : {};
+    const assembly =
+      meta.assembly && typeof meta.assembly === "object" && !Array.isArray(meta.assembly)
+        ? (meta.assembly as Record<string, unknown>)
+        : null;
+    if (!assembly) return null;
+    const num = (value: unknown): number | null =>
+      typeof value === "number" && Number.isFinite(value) ? value : null;
+    return {
+      id: row.id,
+      kind: assembly.kind === "teaser" ? ("teaser" as const) : ("full" as const),
+      url: row.url,
+      durationS: num(assembly.durationS) ?? row.durationS,
+      coveredS: num(assembly.coveredS),
+      songDurationS: num(assembly.songDurationS),
+      shotsUsed: Array.isArray(assembly.shotsUsed)
+        ? assembly.shotsUsed.filter((index): index is number => Number.isInteger(index))
+        : [],
+      audioStartS: num(
+        (assembly.audioSource as Record<string, unknown> | undefined)?.startS
+      ),
+      createdAt: row.createdAt,
+    };
+  }
+
+  /** Assembly state for the Video modal: per-sequence render coverage (chips),
+   *  both gates with honest missing lists, audio availability, and the newest
+   *  assembled artifact per kind (signed for playback by the assets plugin). */
+  app.get<{ Params: { conceptId: string } }>(
+    "/concepts/:conceptId/assembly",
+    async (req, reply) => {
+      const { workspaceId } = requireAuth(req);
+      const concept = await prisma.videoConcept.findFirst({
+        where: { id: req.params.conceptId, project: { workspaceId } },
+      });
+      if (!concept) return reply.code(404).send({ error: "concept_not_found" });
+      const renders = await prisma.videoRender.findMany({
+        where: { conceptId: concept.id },
+        orderBy: { createdAt: "asc" },
+        select: { id: true, url: true, durationS: true, createdAt: true, meta: true },
+      });
+      const audio = await resolveConceptAudio(concept, workspaceId);
+      const status = videoAssemblyStatus({
+        storyboard: concept.storyboard,
+        renders,
+        songDurationS: audio.ok ? audio.songDurationS : null,
+      });
+      const assemblies: {
+        full: ReturnType<typeof assemblyOf> | null;
+        teaser: ReturnType<typeof assemblyOf> | null;
+      } = { full: null, teaser: null };
+      for (const row of renders) {
+        const assembled = assemblyOf(row);
+        if (assembled) assemblies[assembled.kind] = assembled; // asc order → newest wins
+      }
+      return {
+        conceptId: concept.id,
+        ...status,
+        audio: audio.ok
+          ? { ready: true, sourceType: audio.sourceType }
+          : {
+              ready: false,
+              reason:
+                audio.error === "no_song_bound"
+                  ? "This plan is not bound to a song."
+                  : "No song audio yet — make the song first.",
+            },
+        assemblies,
+      };
+    }
+  );
+
+  const assembleVideoInputSchema = z.object({
+    conceptId: z.string().cuid(),
+    kind: z.enum(["full", "teaser"]),
+  });
+
+  app.post(
+    "/assemble",
+    { schema: { body: assembleVideoInputSchema } },
+    async (req, reply) => {
+      const { workspaceId } = requireAuth(req);
+      const input = assembleVideoInputSchema.parse(req.body);
+
+      const concept = await prisma.videoConcept.findFirst({
+        where: { id: input.conceptId, project: { workspaceId } },
+      });
+      if (!concept) return reply.code(404).send({ error: "concept_not_found" });
+
+      // The song's CURRENT audio — resolved before the gate so a missing
+      // record is its own honest 409, never a queued job that must fail.
+      const audio = await resolveConceptAudio(concept, workspaceId);
+      if (!audio.ok) return reply.code(409).send({ error: audio.error });
+
+      // HONEST GATING (shared law, pure + unit-tested): 'full' needs every
+      // sequence to hold >=1 successfully rendered shot; 'teaser' needs every
+      // teaserCut shot rendered. Failure names exactly what is missing.
+      const renders = await prisma.videoRender.findMany({
+        where: { conceptId: concept.id },
+        orderBy: { createdAt: "asc" },
+        select: { id: true, url: true, createdAt: true, meta: true },
+      });
+      const gate = planVideoAssembly({
+        kind: input.kind,
+        storyboard: concept.storyboard,
+        renders,
+        songDurationS: audio.songDurationS,
+      });
+      if (!gate.ok) {
+        return reply
+          .code(409)
+          .send(
+            gate.error === "shots_missing"
+              ? { error: "shots_missing", missing: gate.missing }
+              : { error: gate.error }
+          );
+      }
+
+      // NO CHARGE — deliberate: this is local CPU assembly on our own worker.
+      // No provider is called; the shots were already billed per-shot and the
+      // master was billed when it was made. Charging again would bill the
+      // user twice for work they already paid for.
+      const idempotencyKey = scopedRequestKey(
+        req.headers as Record<string, unknown>,
+        "video-assemble"
+      );
+      const job = await createQueuedProviderJob({
+        app,
+        queue: app.queues.video,
+        jobName: "assemble-video",
+        workspaceId,
+        projectId: concept.projectId,
+        kind: "video",
+        provider: "assembler",
+        inputJson: input,
+        idempotencyKey,
+        payload: jobId => ({
+          jobId,
+          workspaceId,
+          projectId: concept.projectId,
+          conceptId: concept.id,
+          kind: gate.plan.kind,
+          clips: gate.plan.clips,
+          plannedS: gate.plan.plannedS,
+          maxDurationS: gate.plan.maxDurationS,
+          audio: {
+            url: audio.url,
+            sourceId: audio.sourceId,
+            sourceType: audio.sourceType,
+            startS: gate.plan.audioStartS,
+            songId: audio.songId,
+            songDurationS: audio.songDurationS,
+          },
         }),
       });
 

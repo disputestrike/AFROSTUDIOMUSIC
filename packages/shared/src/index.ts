@@ -13,6 +13,7 @@ export * from "./benchmark-evidence";
 export * from "./runtime-safety";
 export * from "./memory-retrieval";
 export * from "./video-storyboard";
+export * from "./video-assembly";
 export * from "./lane-engine";
 export * from "./engine-class";
 export * from "./reference-origin";
