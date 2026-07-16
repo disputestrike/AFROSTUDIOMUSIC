@@ -195,17 +195,16 @@ export function materialCanAutoAssemble(
  * which made artist stems tagged 'Afrobeats' invisible to a lane tagged
  * 'afrobeats' — the shelf looked empty while the material sat right there.
  *
- * WIRING NOTE (follow-up agent): the genre filters live in Prisma where-clauses
- * UPSTREAM of selectMaterialRows, so they must be rewired to fetch by
- * workspace+role and compare genres with materialGenreMatches() in JS (or the
- * genre column must be normalized at write time + backfilled). Call sites:
- *   - apps/worker/src/processors/own-engine.ts (~84-94, `genre` equality)
- *   - apps/worker/src/processors/song-edit.ts (~285-295 add_fill, ~338-342 resing)
- *   - apps/worker/src/processors/compound.ts (~1309-1318 nightly kit counts)
- *   - apps/api/src/services/chat-tools.ts (~2584-2588 assemble tool)
- *   - apps/api/src/lib/material-plan.ts (~55-64 readiness count)
- *   - apps/api/src/routes/materials.ts (~40-49 shelf listing filter)
- * (music.ts's fill-selection query is already wired to this helper.)
+ * WIRING STATE (source-truth wave, 2026-07): writes now normalize at create
+ * time (material.ts forge, synth-material.ts) and the read sites below fetch a
+ * wider window and compare with materialGenreMatches() in JS — legacy rows
+ * with un-normalized tags stay visible because BOTH sides normalize at compare
+ * time. Rewired: own-engine.ts pickKit, song-edit.ts (add_fill + resing),
+ * chat-tools.ts assemble tool, material-plan.ts ownShelfRoles, materials.ts
+ * shelf listing, music.ts fill selection.
+ * STILL ON PRISMA EQUALITY (operator note): compound.ts nightly kit counts
+ * (~1309-1318) — out of the wave's scope; worst case the nightly forge
+ * over-forges a lane whose rows carry legacy tags. Rewire the same way.
  */
 export function normalizeMaterialGenre(genre?: string | null): string {
   return (genre ?? "").toLowerCase().trim().replace(/[\s/-]+/g, "_");

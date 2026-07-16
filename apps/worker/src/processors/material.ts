@@ -10,8 +10,12 @@ import {
 import {
   trimToLoop,
   assembleBeat,
+  master,
+  masterReferenceDelta,
   measureAudioQuality,
+  probeAudioBufferDurationS,
   transformAudio,
+  MASTER_TARGETS,
   type AssemblyLayer,
   type AssemblySection,
 } from "../lib/ffmpeg";
@@ -24,7 +28,9 @@ import {
   jobOf,
   materialCanAutoAssemble,
   materialGainFor,
+  materialKeyScore,
   materialPanFor,
+  normalizeMaterialGenre,
 } from "@afrohit/shared";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -47,7 +53,14 @@ import { join } from "node:path";
 // roles IN KEY so separately-forged loops fit together. Curated descriptors +
 // family fallbacks live in lib/forge-prompts.ts (one source for forge + tests).
 import { forgePromptFor } from "../lib/forge-prompts";
-import { inspectMaterialAudio } from "../lib/material-inspection";
+import {
+  FORGE_TEMPO_TOLERANCE,
+  foldedTempoDelta,
+  forgeBarsWithinCap,
+  inspectMaterialAudio,
+  measureLoopCutPoint,
+  normalizeLoopLoudness,
+} from "../lib/material-inspection";
 import { assessLaneCompliance } from "../lib/lane-assess";
 
 interface ForgePayload {
@@ -76,7 +89,13 @@ export async function processForgeMaterial(p: ForgePayload) {
     );
     if (!prompt) throw new Error(`unknown material role: ${p.role}`);
     const key = isKeyedRole(p.role) ? p.keySignature : undefined;
-    const bars = p.bars ?? 8;
+    // SLOW-BPM BARS CAP (item 6): the provider caps a render at ~30s but the
+    // trim always cut 8 bars — below ~65bpm the render was SHORTER than the
+    // trim window, so the row recorded fictional bars/duration. Halve the bars
+    // (8→4→2) until bars + 3s trim headroom fit the cap; the row records the
+    // ACTUAL bars below.
+    const requestedBars = p.bars ?? 8;
+    const bars = forgeBarsWithinCap(p.bpm, requestedBars);
     const loopDur = Math.ceil((60 / p.bpm) * 4 * bars) + 3; // headroom for trim
     const ws = await prisma.workspace.findUnique({
       where: { id: p.workspaceId },
@@ -136,7 +155,34 @@ export async function processForgeMaterial(p: ForgePayload) {
         : (() => {
             throw new Error("forge provider returned no playable audio");
           })());
-    const loop = await trimToLoop(raw, p.bpm, bars);
+    // DOWNBEAT-TRUE CUT (item 2): measure where bar one actually lands in the
+    // RAW render and cut THERE, instead of the blind legacy 0.5s that made
+    // whatever transient sat at half a second become "beat one" (separately
+    // forged loops then landed with different phase and never locked). This is
+    // a second DSP pass per forge — seconds of CPU on a ≤30s render, against a
+    // minutes-long provider render. Fails honest: no stable grid / DSP down →
+    // the legacy default, and the receipt below SAYS so.
+    const cutPoint = await measureLoopCutPoint(raw);
+    // WINDOW GUARD: the cut start (measured downbeat OR the legacy 0.5s) plus
+    // the full bar count must fit inside the render, or ffmpeg silently
+    // returns FEWER bars than the row claims — the exact fiction this wave
+    // exists to kill. Probe the real render length (integer seconds → keep a
+    // 1s guard band) and clamp the start back rather than losing bars; the
+    // receipt discloses the clamp.
+    const rawDurS = await probeAudioBufferDurationS(raw).catch(() => 0);
+    const barsDurS = (60 / p.bpm) * 4 * bars;
+    const requestedStartS = cutPoint.startS ?? 0.5;
+    const maxStartS =
+      rawDurS > 0 ? Math.max(0, rawDurS - 1 - barsDurS) : requestedStartS;
+    const trimStartS = Math.min(requestedStartS, maxStartS);
+    const trimmed = await trimToLoop(raw, p.bpm, bars, { startS: trimStartS });
+    // PER-LOOP LOUDNESS (item 3): providers render at coin-flip levels, which
+    // made the fixed role-gain doctrine (drums 1.0, chords 0.7…) meaningless.
+    // Normalize the trimmed loop to the shelf level (~-18 LUFS) so every brick
+    // enters the assembly bus at a KNOWN loudness. Guards inside: unmeasurable
+    // or near-silent loops ship unmodified so the QC rejection stays honest.
+    const loudness = await normalizeLoopLoudness(trimmed);
+    const loop = loudness.bytes;
     const url = await uploadBytes({
       workspaceId: p.workspaceId,
       kind: "material",
@@ -152,11 +198,98 @@ export async function processForgeMaterial(p: ForgePayload) {
       roleEvidence: "provider-prompted",
       deep: true,
     });
+    // Cut + loudness receipts — measured facts over prompts, always disclosed.
+    const trimReceipt = {
+      trimStartS,
+      source: cutPoint.startS != null ? "measured-downbeat" : "legacy-default",
+      method: cutPoint.method,
+      ...(trimStartS !== requestedStartS
+        ? { clamped: true, requestedStartS }
+        : {}),
+      ...(cutPoint.confidence != null ? { confidence: cutPoint.confidence } : {}),
+    } as const;
+    const loudnessReceipt = {
+      preLufs: loudness.preLufs,
+      postLufs: inspection.qc?.integratedLufs ?? null,
+      targetLufs: -18,
+      applied: loudness.applied,
+      ...(loudness.reason ? { skipped: loudness.reason } : {}),
+    };
+    // The measured facts about this loop become the RECORD — genre stored in
+    // canonical form (item 8a) so 'Afrobeats'/'afro-beats'/'afrobeats' are one
+    // shelf, never three invisible ones.
+    const genre = normalizeMaterialGenre(p.genre) || p.genre;
+
+    // REJECTED-ROW FILING (house rule: never delete, demote): a forge whose
+    // measurements CONTRADICT its own claim files a rejected row — a receipt
+    // the shelf can show ("this render lied about its tempo/key/role") and a
+    // contentHash tombstone so identical bytes can't re-enter under a new
+    // label. The row owns the uploaded object; the job still fails honestly.
+    const fileRejectedForge = async (
+      reason: string,
+      extra: Record<string, unknown>
+    ) => {
+      const dupe = await prisma.materialAsset.findFirst({
+        where: {
+          workspaceId: p.workspaceId,
+          contentHash: inspection.contentHash,
+        },
+        select: { id: true },
+      });
+      if (dupe) {
+        // the same audio already has a row (its receipt stands) — drop the copy
+        await deleteObjectByUrl(url).catch(() => {});
+        uploadedUrl = null;
+        return;
+      }
+      await prisma.materialAsset.create({
+        data: {
+          workspaceId: p.workspaceId,
+          kind: "loop",
+          role: p.role,
+          genre,
+          bpm: p.bpm,
+          keySignature: key ?? null,
+          bars,
+          durationS: inspection.qc?.durationS ?? null,
+          url,
+          source: "forged",
+          readiness: "rejected",
+          qualityState: "failed",
+          roleEvidence: inspection.roleEvidence,
+          rightsBasis: "provider-generated",
+          contentHash: inspection.contentHash,
+          verifiedAt: inspection.verifiedAt,
+          meta: {
+            reason,
+            qc: inspection.qc,
+            measured: inspection.measured,
+            trim: trimReceipt,
+            loudness: loudnessReceipt,
+            prompt,
+            engine: adapter.name,
+            origin: "forged",
+            rightsBasis: "provider-generated",
+            ...(p.variant ? { variant: p.variant } : {}),
+            ...extra,
+          } as never,
+        },
+      });
+      uploadedUrl = null; // the rejected row owns the object now
+    };
+
     // ISOLATED-LOOP gate (not song thresholds): a solo dry chord bed or shaker
     // loop is SUPPOSED to be quiet-ish and steady — 'too_quiet'/'flat' would
     // wrongly discard good material. Only reject true junk: near-silence,
-    // clipping, or no meaningful duration.
+    // clipping, no meaningful duration — or measured ROLE BLEED (item 4): a
+    // "shaker" hiding a kick+bass mix is refused WITH a filed receipt.
     if (inspection.readiness !== "ready") {
+      if (inspection.reasons.includes("role-bleed")) {
+        await fileRejectedForge("role-bleed", { purity: inspection.purity });
+        throw new Error(
+          `forged ${p.role} loop failed role purity (${inspection.purity?.reason ?? "foreign family measured inside the loop"})`
+        );
+      }
       throw new Error(
         `forged ${p.role} loop did not pass technical QC (${inspection.reasons.join(", ") || "unmeasured"})`
       );
@@ -171,6 +304,64 @@ export async function processForgeMaterial(p: ForgePayload) {
       throw new Error(
         `forged ${p.role} loop did not confirm the requested musical role (${inspection.roleEvidence})`
       );
+    }
+
+    // MEASURED TEMPO IS THE RECORD (item 1): the row used to store the PROMPTED
+    // bpm while the detector's number went to meta — the assembler then
+    // time-stretched by a fiction. Detectors are octave-ambiguous, so the
+    // comparison folds (×0.5/×1/×2) first; a >4% miss after folding means the
+    // provider rendered a different groove than requested → rejected, never
+    // relabeled.
+    let rowBpm = p.bpm;
+    let tempoVerification: Record<string, unknown> = {
+      promptedBpm: p.bpm,
+      detectedBpm: null,
+      state: "undetected", // unknown is honorable — the prompt stays as declared intent
+    };
+    if (inspection.detectedBpm != null) {
+      const { foldedBpm, delta } = foldedTempoDelta(
+        p.bpm,
+        inspection.detectedBpm
+      );
+      tempoVerification = {
+        promptedBpm: p.bpm,
+        detectedBpm: inspection.detectedBpm,
+        foldedBpm: +foldedBpm.toFixed(1),
+        deltaRatio: +delta.toFixed(4),
+        state: delta > FORGE_TEMPO_TOLERANCE ? "contradicted" : "confirmed",
+      };
+      if (delta > FORGE_TEMPO_TOLERANCE) {
+        await fileRejectedForge("tempo-mismatch", { tempoVerification });
+        throw new Error(
+          `forged ${p.role} loop measured ${inspection.detectedBpm}bpm (best octave ${foldedBpm.toFixed(1)}) vs requested ${p.bpm} — rejected, not relabeled`
+        );
+      }
+      rowBpm = Math.round(foldedBpm);
+    }
+
+    // MEASURED KEY IS THE RECORD (item 1): a keyed role whose detected key HARD
+    // contradicts the prompt (materialKeyScore 3 — enharmonic + relative-key
+    // aware, same compatibility law the selector uses) is rejected; a detected
+    // compatible key replaces the prompt on the row.
+    let rowKey: string | null = key ?? null;
+    let keyVerification: Record<string, unknown> | undefined;
+    if (isKeyedRole(p.role) && inspection.detectedKey) {
+      const compatibility = key
+        ? materialKeyScore(p.role, inspection.detectedKey, key)
+        : 0;
+      keyVerification = {
+        promptedKey: key ?? null,
+        detectedKey: inspection.detectedKey,
+        compatibility,
+        state: compatibility === 3 ? "contradicted" : "confirmed",
+      };
+      if (compatibility === 3) {
+        await fileRejectedForge("key-mismatch", { keyVerification });
+        throw new Error(
+          `forged ${p.role} loop measured in ${inspection.detectedKey} vs requested ${key} — rejected, not relabeled`
+        );
+      }
+      rowKey = inspection.detectedKey;
     }
     const duplicate = await prisma.materialAsset.findFirst({
       where: {
@@ -206,11 +397,14 @@ export async function processForgeMaterial(p: ForgePayload) {
         workspaceId: p.workspaceId,
         kind: "loop",
         role: p.role,
-        genre: p.genre,
-        bpm: p.bpm,
-        keySignature: key ?? null,
+        genre,
+        // Measured facts are the record: verified (octave-folded) tempo, the
+        // detected key, the ACTUAL bars after the slow-bpm cap, and the QC'd
+        // duration of the bytes that ship — never the prompt's fiction.
+        bpm: rowBpm,
+        keySignature: rowKey,
         bars,
-        durationS: (60 / p.bpm) * 4 * bars,
+        durationS: inspection.qc?.durationS ?? (60 / rowBpm) * 4 * bars,
         url,
         source: "forged",
         readiness: inspection.readiness,
@@ -222,6 +416,12 @@ export async function processForgeMaterial(p: ForgePayload) {
         meta: {
           qc: inspection.qc,
           measured: inspection.measured,
+          trim: trimReceipt,
+          loudness: loudnessReceipt,
+          tempoVerification,
+          ...(keyVerification ? { keyVerification } : {}),
+          ...(inspection.purity ? { purity: inspection.purity } : {}),
+          ...(bars !== requestedBars ? { requestedBars } : {}),
           prompt,
           engine: adapter.name,
           origin: "forged",
@@ -646,10 +846,14 @@ export async function processAssembleBeat(p: AssemblePayload) {
                 Math.abs(tempoRatio - 1) > 0.001
                   ? await transformAudio(rawFill, { tempo: tempoRatio })
                   : rawFill;
+              // bpm rides along so the fill is trimmed to exactly ONE bar
+              // inside the filtergraph (fills.ts ONE-BAR LAW) — an 8-bar fill
+              // no longer plays 7 bars past every boundary.
               beatBytes = await overlayFills(
                 beatWav,
                 fillBuf,
-                placements.map(f => f.atS)
+                placements.map(f => f.atS),
+                { bpm: p.bpm }
               );
               attemptFillApplied = true;
               console.log(
@@ -701,8 +905,64 @@ export async function processAssembleBeat(p: AssemblePayload) {
     )) {
       await deleteObjectByUrl(staleUrl).catch(() => {});
     }
+    attemptedUrls.length = 0;
+    attemptedUrls.push(url);
+
+    // MASTER THE ASSEMBLED BEAT (item 7 — the single biggest audible gap): the
+    // bus sum deliberately keeps headroom "for the master downstream", but no
+    // master ever ran — raw sums shipped quiet and unglued. Run the SAME
+    // two-pass chain the song path uses, with the project's genre curve
+    // (amapiano low-mid control / afrobeats percussion presence), and ship the
+    // MASTERED wav as the BeatAsset. The raw sum stays uploaded as meta.audit
+    // evidence — measured lineage, never deleted on success.
+    const rawSumUrl = url;
+    const rawSumQc = qc;
+    const rawSumBytes = await downloadToBuffer(url);
+    const masterPreset = "afro_stream_-9";
+    const masterGenre = normalizeMaterialGenre(p.genre) || p.genre;
+    const { wav: masteredWav } = await master({
+      mix: rawSumBytes,
+      preset: masterPreset,
+      genre: masterGenre,
+    });
+    const masteredUrl = await uploadBytes({
+      workspaceId: p.workspaceId,
+      kind: "beats",
+      bytes: masteredWav,
+      contentType: "audio/wav",
+      ext: "wav",
+    });
+    attemptedUrls.push(masteredUrl);
+    // Certify what actually SHIPS: the mastered artifact passes the same QC
+    // gate; a master that breaks a passing sum fails the job honestly.
+    const masterQc = await measureAudioQuality(masteredUrl).catch(() => null);
+    if (!masterQc || masterQc.verdict !== "pass") {
+      throw new Error(
+        `assembled master failed QC (${(masterQc?.flags ?? []).join(", ") || "unmeasured"}) — nothing shipped`
+      );
+    }
+    const masterTarget = MASTER_TARGETS[masterPreset]!;
+    if (
+      masterQc.integratedLufs != null &&
+      masterQc.integratedLufs < masterTarget.lufs - 1.5
+    ) {
+      console.warn(
+        `[assemble] master undershot target: measured ${masterQc.integratedLufs.toFixed(1)} LUFS vs ${masterTarget.lufs} (${masterPreset})`
+      );
+    }
+    const masterReport = {
+      preset: masterPreset,
+      genre: masterGenre,
+      target: masterTarget,
+      measured: masterQc,
+      // measured delta vs the genre's rights-cleared reference numbers — a
+      // report line, honorably null until the operator commits the manifest
+      referenceDelta: masterReferenceDelta(masterGenre, masterQc),
+    };
+    url = masteredUrl;
+    qc = masterQc;
     const assembledContentHash = createHash("sha256")
-      .update(await downloadToBuffer(url))
+      .update(masteredWav)
       .digest("hex");
 
     const usedPicks = picks.filter(pick => pick.role !== "fill" || fillApplied);
@@ -735,6 +995,7 @@ export async function processAssembleBeat(p: AssemblePayload) {
           approved: false,
           meta: {
             assembled: true,
+            mastered: true,
             arrangedBy: planned.length >= 3 ? "claude" : "template",
             ...(tacticalTrim ? { tacticalTrim } : {}),
             materialIds: usedPicks.map(pick => pick.id),
@@ -743,7 +1004,11 @@ export async function processAssembleBeat(p: AssemblePayload) {
               section => `${section.name}:${section.bars}`
             ),
             assemblyLog,
+            // qc = the MASTERED artifact's measured QC (what actually ships);
+            // the raw bus sum and its measurement stay as audit evidence.
             qc,
+            masterReport,
+            audit: { rawSumUrl, rawSumQc },
           } as never,
         },
       });

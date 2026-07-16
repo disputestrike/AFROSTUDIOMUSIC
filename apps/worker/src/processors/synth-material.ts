@@ -16,10 +16,11 @@ import { readFile, unlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { prisma } from '@afrohit/db';
-import { getGenreKit, synthKitFor } from '@afrohit/shared';
+import { getGenreKit, normalizeMaterialGenre, synthKitFor } from '@afrohit/shared';
 import { deleteObjectByUrl, downloadToBuffer, uploadBytes } from '../lib/storage';
+import { trimToLoop } from '../lib/ffmpeg';
 import { markFailed, markRunning, markSucceeded } from '../lib/jobs';
-import { inspectMaterialAudio } from '../lib/material-inspection';
+import { inspectMaterialAudio, normalizeLoopLoudness } from '../lib/material-inspection';
 
 const PYTHON = process.env.PYTHON_BIN || 'python3';
 // CJS worker (module: CommonJS) — resolve like lib/dsp.ts does: dist/processors -> ../../py
@@ -108,7 +109,18 @@ export async function processSynthMaterial(p: SynthMaterialPayload): Promise<voi
       let uploadedUrl: string | null = null;
       try {
         await runSynth(role, bpm, tmp, p.genre, key, fourOnFloor, Number.parseInt(digest.slice(0, 6), 16) % 9973);
-        const bytes = await readFile(tmp);
+        const rendered = await readFile(tmp);
+        // BELT-AND-BRACES EXACT BARS (source-truth item 5): the py synth now
+        // slices its 0.25s scratch tail itself; trimToLoop with startS 0 (a
+        // synth loop starts ON the grid by construction — never the 0.5s
+        // provider default) re-asserts the exact 2-bar length and adds the
+        // declick edge fades so the loop seam never pops.
+        const trimmed = await trimToLoop(rendered, bpm, 2, { startS: 0 });
+        // Same shelf-level law as the forge (item 3): every material loop
+        // lands at ~-18 LUFS so the role-gain doctrine acts on KNOWN levels
+        // (the synth's 0.89-peak normalize says nothing about loudness).
+        const loudness = await normalizeLoopLoudness(trimmed);
+        const bytes = loudness.bytes;
         const url = await uploadBytes({ workspaceId: p.workspaceId, kind: 'materials', bytes, contentType: 'audio/wav', ext: 'wav' });
         uploadedUrl = url;
         const inspection = await inspectMaterialAudio({ bytes, url, role, roleEvidence: 'synth-code', deep: false });
@@ -126,11 +138,18 @@ export async function processSynthMaterial(p: SynthMaterialPayload): Promise<voi
           completed.push(role);
           continue;
         }
-        const durationS = (60 / bpm) * 8;
+        // ACTUAL duration on the record: the QC'd length of the bytes that
+        // ship (exactly 2 bars after the tail fix + trim), with the pure math
+        // only as the fallback when ffprobe could not measure.
+        const durationS = inspection.qc?.durationS ?? (60 / bpm) * 8;
         await prisma.materialAsset.create({
           data: {
             id: materialId,
-            workspaceId: p.workspaceId, kind: 'loop', role, genre: p.genre, bpm, bars: 2,
+            workspaceId: p.workspaceId, kind: 'loop', role,
+            // canonical genre at write time (item 8a) — one shelf per lane,
+            // never 'Afrobeats'/'afro-beats'/'afrobeats' as three ghosts
+            genre: normalizeMaterialGenre(p.genre) || p.genre,
+            bpm, bars: 2,
             keySignature: key,
             durationS, url, source: 'forged',
             readiness: inspection.readiness,
@@ -146,6 +165,16 @@ export async function processSynthMaterial(p: SynthMaterialPayload): Promise<voi
               fourOnFloor,
               jobId: p.jobId,
               qc: inspection.qc,
+              // cut + loudness receipts (source-truth wave): grid-exact by
+              // construction, shelf-leveled to ~-18 LUFS like every loop
+              trim: { trimStartS: 0, source: 'synth-grid' },
+              loudness: {
+                preLufs: loudness.preLufs,
+                postLufs: inspection.qc?.integratedLufs ?? null,
+                targetLufs: -18,
+                applied: loudness.applied,
+                ...(loudness.reason ? { skipped: loudness.reason } : {}),
+              },
               rightsBasis: 'code-generated',
               note: 'synthesized material from studio code; genre and key aware',
             } as never,

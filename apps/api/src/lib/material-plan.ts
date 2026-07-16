@@ -5,6 +5,7 @@ import {
   forgeKitFor,
   materialCanAutoAssemble,
   materialCoverage,
+  materialGenreMatches,
   selectMaterialRows,
   withCoarseMaterialRoles,
   type SelectableMaterial,
@@ -51,19 +52,28 @@ export async function ownShelfRoles(
   genre: string
 ): Promise<number | null> {
   const min = Math.max(1, Number(process.env.OWN_ENGINE_MIN_ROLES) || 6);
-  const rows: Array<{ role: string; source: string; roleEvidence: string }> =
-    await prisma.materialAsset.findMany({
-      where: {
-        workspaceId,
-        genre,
-        readiness: "ready",
-        qualityState: "passed",
-        rightsBasis: { not: "unknown" },
-      },
-      select: { role: true, source: true, roleEvidence: true },
-    });
+  // GENRE IN JS (source-truth wave item 8): exact-equality made a shelf tagged
+  // 'Afrobeats' count zero for an 'afrobeats' lane, so 'auto' kept renting a
+  // provider over a fully stocked own shelf. Fetch the workspace's verified
+  // rows and compare canonically; genre-null rows stay excluded exactly as the
+  // old equality excluded them.
+  const rows: Array<{
+    role: string;
+    source: string;
+    roleEvidence: string;
+    genre: string | null;
+  }> = await prisma.materialAsset.findMany({
+    where: {
+      workspaceId,
+      readiness: "ready",
+      qualityState: "passed",
+      rightsBasis: { not: "unknown" },
+    },
+    select: { role: true, source: true, roleEvidence: true, genre: true },
+  });
+  const laneRows = rows.filter(row => materialGenreMatches(row.genre, genre));
   const roles = [
-    ...new Set(rows.filter(materialCanAutoAssemble).map(row => row.role)),
+    ...new Set(laneRows.filter(materialCanAutoAssemble).map(row => row.role)),
   ];
   return roles.length >= min &&
     materialCoverage(roles.map(role => ({ role }))).ready

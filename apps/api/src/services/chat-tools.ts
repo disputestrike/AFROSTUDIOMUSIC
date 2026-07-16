@@ -40,6 +40,7 @@ import { blueprintForReference } from "../lib/blueprint";
 import {
   genreSignature,
   structureBrief,
+  materialGenreMatches,
   pickLawfulTitle,
   lyricQaCheck,
   normalizeLyricBody,
@@ -2581,11 +2582,18 @@ async function assembleBeatTool(
 ) {
   if (!ctx.projectId) return { error: "no_project_in_thread" };
   const bpm = Number(a.bpm ?? 108);
-  const rows = await prisma.materialAsset.findMany({
-    where: { workspaceId: ctx.workspaceId, genre: a.genre },
+  // GENRE IN JS (source-truth wave item 8): the exact-equality filter hid
+  // 'Afrobeats'-tagged loops from an 'afrobeats' assemble. Wider fetch window,
+  // canonical match, same 100-row budget after filtering; genre-null rows stay
+  // excluded exactly as the old equality excluded them.
+  const shelf = await prisma.materialAsset.findMany({
+    where: { workspaceId: ctx.workspaceId },
     orderBy: { createdAt: "desc" },
-    take: 100,
+    take: 300,
   });
+  const rows = shelf
+    .filter(row => materialGenreMatches(row.genre, a.genre))
+    .slice(0, 100);
   const picks = pickMaterial(rows, a.genre, bpm, a.keySignature, {
     roles: kitRolesFor(a.genre, 14),
   });

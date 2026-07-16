@@ -6,6 +6,7 @@ import {
   genreSchema,
   isMaterialRole,
   materialCanAutoAssemble,
+  materialGenreMatches,
   synthKitFor,
 } from "@afrohit/shared";
 import { getSoundDNA } from "@afrohit/ai";
@@ -37,16 +38,26 @@ export default async function materials(app: FastifyInstance) {
   /** The library — what's on the shelf, grouped for the UI/chat. */
   app.get<{ Querystring: { genre?: string } }>("/", async req => {
     const { workspaceId } = requireAuth(req);
-    const rows = await prisma.materialAsset.findMany({
+    // GENRE IN JS (source-truth wave item 8): the exact-equality query hid
+    // 'Afrobeats'-tagged rows from an '?genre=afrobeats' shelf view. Fetch a
+    // wider window when filtering, compare canonically, keep the original
+    // 200-row budget. Semantics preserved exactly: with a genre only matching
+    // rows show (genre-null rows didn't match the old equality and still
+    // don't); without a genre the whole shelf shows, untagged included.
+    const shelf = await prisma.materialAsset.findMany({
       where: {
         workspaceId,
         role: { not: "instrumental" },
-        ...(req.query.genre ? { genre: req.query.genre } : {}),
       },
       orderBy: { createdAt: "desc" },
-      take: 200,
+      take: req.query.genre ? 600 : 200,
       include: { _count: { select: { usages: true } } },
     });
+    const rows = req.query.genre
+      ? shelf
+          .filter(m => materialGenreMatches(m.genre, req.query.genre))
+          .slice(0, 200)
+      : shelf;
     type Row = {
       id: string;
       role: string;

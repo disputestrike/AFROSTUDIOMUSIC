@@ -59,6 +59,14 @@ export interface MeasuredAnalysis {
   energyCurve: Measured<number[]>; // normalized loudness/RMS over time (drives firstDrop/intro)
   firstDropAtS: Measured<number>;
   introLengthBars: Measured<number>;
+  /** DOWNBEAT-TRUE CUTS (material source-truth wave): the time of the first
+   * STRONG beat — where "bar one" actually lands in the render. The forge used
+   * to cut every provider render at a blind fixed 0.5 s, so whatever transient
+   * sat there became beat one and separately-forged loops never phase-locked.
+   * Utility for cut points, NOT a lane-scored feature — deliberately absent
+   * from ANALYSIS_FEATURE_KEYS so adding it cannot shift any coverage ratio or
+   * compliance gate. Unknown when the beat grid is unstable (honest). */
+  firstDownbeatS: Measured<number>;
 
   // Vocal
   vocalPresenceRatio: Measured<number>;
@@ -109,7 +117,7 @@ export function unknownAnalysis(method = 'engine-unavailable'): MeasuredAnalysis
     durationS: u(), tempoBpm: u(), key: u(), mode: u(), timeSignature: u(),
     swingRatio: u(), microtiming: u(), syncopationIndex: u(), fourOnFloor: u(),
     lowEndProfile: u(), logDrumLikelihood: u(), shakerContinuity: u(), kickDensity: u(), clapBackbeat: u(), hatRollPresence: u(), harmonicRichness: u(),
-    sectionBoundaries: u(), energyCurve: u(), firstDropAtS: u(), introLengthBars: u(),
+    sectionBoundaries: u(), energyCurve: u(), firstDropAtS: u(), introLengthBars: u(), firstDownbeatS: u(),
     vocalPresenceRatio: u(), sungVsSpoken: u(), adLibDensity: u(),
     engineOk: false, analyzedAt: null,
   };

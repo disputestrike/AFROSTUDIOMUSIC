@@ -9,8 +9,9 @@
  * shakers wide); (5) the PDF's regression scenarios yield their expected
  * instruments. Exit 1 on any regression.
  */
-import { GENRE_KIT_KEYS, GENRE_PALETTES, forgeKitFor, getGenreKit, isMaterialRole, familyOf, jobOf, materialGainFor, materialPanFor, type MaterialRole } from '@afrohit/shared';
+import { GENRE_KIT_KEYS, GENRE_PALETTES, forgeKitFor, getGenreKit, isMaterialRole, familyOf, jobOf, materialGainFor, materialPanFor, measured, unknownAnalysis, type MaterialRole, type MeasuredAnalysis } from '@afrohit/shared';
 import { forgePromptFor, isKeyedRole } from '../src/lib/forge-prompts';
+import { FORGE_TEMPO_TOLERANCE, foldedTempoDelta, forgeBarsWithinCap, materialRolePurity } from '../src/lib/material-inspection';
 
 let failures = 0;
 const fail = (m: string) => { console.error(`FAIL: ${m}`); failures++; };
@@ -110,5 +111,80 @@ for (const sc of SCENARIOS) {
   }
 }
 
+// ---- 6: SLOW-BPM BARS CAP (source-truth item 6) ----------------------------
+// The provider caps a render at ~30s; the trim must never read past the file.
+// forgeBarsWithinCap halves 8→4→2 until bars + 3s headroom fit the cap, so the
+// row records the bars that EXIST, never a fiction.
+if (forgeBarsWithinCap(110, 8) !== 8) fail('bars-cap: 8 bars at 110bpm fit the 30s cap and must not shrink');
+if (forgeBarsWithinCap(72, 8) !== 8) fail('bars-cap: 8 bars at 72bpm (=26.7s+3) still fit the cap exactly');
+if (forgeBarsWithinCap(70, 8) !== 4) fail('bars-cap: 8 bars at 70bpm (=27.4s+3) exceed the cap and must halve to 4');
+if (forgeBarsWithinCap(60, 8) !== 4) fail('bars-cap: 8 bars at 60bpm (=32s+3) must halve to 4');
+if (forgeBarsWithinCap(45, 8) !== 4) fail('bars-cap: 4 bars at 45bpm (=21.3s+3) fit — no over-shrink');
+if (forgeBarsWithinCap(30, 8) !== 2) fail('bars-cap: 30bpm needs the second halving (4 bars = 32s+3 > cap)');
+if (forgeBarsWithinCap(110, 4) !== 4) fail('bars-cap: an explicit 4-bar request passes through untouched');
+for (let bpm = 20; bpm <= 200; bpm += 1) {
+  const bars = forgeBarsWithinCap(bpm, 8);
+  const need = Math.ceil((60 / bpm) * 4 * bars) + 3;
+  if (need > 30 && bars > 2) fail(`bars-cap invariant broken at ${bpm}bpm: ${bars} bars need ${need}s > 30s cap`);
+}
+
+// ---- 7: OCTAVE-FOLDED TEMPO VERIFICATION (source-truth item 1) -------------
+// Detectors are octave-ambiguous: half/double detections of the prompt must
+// verify; a genuinely different tempo must not.
+if (foldedTempoDelta(112, 56).delta > 0.001) fail('tempo-fold: a half-tempo detection of the prompt must fold to zero delta');
+if (foldedTempoDelta(112, 224).delta > 0.001) fail('tempo-fold: a double-tempo detection must fold to zero delta');
+if (foldedTempoDelta(112, 111).delta > FORGE_TEMPO_TOLERANCE) fail('tempo-fold: a 1bpm-off detection is within the 4% tolerance');
+if (foldedTempoDelta(112, 100).delta <= FORGE_TEMPO_TOLERANCE) fail('tempo-fold: a 100bpm render of a 112bpm prompt must be OUT of tolerance');
+if (Math.abs(foldedTempoDelta(112, 225).foldedBpm - 112.5) > 0.001) fail('tempo-fold: foldedBpm must report the closest octave interpretation');
+
+// ---- 8: ROLE PURITY — the ABSENCE gates (source-truth item 4) --------------
+// Presence-only evidence had an inversion: a 'shaker' hiding a kick+bass full
+// mix passed MORE easily (the hidden kick supplied the rhythm proof). These
+// pure-function checks pin the absence law: what a clean loop must NOT contain.
+const analysisWith = (fields: Partial<MeasuredAnalysis>): MeasuredAnalysis =>
+  ({ ...unknownAnalysis('test'), engineOk: true, ...fields });
+const kicky = analysisWith({
+  kickDensity: measured(3.2, 0.8, 'test'),
+  lowEndProfile: measured({ ratio: 0.32, crest: 6 }, 0.9, 'test'),
+  clapBackbeat: measured(0.55, 0.4, 'test'),
+});
+const cleanShaker = analysisWith({
+  kickDensity: measured(0.2, 0.8, 'test'),
+  lowEndProfile: measured({ ratio: 0.03, crest: 3 }, 0.9, 'test'),
+  shakerContinuity: measured(0.7, 0.8, 'test'),
+});
+// hats/shakers: a hidden kick+bass mix is refused
+if (materialRolePurity('shaker', kicky).ok) fail('purity: a kick+bass mix labeled shaker must fail the absence gate');
+if (!/kick-bleed|low-end-bleed/.test(materialRolePurity('shaker', kicky).reason ?? '')) fail('purity: shaker bleed must carry a machine-readable reason');
+if (!materialRolePurity('shaker', cleanShaker).ok) fail('purity: a clean shaker bed must pass');
+if (materialRolePurity('closed_hat', kicky).ok) fail('purity: a full mix labeled closed_hat must fail');
+// mid percussion: looser thresholds (talking drum dips low) but a full mix still fails
+if (materialRolePurity('conga', kicky).ok) fail('purity: a kick+bass mix labeled conga must fail');
+const congaWithSomeKick = analysisWith({
+  kickDensity: measured(1.5, 0.8, 'test'),
+  lowEndProfile: measured({ ratio: 0.12, crest: 4 }, 0.9, 'test'),
+});
+if (!materialRolePurity('conga', congaWithSomeKick).ok) fail('purity: mid-perc tolerance must not reject a conga with modest low-band onsets');
+if (materialRolePurity('shaker', congaWithSomeKick).ok) fail('purity: the same measurements DO fail the stricter hat/shaker class');
+// tonal: a chord bed carrying a drum kit is bleed
+if (materialRolePurity('piano', kicky).ok) fail('purity: a piano loop with kicks and a clap backbeat must fail');
+const cleanPiano = analysisWith({
+  kickDensity: measured(0.3, 0.8, 'test'),
+  clapBackbeat: measured(0.1, 0.4, 'test'),
+  harmonicRichness: measured(0.4, 0.7, 'test'),
+});
+if (!materialRolePurity('piano', cleanPiano).ok) fail('purity: a clean chord bed must pass');
+if (materialRolePurity('chords', kicky).ok) fail('purity: the coarse chords role gets the same tonal gate');
+// low-end + drum-kit backbone are EXEMPT — kicks/sub ARE their content
+if (!materialRolePurity('bass', kicky).ok) fail('purity: low-end roles are exempt (kicky bass content is legitimate)');
+if (!materialRolePurity('log_drum', kicky).ok) fail('purity: log_drum is exempt (pitched sub IS the role)');
+if (!materialRolePurity('drums', kicky).ok) fail('purity: the coarse full-kit drums role is exempt');
+if (!materialRolePurity('kick', kicky).ok) fail('purity: the kick role is exempt');
+// honesty: unknown measurements never fabricate a failure
+if (!materialRolePurity('shaker', analysisWith({})).ok) fail('purity: all-unknown measurements must pass (unknown is honorable)');
+if (!materialRolePurity('shaker', null).ok) fail('purity: no measurement at all must pass (the gate cannot run)');
+const engineDown = { ...kicky, engineOk: false };
+if (!materialRolePurity('shaker', engineDown).ok) fail('purity: engineOk=false means nothing was measured — no fabricated failure');
+
 if (failures) { console.error(`material-system: ${failures} failure(s)`); process.exit(1); }
-console.log(`material-system: ${GENRE_KIT_KEYS.length} genres — kit-driven forge, isolated keyed prompts, layering law (3+ rhythm), gain/pan doctrine, ${SCENARIOS.length} PDF scenarios — all enforced`);
+console.log(`material-system: ${GENRE_KIT_KEYS.length} genres — kit-driven forge, isolated keyed prompts, layering law (3+ rhythm), gain/pan doctrine, ${SCENARIOS.length} PDF scenarios, slow-bpm bars cap, octave-folded tempo verification, role-purity absence gates — all enforced`);
