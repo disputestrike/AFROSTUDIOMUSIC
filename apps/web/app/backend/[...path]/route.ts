@@ -20,7 +20,31 @@ const FORWARDED_RESPONSE_HEADERS = [
 
 type RouteContext = { params: Promise<{ path: string[] }> };
 
-function expectedOrigin(): string {
+/**
+ * Origin forwarded to the API's browser-verification check. Priority:
+ * the browser's OWN Origin header (browsers always send it on fetch POSTs,
+ * and forwarding it preserves the API-side allowlist semantics — a cross-site
+ * attacker's Origin still reaches the API and still gets rejected), then this
+ * request's public origin (always correct at runtime, zero config), then the
+ * WEB_URL fallback. The old order derived the origin ONLY from WEB_URL — an
+ * API-service variable the web service never had — so every deployed browser
+ * login/signup was stamped `http://localhost:3000` and 403'd the moment
+ * AUTH_MODE=jwt turned the verification on (live incident, 2026-07-16).
+ */
+function forwardOrigin(request: NextRequest): string {
+  const fromBrowser = request.headers.get('origin');
+  if (fromBrowser) {
+    try {
+      return new URL(fromBrowser).origin;
+    } catch {
+      // Malformed header — fall through to the request's own origin.
+    }
+  }
+  try {
+    return request.nextUrl.origin;
+  } catch {
+    // Fall through to configuration.
+  }
   for (const candidate of (process.env.WEB_URL ?? 'http://localhost:3000').split(',')) {
     try {
       return new URL(candidate.trim()).origin;
@@ -45,7 +69,7 @@ async function proxy(request: NextRequest, context: RouteContext): Promise<Respo
     const value = request.headers.get(name);
     if (value) headers.set(name, value);
   }
-  if (UNSAFE_METHODS.has(method)) headers.set('origin', expectedOrigin());
+  if (UNSAFE_METHODS.has(method)) headers.set('origin', forwardOrigin(request));
 
   const init: RequestInit & { duplex?: 'half' } = {
     method,

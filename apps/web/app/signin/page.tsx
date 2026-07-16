@@ -24,6 +24,8 @@ function friendlyError(raw: string, mode: 'signin' | 'signup'): string {
   if (/email_in_use/.test(raw)) return 'That email already has an account — sign in instead.';
   if (/invalid_credentials/.test(raw)) return 'Wrong email or password.';
   if (/no_workspace/.test(raw)) return 'Your account has no studio attached yet — contact the studio owner.';
+  if (/browser.request.verification|browser_request_verification/.test(raw))
+    return 'Your browser request could not be verified — refresh the page and try again.';
   if (/capacity is busy/.test(raw) || /503/.test(raw)) return 'The studio is busy for a moment — try again in a few seconds.';
   if (/disabled/.test(raw)) return 'Accounts are not enabled on this studio yet.';
   if (/password/i.test(raw) || /at least 12/.test(raw))
