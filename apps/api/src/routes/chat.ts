@@ -16,7 +16,7 @@
 import type { FastifyInstance } from 'fastify';
 import type { FastifyReply, FastifyRequest } from 'fastify';
 import { prisma } from '@afrohit/db';
-import { chatMessageInputSchema } from '@afrohit/shared';
+import { chatMessageInputSchema, humanizeChatError, scrubVendorNames } from '@afrohit/shared';
 import { prompts, studioChat } from '@afrohit/ai';
 import { requireAuth } from '../middleware/auth';
 import { runChatTool } from '../services/chat-tools';
@@ -55,6 +55,29 @@ function makeGenGuard() {
     }
     return { allowed: true };
   };
+}
+
+/**
+ * RELIABILITY: a hung model call must never hang the whole turn. The Claude
+ * path has its own 90s abort, but the fallback path had none — a stalled
+ * upstream left the SSE open with zero events and the user staring at a dead
+ * spinner ("sometimes it just doesn't want to work"). 120s is far above any
+ * healthy turn; on breach we throw an honest timeout the error mapper turns
+ * into "took too long — try again".
+ */
+const CHAT_TURN_TIMEOUT_MS = 120_000;
+async function modelTurnWithTimeout<T>(work: Promise<T>): Promise<T> {
+  let timer: NodeJS.Timeout | undefined;
+  try {
+    return await Promise.race([
+      work,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error('chat model turn timed out')), CHAT_TURN_TIMEOUT_MS);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
 }
 
 /**
@@ -246,7 +269,7 @@ export default async function chat(app: FastifyInstance) {
         dataLake: await dataLakeSummary(workspaceId),
       });
 
-      const turn = await studioChat({
+      const turn = await modelTurnWithTimeout(studioChat({
         tools: prompts.STUDIO_CHAT_TOOLS as never,
         messages: [
           { role: 'system', content: prompts.STUDIO_CHAT_SYSTEM },
@@ -254,7 +277,7 @@ export default async function chat(app: FastifyInstance) {
           ...toModelMessages(history),
         ],
         temperature: 0.5,
-      });
+      }));
 
       const toolResults: Array<{ name: string; arguments: unknown; output: unknown }> = [];
 
@@ -287,7 +310,7 @@ export default async function chat(app: FastifyInstance) {
         }
 
         // Second model turn — let it summarize the tool results for the user.
-        const finalTurn = await studioChat({
+        const finalTurn = await modelTurnWithTimeout(studioChat({
           tools: prompts.STUDIO_CHAT_TOOLS as never,
           messages: [
             { role: 'system', content: prompts.STUDIO_CHAT_SYSTEM },
@@ -298,16 +321,18 @@ export default async function chat(app: FastifyInstance) {
               role: 'system',
               content: `TOOL_RESULTS=${JSON.stringify(toolResults).slice(0, 12_000)}`,
             },
-            { role: 'user', content: 'Summarize and propose the next step.' },
+            { role: 'user', content: 'One short line for the artist: what landed and the single next move. No ids, no JSON.' },
           ],
           temperature: 0.5,
-        });
+        }));
 
+        // §1.11 THE WALL: the persisted + returned prose is a user surface.
+        const finalAssistant = scrubVendorNames(finalTurn.text ?? '');
         await prisma.chatMessage.create({
           data: {
             threadId: thread.id,
             role: 'assistant',
-            content: finalTurn.text ?? '',
+            content: finalAssistant,
             artifactRefs: artifactsFromTools(toolResults) as never,
           },
         });
@@ -315,17 +340,18 @@ export default async function chat(app: FastifyInstance) {
         await prisma.chatThread.update({ where: { id: thread.id }, data: { updatedAt: new Date() } });
         return {
           threadId: thread.id,
-          assistant: finalTurn.text ?? '',
+          assistant: finalAssistant,
           toolCalls: toolResults,
         };
       }
 
+      const plainAssistant = scrubVendorNames(turn.text ?? '');
       await prisma.chatMessage.create({
-        data: { threadId: thread.id, role: 'assistant', content: turn.text ?? '' },
+        data: { threadId: thread.id, role: 'assistant', content: plainAssistant },
       });
       await prisma.chatThread.update({ where: { id: thread.id }, data: { updatedAt: new Date() } });
 
-      return { threadId: thread.id, assistant: turn.text ?? '', toolCalls: [] };
+      return { threadId: thread.id, assistant: plainAssistant, toolCalls: [] };
         },
       });
       if (operation.state !== 'completed') {
@@ -380,6 +406,11 @@ export default async function chat(app: FastifyInstance) {
           /* socket dead — swallow; finally{} ends the stream */
         }
       };
+      // HEARTBEAT — model turns and long tool chains can be quiet for a minute+;
+      // idle proxies kill silent SSE connections and the client watchdog needs
+      // proof of life. Honest by design: a ping only says "still connected",
+      // never progress that isn't happening.
+      const heartbeat = setInterval(() => send({ type: 'ping' }), 15_000);
 
       try {
         const operation = await runIdempotentOperation({
@@ -460,11 +491,11 @@ export default async function chat(app: FastifyInstance) {
         let finalText = '';
         for (let round = 1; round <= maxRounds; round++) {
           send({ type: 'stage', stage: autopilot ? `producing (step ${round})` : 'thinking' });
-          const turn = await studioChat({
+          const turn = await modelTurnWithTimeout(studioChat({
             tools: prompts.STUDIO_CHAT_TOOLS as never,
             messages: convo,
             temperature: 0.5,
-          });
+          }));
 
           if (!turn.toolCalls?.length) {
             finalText = turn.text ?? '';
@@ -500,17 +531,20 @@ export default async function chat(app: FastifyInstance) {
               `TOOL_RESULTS=${JSON.stringify(roundResults).slice(0, 12_000)}\n\n` +
               (autopilot
                 ? 'Continue AUTOPILOT — do the next pipeline step now without asking. Use the real IDs from these results. When the release is bundled, give one final summary and stop.'
-                : 'Summarize what you did and propose the next step.'),
+                : 'One short line for the artist: what landed and the single next move. No ids, no JSON.'),
           });
 
           if (!autopilot || round === maxRounds) {
             send({ type: 'stage', stage: 'summarizing' });
-            const fin = await studioChat({ tools: prompts.STUDIO_CHAT_TOOLS as never, messages: convo, temperature: 0.5 });
+            const fin = await modelTurnWithTimeout(studioChat({ tools: prompts.STUDIO_CHAT_TOOLS as never, messages: convo, temperature: 0.5 }));
             finalText = fin.text ?? finalText;
             break;
           }
         }
 
+        // §1.11 THE WALL: assistant prose is a user surface — engine-class
+        // language only, and the scrubbed copy is what persists.
+        finalText = scrubVendorNames(finalText);
         await prisma.chatMessage.create({ data: { threadId: thread.id, role: 'assistant', content: finalText } });
         send({ type: 'assistant', text: finalText });
 
@@ -519,8 +553,10 @@ export default async function chat(app: FastifyInstance) {
           },
         });
         if (operation.state !== 'completed') {
-          const failure = operationErrorBody(operation);
-          send({ type: 'error', ...failure.body });
+          // Humanized: the raw body ({error:'operation_in_progress',receiptId})
+          // used to reach the transcript as "Something broke: undefined".
+          const human = humanizeChatError(operationErrorBody(operation).body);
+          send({ type: 'error', message: human.text, canRetry: human.canRetry, ...(human.details ? { details: human.details } : {}) });
         } else if (operation.replayed) {
           send({ type: 'thread', threadId: operation.value.threadId, replayed: true });
           send({ type: 'assistant', text: operation.value.assistant, replayed: true });
@@ -528,8 +564,12 @@ export default async function chat(app: FastifyInstance) {
         send({ type: 'done' });
       } catch (err) {
         req.log.error({ err }, 'chat stream failed');
-        send({ type: 'error', message: String((err as Error)?.message ?? err) });
+        // Raw exception text (provider names, response bodies) never reaches
+        // the user — one plain sentence + a scrubbed details string.
+        const human = humanizeChatError(err as Error);
+        send({ type: 'error', message: human.text, canRetry: human.canRetry, ...(human.details ? { details: human.details } : {}) });
       } finally {
+        clearInterval(heartbeat);
         reply.raw.end();
       }
     }

@@ -2,11 +2,12 @@
 
 import { useEffect, useRef, useState } from 'react';
 import { useApi } from '@/lib/api';
+import { humanizeChatError, scrubVendorNames, type HumanChatError } from '@afrohit/shared';
 import { ArtifactCard } from './ArtifactCard';
 import { Send, Loader2, Mic, Plus, MessageSquare, Play, RotateCcw, Trash2, Sparkles, Headphones } from 'lucide-react';
 
 const ACTIVE_THREAD_KEY = 'afrohit.activeThread';
-import { cn } from '@/lib/utils';
+import { cn, formatElapsed } from '@/lib/utils';
 
 interface Message {
   id: string;
@@ -14,6 +15,8 @@ interface Message {
   content: string;
   toolName?: string;
   toolOutput?: unknown;
+  /** A failed step, already humanized — renders as a compact error card with one retry. */
+  error?: HumanChatError;
 }
 
 interface ThreadRow {
@@ -26,6 +29,53 @@ const QUICK_ACTIONS: Array<{ label: string; icon: React.ReactNode; prompt: strin
   { label: 'Continue', icon: <Play className="h-3.5 w-3.5" />, prompt: 'Continue to the next step.' },
   { label: 'Regenerate', icon: <RotateCcw className="h-3.5 w-3.5" />, prompt: 'Regenerate the current hooks — sharper versions in the SAME lane and concept. Keep what works, fix the weak lines, deepen the imagery, and tighten it. Do NOT switch to a different idea or start over.' },
 ];
+
+// The compact status line speaks producer, not plumbing: server stages and
+// tool names map to ONE human label. Only real, currently-running work is
+// named — never a fake progress percentage (honesty law).
+const TOOL_STAGE: Record<string, string> = {
+  research_trends: 'Checking the charts',
+  polish_brief: 'Shaping the brief',
+  generate_hooks: 'Writing hooks',
+  score_hooks: 'Scoring hooks',
+  approve_hook: 'Locking the hook',
+  reject_hook: 'Noting your taste',
+  generate_lyrics: 'Writing the lyrics',
+  create_beat_job: 'Starting the render',
+  generate_cover_art: 'Starting the cover art',
+  generate_video_storyboard: 'Drafting the video',
+  render_video: 'Starting the video render',
+  run_rights_check: 'Checking rights',
+  create_release_kit: 'Bundling the release',
+  analyze_audio: 'Listening to the track',
+  run_drop: 'Producing the drop',
+  master_song: 'Mastering',
+  make_snippet: 'Cutting the snippet',
+  list_beats: 'Checking your beats',
+  list_catalog: 'Checking your catalog',
+  set_release_rights: 'Saving the splits',
+  predict_hit: 'Reading the record',
+  forge_materials: 'Forging material',
+  assemble_beat: 'Assembling the beat',
+  make_material_beat: 'Building the beat from material',
+  separate_stems: 'Splitting the stems',
+  learn_lyrics: 'Studying the craft',
+  show_data_lake: 'Reading what you taught me',
+  request_approval: 'Asking for your sign-off',
+};
+
+function humanStage(stage: string): string {
+  if (stage === 'thinking') return 'Thinking';
+  if (stage === 'summarizing') return 'Wrapping up';
+  const step = /^producing \(step (\d+)\)$/.exec(stage);
+  if (step) return `Producing — step ${step[1]}`;
+  return stage;
+}
+
+// If the stream goes fully silent for this long (the server heartbeats every
+// 15s, so silence means the connection is actually dead), stop waiting and
+// say so honestly instead of spinning forever.
+const DEAD_AIR_MS = 90_000;
 
 // SpeechRecognition is vendor-prefixed on some browsers.
 type SR = { start: () => void; stop: () => void; onresult: ((e: unknown) => void) | null; onend: (() => void) | null; continuous: boolean; interimResults: boolean; lang: string };
@@ -52,15 +102,32 @@ export default function StudioChat({ projectId }: { projectId?: string }) {
   const [listening, setListening] = useState(false);
   const [autopilot, setAutopilot] = useState(false);
   const [stage, setStage] = useState<string | null>(null);
+  const [elapsedS, setElapsedS] = useState(0);
   const [micAvailable, setMicAvailable] = useState(false); // set after mount → no SSR mismatch
   const [uploading, setUploading] = useState(false);
+  const [resumeFailed, setResumeFailed] = useState<string | null>(null);
   const bottomRef = useRef<HTMLDivElement | null>(null);
   const recRef = useRef<SR | null>(null);
   const listenRef = useRef<HTMLInputElement | null>(null);
+  const lastSentRef = useRef('');
+  const abortRef = useRef<AbortController | null>(null);
+  const watchdogRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages, stage]);
+
+  // Real elapsed time on the status line — the render can take minutes and a
+  // silent spinner reads as dead. One ticking number, no fake progress.
+  useEffect(() => {
+    if (!busy) { setElapsedS(0); return; }
+    const started = Date.now();
+    const timer = setInterval(() => setElapsedS(Math.floor((Date.now() - started) / 1000)), 1_000);
+    return () => clearInterval(timer);
+  }, [busy]);
+
+  // Leaving the page kills the stream read (the queued work continues server-side).
+  useEffect(() => () => { abortRef.current?.abort(); if (watchdogRef.current) clearTimeout(watchdogRef.current); }, []);
 
   async function loadThreads() {
     try {
@@ -92,22 +159,34 @@ export default function StudioChat({ projectId }: { projectId?: string }) {
 
   async function openThread(id: string) {
     setBusy(true);
+    setResumeFailed(null);
     try {
       const t = await api.get<{ id: string; messages: Array<Record<string, unknown>> }>(`/chat/threads/${id}`);
       setThreadId(t.id);
       setMessages(
-        (t.messages ?? []).map((m, i) => ({
-          id: `${id}-${i}`,
-          role: (m.role as Message['role']) ?? 'assistant',
-          content: String(m.content ?? ''),
-          toolName: (m.toolName as string) ?? undefined,
-          toolOutput: m.toolOutput ?? undefined,
-        }))
+        (t.messages ?? [])
+          .map((m, i) => ({
+            id: `${id}-${i}`,
+            role: (m.role as Message['role']) ?? 'assistant',
+            // Old rows predate the server-side scrub — clean them at render time.
+            content: (m.role === 'assistant' ? scrubVendorNames : String)(String(m.content ?? '')),
+            toolName: (m.toolName as string) ?? undefined,
+            toolOutput: m.toolOutput ?? undefined,
+          }))
+          // Empty assistant turns (a failed summary) are noise, not history.
+          .filter((m) => m.role !== 'assistant' || m.content.trim().length > 0)
       );
-    } catch {
-      // Saved thread is gone (deleted) — drop the stale pointer, start fresh.
-      if (typeof window !== 'undefined') localStorage.removeItem(ACTIVE_THREAD_KEY);
-      setThreadId(null);
+    } catch (e) {
+      const msg = String((e as Error)?.message ?? '');
+      if (/^40[34]\b/.test(msg)) {
+        // Thread is truly gone (deleted elsewhere) — drop the stale pointer, start fresh.
+        if (typeof window !== 'undefined') localStorage.removeItem(ACTIVE_THREAD_KEY);
+        setThreadId(null);
+      } else {
+        // Transient failure (network/deploy/rate limit) — KEEP the pointer and
+        // offer a retry instead of silently killing the session.
+        setResumeFailed(id);
+      }
     } finally {
       setBusy(false);
     }
@@ -117,6 +196,7 @@ export default function StudioChat({ projectId }: { projectId?: string }) {
     setThreadId(null);
     setMessages([]);
     setDraft('');
+    setResumeFailed(null);
     if (typeof window !== 'undefined') localStorage.removeItem(ACTIVE_THREAD_KEY);
   }
 
@@ -128,7 +208,7 @@ export default function StudioChat({ projectId }: { projectId?: string }) {
       const { publicUrl } = await api.uploadAudioDirect(file, 'reference');
       await sendText(`Listen to this track and make a fresh original in that vibe — or make it better. Never copy it. Reference: ${publicUrl}`);
     } catch (e) {
-      setMessages((m) => [...m, { id: `e-${Date.now()}`, role: 'assistant', content: `Couldn't upload that track: ${(e as Error).message}` }]);
+      setMessages((m) => [...m, { id: `e-${Date.now()}`, role: 'assistant', content: '', error: humanizeChatError(e as Error) }]);
     } finally {
       setUploading(false);
     }
@@ -148,17 +228,30 @@ export default function StudioChat({ projectId }: { projectId?: string }) {
 
   async function sendText(text: string) {
     if (!text.trim() || busy) return;
+    lastSentRef.current = text;
     setMessages((m) => [...m, { id: `u-${Date.now()}`, role: 'user', content: text }]);
     setDraft('');
     setBusy(true);
-    setStage('thinking');
+    // Instant acknowledgment — the status line lights up the moment they hit
+    // send, before any round-trip. Honest: the request IS in flight.
+    setStage('On it');
+    const ctrl = new AbortController();
+    abortRef.current = ctrl;
+    const armWatchdog = () => {
+      if (watchdogRef.current) clearTimeout(watchdogRef.current);
+      watchdogRef.current = setTimeout(() => ctrl.abort(), DEAD_AIR_MS);
+    };
+    armWatchdog();
     let createdThread = false;
     try {
       await api.postStream(
         '/chat/messages/stream',
         { threadId: threadId ?? undefined, projectId, content: text, autopilot },
         (evt) => {
+          armWatchdog(); // every event (incl. heartbeat pings) proves life
           switch (evt.type) {
+            case 'ping':
+              break;
             case 'thread':
               if (!threadId) {
                 setThreadId(String(evt.threadId));
@@ -166,42 +259,64 @@ export default function StudioChat({ projectId }: { projectId?: string }) {
               }
               break;
             case 'stage':
-              setStage(String(evt.stage));
+              setStage(humanStage(String(evt.stage)));
               break;
             case 'tool_start':
-              setMessages((m) => [
-                ...m,
-                { id: `t-${Date.now()}-${Math.random()}`, role: 'tool', content: '', toolName: String(evt.name), toolOutput: { pending: true } },
-              ]);
+              // Internal steps live on the status line, never in the transcript —
+              // no more dangling "running…" rows when a stream dies mid-step.
+              setStage(TOOL_STAGE[String(evt.name)] ?? 'Working');
               break;
             case 'tool_result':
-              setMessages((m) => {
-                const idx = [...m].reverse().findIndex(
-                  (msg) => msg.role === 'tool' && msg.toolName === evt.name && (msg.toolOutput as { pending?: boolean })?.pending
-                );
-                if (idx === -1) return m;
-                const real = m.length - 1 - idx;
-                const copy = [...m];
-                copy[real] = { ...copy[real]!, toolOutput: evt.output };
-                return copy;
-              });
+              if (typeof evt.name === 'string') {
+                setMessages((m) => [
+                  ...m,
+                  { id: `t-${Date.now()}-${Math.random()}`, role: 'tool', content: '', toolName: String(evt.name), toolOutput: evt.output },
+                ]);
+              }
               break;
-            case 'assistant':
-              setMessages((m) => [...m, { id: `a-${Date.now()}`, role: 'assistant', content: String(evt.text ?? '') }]);
+            case 'assistant': {
+              const said = scrubVendorNames(String(evt.text ?? '')).trim();
+              if (said) setMessages((m) => [...m, { id: `a-${Date.now()}`, role: 'assistant', content: said }]);
               break;
+            }
             case 'error':
-              setMessages((m) => [...m, { id: `e-${Date.now()}`, role: 'assistant', content: `Something broke: ${evt.message}` }]);
+              setMessages((m) => [
+                ...m,
+                {
+                  id: `e-${Date.now()}`,
+                  role: 'assistant',
+                  content: '',
+                  error: {
+                    text: typeof evt.message === 'string' && evt.message ? evt.message : 'Something went wrong with that one — try again.',
+                    canRetry: evt.canRetry !== false,
+                    ...(typeof evt.details === 'string' && evt.details ? { details: evt.details } : {}),
+                  },
+                },
+              ]);
               break;
           }
-        }
+        },
+        { signal: ctrl.signal }
       );
     } catch (err) {
-      setMessages((m) => [...m, { id: `e-${Date.now()}`, role: 'assistant', content: `Something broke: ${(err as Error).message}` }]);
+      const wasAborted = (err as Error)?.name === 'AbortError' || ctrl.signal.aborted;
+      const human = wasAborted
+        ? { text: 'The studio went quiet on that one — nothing came back. Try again.', canRetry: true }
+        : humanizeChatError(err as Error);
+      setMessages((m) => [...m, { id: `e-${Date.now()}`, role: 'assistant', content: '', error: human }]);
     } finally {
+      if (watchdogRef.current) clearTimeout(watchdogRef.current);
+      abortRef.current = null;
       setBusy(false);
       setStage(null);
       if (createdThread) void loadThreads();
     }
+  }
+
+  function retryLast() {
+    if (busy) return;
+    const text = lastSentRef.current;
+    if (text) void sendText(text);
   }
 
   function toggleMic() {
@@ -269,10 +384,21 @@ export default function StudioChat({ projectId }: { projectId?: string }) {
         {/* stick-to-bottom lives on the MESSAGES pane — it was wired to the
             thread-history sidebar, so new messages scrolled the wrong element. */}
         <div ref={listRef} onScroll={(e) => { const el = e.currentTarget; stickRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 60; }} className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-6 py-4">
+          {resumeFailed && (
+            <div className="mx-auto mb-3 flex max-w-3xl items-center gap-3 rounded-xl border border-amber-800/50 bg-amber-950/30 px-4 py-2.5 text-sm text-amber-200">
+              <span className="flex-1">Couldn&rsquo;t load your last session.</span>
+              <button
+                onClick={() => void openThread(resumeFailed)}
+                className="flex items-center gap-1.5 rounded-full border border-amber-700/60 px-3 py-1 text-xs hover:bg-amber-900/40"
+              >
+                <RotateCcw className="h-3 w-3" /> Retry
+              </button>
+            </div>
+          )}
           {messages.length === 0 && (
             <div className="mx-auto mt-12 max-w-2xl rounded-3xl border border-slate-800 bg-slate-900/40 p-6 text-sm text-slate-300">
               <div className="mb-1 font-display text-2xl text-slate-100">Ship <span className="text-gradient">your</span> Afrobeats.</div>
-              <div className="mb-3 text-slate-400">Bring your voice — the studio produces around it, masters it, and hands you a rights-clean release + a clip to post.</div>
+              <div className="mb-3 text-slate-400">Say what you want — the studio builds it and hands you the result.</div>
               <ul className="space-y-2 text-slate-400">
                 <li>&ldquo;Upload my beat and finish the whole song around it.&rdquo;</li>
                 <li>&ldquo;Afro-fusion love song, 103 bpm, Pidgin/Yoruba, smooth Wizkid lane — take it all the way.&rdquo;</li>
@@ -282,11 +408,13 @@ export default function StudioChat({ projectId }: { projectId?: string }) {
           )}
           <div className="mx-auto max-w-3xl space-y-4">
             {messages.map((m) => (
-              <MessageBubble key={m.id} m={m} onAction={(p) => void sendText(p)} />
+              <MessageBubble key={m.id} m={m} onAction={(p) => void sendText(p)} onRetry={retryLast} />
             ))}
             {busy && (
               <div className="flex items-center gap-2 text-sm text-slate-400">
-                <Loader2 className="h-4 w-4 animate-spin" /> {stage ?? 'working'}…
+                <Loader2 className="h-4 w-4 animate-spin" />
+                <span>{stage ?? 'Working'}…</span>
+                {elapsedS >= 5 && <span className="text-xs tabular-nums text-slate-600">{formatElapsed(elapsedS)}</span>}
               </div>
             )}
             <div ref={bottomRef} />
@@ -322,7 +450,7 @@ export default function StudioChat({ projectId }: { projectId?: string }) {
             </div>
             {autopilot && (
               <div className="mb-2 text-xs text-afrobrand-300/80">
-                Autopilot on — one prompt runs the full pipeline (hooks → pick best → lyrics → beat → cover → bundle) without pausing.
+                Autopilot on — one prompt runs the full pipeline without pausing.
               </div>
             )}
             <div className="flex items-end gap-2">
@@ -387,8 +515,48 @@ export default function StudioChat({ projectId }: { projectId?: string }) {
   );
 }
 
-function MessageBubble({ m, onAction }: { m: Message; onAction?: (prompt: string) => void }) {
+/** One failed step: a short human sentence, one retry, internals folded away. */
+function ErrorCard({ error, onRetry }: { error: HumanChatError; onRetry?: () => void }) {
+  return (
+    <div className="mr-auto max-w-[85%] rounded-2xl border border-red-900/50 bg-red-950/30 p-4 text-sm text-red-200">
+      <div>{error.text}</div>
+      {(error.canRetry && onRetry) || error.details ? (
+        <div className="mt-2 flex items-start gap-3">
+          {error.canRetry && onRetry && (
+            <button
+              onClick={onRetry}
+              className="flex items-center gap-1.5 rounded-full border border-red-800/60 px-3 py-1 text-xs text-red-200 hover:bg-red-900/40"
+            >
+              <RotateCcw className="h-3 w-3" /> Try again
+            </button>
+          )}
+          {error.details && (
+            <details className="min-w-0 text-[10px] text-red-300/50">
+              <summary className="cursor-pointer select-none py-1">Details</summary>
+              <div className="mt-1 whitespace-pre-wrap break-words">{error.details}</div>
+            </details>
+          )}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function MessageBubble({ m, onAction, onRetry }: { m: Message; onAction?: (prompt: string) => void; onRetry?: () => void }) {
+  if (m.error) return <ErrorCard error={m.error} onRetry={m.error.canRetry ? onRetry : undefined} />;
   if (m.role === 'tool') {
+    // A failed tool renders as the SAME humanized error card — never the raw
+    // machine string. Retry = ask the producer to rerun that one step.
+    const out = m.toolOutput as { error?: unknown } | null | undefined;
+    if (out && typeof out === 'object' && typeof out.error === 'string') {
+      const human = humanizeChatError(out);
+      return (
+        <ErrorCard
+          error={human}
+          onRetry={human.canRetry && onAction ? () => onAction('Run that last step again.') : undefined}
+        />
+      );
+    }
     return (
       <div className="rounded-2xl border border-slate-800 bg-slate-900/60 p-4">
         <ArtifactCard toolName={m.toolName!} output={m.toolOutput} onAction={onAction} />

@@ -37,5 +37,6 @@ export * from "./song-state";
 export * from "./concept-exemplars";
 export * from "./storage-uri";
 export * from "./redact";
+export * from "./chat-user-messages";
 export * from "./html";
 export * from "./voice-consent";

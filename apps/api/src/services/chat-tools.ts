@@ -1374,7 +1374,7 @@ async function createBeatJob(
         ? { materialSource: `own-shelf (${autoOwnRoles} roles)` }
         : {}),
       note: a.withVocals
-        ? "Our engine builds the INSTRUMENTAL bed from your own + synthesized material — sung vocals are not wired to it yet. Add a vocal by upload, or pick MiniMax for a fully sung take."
+        ? "Our engine builds the INSTRUMENTAL bed from your own + synthesized material — sung vocals are not wired to it yet. Add a vocal by upload, or pick a standard engine for a fully sung take."
         : autoOwnRoles
           ? `The shelf is stocked — own-shelf (${autoOwnRoles} roles) of your own material — so this beat is assembled from YOUR OWN material instead of renting a provider. Poll the job.`
           : "Building the beat from your own + synthesized material (owned engine). Poll the job.",
@@ -2516,7 +2516,8 @@ async function predictHitTool(ctx: Ctx, songId: string | undefined) {
   );
   if (!prediction)
     return {
-      error: "a&r_unavailable — add ANTHROPIC_API_KEY for the hit scout",
+      error: "a&r_unavailable",
+      hint: "The hit scout isn't connected — an owner can enable it in Settings.",
     };
   return { songId: song.id, ...prediction };
 }

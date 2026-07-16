@@ -2,6 +2,8 @@
 
 import { useEffect, useState } from "react";
 import { useApi } from "@/lib/api";
+import { formatElapsed } from "@/lib/utils";
+import { humanizeChatError } from "@afrohit/shared";
 import {
   CheckCircle2,
   ListMusic,
@@ -12,6 +14,7 @@ import {
   Clock,
   Pencil,
   Check,
+  RotateCcw,
 } from "lucide-react";
 
 interface Props {
@@ -37,9 +40,28 @@ export function ArtifactCard({ toolName, output, onAction }: Props) {
     );
   }
   if ((o as { error?: string }).error) {
+    // §1.11 THE WALL: never render the machine error string — one human
+    // sentence, one retry, internals behind a collapsed expander.
+    const human = humanizeChatError(o);
     return (
-      <div className="rounded-xl border border-red-900/60 bg-red-950/40 p-3 text-red-300">
-        {String((o as { error: string }).error)}
+      <div className="rounded-xl border border-red-900/60 bg-red-950/40 p-3 text-sm text-red-200">
+        <div>{human.text}</div>
+        <div className="mt-2 flex items-start gap-3">
+          {human.canRetry && onAction && (
+            <button
+              onClick={() => onAction("Run that last step again.")}
+              className="flex items-center gap-1.5 rounded-full border border-red-800/60 px-3 py-1 text-xs text-red-200 hover:bg-red-900/40"
+            >
+              <RotateCcw className="h-3 w-3" /> Try again
+            </button>
+          )}
+          {human.details && (
+            <details className="min-w-0 text-[10px] text-red-300/50">
+              <summary className="cursor-pointer select-none py-1">Details</summary>
+              <div className="mt-1 whitespace-pre-wrap break-words">{human.details}</div>
+            </details>
+          )}
+        </div>
       </div>
     );
   }
@@ -96,12 +118,18 @@ export function ArtifactCard({ toolName, output, onAction }: Props) {
     case "generate_cover_art":
     case "render_video":
     case "create_release_kit":
-      return (
-        <JobPending
-          jobId={String((o as { jobId: string }).jobId)}
-          kind={toolName}
-        />
-      );
+    case "master_song":
+    case "make_snippet":
+    case "separate_stems":
+    case "make_material_beat":
+    case "assemble_beat": {
+      // Some material-path results come back without a trackable job — a quiet
+      // chip beats a poller aimed at /jobs/undefined.
+      const jobId = (o as { jobId?: unknown }).jobId;
+      if (typeof jobId !== "string" || !jobId)
+        return <DoneChip label={PRETTY[toolName] ?? "Queued"} />;
+      return <JobPending jobId={jobId} kind={toolName} onAction={onAction} />;
+    }
     case "generate_video_storyboard":
       return (
         <Storyboard
@@ -592,46 +620,96 @@ const JOB_LABEL: Record<string, string> = {
   generate_cover_art: "Painting the cover art",
   render_video: "Rendering the video",
   create_release_kit: "Bundling the release",
+  master_song: "Mastering",
+  make_snippet: "Cutting the snippet",
+  separate_stems: "Splitting the stems",
+  make_material_beat: "Building the beat",
+  assemble_beat: "Assembling the beat",
 };
 
-function JobPending({ jobId, kind }: { jobId: string; kind: string }) {
+const JOB_DONE_LABEL: Record<string, string> = {
+  create_beat_job: "Your track is ready",
+  render_demo_vocal: "Vocal ready",
+  generate_cover_art: "Cover art ready",
+  render_video: "Video ready",
+  create_release_kit: "Release bundle ready",
+  master_song: "Master ready",
+  make_snippet: "Snippet ready",
+  separate_stems: "Stems ready",
+  make_material_beat: "Your beat is ready",
+  assemble_beat: "Your beat is ready",
+};
+
+type JobRow = {
+  status: "QUEUED" | "RUNNING" | "SUCCEEDED" | "FAILED" | "CANCELED";
+  errorJson?: { message?: string } | null;
+  outputJson?: Record<string, unknown> | null;
+};
+
+/**
+ * A background render, tracked honestly: one status line with REAL elapsed
+ * time (no fake progress bar), a playable result card when it lands, and a
+ * one-tap retry when it fails. Renders can take minutes — the poll backs off
+ * (3s → 6s → 10s) and keeps watching for ~30 minutes.
+ */
+function JobPending({
+  jobId,
+  kind,
+  onAction,
+}: {
+  jobId: string;
+  kind: string;
+  onAction?: (prompt: string) => void;
+}) {
   const api = useApi();
-  const [job, setJob] = useState<{
-    status: "QUEUED" | "RUNNING" | "SUCCEEDED" | "FAILED" | "CANCELED";
-    errorJson?: { message?: string } | null;
-  } | null>(null);
-  const [pollError, setPollError] = useState("");
+  const [job, setJob] = useState<JobRow | null>(null);
+  const [pollNote, setPollNote] = useState("");
+  const [startedAt] = useState(() => Date.now());
+  const [elapsedS, setElapsedS] = useState(0);
+
+  const terminal =
+    job?.status === "SUCCEEDED" ||
+    job?.status === "FAILED" ||
+    job?.status === "CANCELED";
+
+  useEffect(() => {
+    if (terminal) return;
+    const timer = setInterval(
+      () => setElapsedS(Math.floor((Date.now() - startedAt) / 1000)),
+      1_000
+    );
+    return () => clearInterval(timer);
+  }, [terminal, startedAt]);
 
   useEffect(() => {
     let active = true;
     let timer: ReturnType<typeof setTimeout> | undefined;
     let attempts = 0;
+    const delayFor = (n: number) => (n < 20 ? 3_000 : n < 50 ? 6_000 : 10_000);
 
     const poll = async () => {
       try {
-        const next = await api.get<{
-          status: "QUEUED" | "RUNNING" | "SUCCEEDED" | "FAILED" | "CANCELED";
-          errorJson?: { message?: string } | null;
-        }>(`/jobs/${encodeURIComponent(jobId)}`);
+        const next = await api.get<JobRow>(
+          `/jobs/${encodeURIComponent(jobId)}`
+        );
         if (!active) return;
         setJob(next);
-        setPollError("");
+        setPollNote("");
         if (
           next.status === "SUCCEEDED" ||
           next.status === "FAILED" ||
           next.status === "CANCELED"
         )
           return;
-      } catch (error) {
+      } catch {
         if (!active) return;
-        setPollError((error as Error).message || "Could not read job status.");
+        setPollNote("reconnecting…");
       }
       attempts += 1;
-      if (active && attempts < 120) timer = setTimeout(() => void poll(), 3000);
+      if (active && attempts < 220)
+        timer = setTimeout(() => void poll(), delayFor(attempts));
       else if (active)
-        setPollError(
-          "The job is still running. Its result remains available in Jobs."
-        );
+        setPollNote("still running — it lands in your Catalog when done");
     };
 
     void poll();
@@ -642,36 +720,95 @@ function JobPending({ jobId, kind }: { jobId: string; kind: string }) {
   }, [api, jobId]);
 
   if (job?.status === "SUCCEEDED") {
+    const out = (job.outputJson ?? {}) as { masterUrl?: unknown; url?: unknown };
+    const rawUrl =
+      typeof out.masterUrl === "string"
+        ? out.masterUrl
+        : typeof out.url === "string"
+          ? out.url
+          : null;
+    const mediaUrl = rawUrl && !/\.zip(\?|$)/i.test(rawUrl) ? rawUrl : null;
+    const isImage = kind === "generate_cover_art";
+    const isVideo = kind === "render_video" || kind === "make_snippet";
     return (
-      <div className="flex items-center gap-2 text-sm text-emerald-300">
-        <CheckCircle2 className="h-4 w-4" />
-        {JOB_LABEL[kind] ?? "Background job"} completed
+      <div className="text-sm">
+        <div className="flex items-center gap-2 text-emerald-300">
+          <CheckCircle2 className="h-4 w-4" /> {JOB_DONE_LABEL[kind] ?? "Done"}
+        </div>
+        {mediaUrl && isImage && (
+          <img
+            src={mediaUrl}
+            alt="Cover art"
+            className="mt-2 h-40 w-40 rounded-xl border border-slate-800 object-cover"
+          />
+        )}
+        {mediaUrl && isVideo && (
+          <video
+            src={mediaUrl}
+            controls
+            preload="none"
+            className="mt-2 max-h-64 rounded-xl border border-slate-800"
+          />
+        )}
+        {mediaUrl && !isImage && !isVideo && (
+          <audio src={mediaUrl} controls preload="none" className="mt-2 w-full" />
+        )}
+        <div className="mt-2 flex gap-1.5">
+          <a
+            href="/catalog"
+            className="rounded-full border border-afrobrand-500/40 bg-afrobrand-500/10 px-2.5 py-0.5 text-xs text-afrobrand-300 hover:bg-afrobrand-500/20"
+          >
+            Open in Catalog →
+          </a>
+          {onAction && (
+            <button
+              onClick={() => onAction("Run that again — I want another take.")}
+              className="rounded-full border border-white/10 bg-white/5 px-2.5 py-0.5 text-xs text-slate-300 hover:bg-white/10"
+            >
+              Another take
+            </button>
+          )}
+        </div>
       </div>
     );
   }
 
   if (job?.status === "FAILED" || job?.status === "CANCELED") {
+    const human =
+      job.status === "CANCELED"
+        ? { text: "That job was canceled.", canRetry: true, details: undefined }
+        : humanizeChatError({ message: job.errorJson?.message ?? "render failed" });
     return (
-      <div className="text-sm text-red-300">
-        {job.errorJson?.message ??
-          (job.status === "CANCELED"
-            ? "The job was canceled."
-            : "The background job failed.")}
+      <div className="text-sm text-red-200">
+        <div>{human.text}</div>
+        <div className="mt-2 flex items-start gap-3">
+          {onAction && (
+            <button
+              onClick={() => onAction("That render failed — run it again.")}
+              className="flex items-center gap-1.5 rounded-full border border-red-800/60 px-3 py-1 text-xs text-red-200 hover:bg-red-900/40"
+            >
+              <RotateCcw className="h-3 w-3" /> Try again
+            </button>
+          )}
+          {human.details && (
+            <details className="min-w-0 text-[10px] text-red-300/50">
+              <summary className="cursor-pointer select-none py-1">Details</summary>
+              <div className="mt-1 whitespace-pre-wrap break-words">{human.details}</div>
+            </details>
+          )}
+        </div>
       </div>
     );
-  }
-
-  if (pollError) {
-    return <div className="text-sm text-amber-300">{pollError}</div>;
   }
 
   return (
     <div className="flex items-center gap-2 text-sm text-slate-300">
       <Clock className="h-4 w-4 animate-pulse text-afrobrand-400" />
-      {JOB_LABEL[kind] ?? "Working"}…{" "}
-      <span className="text-xs text-slate-500">
-        (this runs in the background)
+      <span>{JOB_LABEL[kind] ?? "Working"}…</span>
+      <span className="text-xs tabular-nums text-slate-500">
+        {formatElapsed(elapsedS)}
       </span>
+      {pollNote && <span className="text-xs text-slate-600">{pollNote}</span>}
     </div>
   );
 }

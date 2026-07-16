@@ -24,7 +24,10 @@ async function fetchWithRetry(url: string, init: RequestInit): Promise<Response>
   for (let attempt = 0; ; attempt++) {
     try {
       return await fetch(url, init);
-    } catch {
+    } catch (err) {
+      // A deliberate abort (watchdog/unmount) must surface immediately —
+      // retrying a canceled request would resurrect it three times over.
+      if ((err as Error)?.name === 'AbortError' || init.signal?.aborted) throw err;
       if (attempt >= delays.length) {
         // Raw "Failed to fetch" reads like the APP is broken — say what actually
         // happened after ~30s of genuine retries.
@@ -173,12 +176,15 @@ export function useApi() {
     },
     /**
      * POST that consumes a Server-Sent-Events response. Calls onEvent for
-     * every `data:` JSON object. Resolves when the stream ends.
+     * every `data:` JSON object. Resolves when the stream ends. An optional
+     * AbortSignal lets the caller kill a stream that has gone quiet (the
+     * chat's dead-air watchdog) instead of hanging forever.
      */
     async postStream(
       path: string,
       body: unknown,
-      onEvent: (evt: Record<string, unknown>) => void
+      onEvent: (evt: Record<string, unknown>) => void,
+      opts?: { signal?: AbortSignal }
     ): Promise<void> {
       const idempotencyKey = crypto.randomUUID();
       const res = await fetchWithRetry(`${API_URL}${path}`, {
@@ -186,6 +192,7 @@ export function useApi() {
         headers: { 'content-type': 'application/json', 'x-afrohit-request': '1', 'idempotency-key': idempotencyKey },
         body: JSON.stringify(body),
         credentials: 'include',
+        signal: opts?.signal,
       });
       if (!res.ok || !res.body) {
         throw new Error(`${res.status} ${res.statusText}: ${await res.text()}`);
