@@ -146,6 +146,20 @@ export async function processMusic(p: MusicPayload) {
   let uncommittedStemUrls: string[] = [];
   const transientStemSourceUrls: string[] = [];
   let supersededBeatUrl: string | null = null;
+  // POST-RENDER SALVAGE LAW (live incident 2026-07-16: a paid, ranked render
+  // was destroyed by a bare 'fetch failed' in post-processing, and every retry
+  // RE-RENDERED — billing the provider again). Once a winner exists, its
+  // context lives here so the outer catch can SALVAGE the take (it is already
+  // durable in owned storage from candidate materialization) as a playable,
+  // honestly-marked unprocessed asset instead of failing the job. Render money
+  // is never spent twice over post-processing weather.
+  let salvageCandidate: {
+    url: string; format: string; provider: string; externalId?: string;
+    assetKind: string; bpm: number | null; keySignature: string | null;
+    durationS: number; alignment: unknown; step: string;
+    projectId: string; songId: string | null;
+  } | null = null;
+  let committedBeatId: string | null = null;
   try {
     // Provider + key are set IN-APP (Settings → Music engine), stored per
     // workspace. Falls back to env (MUSIC_PROVIDER / *_API_KEY) then stub.
@@ -438,6 +452,30 @@ export async function processMusic(p: MusicPayload) {
       : productionRank;
     console.log(`[music] best-of-${ok.length} ranked by ${rankedBy}${winnerLane ? ` — lane ${winnerLane.overall}/100 cov ${(winnerLane.coverage * 100) | 0}% failedCritical=[${winnerLane.failedCritical.join(',')}]` : ''}`);
 
+    // POST-RENDER SALVAGE LAW (live incident 2026-07-16: a paid, ranked,
+    // verified-enough render was destroyed by a bare 'fetch failed' in
+    // post-processing — and every retry RE-RENDERED, billing the provider
+    // again). From here to the asset commit, any failure names its step and
+    // network cause, and the take — already durable in owned storage from
+    // candidate materialization — is SALVAGED as a playable, honestly-marked
+    // unprocessed asset instead of being thrown away. Render money is never
+    // spent twice for a post-processing hiccup.
+    salvageCandidate = {
+      url: out.mainAudioUrl!,
+      format: out.format,
+      provider: adapter.name,
+      externalId: result.externalId,
+      assetKind: wantsVocals ? 'full_mix' : 'instrumental',
+      bpm: out.bpm ?? p.input.bpm ?? null,
+      keySignature: out.keySignature ?? p.input.keySignature ?? null,
+      durationS: out.durationS ?? 0,
+      alignment: wantsVocals
+        ? winner.alignment ?? { state: 'unmeasured', required: alignmentRequired }
+        : { state: 'not_applicable' },
+      step: 'ingest-winner',
+      projectId: p.projectId,
+      songId: p.songId ?? null,
+    };
     // Re-host ONLY the winning take (survives provider URL expiry; stable CDN path).
     let ingestedMain = await ingestRemoteFile({
       workspaceId: p.workspaceId,
@@ -447,6 +485,7 @@ export async function processMusic(p: MusicPayload) {
       contentType: out.format === 'mp3' ? 'audio/mpeg' : out.format === 'flac' ? 'audio/flac' : 'audio/wav',
     });
     uncommittedBeatUrl = ingestedMain;
+    if (salvageCandidate) salvageCandidate.step = 'qc-and-fills';
 
     // Winner QC measured the provider URL (same bytes). Re-probe duration if unknown;
     // if QC didn't run at all, measure the ingested file now. Never fatal.
@@ -553,6 +592,7 @@ export async function processMusic(p: MusicPayload) {
 
     // Certify the exact bytes persisted after any fill overlay. This hash is the
     // identity shared by the BeatAsset, source Mix, master receipt and export.
+    if (salvageCandidate) salvageCandidate.step = 'certify-download';
     const sourceBytes = await downloadToBuffer(ingestedMain, { maxBytes: 640 * 1024 * 1024 });
     const sourceContentHash = createHash('sha256').update(sourceBytes).digest('hex');
     const vocalIdentityAccepted = !wantsVocals || !!winner.alignment?.pass || !alignmentRequired;
@@ -560,6 +600,7 @@ export async function processMusic(p: MusicPayload) {
     // A provider may return a finished master without stems. When stems were
     // promised, split the exact re-hosted and certified source that will back the
     // BeatAsset. Keep the job RUNNING until those rows are committed below.
+    if (salvageCandidate) salvageCandidate.step = 'stems';
     const stemResolution = await resolveMusicStemSources({
       withStems: p.input.withStems,
       providerStems: out.stems,
@@ -586,6 +627,7 @@ export async function processMusic(p: MusicPayload) {
         inferredOnly?: number;
       };
     }).trainingUsage;
+    if (salvageCandidate) salvageCandidate.step = 'commit-asset';
     const beat = await prisma.$transaction(async (tx) => {
       const created = await tx.beatAsset.create({
         data: {
@@ -715,6 +757,10 @@ export async function processMusic(p: MusicPayload) {
     });
     uncommittedBeatUrl = null;
     uncommittedStemUrls = [];
+    // Asset committed: post-commit failures complete the job (the song exists);
+    // the salvage-create path is no longer needed.
+    committedBeatId = beat.id;
+    salvageCandidate = null;
     const persistedStemCount = await prisma.stem.count({ where: { beatId: beat.id } });
     enforceMusicStemPersistence(p.input.withStems, persistedStemCount);
     if (supersededBeatUrl) {
@@ -1021,10 +1067,61 @@ export async function processMusic(p: MusicPayload) {
       result.estimatedCostUsd
     );
   } catch (err) {
+    const cause = (err as { cause?: { code?: string; message?: string } })?.cause;
+    const causeNote = cause?.code || cause?.message ? ` (cause: ${cause?.code ?? cause?.message})` : '';
+    // SALVAGE LAW: a failure after the asset committed completes the job (the
+    // song exists); a failure after a winner existed but before commit turns
+    // the already-durable candidate into an honest unprocessed asset. Only a
+    // failure with NO winner — nothing paid for, nothing to save — fails.
+    if (committedBeatId) {
+      console.warn(`[music] post-commit step failed (${(err as Error).message}${causeNote}) — asset ${committedBeatId} is committed; completing the job`);
+      await markSucceeded(p.jobId, {
+        beatId: committedBeatId,
+        postProcessing: 'incomplete',
+        note: `a post-commit step failed (${(err as Error).message.slice(0, 160)}${causeNote}); the song is saved — Re-master finishes what remained`,
+      });
+      return;
+    }
+    if (salvageCandidate) {
+      const s = salvageCandidate;
+      console.warn(`[music] post-render step '${s.step}' failed (${(err as Error).message}${causeNote}) — SALVAGING the paid take (never re-render on post-processing weather)`);
+      try {
+        const keep = temporaryCandidateUrls.indexOf(s.url);
+        if (keep >= 0) temporaryCandidateUrls.splice(keep, 1);
+        const salvaged = await prisma.beatAsset.create({
+          data: {
+            projectId: s.projectId,
+            songId: s.songId,
+            url: s.url,
+            format: s.format,
+            bpm: s.bpm,
+            keySignature: s.keySignature,
+            duration: s.durationS,
+            provider: s.provider,
+            assetKind: s.assetKind,
+            qualityState: 'unmeasured',
+            approved: false,
+            meta: {
+              externalId: s.externalId,
+              salvage: { failedStep: s.step, error: `${(err as Error).message.slice(0, 240)}${causeNote}` },
+              vocalAlignment: s.alignment,
+            } as never,
+          },
+        });
+        await markSucceeded(p.jobId, {
+          beatId: salvaged.id,
+          salvage: true,
+          note: `post-processing step '${s.step}' failed — the paid render was saved unprocessed; Re-master finishes and verifies it`,
+        });
+        return;
+      } catch (salvageErr) {
+        console.warn(`[music] salvage itself failed (${(salvageErr as Error).message}) — falling through to failure`);
+      }
+    }
     if (uncommittedBeatUrl) await deleteObjectByUrl(uncommittedBeatUrl).catch(() => {});
     await Promise.allSettled(uncommittedStemUrls.map((url) => deleteObjectByUrl(url)));
     if (supersededBeatUrl) await deleteObjectByUrl(supersededBeatUrl).catch(() => {});
-    await markFailed(p.jobId, err);
+    await markFailed(p.jobId, `${(err as Error)?.message ?? err}${causeNote}`);
   } finally {
     const transientUrls = [...new Set([...temporaryCandidateUrls, ...transientStemSourceUrls])];
     await Promise.allSettled(transientUrls.map((url) => deleteObjectByUrl(url)));
