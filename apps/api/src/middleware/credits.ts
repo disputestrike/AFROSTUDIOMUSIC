@@ -77,6 +77,46 @@ async function oldestWorkspaceId(): Promise<string | null> {
   return houseWorkspaceId;
 }
 
+/**
+ * SELF-DIAGNOSIS for the billing engine — every fact the owner needed tonight
+ * while three detection rules failed invisibly. Caller-scoped booleans only;
+ * never leaks emails or other workspaces' data.
+ */
+export async function billingDiagnosis(workspaceId: string, userEmail: string | null) {
+  const houseId = await oldestWorkspaceId();
+  const emails = [
+    ...(process.env.ADMIN_EMAILS ?? "").split(","),
+    process.env.BOOTSTRAP_OWNER_EMAIL ?? "",
+  ]
+    .map(e => e.trim().toLowerCase())
+    .filter(Boolean);
+  const [songCount, workspace] = await Promise.all([
+    prisma.song.count({ where: { workspaceId } }),
+    prisma.workspace.findUnique({
+      where: { id: workspaceId },
+      select: { createdAt: true, creditsCents: true, plan: true },
+    }),
+  ]);
+  return {
+    workspaceId,
+    firstParty: await isFirstPartyBilling(workspaceId),
+    billingEnforcement: billingEnforced() ? "on" : "off (beta)",
+    rules: {
+      envList: isFirstPartyWorkspace(workspaceId),
+      isHouseWorkspace: workspaceId === houseId,
+      houseWorkspaceKnown: houseId != null,
+      emailIsMaster: userEmail != null && emails.includes(userEmail.toLowerCase()),
+      masterEmailsConfigured: emails.length,
+    },
+    workspace: {
+      songCount,
+      createdAt: workspace?.createdAt ?? null,
+      plan: workspace?.plan ?? null,
+      creditsCents: workspace?.creditsCents ?? null,
+    },
+  };
+}
+
 export async function isFirstPartyBilling(workspaceId: string): Promise<boolean> {
   if (isFirstPartyWorkspace(workspaceId)) return true;
   if (workspaceId === (await oldestWorkspaceId())) return true;
@@ -114,6 +154,19 @@ export async function isFirstPartyBilling(workspaceId: string): Promise<boolean>
  * Atomically applies idempotency, generation caps, plan limits, and balance
  * changes under one workspace advisory lock.
  */
+/**
+ * PRE-LAUNCH BILLING VALVE. BILLING_ENFORCEMENT defaults to 'off' until the
+ * operator flips it 'on' at launch: during beta the only real user is the
+ * owner, and three successive first-party detection rules failed live while
+ * they were locked out of their own product ("it's still not letting me
+ * create anything"). Off = every charge runs internal-mode (no balance
+ * debit, ledger still written): the house is uncapped; everyone else gets
+ * the BETA daily cap so an abusive stranger cannot burn provider budget.
+ * LAUNCH CHECKLIST: set BILLING_ENFORCEMENT=on.
+ */
+const billingEnforced = () => process.env.BILLING_ENFORCEMENT === "on";
+const betaDailyCap = () => Number(process.env.BETA_DAILY_GENERATIONS ?? 25);
+
 export const creditsPlugin = fp(async function (app) {
   app.decorate(
     "chargeCredits",
@@ -127,6 +180,15 @@ export const creditsPlugin = fp(async function (app) {
       idempotencyKey?: string;
     }) => {
       const firstParty = await isFirstPartyBilling(opts.workspaceId);
+      if (!billingEnforced() && !firstParty) {
+        return chargeWorkspaceCredits(prisma, {
+          ...opts,
+          internalMode: true,
+          enforceGenerationCap: true,
+          dailyCap: betaDailyCap(),
+          monthlyCap: Number(process.env.BETA_MONTHLY_GENERATIONS ?? 300),
+        });
+      }
       if (firstParty) {
         return chargeWorkspaceCredits(prisma, {
           ...opts,

@@ -919,6 +919,9 @@ export default function CreatePage() {
               ? 'This song needs more credits than the studio has left. Top up or upgrade to keep creating.'
               : err}
         </p>
+        {/* SELF-EXPLAINING 402s: the billing engine reports exactly which
+            rule produced this block — no more screenshot-and-guess loops. */}
+        {isLimit && <BillingDiagnosisLine />}
         <div className="mt-6 flex flex-wrap justify-center gap-3">
           {isLimit ? (
             <>
@@ -1400,4 +1403,41 @@ function Picker({ label, items, selected, onPick }: { label: string; items: { va
       </div>
     </div>
   );
+}
+
+/**
+ * Fetches the billing engine's own explanation of the current block and
+ * renders it as one honest line — which detection rule matched or missed,
+ * from the same code that made the decision.
+ */
+function BillingDiagnosisLine() {
+  const api = useApi();
+  const [line, setLine] = useState<string | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    api
+      .get<{
+        firstParty: boolean;
+        billingEnforcement: string;
+        rules: { envList: boolean; isHouseWorkspace: boolean; houseWorkspaceKnown: boolean; emailIsMaster: boolean; masterEmailsConfigured: number };
+        workspace: { songCount: number; creditsCents: number | null; plan: string | null };
+      }>(`/billing/diagnose`)
+      .then((d) => {
+        if (cancelled) return;
+        if (d.firstParty) {
+          setLine('Diagnosis: this account IS recognized as the house — this block should not have happened; report this exact screen.');
+        } else {
+          const misses = [
+            d.rules.isHouseWorkspace ? null : `not the house workspace (${d.workspace.songCount} songs here)`,
+            d.rules.emailIsMaster ? null : `login email is not in the master list (${d.rules.masterEmailsConfigured} configured)`,
+            d.rules.envList ? null : 'not in FIRST_PARTY_WORKSPACE_IDS',
+          ].filter(Boolean);
+          setLine(`Diagnosis: treated as a customer — ${misses.join('; ')}. Billing enforcement: ${d.billingEnforcement}.`);
+        }
+      })
+      .catch(() => setLine(null));
+    return () => { cancelled = true; };
+  }, [api]);
+  if (!line) return null;
+  return <p className="mt-2 text-xs text-slate-500">{line}</p>;
 }

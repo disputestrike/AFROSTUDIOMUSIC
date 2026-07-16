@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { prisma } from '@afrohit/db';
 import { costOf, PLAN_LIMITS } from '@afrohit/shared';
 import { requireAuth, requireRole } from '../middleware/auth';
+import { billingDiagnosis } from '../middleware/credits';
 import {
   approveUrlOf,
   cancelSubscription,
@@ -56,6 +57,22 @@ function checkoutKey(headers: Record<string, unknown>): string | null {
 }
 
 export default async function billing(app: FastifyInstance) {
+  /**
+   * SELF-DIAGNOSIS — why is billing treating me the way it is? Born from a
+   * night of blind fixes (2026-07-16): three first-party detection rules
+   * failed live while the owner was locked out and nobody could see WHICH
+   * rule missed. Caller-scoped facts straight from the billing engine —
+   * booleans only, no emails, no other tenants' data.
+   */
+  app.get('/diagnose', async (req) => {
+    const { userId, workspaceId } = requireAuth(req);
+    const user = await prisma.user.findUnique({
+      where: { id: userId },
+      select: { email: true },
+    });
+    return billingDiagnosis(workspaceId, user?.email ?? null);
+  });
+
   /**
    * PRE-FLIGHT — can the workspace afford a generation RIGHT NOW?
    * Read-only mirror of chargeCredits' gate logic so the UI can refuse BEFORE
