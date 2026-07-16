@@ -27,7 +27,7 @@
     "infra:up": "docker compose -f docker-compose.dev.yml up -d",
     "infra:down": "docker compose -f docker-compose.dev.yml down",
     "format": "prettier --write \"**/*.{ts,tsx,md,json}\"",
-    "verify": "pnpm --filter @afrohit/shared build && pnpm --filter @afrohit/db build && pnpm --filter @afrohit/ai build && pnpm --filter @afrohit/web typecheck && pnpm --filter @afrohit/api typecheck && pnpm --filter @afrohit/worker typecheck && pnpm --filter @afrohit/api test:source-mix-lineage && pnpm --filter @afrohit/api test:direct-upload-release && pnpm --filter @afrohit/api test:release-artifact-integrity && pnpm --filter @afrohit/worker test && node scripts/test-benchmark-corpus.mjs",
+    "verify": "pnpm --filter @afrohit/shared build && pnpm --filter @afrohit/db build && pnpm --filter @afrohit/ai build && pnpm --filter @afrohit/web typecheck && pnpm --filter @afrohit/api typecheck && pnpm --filter @afrohit/worker typecheck && pnpm --filter @afrohit/api test:source-mix-lineage && pnpm --filter @afrohit/api test:direct-upload-release && pnpm --filter @afrohit/api test:release-artifact-integrity && pnpm --filter @afrohit/worker test && node scripts/test-benchmark-corpus.mjs && node scripts/test-video-treatment.mjs",
     "acceptance:production": "node scripts/live-test.mjs",
     "acceptance:benchmark": "node scripts/benchmark-corpus.mjs",
     "acceptance:benchmark:test": "node scripts/test-benchmark-corpus.mjs"

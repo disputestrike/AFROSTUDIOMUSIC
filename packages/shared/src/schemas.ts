@@ -403,7 +403,14 @@ export const generateStoryboardInputSchema = z.object({
   // words and lane rather than the project brief alone — and it is stored
   // against the song so it can sit beside its lyrics.
   songId: z.string().cuid().optional(),
-  durationS: z.number().int().min(8).max(60).default(15),
+  // 'full_song' (default) = the creative-director treatment covering the whole
+  // song, sequenced against its measured section boundaries, with a social
+  // teaser cut derived from it. 'short' = the legacy 8-60s shot list.
+  mode: z.enum(["full_song", "short"]).default("full_song"),
+  // Optional now: in full_song mode the length is derived from the song's
+  // measured audio; this field is the fallback when nothing is measured (and
+  // the target length in 'short' mode, default 15).
+  durationS: z.number().int().min(8).max(60).optional(),
   format: z.enum(["vertical", "square", "landscape"]).default("vertical"),
   prompt: z.string().max(2000).optional(),
 });
