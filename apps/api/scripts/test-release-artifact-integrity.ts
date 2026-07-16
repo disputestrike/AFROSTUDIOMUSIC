@@ -15,102 +15,171 @@ const receiptId = "receipt-exact";
 
 const derivedClaim = releaseMixSourceClaim({
   source: {
-    beatId: 'beat-1',
-    beatContentHash: '1'.repeat(64),
-    vocalRenderIds: ['vocal-b', 'vocal-a'],
-    vocalRenderContentHashes: ['3'.repeat(64), '2'.repeat(64)],
+    beatId: "beat-1",
+    beatContentHash: "1".repeat(64),
+    vocalRenderIds: ["vocal-b", "vocal-a"],
+    vocalRenderContentHashes: ["3".repeat(64), "2".repeat(64)],
   },
 });
 assert.deepEqual(derivedClaim, {
   schemaVersion: 1,
-  kind: 'derived_mix',
-  beatId: 'beat-1',
-  beatContentHash: '1'.repeat(64),
-  vocalRenderIds: ['vocal-a', 'vocal-b'],
-  vocalRenderContentHashes: ['2'.repeat(64), '3'.repeat(64)],
+  kind: "derived_mix",
+  beatId: "beat-1",
+  beatContentHash: "1".repeat(64),
+  vocalRenderIds: ["vocal-a", "vocal-b"],
+  vocalRenderContentHashes: ["2".repeat(64), "3".repeat(64)],
 });
 assert.equal(
   releaseMixSourceClaim({
     source: {
-      beatId: 'beat-1',
-      beatContentHash: '1'.repeat(64),
-      vocalRenderIds: ['vocal-a'],
+      beatId: "beat-1",
+      beatContentHash: "1".repeat(64),
+    },
+  }),
+  null,
+  "component claims must explicitly bind the complete vocal ID/hash arrays"
+);
+assert.equal(
+  releaseMixSourceClaim({
+    source: {
+      beatId: "beat-1",
+      beatContentHash: "1".repeat(64),
+      vocalRenderIds: ["vocal-a"],
       vocalRenderContentHashes: [],
     },
   }),
   null,
-  'component claims without one exact hash per vocal must fail closed',
+  "component claims without one exact hash per vocal must fail closed"
 );
 const parentClaim = {
   schemaVersion: 1,
-  kind: 'derived_mix',
-  beatId: 'parent-beat',
-  beatContentHash: '5'.repeat(64),
+  kind: "derived_mix",
+  beatId: "parent-beat",
+  beatContentHash: "5".repeat(64),
   vocalRenderIds: [],
   vocalRenderContentHashes: [],
 };
 const parentClaimHash = releaseEvidenceHash(parentClaim);
 const derivedWithParentClaim = releaseMixSourceClaim({
   source: {
-    beatId: 'output-beat',
-    beatContentHash: '6'.repeat(64),
+    beatId: "output-beat",
+    beatContentHash: "6".repeat(64),
     vocalRenderIds: [],
     vocalRenderContentHashes: [],
   },
   derivedFrom: {
-    type: 'master',
-    id: 'parent-master',
-    contentHash: '7'.repeat(64),
+    type: "master",
+    id: "parent-master",
+    contentHash: "7".repeat(64),
     claimHash: parentClaimHash,
     claim: parentClaim,
   },
 });
 assert.deepEqual(derivedWithParentClaim?.derivedFrom, {
-  type: 'master',
-  id: 'parent-master',
-  sourceContentHash: '7'.repeat(64),
+  type: "master",
+  id: "parent-master",
+  sourceContentHash: "7".repeat(64),
   claimHash: parentClaimHash,
 });
 assert.equal(
   releaseMixSourceClaim({
     source: {
-      beatId: 'output-beat',
-      beatContentHash: '6'.repeat(64),
+      beatId: "output-beat",
+      beatContentHash: "6".repeat(64),
       vocalRenderIds: [],
       vocalRenderContentHashes: [],
     },
     derivedFrom: {
-      type: 'master',
-      id: 'parent-master',
-      contentHash: '7'.repeat(64),
-      claimHash: '8'.repeat(64),
+      type: "master",
+      id: "parent-master",
+      contentHash: "7".repeat(64),
+      claimHash: "8".repeat(64),
       claim: parentClaim,
     },
   }),
   null,
-  'a derived source claim must fail if its embedded parent evidence changes',
+  "a derived source claim must fail if its embedded parent evidence changes"
 );
 const directClaim = releaseMixSourceClaim({
   directOwnedUpload: {
     schemaVersion: 1,
-    sourceKind: 'workspace_upload',
+    sourceKind: "workspace_upload",
     rightsConfirmation: { version: 1, confirmed: true },
-    sourceContentHash: '4'.repeat(64),
-    objectKey: 'private/workspace/source.wav',
-    recordedAt: '2026-07-15T12:00:00.000Z',
+    sourceContentHash: "4".repeat(64),
+    objectKey: "private/workspace/source.wav",
+    recordedAt: "2026-07-15T12:00:00.000Z",
+    certifiedAt: "2026-07-15T12:01:00.000Z",
   },
 });
 assert.deepEqual(directClaim, {
   schemaVersion: 1,
-  kind: 'direct_owned_upload',
-  sourceKind: 'workspace_upload',
-  sourceContentHash: '4'.repeat(64),
+  kind: "direct_owned_upload",
+  sourceKind: "workspace_upload",
+  sourceContentHash: "4".repeat(64),
   parentSourceContentHash: null,
   parentClaimHash: null,
   rightsConfirmationVersion: 1,
   rightsConfirmed: true,
 });
 assert.doesNotMatch(JSON.stringify(directClaim), /private|recordedAt/);
+assert.equal(
+  releaseMixSourceClaim({
+    directOwnedUpload: {
+      schemaVersion: 1,
+      sourceKind: "workspace_upload",
+      rightsConfirmation: { version: 1, confirmed: true },
+      sourceContentHash: "4".repeat(64),
+      recordedAt: "2026-07-15T12:00:00.000Z",
+    },
+  }),
+  null,
+  "an upload is not certified until the worker records a certification timestamp"
+);
+
+const directParentClaimHash = releaseEvidenceHash(directClaim);
+const ownedDerivativeClaim = releaseMixSourceClaim({
+  directOwnedUpload: {
+    schemaVersion: 1,
+    sourceKind: "owned_derivative",
+    rightsConfirmation: { version: 1, confirmed: true },
+    sourceContentHash: "6".repeat(64),
+    parentSourceContentHash: "4".repeat(64),
+    parentClaimHash: directParentClaimHash,
+    recordedAt: "2026-07-15T12:02:00.000Z",
+    certifiedAt: "2026-07-15T12:03:00.000Z",
+  },
+  derivedFrom: {
+    type: "mix",
+    id: "parent-mix",
+    contentHash: "4".repeat(64),
+    claimHash: directParentClaimHash,
+    claim: directClaim,
+  },
+});
+assert.equal(ownedDerivativeClaim?.parentClaimHash, directParentClaimHash);
+assert.equal(
+  releaseMixSourceClaim({
+    directOwnedUpload: {
+      schemaVersion: 1,
+      sourceKind: "owned_derivative",
+      rightsConfirmation: { version: 1, confirmed: true },
+      sourceContentHash: "6".repeat(64),
+      parentSourceContentHash: "5".repeat(64),
+      parentClaimHash: directParentClaimHash,
+      recordedAt: "2026-07-15T12:02:00.000Z",
+      certifiedAt: "2026-07-15T12:03:00.000Z",
+    },
+    derivedFrom: {
+      type: "mix",
+      id: "parent-mix",
+      contentHash: "4".repeat(64),
+      claimHash: directParentClaimHash,
+      claim: directClaim,
+    },
+  }),
+  null,
+  "owned derivatives must bind the same parent bytes in both claim locations"
+);
 
 const releaseExport = {
   qualityState: "ready",
@@ -279,7 +348,8 @@ const migrationSource = readFileSync(
     "packages/db/prisma/migrations/20260715190000_release_artifact_integrity/migration.sql"
   ),
   "utf8"
-);assert.match(routeSource, /loadReleaseCertification\(tx,/);
+);
+assert.match(routeSource, /loadReleaseCertification\(tx,/);
 assert.match(routeSource, /current\.revision !== observedHead\.revision/);
 assert.match(routeSource, /releaseExport\.sourceFingerprint !==/);
 assert.doesNotMatch(
@@ -288,7 +358,7 @@ assert.doesNotMatch(
   "distribution must trust the exact artifact fingerprint, not a nonexistent manifest field"
 );
 assert.ok(
-  migrationSource.indexOf('ROW_NUMBER() OVER') <
+  migrationSource.indexOf("ROW_NUMBER() OVER") <
     migrationSource.indexOf('CREATE UNIQUE INDEX "Song_isrc_key"'),
   "legacy duplicates must be reconciled before unique indexes are created"
 );

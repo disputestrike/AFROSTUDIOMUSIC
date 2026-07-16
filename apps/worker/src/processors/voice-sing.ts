@@ -4,7 +4,6 @@ import {
   openSecret,
   prisma,
   releaseEvidenceHash,
-  type Prisma,
 } from "@afrohit/db";
 import {
   singWithVoice,
@@ -58,17 +57,6 @@ type AuthorizedVoice = {
     revokedAt: Date | null;
   };
   voiceDataset: { id: string; workspaceId: string; contentHash: string } | null;
-};
-
-type CertifiedSourceAsset = {
-  id: string;
-  url: string;
-  contentHash: string | null;
-};
-
-type CertifiedSourceMix = CertifiedSourceAsset & { meta: unknown };
-type CertifiedSourceMaster = CertifiedSourceAsset & {
-  mixId: string | null;
 };
 
 export type CertifiedVoiceSingSourceLineage = {

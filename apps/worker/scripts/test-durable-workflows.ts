@@ -240,7 +240,17 @@ async function main() {
     /waitForTerminalJobs\(\s*workspaceId,\s*\[assemblyJobId\]/
   );
   assert.doesNotMatch(materialAuto, /if \(!charge\.ok\) break/);
-  assert.match(orchestration, /material batch refund failed/);
+  assert.match(orchestration, /const REFUND_OUTBOX_MARKER = "refund_pending:"/);
+  assert.match(orchestration, /await refundWorkspaceCharge\(prisma,/);
+  assert.match(orchestration, /refundRetryDelayMs\(row\.attempts \+ 1\)/);
+  assert.match(
+    orchestration,
+    /"orchestration refund deferred for durable retry"/
+  );
+  assert.match(
+    orchestration,
+    /fallbackMessage: "material orchestration failed"/
+  );
   assert.match(
     materialWorker,
     /approved:\s*false[\s\S]*assessLaneCompliance[\s\S]*approved:\s*true/

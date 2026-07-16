@@ -206,7 +206,7 @@ async function main() {
     join(process.cwd(), "..", "api", "src", "index.ts"),
     "utf8"
   );
-  assert.match(apiIndexSource, /redis: app\.redis/);
+  assert.match(apiIndexSource, /redis:\s*app\.rateLimitRedis/);
   assert.match(apiIndexSource, /skipOnError: false/);
   assert.doesNotMatch(
     apiIndexSource,
