@@ -46,6 +46,32 @@ export default async function videos(app: FastifyInstance) {
         return reply.code(404).send({ error: "song_not_found" });
       }
 
+      // WHO IS SINGING. The director was never told the vocalist, so a
+      // woman-sung record could get (and did get — live incident, 2026-07-16,
+      // "A.I baddie") a male lead copied from the prompt's example. The voice
+      // the user picked at creation travels in the render job's input; recover
+      // it here so the PERFORMER LAW has something to enforce. 'auto'/absent
+      // stays honest: the model must infer from the lyrics' first-person voice.
+      let vocalist: string = "unknown — infer from the lyrics' first-person voice";
+      if (song) {
+        const renderJobs = await prisma.providerJob.findMany({
+          where: { workspaceId, projectId: project.id, kind: "music" },
+          orderBy: { createdAt: "desc" },
+          take: 10,
+          select: { inputJson: true },
+        });
+        for (const job of renderJobs) {
+          const inputJson = job.inputJson as { songId?: unknown; voice?: unknown } | null;
+          const jobSongId = typeof inputJson?.songId === "string" ? inputJson.songId : null;
+          const voice = typeof inputJson?.voice === "string" ? inputJson.voice : null;
+          if (jobSongId && jobSongId !== song.id) continue;
+          if (voice && voice !== "auto") {
+            vocalist = voice; // 'female' | 'male' | 'duet' | 'group'
+            break;
+          }
+        }
+      }
+
       const result = await responsesJson<{
         title: string;
         shots: Array<{
@@ -75,6 +101,7 @@ export default async function videos(app: FastifyInstance) {
                 title: song.title,
                 genre: project.genre,
                 bpm: project.bpm,
+                vocalist,
                 lyrics: song.lyric?.cleanVersion ?? song.lyric?.body ?? null,
                 madeAt: song.createdAt.toISOString(),
               }
