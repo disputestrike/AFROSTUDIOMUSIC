@@ -34,6 +34,11 @@ const FlagshipBridge = dynamic(
   { ssr: false }
 );
 import { SongChat } from "./SongChat";
+import {
+  storyboardShots,
+  videoTreatmentOf,
+  type NormalizedVideoTreatment,
+} from "@afrohit/shared";
 
 interface HitPrediction {
   hitScore: number;
@@ -284,6 +289,11 @@ interface ProofPack {
 }
 
 type DownloadFile = { label: string; url: string; kind: string; dl?: string };
+/** 92.5 → "1:33" — section timecodes in the treatment modal. */
+const mmss = (s: number) => {
+  const t = Math.max(0, Math.round(s));
+  return `${Math.floor(t / 60)}:${String(t % 60).padStart(2, "0")}`;
+};
 type LyricVer = {
   body: string;
   title: string | null;
@@ -302,7 +312,12 @@ type VideoShot = {
 type VideoConceptRow = {
   id: string;
   title: string;
+  /** Flat shot list — for full-song treatments this is the compatibility view
+   *  extracted client-side (storyboardShots) so the lyric-panel list keeps
+   *  rendering unchanged whichever shape the server stored. */
   storyboard: VideoShot[];
+  /** The rich full-song treatment when the stored concept carries one. */
+  treatment?: NormalizedVideoTreatment | null;
   durationS: number;
   format: string;
   createdAt: string;
@@ -878,7 +893,22 @@ export default function CatalogGrid({ initial }: { initial: SongRow[] }) {
       const r = await api.get<{ concept: VideoConceptRow | null }>(
         `/songs/${songId}/video-concept`
       );
-      setVideoConcept({ songId, state: "ready", concept: r.concept });
+      // The stored storyboard is EITHER the legacy flat shot array or the
+      // full-song treatment object. Normalize once here so every render site
+      // sees a flat shots[] (legacy contract) plus the rich treatment when
+      // the concept carries one.
+      const raw = r.concept;
+      setVideoConcept({
+        songId,
+        state: "ready",
+        concept: raw
+          ? {
+              ...raw,
+              storyboard: storyboardShots(raw.storyboard) as VideoShot[],
+              treatment: videoTreatmentOf(raw.storyboard),
+            }
+          : null,
+      });
     } catch {
       setVideoConcept({ songId, state: "ready", concept: null });
     }
@@ -1727,52 +1757,212 @@ export default function CatalogGrid({ initial }: { initial: SongRow[] }) {
                   <span className="ml-2 font-normal text-slate-500">
                     · {videoConcept.concept.durationS}s ·{" "}
                     {videoConcept.concept.format}
+                    {videoConcept.concept.treatment
+                      ? videoConcept.concept.treatment.structureSource ===
+                        "measured"
+                        ? " · measured structure"
+                        : " · assumed 3-act"
+                      : null}
                   </span>
                 </div>
-                <ol className="space-y-2">
-                  {videoConcept.concept.storyboard.map(shot => (
-                    <li
-                      key={shot.index}
-                      className="rounded-lg border border-white/5 bg-black/20 px-3 py-2 text-xs leading-relaxed text-slate-400"
-                    >
-                      <span className="font-medium text-slate-300">
-                        Scene {shot.index + 1}
-                      </span>
-                      <span className="text-slate-600"> · {shot.duration_s}s</span>
-                      <div className="mt-1 text-slate-400">{shot.prompt}</div>
-                      {shot.motion || shot.lighting ? (
-                        <div className="mt-1 text-slate-600">
-                          {[shot.motion, shot.lighting].filter(Boolean).join(" · ")}
+                {videoConcept.concept.treatment ? (
+                  (t => (
+                    <div>
+                      {/* CONCEPT FIRST — the idea before the shots. */}
+                      <div className="mb-3 rounded-lg border border-white/10 bg-black/20 p-3">
+                        <div className="text-sm font-medium text-slate-100">
+                          {t.concept}
                         </div>
-                      ) : null}
-                    </li>
-                  ))}
-                </ol>
+                        <div className="mt-1 text-xs italic text-slate-400">
+                          {t.logline}
+                        </div>
+                        {t.visualWorld ? (
+                          <div className="mt-2 text-xs leading-relaxed text-slate-400">
+                            <span className="font-medium text-slate-300">
+                              Visual world ·{" "}
+                            </span>
+                            {t.visualWorld}
+                          </div>
+                        ) : null}
+                        {t.motifs.length ? (
+                          <div className="mt-2 flex flex-wrap gap-1.5">
+                            {t.motifs.map((m, i) => (
+                              <span
+                                key={i}
+                                className="rounded-full border border-white/10 bg-white/5 px-2 py-0.5 text-[11px] text-slate-300"
+                              >
+                                {m}
+                              </span>
+                            ))}
+                          </div>
+                        ) : null}
+                        {t.colorStory ? (
+                          <div className="mt-2 text-xs text-slate-500">
+                            <span className="font-medium text-slate-400">
+                              Color ·{" "}
+                            </span>
+                            {t.colorStory}
+                          </div>
+                        ) : null}
+                        {t.castingNotes ? (
+                          <div className="mt-1 text-xs text-slate-500">
+                            <span className="font-medium text-slate-400">
+                              Casting ·{" "}
+                            </span>
+                            {t.castingNotes}
+                          </div>
+                        ) : null}
+                        {t.balance ? (
+                          <div className="mt-1 text-xs text-slate-500">
+                            <span className="font-medium text-slate-400">
+                              Balance ·{" "}
+                            </span>
+                            {t.balance}
+                          </div>
+                        ) : null}
+                      </div>
+                      {/* SEQUENCES — grouped by the song's own sections. */}
+                      <ol className="space-y-2">
+                        {t.sequences.map(seq => (
+                          <li
+                            key={seq.index}
+                            className="rounded-lg border border-white/5 bg-black/20 px-3 py-2 text-xs leading-relaxed"
+                          >
+                            <div className="flex items-baseline gap-2">
+                              <span className="font-medium text-afrobrand-400">
+                                {seq.label}
+                              </span>
+                              <span className="text-slate-600">
+                                {mmss(seq.startS)}–{mmss(seq.endS)}
+                              </span>
+                            </div>
+                            {seq.intent ? (
+                              <div className="mt-1 text-slate-400">
+                                <span className="font-medium text-slate-300">
+                                  Intent ·{" "}
+                                </span>
+                                {seq.intent}
+                              </div>
+                            ) : null}
+                            {seq.setting ? (
+                              <div className="mt-0.5 text-slate-500">
+                                <span className="font-medium text-slate-400">
+                                  Setting ·{" "}
+                                </span>
+                                {seq.setting}
+                              </div>
+                            ) : null}
+                            <ol className="mt-1.5 space-y-1.5">
+                              {seq.shotIndexes.map(i => {
+                                const shot = t.shots[i];
+                                if (!shot) return null;
+                                return (
+                                  <li
+                                    key={i}
+                                    className="rounded border border-white/5 bg-black/20 px-2 py-1.5 text-slate-400"
+                                  >
+                                    <span className="font-medium text-slate-300">
+                                      Shot {i + 1}
+                                    </span>
+                                    <span className="text-slate-600">
+                                      {" "}
+                                      · {shot.duration_s}s
+                                    </span>
+                                    <div className="mt-0.5">{shot.prompt}</div>
+                                    {shot.motion || shot.lighting ? (
+                                      <div className="mt-0.5 text-slate-600">
+                                        {[shot.motion, shot.lighting]
+                                          .filter(Boolean)
+                                          .join(" · ")}
+                                      </div>
+                                    ) : null}
+                                  </li>
+                                );
+                              })}
+                            </ol>
+                            {seq.continuity ? (
+                              <div className="mt-1 text-slate-600">
+                                <span className="font-medium text-slate-500">
+                                  Continuity ·{" "}
+                                </span>
+                                {seq.continuity}
+                              </div>
+                            ) : null}
+                          </li>
+                        ))}
+                      </ol>
+                      {/* TEASER CUT — the socials clip derived from the
+                          treatment itself, never a separate cheap plan. */}
+                      <div className="mt-3 rounded-lg border border-afrobrand-400/30 bg-afrobrand-400/5 px-3 py-2 text-xs text-slate-300">
+                        <span className="font-medium text-afrobrand-400">
+                          {t.teaserCut.durationS}s {t.teaserCut.format} teaser
+                        </span>
+                        <span className="text-slate-400">
+                          {" "}
+                          — shots{" "}
+                          {t.teaserCut.shotRefs.map(r => r + 1).join(", ")}
+                        </span>
+                        {t.teaserCut.hookMoment ? (
+                          <div className="mt-0.5 text-slate-500">
+                            Hook moment · {t.teaserCut.hookMoment}
+                          </div>
+                        ) : null}
+                      </div>
+                    </div>
+                  ))(videoConcept.concept.treatment)
+                ) : (
+                  <ol className="space-y-2">
+                    {videoConcept.concept.storyboard.map(shot => (
+                      <li
+                        key={shot.index}
+                        className="rounded-lg border border-white/5 bg-black/20 px-3 py-2 text-xs leading-relaxed text-slate-400"
+                      >
+                        <span className="font-medium text-slate-300">
+                          Scene {shot.index + 1}
+                        </span>
+                        <span className="text-slate-600"> · {shot.duration_s}s</span>
+                        <div className="mt-1 text-slate-400">{shot.prompt}</div>
+                        {shot.motion || shot.lighting ? (
+                          <div className="mt-1 text-slate-600">
+                            {[shot.motion, shot.lighting].filter(Boolean).join(" · ")}
+                          </div>
+                        ) : null}
+                      </li>
+                    ))}
+                  </ol>
+                )}
                 {/* REWRITE (owner-requested): plans written before the
-                    PERFORMER LAW (0475f1d) carry the wrong lead. POST
-                    /videos/storyboards creates a NEW concept and the GET
-                    returns the newest, so a rewrite replaces the view without
-                    deleting anything. Text only — no video-render credits. */}
+                    PERFORMER LAW (0475f1d) carry the wrong lead — and plans
+                    written before the creative-director rebuild are 12s lyric
+                    slideshows. POST /videos/storyboards creates a NEW concept
+                    and the GET returns the newest, so a rewrite replaces the
+                    view without deleting anything. Text only — no
+                    video-render credits. */}
                 <button
                   disabled={makingVideo}
                   onClick={() => void makeVideoPlan(videoOpen)}
                   className="mt-3 rounded-full border border-white/15 px-4 py-2 text-sm text-slate-300 hover:bg-white/10 disabled:opacity-40"
                 >
-                  {makingVideo ? "Rewriting the plan…" : "✍️ Rewrite plan"}
+                  {makingVideo
+                    ? "Rewriting the treatment…"
+                    : "✍️ Rewrite full-song treatment"}
                 </button>
               </div>
             ) : (
               <div>
                 <p className="mb-3 text-sm text-slate-400">
-                  No video plan for this song yet. Write one from this
-                  song&apos;s own words — text only, no video credits spent.
+                  No video treatment for this song yet. Write a full-song
+                  treatment from this song&apos;s own words and structure —
+                  text only, no video credits spent.
                 </p>
                 <button
                   disabled={makingVideo}
                   onClick={() => void makeVideoPlan(videoOpen)}
                   className="rounded-full bg-brand-gradient px-4 py-2 text-sm font-medium text-ink shadow-glow disabled:opacity-40"
                 >
-                  {makingVideo ? "Writing the treatment…" : "🎬 Write the video plan"}
+                  {makingVideo
+                    ? "Writing the treatment…"
+                    : "🎬 Write the full-song treatment"}
                 </button>
               </div>
             )}
