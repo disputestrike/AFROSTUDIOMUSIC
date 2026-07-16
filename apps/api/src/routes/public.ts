@@ -9,6 +9,52 @@ import { presignAssetRef } from '../lib/storage';
  * attention doesn't leak.
  */
 export default async function publicRoutes(app: FastifyInstance) {
+  /**
+   * The landing-page song wall. Up to 12 REAL, releaseReady songs — the studio
+   * demos itself with records the artist green-lit, never placeholders. Gate:
+   * releaseReady && !quarantined && !deleted, and a playable approved
+   * master/mix must exist (a wall card you can't press play on is a dead card).
+   * Only public-safe fields leave: no workspace ids, no scores, no internals.
+   */
+  app.get('/trending', async (_req, reply) => {
+    const songs = await prisma.song.findMany({
+      where: { releaseReady: true, quarantined: false, deletedAt: null },
+      orderBy: { createdAt: 'desc' },
+      take: 24, // over-fetch; songs without a playable asset are dropped below
+      include: { project: { include: { artist: true } } },
+    });
+
+    const cards = await Promise.all(
+      songs.map(async (song) => {
+        const [master, mix, cover] = await Promise.all([
+          prisma.master.findFirst({ where: { songId: song.id, approved: true }, orderBy: { createdAt: 'desc' } }),
+          prisma.mix.findFirst({ where: { songId: song.id, approved: true }, orderBy: { createdAt: 'desc' } }),
+          prisma.imageAsset.findFirst({
+            where: { projectId: song.projectId, kind: 'cover', approved: true },
+            orderBy: { createdAt: 'desc' },
+          }),
+        ]);
+        const streamRef = master?.url ?? mix?.url;
+        if (!streamRef) return null;
+        const [coverUrl, streamUrl] = await Promise.all([
+          cover?.url ? presignAssetRef(cover.url, 900) : null,
+          presignAssetRef(streamRef, 900),
+        ]);
+        return {
+          id: song.id,
+          title: song.title,
+          artist: song.project.artist.stageName,
+          genre: song.project.genre,
+          coverUrl,
+          streamUrl,
+        };
+      }),
+    );
+
+    reply.header('cache-control', 'public, max-age=60');
+    return { songs: cards.filter((c): c is NonNullable<typeof c> => c !== null).slice(0, 12) };
+  });
+
   app.get<{ Params: { songId: string } }>('/song/:songId', async (req, reply) => {
     const song = await prisma.song.findUnique({
       where: { id: req.params.songId },

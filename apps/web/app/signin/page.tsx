@@ -13,7 +13,7 @@
  * failure maps to a message that says what actually went wrong and what to do.
  * A real <form> submit is used so browser password managers offer to save.
  */
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { useApi } from '@/lib/api';
 
@@ -44,6 +44,13 @@ export default function SignInPage() {
   const [err, setErr] = useState('');
   const [busy, setBusy] = useState(false);
   const [touched, setTouched] = useState(false);
+
+  // Landing CTAs deep-link to /signin?mode=signup. Read the param on mount
+  // (not useSearchParams — that would force a Suspense boundary for one flag)
+  // so the server-rendered markup stays identical and hydration never differs.
+  useEffect(() => {
+    if (new URLSearchParams(window.location.search).get('mode') === 'signup') setMode('signup');
+  }, []);
 
   const passwordShort = password.length > 0 && password.length < MIN_PASSWORD;
   const passwordOk = password.length >= MIN_PASSWORD;

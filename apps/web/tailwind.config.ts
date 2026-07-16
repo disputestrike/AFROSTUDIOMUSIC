@@ -53,12 +53,17 @@ const config: Config = {
           '0%': { backgroundPosition: '-200% 0' },
           '100%': { backgroundPosition: '200% 0' },
         },
+        eq: {
+          '0%,100%': { transform: 'scaleY(0.3)' },
+          '50%': { transform: 'scaleY(1)' },
+        },
       },
       animation: {
         drift: 'drift 22s ease-in-out infinite',
         'drift-slow': 'drift 34s ease-in-out infinite',
         float: 'float 6s ease-in-out infinite',
         shimmer: 'shimmer 3s linear infinite',
+        eq: 'eq 0.9s ease-in-out infinite',
       },
     },
   },

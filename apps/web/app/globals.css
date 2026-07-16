@@ -12,6 +12,13 @@ body {
   color: #f1f5f9;
 }
 
+/* Landing anchor CTAs ("Hear what it makes" → #wall) glide instead of jump. */
+@media (prefers-reduced-motion: no-preference) {
+  html {
+    scroll-behavior: smooth;
+  }
+}
+
 * {
   -webkit-tap-highlight-color: transparent;
 }
