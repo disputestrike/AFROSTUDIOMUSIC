@@ -60,6 +60,141 @@ async function reconcileLegacyDatabase(prisma) {
 
       // The lock is held before schema reconciliation so concurrent deploys
       // cannot race through the one-time db-push transition.
+
+      // Deduplicate rows before prisma db push to avoid unique constraint violations
+      // These queries remove older duplicate rows (by id) from columns that will become unique
+      
+      // Song.isrc
+      await tx.$executeRawUnsafe(`
+        DELETE FROM "Song" s1
+        WHERE s1."isrc" IS NOT NULL
+          AND EXISTS (
+            SELECT 1 FROM "Song" s2
+            WHERE s2."workspaceId" = s1."workspaceId"
+              AND s2."isrc" = s1."isrc"
+              AND s2."id" < s1."id"
+          )
+      `);
+
+      // Song.upc
+      await tx.$executeRawUnsafe(`
+        DELETE FROM "Song" s1
+        WHERE s1."upc" IS NOT NULL
+          AND EXISTS (
+            SELECT 1 FROM "Song" s2
+            WHERE s2."workspaceId" = s1."workspaceId"
+              AND s2."upc" = s1."upc"
+              AND s2."id" < s1."id"
+          )
+      `);
+
+      // Release.upc
+      await tx.$executeRawUnsafe(`
+        DELETE FROM "Release" r1
+        WHERE r1."upc" IS NOT NULL
+          AND EXISTS (
+            SELECT 1 FROM "Release" r2
+            WHERE r2."workspaceId" = r1."workspaceId"
+              AND r2."upc" = r1."upc"
+              AND r2."id" < r1."id"
+          )
+      `);
+
+      // Release.externalId
+      await tx.$executeRawUnsafe(`
+        DELETE FROM "Release" r1
+        WHERE r1."externalId" IS NOT NULL
+          AND EXISTS (
+            SELECT 1 FROM "Release" r2
+            WHERE r2."workspaceId" = r1."workspaceId"
+              AND r2."externalId" = r1."externalId"
+              AND r2."id" < r1."id"
+          )
+      `);
+
+      // CreditLedger.reversalOfId
+      await tx.$executeRawUnsafe(`
+        DELETE FROM "CreditLedger" cl1
+        WHERE cl1."reversalOfId" IS NOT NULL
+          AND EXISTS (
+            SELECT 1 FROM "CreditLedger" cl2
+            WHERE cl2."reversalOfId" = cl1."reversalOfId"
+              AND cl2."id" < cl1."id"
+          )
+      `);
+
+      // CreditLedger (workspaceId, idempotencyKey)
+      await tx.$executeRawUnsafe(`
+        DELETE FROM "CreditLedger" cl1
+        WHERE cl1."idempotencyKey" IS NOT NULL
+          AND EXISTS (
+            SELECT 1 FROM "CreditLedger" cl2
+            WHERE cl2."workspaceId" = cl1."workspaceId"
+              AND cl2."idempotencyKey" = cl1."idempotencyKey"
+              AND cl2."id" < cl1."id"
+          )
+      `);
+
+      // Export (songId, sourceFingerprint)
+      await tx.$executeRawUnsafe(`
+        DELETE FROM "Export" e1
+        WHERE e1."sourceFingerprint" IS NOT NULL
+          AND EXISTS (
+            SELECT 1 FROM "Export" e2
+            WHERE e2."songId" = e1."songId"
+              AND e2."sourceFingerprint" = e1."sourceFingerprint"
+              AND e2."id" < e1."id"
+          )
+      `);
+
+      // MaterialAsset (workspaceId, contentHash)
+      await tx.$executeRawUnsafe(`
+        DELETE FROM "MaterialAsset" ma1
+        WHERE ma1."contentHash" IS NOT NULL
+          AND EXISTS (
+            SELECT 1 FROM "MaterialAsset" ma2
+            WHERE ma2."workspaceId" = ma1."workspaceId"
+              AND ma2."contentHash" = ma1."contentHash"
+              AND ma2."id" < ma1."id"
+          )
+      `);
+
+      // ProviderJob.chargeLedgerId
+      await tx.$executeRawUnsafe(`
+        DELETE FROM "ProviderJob" pj1
+        WHERE pj1."chargeLedgerId" IS NOT NULL
+          AND EXISTS (
+            SELECT 1 FROM "ProviderJob" pj2
+            WHERE pj2."chargeLedgerId" = pj1."chargeLedgerId"
+              AND pj2."id" < pj1."id"
+          )
+      `);
+
+      // ProviderJob (workspaceId, kind, idempotencyKey)
+      await tx.$executeRawUnsafe(`
+        DELETE FROM "ProviderJob" pj1
+        WHERE pj1."idempotencyKey" IS NOT NULL
+          AND EXISTS (
+            SELECT 1 FROM "ProviderJob" pj2
+            WHERE pj2."workspaceId" = pj1."workspaceId"
+              AND pj2."kind" = pj1."kind"
+              AND pj2."idempotencyKey" = pj1."idempotencyKey"
+              AND pj2."id" < pj1."id"
+          )
+      `);
+
+      // SoundReference (workspaceId, contentHash)
+      await tx.$executeRawUnsafe(`
+        DELETE FROM "SoundReference" sr1
+        WHERE sr1."contentHash" IS NOT NULL
+          AND EXISTS (
+            SELECT 1 FROM "SoundReference" sr2
+            WHERE sr2."workspaceId" = sr1."workspaceId"
+              AND sr2."contentHash" = sr1."contentHash"
+              AND sr2."id" < sr1."id"
+          )
+      `);
+
       runPrisma(["db", "push", "--skip-generate"]);
 
       const state = await baselineState(tx);
