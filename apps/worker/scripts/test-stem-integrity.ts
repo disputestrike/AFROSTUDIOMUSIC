@@ -185,7 +185,15 @@ function testProcessorWiring(): void {
   assert.match(music, /tx\.stem\.create\([\s\S]*format:\s*stem\.format/);
   assert.match(music, /const persistedStemCount = await prisma\.stem\.count/);
   assert.match(music, /enforceMusicStemPersistence\(p\.input\.withStems, persistedStemCount\)/);
-  assert.match(music, /catch \(err\)[\s\S]*await markFailed\(p\.jobId, err\)/);
+  // FAILURES MUST FAIL — but under the POST-RENDER SALVAGE LAW (2026-07-16):
+  // a failure with no winner still hard-fails (markFailed, now carrying the
+  // undici cause code); a failure AFTER a winner exists salvages the paid
+  // take (markSucceeded with salvage:true) instead of re-rendering on retry.
+  // Pin all three branches so none can silently disappear.
+  assert.match(music, /catch \(err\)[\s\S]*await markFailed\(p\.jobId, `\$\{\(err as Error\)\?\.message \?\? err\}\$\{causeNote\}`\)/);
+  assert.match(music, /if \(committedBeatId\)[\s\S]*postProcessing: 'incomplete'/);
+  assert.match(music, /if \(salvageCandidate\)[\s\S]*salvage: true/);
+  assert.match(music, /salvage: \{ failedStep: s\.step/);
   assert.match(stems, /materializeStemAudio/);
   assert.match(stems, /format:\s*(?:s|stem)\.format/);
 
