@@ -299,6 +299,11 @@ async function bootstrap() {
     ok: true,
     service: "api",
     ts: new Date().toISOString(),
+    // DEPLOY VERIFIABILITY (2026-07-16): three incidents in one night reduced
+    // to "is prod running the fix?" and nothing could answer. The commit sha —
+    // and ONLY the sha, no secrets, no config — is public so anyone can check
+    // what build is live with a curl. Null outside Railway (local/dev).
+    sha: process.env.RAILWAY_GIT_COMMIT_SHA ?? null,
   }));
   app.get("/health/ready", async (_req, reply) => {
     const checkedAt = new Date();
@@ -325,6 +330,7 @@ async function bootstrap() {
     let database = false;
     let redis = false;
     let worker = false;
+    let workerSha: string | null = null;
     let pendingOutbox = 0;
     let oldestPendingSeconds: number | null = null;
     try {
@@ -357,16 +363,23 @@ async function bootstrap() {
         ]),
         2_000
       );
-      worker = heartbeats.some((row: { value: string }) => {
+      for (const row of heartbeats as Array<{ value: string }>) {
         try {
-          const at = new Date(
-            (JSON.parse(row.value) as { at?: string }).at ?? 0
-          ).getTime();
-          return Number.isFinite(at) && checkedAt.getTime() - at < 45_000;
+          const beat = JSON.parse(row.value) as { at?: string; sha?: string };
+          const at = new Date(beat.at ?? 0).getTime();
+          if (Number.isFinite(at) && checkedAt.getTime() - at < 45_000) {
+            worker = true;
+            // DEPLOY VERIFIABILITY: the freshest live worker's build sha (the
+            // worker has no HTTP surface of its own — its heartbeat is its
+            // health surface, and it now carries the sha). Rows arrive
+            // newest-first, so the first live row wins.
+            workerSha = typeof beat.sha === "string" ? beat.sha : null;
+            break;
+          }
         } catch {
-          return false;
+          /* unreadable heartbeat row — ignore, keep scanning */
         }
-      });
+      }
       pendingOutbox = pending;
       oldestPendingSeconds = oldest
         ? Math.max(
@@ -411,6 +424,7 @@ async function bootstrap() {
         database,
         redis,
         worker,
+        workerSha,
         pendingOutbox,
         oldestPendingSeconds,
       },

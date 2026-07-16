@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { useApi } from "@/lib/api";
 import {
@@ -69,6 +69,13 @@ export interface SongRow {
   viralScore?: number | null;
   coverUrl: string | null;
   createdAt: string;
+  // NEVER-LOSE REPOSITORY: soft-deleted and quarantined rows surface in the
+  // "Show ALL songs" view flagged with their reason — recoverable, never
+  // silently vanished (Restore / Un-quarantine hang off these).
+  deleted?: boolean;
+  deletedReason?: string | null;
+  quarantined?: boolean;
+  quarantineReason?: string | null;
 }
 
 const STATUS_LABEL: Record<string, string> = {
@@ -203,6 +210,10 @@ interface VersionsResp {
     isCurrent?: boolean;
     dl?: string;
     canRevert?: boolean;
+    // Per-take certification truth from the server — an uncertified (pre-
+    // certification-era) take shows an 'unverified' tag instead of hiding or
+    // 409ing; certification gates RELEASE, not catalog reverts.
+    certification?: { certified?: boolean; status?: string };
   }>;
   lyricVersions: Array<{
     label: string;
@@ -261,8 +272,9 @@ export default function CatalogGrid({ initial }: { initial: SongRow[] }) {
     data?: VersionsResp;
   } | null>(null);
   // NOTHING IS LOST: the default list hides old lyric-only shells (failed /
-  // never-ran renders). This toggle fetches EVERYTHING (?all=1) so "lost
-  // versions" are always findable — re-sing or delete them from here.
+  // never-ran renders). This toggle fetches EVERYTHING (?all=1) — including
+  // soft-deleted and quarantined songs, flagged — so "lost versions" are
+  // always findable and RECOVERABLE (restore / un-quarantine) from here.
   const [showingAll, setShowingAll] = useState(false);
   const toggleShowAll = async () => {
     try {
@@ -273,6 +285,104 @@ export default function CatalogGrid({ initial }: { initial: SongRow[] }) {
     } catch {
       flash("Could not load the full list");
     }
+  };
+  // Re-pull the CURRENT view — recovery actions change which rows belong in it.
+  const refreshList = async () => {
+    try {
+      setSongs(await api.get<SongRow[]>(showingAll ? "/songs?all=1" : "/songs"));
+    } catch {
+      router.refresh();
+    }
+  };
+
+  // NEVER-LOSE RECOVERY — the client half the server has been waiting for:
+  // DELETE stamps deletedAt and POST /:id/restore clears it, but nothing in the
+  // web ever called restore, so "recoverable" was a claim with no button.
+  async function restore(s: SongRow) {
+    setBusy(`${s.id}:restore`);
+    try {
+      await api.post(`/songs/${s.id}/restore`, {});
+      flash("Restored — the song is back in the catalog.");
+      await refreshList();
+    } catch (e) {
+      flash((e as Error).message || "Restore failed");
+    } finally {
+      setBusy("");
+    }
+  }
+
+  // Quarantine is reversible by design (PATCH /songs/:id carries the toggle);
+  // auto-quarantined songs used to vanish from EVERY view with no way back.
+  async function unquarantine(s: SongRow) {
+    setBusy(`${s.id}:unquarantine`);
+    try {
+      await api.patch(`/songs/${s.id}`, {
+        quarantined: false,
+        quarantineReason: null,
+      });
+      flash("Quarantine lifted — the song is visible again.");
+      await refreshList();
+    } catch (e) {
+      flash((e as Error).message || "Could not lift quarantine");
+    } finally {
+      setBusy("");
+    }
+  }
+
+  // ---- PLAYER QUALITY-OF-LIFE (owner-requested, 2026-07-16) ----
+  // Loop per card = the native audio `loop` attribute, nothing clever.
+  const [looping, setLooping] = useState<Record<string, boolean>>({});
+  // PLAY ALL — the visible songs in card order, advanced on 'ended'. The
+  // app-wide AudioSolo listener already enforces one-audio-at-a-time, so
+  // starting the next element IS the discipline; no new deps, no new player.
+  // A ref mirror avoids acting on stale state from inside media callbacks.
+  const audioEls = useRef<Map<string, HTMLAudioElement>>(new Map());
+  const playAllRef = useRef<{ ids: string[]; idx: number } | null>(null);
+  const [playAll, setPlayAllState] = useState<{ ids: string[]; idx: number } | null>(null);
+  const setPlayAll = (v: { ids: string[]; idx: number } | null) => {
+    playAllRef.current = v;
+    setPlayAllState(v);
+  };
+  const playAt = (ids: string[], idx: number) => {
+    const el = audioEls.current.get(ids[idx]!);
+    if (!el) {
+      skipTo(ids, idx + 1); // card unmounted/filtered — skip, never stall
+      return;
+    }
+    try {
+      el.currentTime = 0;
+    } catch {
+      /* metadata not loaded yet — play() below still starts from 0 */
+    }
+    void el.play().catch(() => skipTo(ids, idx + 1));
+  };
+  const skipTo = (ids: string[], idx: number) => {
+    if (idx >= ids.length) {
+      setPlayAll(null);
+      flash("Played the whole view.");
+      return;
+    }
+    setPlayAll({ ids, idx });
+    playAt(ids, idx);
+  };
+  const startPlayAll = () => {
+    const ids = songs.filter(x => x.audioUrl).map(x => x.id);
+    if (!ids.length) {
+      flash("Nothing playable in this view yet.");
+      return;
+    }
+    setPlayAll({ ids, idx: 0 });
+    playAt(ids, 0);
+  };
+  const stopPlayAll = () => {
+    const cur = playAllRef.current;
+    if (cur) audioEls.current.get(cur.ids[cur.idx]!)?.pause();
+    setPlayAll(null);
+  };
+  const onCardEnded = (songId: string) => {
+    const cur = playAllRef.current;
+    if (!cur || cur.ids[cur.idx] !== songId) return; // not our queue's track
+    skipTo(cur.ids, cur.idx + 1);
   };
 
   async function openCompare(s: SongRow) {
@@ -370,7 +480,10 @@ export default function CatalogGrid({ initial }: { initial: SongRow[] }) {
     setSongs(s => s.filter(x => x.id !== id));
     try {
       await api.del(`/songs/${id}`);
-      flash("Deleted.");
+      flash("Deleted — recoverable anytime from “Show ALL songs”.");
+      // In the repository view the row should REAPPEAR flagged deleted (with
+      // its Restore button), not vanish like a hard delete.
+      if (showingAll) await refreshList();
     } catch (e) {
       // NEVER pretend: if the server refused, put the song back and say so —
       // a silently-failed delete is exactly the "it always comes back" bug.
@@ -634,9 +747,14 @@ export default function CatalogGrid({ initial }: { initial: SongRow[] }) {
     setMakingVideo(true);
     try {
       await api.post(`/videos/storyboards`, { projectId: s.projectId, songId: s.id });
+      // POST creates a NEW concept row and GET returns the newest — a rewrite
+      // therefore replaces what the modal shows without deleting anything.
       await loadVideoConcept(s.id);
-    } catch {
-      setVideoConcept({ songId: s.id, state: "ready", concept: null });
+    } catch (e) {
+      // A failed (re)write must not blank an EXISTING plan off the screen —
+      // reload whatever the server still has and say what went wrong.
+      flash((e as Error).message?.slice(0, 140) || "Could not write the video plan");
+      await loadVideoConcept(s.id);
     } finally {
       setMakingVideo(false);
     }
@@ -780,7 +898,15 @@ export default function CatalogGrid({ initial }: { initial: SongRow[] }) {
         </div>
       )}
 
-      <div className="mb-4 flex items-center justify-end">
+      <div className="mb-4 flex items-center justify-between gap-2">
+        {/* PLAY ALL (owner-requested): the visible songs, in order, one after
+            the other — the AudioSolo listener keeps it one-at-a-time. */}
+        <button
+          onClick={() => (playAll ? stopPlayAll() : startPlayAll())}
+          className="rounded-full border border-white/15 px-3 py-1.5 text-xs text-slate-300 hover:bg-white/10"
+        >
+          {playAll ? "⏹ Stop play all" : "▶ Play all"}
+        </button>
         <button
           onClick={() => void toggleShowAll()}
           className="rounded-full border border-white/15 px-3 py-1.5 text-xs text-slate-300 hover:bg-white/10"
@@ -790,6 +916,30 @@ export default function CatalogGrid({ initial }: { initial: SongRow[] }) {
             : "🔎 Show ALL songs (recover hidden/failed)"}
         </button>
       </div>
+
+      {/* Now-playing bar for Play all — enough to see where you are, skip, stop. */}
+      {playAll && (
+        <div className="fixed bottom-4 left-1/2 z-40 flex max-w-[92vw] -translate-x-1/2 items-center gap-3 rounded-full border border-white/10 bg-slate-900/95 px-4 py-2 text-xs shadow-xl backdrop-blur">
+          <span className="shrink-0 text-slate-500">
+            {playAll.idx + 1}/{playAll.ids.length}
+          </span>
+          <span className="truncate text-slate-200">
+            {songs.find(x => x.id === playAll.ids[playAll.idx])?.title ?? "…"}
+          </span>
+          <button
+            onClick={() => skipTo(playAll.ids, playAll.idx + 1)}
+            className="shrink-0 rounded-full border border-white/15 px-2.5 py-1 text-slate-300 hover:bg-white/10"
+          >
+            ⏭ Next
+          </button>
+          <button
+            onClick={stopPlayAll}
+            className="shrink-0 rounded-full border border-white/15 px-2.5 py-1 text-slate-300 hover:bg-white/10"
+          >
+            ⏹ Stop
+          </button>
+        </div>
+      )}
 
       <div className="grid gap-5 sm:grid-cols-2 lg:grid-cols-3">
         {songs.map(s => (
@@ -833,9 +983,29 @@ export default function CatalogGrid({ initial }: { initial: SongRow[] }) {
                     </span>
                   ) : null}
                 </div>
-                <span className="shrink-0 rounded-full bg-slate-800 px-2 py-0.5 text-[10px] uppercase tracking-wide text-slate-400">
-                  {STATUS_LABEL[s.status] ?? s.status}
-                </span>
+                <div className="flex shrink-0 flex-wrap items-center justify-end gap-1">
+                  {/* Recovery truth: a deleted/quarantined row SAYS so (the
+                      reason rides the tooltip) instead of vanishing. */}
+                  {s.deleted && (
+                    <span
+                      title={s.deletedReason || "Soft-deleted — everything kept; Restore brings it back whole"}
+                      className="rounded-full bg-red-500/15 px-2 py-0.5 text-[10px] uppercase tracking-wide text-red-300"
+                    >
+                      Deleted
+                    </span>
+                  )}
+                  {s.quarantined && (
+                    <span
+                      title={s.quarantineReason || "Quarantined by QA — reversible"}
+                      className="rounded-full bg-amber-500/15 px-2 py-0.5 text-[10px] uppercase tracking-wide text-amber-300"
+                    >
+                      Quarantined
+                    </span>
+                  )}
+                  <span className="rounded-full bg-slate-800 px-2 py-0.5 text-[10px] uppercase tracking-wide text-slate-400">
+                    {STATUS_LABEL[s.status] ?? s.status}
+                  </span>
+                </div>
               </div>
               <div className="mt-1 text-xs text-slate-400">
                 {s.artist} · {s.genre.replace("_", " ")}
@@ -857,16 +1027,35 @@ export default function CatalogGrid({ initial }: { initial: SongRow[] }) {
                   <audio
                     controls
                     preload="none"
+                    loop={!!looping[s.id]}
+                    ref={el => {
+                      if (el) audioEls.current.set(s.id, el);
+                      else audioEls.current.delete(s.id);
+                    }}
+                    onEnded={() => onCardEnded(s.id)}
                     className="mt-3 w-full"
                     src={s.audioUrl}
                   />
-                  {/* HONESTY TAG: pre-certification-era renders play fine but
-                      haven't been hash-verified; say so instead of hiding them. */}
-                  {s.currentAudio && s.currentAudio.certification?.certified === false ? (
-                    <div className="mt-1 text-[10px] text-slate-500">
-                      Legacy render — plays fine; verifies automatically on next master.
-                    </div>
-                  ) : null}
+                  <div className="mt-1 flex items-center justify-between gap-2">
+                    {/* Loop = the native attribute; the button just flips it. */}
+                    <button
+                      onClick={() =>
+                        setLooping(cur => ({ ...cur, [s.id]: !cur[s.id] }))
+                      }
+                      title={looping[s.id] ? "Looping — click to play once" : "Loop this song"}
+                      className={`shrink-0 rounded-full border px-2 py-0.5 text-[10px] ${looping[s.id] ? "border-afrobrand-500/50 bg-afrobrand-500/15 text-afrobrand-300" : "border-white/10 bg-white/5 text-slate-400 hover:bg-white/10"}`}
+                    >
+                      🔁 {looping[s.id] ? "Looping" : "Loop"}
+                    </button>
+                    {/* HONESTY TAG: pre-certification-era renders play fine but
+                        haven't been hash-verified; say so instead of hiding
+                        them. Re-master (user-triggered) is what verifies. */}
+                    {s.currentAudio && s.currentAudio.certification?.certified === false ? (
+                      <div className="text-[10px] text-slate-500">
+                        Legacy render — plays fine; Re-master verifies it.
+                      </div>
+                    ) : null}
+                  </div>
                 </>
               ) : (
                 <div className="mt-3 text-xs text-slate-600">
@@ -876,6 +1065,21 @@ export default function CatalogGrid({ initial }: { initial: SongRow[] }) {
 
               {/* Action bar — the workstation */}
               <div className="mt-3 flex flex-wrap gap-1.5">
+                {/* Recovery actions lead when the row needs recovering. */}
+                {s.deleted && (
+                  <Action
+                    label="♻ Restore"
+                    busy={isBusy(s.id, "restore")}
+                    onClick={() => void restore(s)}
+                  />
+                )}
+                {s.quarantined && (
+                  <Action
+                    label="Un-quarantine"
+                    busy={isBusy(s.id, "unquarantine")}
+                    onClick={() => void unquarantine(s)}
+                  />
+                )}
                 <Action
                   label="Download"
                   icon={<Download className="h-3.5 w-3.5" />}
@@ -1368,6 +1572,18 @@ export default function CatalogGrid({ initial }: { initial: SongRow[] }) {
                     </li>
                   ))}
                 </ol>
+                {/* REWRITE (owner-requested): plans written before the
+                    PERFORMER LAW (0475f1d) carry the wrong lead. POST
+                    /videos/storyboards creates a NEW concept and the GET
+                    returns the newest, so a rewrite replaces the view without
+                    deleting anything. Text only — no video-render credits. */}
+                <button
+                  disabled={makingVideo}
+                  onClick={() => void makeVideoPlan(videoOpen)}
+                  className="mt-3 rounded-full border border-white/15 px-4 py-2 text-sm text-slate-300 hover:bg-white/10 disabled:opacity-40"
+                >
+                  {makingVideo ? "Rewriting the plan…" : "✍️ Rewrite plan"}
+                </button>
               </div>
             ) : (
               <div>
@@ -1435,11 +1651,24 @@ export default function CatalogGrid({ initial }: { initial: SongRow[] }) {
                           <span className="text-xs font-medium text-slate-200">
                             {a.label}
                           </span>
-                          {a.isCurrent && (
-                            <span className="rounded-full bg-emerald-500/15 px-1.5 py-0.5 text-[10px] text-emerald-300">
-                              current
-                            </span>
-                          )}
+                          <span className="flex items-center gap-1">
+                            {/* Pre-certification-era takes are shown AND
+                                revertable — tagged, never hidden. Release
+                                keeps its own strict certification gate. */}
+                            {a.certification?.certified === false && (
+                              <span
+                                title="Made before hash+QC certification — plays and reverts fine; a Re-master verifies it. Release still requires certification."
+                                className="rounded-full bg-amber-500/15 px-1.5 py-0.5 text-[10px] text-amber-300"
+                              >
+                                unverified
+                              </span>
+                            )}
+                            {a.isCurrent && (
+                              <span className="rounded-full bg-emerald-500/15 px-1.5 py-0.5 text-[10px] text-emerald-300">
+                                current
+                              </span>
+                            )}
+                          </span>
                         </div>
                         <audio
                           controls

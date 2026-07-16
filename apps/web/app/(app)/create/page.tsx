@@ -345,7 +345,12 @@ export default function CreatePage() {
       try {
         started = await api.post<{ jobId: string }>(
         `/projects/${project.id}/drop`,
-        { theme, vibe: vibe.trim().slice(0, 500) || undefined, songTitle: songName.trim() || undefined, voice: voice === 'auto' ? undefined : voice, candidates: takes > 1 ? takes : undefined, pinnedReferenceId: pinnedRef || undefined, count: 1, genre, fusionGenres: fusion.length ? fusion : undefined, mood, bpm, withVocals: true, songEngine: engine === 'auto' ? undefined : engine, influence: influence.trim() || undefined, languages: langs, instruments: instruments.length ? instruments : undefined },
+        // OUR ENGINE IS INSTRUMENTAL-ONLY (2026-07-16): sung vocals aren't wired
+        // to it yet, and withVocals:true + own used to guarantee a 422 on every
+        // click — right after the owner proudly restored the picker. The chip
+        // says so honestly; the request matches: instrumental bed, vocals come
+        // by upload or re-sing.
+        { theme, vibe: vibe.trim().slice(0, 500) || undefined, songTitle: songName.trim() || undefined, voice: voice === 'auto' ? undefined : voice, candidates: takes > 1 ? takes : undefined, pinnedReferenceId: pinnedRef || undefined, count: 1, genre, fusionGenres: fusion.length ? fusion : undefined, mood, bpm, withVocals: engine !== 'own', songEngine: engine === 'auto' ? undefined : engine, influence: influence.trim() || undefined, languages: langs, instruments: instruments.length ? instruments : undefined },
         // One key per CLICK: the retry-on-network-death in apiFetch can re-send
         // this POST — the server returns the drop already running instead of
         // starting (and charging) a second one.
@@ -515,7 +520,11 @@ export default function CreatePage() {
         fusionGenres: fusion.length ? fusion : undefined,
         bpm,
         withStems: false,
-        withVocals: true,
+        // OUR ENGINE IS INSTRUMENTAL-ONLY (2026-07-16): own + withVocals:true
+        // hard-422'd server-side, so every "Sing MY lyrics" click on Our Engine
+        // failed. The lyrics stay attached to the song — sing them over the bed
+        // by upload or re-sing once a vocal engine is picked.
+        withVocals: engine !== 'own',
         // NO inline lyrics — the attach above stored the draft artistAuthored, and
         // the server sings draft.body VERBATIM on that path. Passing the text
         // inline skipped the artistAuthored check and the enrichment REWROTE the
@@ -840,7 +849,10 @@ export default function CreatePage() {
             { value: 'eleven', label: 'Advanced', hint: 'Section-controlled, high realism', available: musicRoutes?.advanced === true },
             { value: 'minimax', label: 'Standard A', hint: 'High vocal realism', available: musicRoutes?.standard === true },
             { value: 'ace_step', label: 'Standard B', hint: 'Fast draft', available: musicRoutes?.standard === true },
-            { value: 'own', label: 'Our Engine', hint: 'Built from YOUR material — fully owned', available: true },
+            // HONEST HINT (2026-07-16): the own engine builds the INSTRUMENTAL
+            // bed only — the old "fully owned" hint implied a sung song and set
+            // up a guaranteed failure. Say what it actually does.
+            { value: 'own', label: 'Our Engine', hint: 'Instrumental bed from YOUR material — add vocals by upload or re-sing', available: true },
           ] as const).filter((e) => e.available).map((e) => (
             <button key={e.value} onClick={() => setEngine(e.value)} className={`rounded-full px-4 py-2 text-sm ${engine === e.value ? 'bg-brand-gradient text-ink shadow-glow' : 'border border-white/10 bg-white/5 text-slate-300 hover:bg-white/10'}`}>
               {e.label} <span className="opacity-60">· {e.hint}</span>

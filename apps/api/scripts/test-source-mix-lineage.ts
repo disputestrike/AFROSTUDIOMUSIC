@@ -52,4 +52,52 @@ assert.match(writers[1][1], /project: \{ workspaceId: ctx\.workspaceId \}/);
 assert.match(writers[1][1], /const current = currentPlayableAsset\(song\)/);
 assert.match(writers[1][1], /if \(!current\)[\s\S]*master_source_not_certified/);
 
+// ---- CERTIFICATION GATES RELEASE, NOT CATALOG OPERATIONS (2026-07-16) ----
+// Re-master must PROCEED on an uncertified legacy source (the master pipeline
+// is what produces certification — the old 409 was a circular lockout), and
+// the lineage must say so honestly instead of fabricating 'passed'.
+for (const [name, source] of writers) {
+  assert.match(
+    source,
+    /legacySource/,
+    `${name} must route an uncertified current through the legacy-source wrapper`
+  );
+  assert.match(
+    source,
+    /['"]unverified-legacy['"]/,
+    `${name} must mark legacy master lineage honestly`
+  );
+  assert.match(
+    source,
+    /preset: ['"]legacy-source['"]/,
+    `${name} must wrap the legacy source in its own honest preset`
+  );
+  assert.doesNotMatch(
+    source,
+    /preset: ['"]legacy-source['"],[\s\S]{0,400}qualityState: ['"]passed['"]/,
+    `${name} must never stamp an unverified legacy wrapper 'passed'`
+  );
+}
+// Revert ('Make current') is a catalog operation: the blanket 409 that locked
+// the whole pre-certification catalog out is gone; the unproven wrapper path
+// carries releaseLineageCertified:false instead.
+assert.doesNotMatch(writers[0][1], /error: ['"]version_not_certified['"]/);
+assert.match(writers[0][1], /revert-source-unproven/);
+assert.match(writers[0][1], /releaseLineageCertified: false/);
+// The worker accepts ONLY the honestly-marked legacy wrapper on the
+// uncertified path — everything else still fails closed — and it certifies
+// the actual source bytes at render time.
+const workerMaster = readFileSync(
+  resolve(repoRoot, "apps/worker/src/processors/master.ts"),
+  "utf8"
+);
+assert.match(workerMaster, /sourceCertification === ['"]unverified-legacy['"]/);
+assert.match(workerMaster, /master_source_mix_not_certified/);
+assert.match(workerMaster, /certifiedSource = await certifyAudioBytes/);
+assert.match(
+  workerMaster,
+  /legacySource\s*\?\s*\{\}\s*:/,
+  "a legacy source must never be dressed up as an attested direct upload"
+);
+
 console.log("source mix lineage tests passed");

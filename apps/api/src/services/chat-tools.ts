@@ -1248,16 +1248,22 @@ async function createBeatJob(
     voice?: "auto" | "female" | "male" | "duet" | "group";
     candidates?: number;
     instruments?: string[];
+    /** Explicit song binding for the own-engine bed. The drop pipeline knows
+     *  exactly which song it just wrote (approve_hook minted it) — passing it
+     *  beats re-deriving "the latest song" and keeps the bed (and its melody
+     *  score) bound to the right lyrics even for instrumental asks. */
+    songId?: string;
   }
 ) {
   if (!ctx.projectId) return { error: "no_project_in_thread" };
-  if (a.withVocals && a.songEngine === "own") {
-    return {
-      error: "own_vocal_pipeline_unavailable",
-      message:
-        "Our Engine currently produces instrumentals only. Choose a vocal-capable engine for a sung song.",
-    };
-  }
+  // OUR ENGINE + VOCALS = the INSTRUMENTAL BED, said honestly — never a dead
+  // end. This used to hard-fail here ('own_vocal_pipeline_unavailable'), and on
+  // the drop path that fired AFTER the hooks + lyrics LLM spend: the studio
+  // wrote a whole song and then refused to render it. The own branch below
+  // already does the right thing with a sung ask — it binds the bed to the
+  // song that carries the lyrics and returns the "vocals by upload or re-sing"
+  // note (which this guard had turned into dead code). The own-engine worker
+  // payload never renders vocals regardless, so nothing is faked.
 
   // Honor the requested genre for the whole session — the chat's scratch project
   // defaults to afro_fusion, so sync it to what was actually asked for.
@@ -1301,13 +1307,23 @@ async function createBeatJob(
     });
     if (!ownCharge.ok) return { error: "insufficient_credits", ...ownCharge };
     const ownBpm = a.bpm ?? genreSignature(a.genre).bpm;
-    const ownSong = a.withVocals
+    // SONG BINDING: an explicit songId (the drop pipeline's fresh song) wins;
+    // a sung ask without one falls back to the project's latest song. This
+    // used to hang ONLY off withVocals — so once the web client honestly sends
+    // withVocals:false for Our Engine, the drop's bed would have rendered
+    // unbound and the drop could never find its playable output.
+    const ownSong = a.songId
       ? await prisma.song.findFirst({
-          where: { projectId: ctx.projectId },
-          orderBy: { createdAt: "desc" },
+          where: { id: a.songId, projectId: ctx.projectId, workspaceId: ctx.workspaceId },
           select: { id: true },
         })
-      : null;
+      : a.withVocals
+        ? await prisma.song.findFirst({
+            where: { projectId: ctx.projectId },
+            orderBy: { createdAt: "desc" },
+            select: { id: true },
+          })
+        : null;
     const ownJob = await createQueuedProviderJob({
       app: ctx.app,
       queue: ctx.app.queues.music,
@@ -1384,8 +1400,15 @@ async function createBeatJob(
   let draftCraft: ReturnType<typeof craftOf> = null;
   let hookText: string | undefined;
   if (a.withVocals) {
+    // An explicit songId (the drop pipeline's fresh song) pins the lookup —
+    // "latest in project" is only the fallback, so a concurrent song created
+    // in the same project can never swap in its lyrics mid-drop.
     const song = await prisma.song.findFirst({
-      where: { projectId: ctx.projectId },
+      where: {
+        projectId: ctx.projectId,
+        workspaceId: ctx.workspaceId,
+        ...(a.songId ? { id: a.songId } : {}),
+      },
       orderBy: { createdAt: "desc" },
       include: {
         lyric: true,
@@ -2012,6 +2035,9 @@ async function runDropTool(
       voice: a.voice,
       vibePrompt: a.theme,
       instruments: a.instruments,
+      // Bind the render to THE song this take just wrote (parity with the
+      // drop pipeline) — required for the own-engine bed, harmless elsewhere.
+      songId: ap?.songId,
     })) as { jobId?: string; songId?: string; error?: string };
     // The user's typed song name IS the title (songTitle was a dead field).
     const producedSongId = ap?.songId ?? beat?.songId;
@@ -2057,12 +2083,54 @@ async function masterSongTool(ctx: Ctx, songId: string, preset?: string) {
   }
   const latestMix = song.mixes[0];
   const latestBeat = song.beats[0];
+  // LEGACY SOURCE — same law as the REST path (songs.ts /:id/master):
+  // certification gates release, not catalog operations, and certification is
+  // PRODUCED by this pipeline. An uncertified current used to fall into the
+  // generic 'source' wrapper below, which fabricated qualityState:'passed'
+  // around a null hash and then died in the worker anyway. It now gets an
+  // honestly-marked legacy wrapper the worker certifies at render time.
+  const legacySource = !current.certification.certified;
   const realMix =
     current.type === "mix" && latestMix?.id === current.id
       ? latestMix
       : null;
   let mixId: string;
-  if (realMix) {
+  if (legacySource) {
+    const legacyCandidate = await prisma.mix.findFirst({
+      where: {
+        projectId: song.projectId,
+        songId: song.id,
+        project: { workspaceId: ctx.workspaceId },
+        preset: "legacy-source",
+        url: current.url,
+      },
+      orderBy: { createdAt: "desc" },
+      select: { id: true },
+    });
+    const legacyMix =
+      legacyCandidate ??
+      (await prisma.mix.create({
+        data: {
+          projectId: song.projectId,
+          songId: song.id,
+          preset: "legacy-source",
+          url: current.url,
+          notes:
+            "Re-master source from uncertified legacy catalog audio; the master worker hashes + QC-verifies these bytes at render",
+          qualityState: current.certification.qualityState,
+          contentHash: current.certification.contentHash,
+          verifiedAt: current.certification.verifiedAt,
+          approved: false,
+          meta: {
+            derivedFrom: { type: current.type, id: current.id },
+            sourceCertification: "unverified-legacy",
+            releaseLineageCertified: false,
+          } as never,
+        },
+        select: { id: true },
+      }));
+    mixId = legacyMix.id;
+  } else if (realMix) {
     mixId = realMix.id;
   } else if (current.type === "master") {
     const currentMaster = song.masters.find((master: { id: string; meta: unknown }) => master.id === current.id);
@@ -2232,7 +2300,9 @@ async function masterSongTool(ctx: Ctx, songId: string, preset?: string) {
     projectId: song.projectId,
     kind: "master",
     provider: "internal",
-    inputJson: { songId, mixId, preset: p, finished },
+    // Honest lineage marker when the source was legacy-uncertified (parity
+    // with the REST path) — the master OUTPUT is still fully certified.
+    inputJson: { songId, mixId, preset: p, finished, ...(legacySource ? { sourceCertification: "unverified-legacy" } : {}) },
     charge,
     idempotencyKey,
     payload: jobId => ({
@@ -2250,6 +2320,7 @@ async function masterSongTool(ctx: Ctx, songId: string, preset?: string) {
     replayed: job.replayed,
     status: "queued",
     preset: p,
+    sourceCertification: current.certification.status,
   };
 }
 

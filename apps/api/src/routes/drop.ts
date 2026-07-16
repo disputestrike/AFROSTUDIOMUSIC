@@ -1,7 +1,7 @@
 import type { FastifyInstance } from 'fastify';
 import { prisma } from '@afrohit/db';
 import { runWithBrainContext, brainRunCosts } from '@afrohit/ai';
-import { dropBatchSchema } from '@afrohit/shared';
+import { dropBatchSchema, requestedMaterialRoleContract } from '@afrohit/shared';
 import { requireAuth } from '../middleware/auth';
 import { runChatTool } from '../services/chat-tools';
 import { BLOW_TARGET, willItBlowGate } from '../lib/will-it-blow';
@@ -26,6 +26,22 @@ export default async function drop(app: FastifyInstance) {
       const project = await prisma.project.findFirstOrThrow({
         where: { id: req.params.projectId, workspaceId },
       });
+
+      // OWN-ENGINE PRE-FLIGHT — every check here is PURE and runs before the
+      // job (and its hooks/lyrics LLM spend) exists. The old shape let an
+      // own-engine drop write a whole song and only then discover the render
+      // could never start (a paid dead end). Instrument asks the own engine
+      // cannot prove are the one remaining hard reject; say so NOW.
+      if (input.songEngine === 'own') {
+        const roleRequest = requestedMaterialRoleContract(input.instruments);
+        if (roleRequest.unsupportedInstruments.length) {
+          return reply.code(422).send({
+            error: 'unsupported_exact_instruments',
+            message: 'Our Engine cannot prove an exact material role for every requested instrument. Remove them or pick another engine.',
+            unsupportedInstruments: roleRequest.unsupportedInstruments,
+          });
+        }
+      }
 
       // IDEMPOTENT START: the client retries a network-dead POST (redeploy
       // window) with the SAME Idempotency-Key — a duplicate key returns the
@@ -76,6 +92,9 @@ type DropTake = {
   score: number | null;
   jobId?: string;
   error?: string;
+  /** Honest engine disclosure (e.g. own engine: "instrumental bed — add vocals
+   *  by upload or re-sing"), carried into the drop's outputJson. */
+  note?: string;
 };
 
 export type DropChildJob = {
@@ -496,6 +515,14 @@ async function runDropPipelineInner(app: FastifyInstance, ctx: DropCtx, input: D
   const t0 = Date.now();
   const secs = () => ((Date.now() - t0) / 1000).toFixed(1);
   app.log.info({ dropJobId, count: input.count }, `[drop] start`);
+  // OUR ENGINE + VOCALS — resolved UP FRONT, before a cent of LLM spend, never
+  // as a 422 after the song is written (the 2026-07-16 regression: hooks + A&R
+  // + full lyrics were paid for, THEN create_beat_job refused). The own engine
+  // renders the INSTRUMENTAL bed only; createBeatJob's own branch binds that
+  // bed to the song carrying the fresh lyrics and discloses "vocals by upload
+  // or re-sing" in its note (captured into every take below). The lyrics are
+  // still written on purpose — they are exactly what a later re-sing sings.
+  const ownEngineInstrumental = input.songEngine === 'own' && !!input.withVocals;
   // One shared brief for the whole drop. ADVISORY, NEVER LOAD-BEARING: when the
   // polish LLM fails (cap hit, bad JSON, provider down) the writers used to read
   // briefs[0] === undefined and the user's ENTIRE description — song-name anchor,
@@ -594,8 +621,11 @@ async function runDropPipelineInner(app: FastifyInstance, ctx: DropCtx, input: D
             // vibe were silently dropped here while the fix landed only in chat.
             // vibe (the raw musical description) is preferred over theme, which is
             // wrapped in title-anchor boilerplate the music engine can't use.
-            args: { genre: input.genre, fusionGenres: input.fusionGenres, mood: input.mood, pinnedReferenceId: input.pinnedReferenceId, bpm: input.bpm, withVocals: input.withVocals, songEngine: input.songEngine, influence: input.influence, languages: input.languages, voice: input.voice, vibePrompt: input.vibe, candidates: input.candidates, instruments: input.instruments },
-          })) as { jobId?: string; songId?: string; error?: string };
+            // songId = the song approve_hook just minted: the render (own-engine
+            // bed included) binds to THE song carrying this take's lyrics, not
+            // to whatever happens to be the project's latest row.
+            args: { genre: input.genre, fusionGenres: input.fusionGenres, mood: input.mood, pinnedReferenceId: input.pinnedReferenceId, bpm: input.bpm, withVocals: input.withVocals, songEngine: input.songEngine, influence: input.influence, languages: input.languages, voice: input.voice, vibePrompt: input.vibe, candidates: input.candidates, instruments: input.instruments, songId: ap?.songId },
+          })) as { jobId?: string; songId?: string; error?: string; note?: string };
 
           // The user's typed song name IS the title — the writers already treat it
           // as the creative anchor (via theme); without this the field was dead
@@ -616,6 +646,9 @@ async function runDropPipelineInner(app: FastifyInstance, ctx: DropCtx, input: D
             score: best.score ?? null,
             jobId: beat?.jobId,
             error: beat?.error,
+            // The engine's own disclosure (own engine: instrumental bed) rides
+            // the take so the UI/outputJson never oversell what rendered.
+            note: beat?.note,
           });
 
       // If the daily cap was hit mid-batch, stop cleanly.
@@ -663,6 +696,11 @@ async function runDropPipelineInner(app: FastifyInstance, ctx: DropCtx, input: D
     theme: input.theme,
     requested: input.count,
     produced: playableOutputs.length,
+    // Honest top-level disclosure when the sung ask rendered as the own
+    // engine's instrumental bed (per-take notes carry the same message).
+    ...(ownEngineInstrumental
+      ? { engineNote: 'Our Engine renders the INSTRUMENTAL bed from your own material — the written lyrics are attached to each song; add the vocal by upload or re-sing.' }
+      : {}),
     drop: drops,
     childJobs: directChildren.map((child) => ({ jobId: child.id, status: 'SUCCEEDED' as const })),
     playableOutputs,

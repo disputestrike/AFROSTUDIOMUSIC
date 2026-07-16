@@ -74,6 +74,13 @@ const newerMix = row('mix-1', 'https://audio/new-mix.wav', 3, {
 }
 
 {
+  // CERTIFICATION GATES RELEASE, NOT PLAYBACK (owner doctrine, f6f0465): with
+  // no certified take anywhere, the NEWEST playable audio is still the song's
+  // current audio — hidden audio was the dishonest claim (the owner's whole
+  // pre-certification catalog showed "No audio rendered yet"). The
+  // certification object travels as 'uncertified' so every surface can say so.
+  // (These two blocks pinned the pre-f6f0465 null behavior and were failing
+  // against the doctrine commit itself — updated 2026-07-16.)
   const current = currentPlayableAsset({
     beats: [row('pending', 'https://audio/pending.wav', 20)],
     mixes: [row('failed', 'https://audio/failed.wav', 21, {
@@ -83,7 +90,8 @@ const newerMix = row('mix-1', 'https://audio/new-mix.wav', 3, {
       verifiedAt: at(21),
     })],
   });
-  assert.equal(current, null, 'a song with no certified audio has no canonical playable asset');
+  assert.equal(current?.id, 'failed', 'with nothing certified, the newest playable take is still the current audio');
+  assert.equal(current?.certification.certified, false, 'the fallback must SAY it is uncertified, never fake a pass');
 }
 {
   const current = currentPlayableAsset({
@@ -94,7 +102,9 @@ const newerMix = row('mix-1', 'https://audio/new-mix.wav', 3, {
       verifiedAt: at(22),
     })],
   });
-  assert.equal(current, null, 'malformed hashes cannot satisfy playback certification');
+  assert.equal(current?.id, 'malformed-hash', 'a malformed hash falls back to playable-but-uncertified, not to silence');
+  assert.equal(current?.certification.certified, false, 'malformed hashes cannot satisfy playback certification');
+  assert.equal(current?.certification.contentHash, null, 'a malformed hash is recorded as no hash, never echoed back');
 }
 {
   const current = currentPlayableAsset({

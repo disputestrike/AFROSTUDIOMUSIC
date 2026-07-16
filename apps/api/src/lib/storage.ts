@@ -186,6 +186,28 @@ export type AudioFormat =
   | "m4a"
   | "aiff";
 
+/**
+ * Is this stored ContentType an acceptable CLAIM for an audio upload?
+ *
+ * The claim is only a screen — the magic-byte sniff below is the real content
+ * check (the presign schema says exactly this). Browsers tag MPEG AUDIO
+ * (.mpeg/.mpg) as "video/mpeg" — a technicality of MIME registration, not a
+ * video file — and some upload paths/proxies store "application/octet-stream".
+ * Rejecting on those claims BEFORE sniffing broke legitimate audio the presign
+ * had already accepted (the .mpeg/.mpg attach failure, 2026-07-16). Anything
+ * else (image/*, text/*, other video/*) is still rejected on the claim so the
+ * ingest stays an audio ingest.
+ */
+export function isAcceptableAudioContentTypeClaim(contentType: string): boolean {
+  const claim = contentType.trim().toLowerCase().split(";")[0] ?? "";
+  return (
+    claim.startsWith("audio/") ||
+    /^video\/(x-)?mpe?g$/.test(claim) ||
+    claim === "application/octet-stream" ||
+    claim === "" // no claim stored at all — let the sniff decide
+  );
+}
+
 export function sniffAudioFormat(bytes: Uint8Array): AudioFormat | null {
   if (bytes.byteLength < 12) return null;
   const text = (start: number, end: number) =>
@@ -237,11 +259,11 @@ export async function verifyUploadedAudio(
       statusCode: 413,
     });
   }
-  if (
-    !String(head.ContentType ?? "")
-      .toLowerCase()
-      .startsWith("audio/")
-  ) {
+  // CLAIM SCREEN ONLY — the sniff below is the real content check. A strict
+  // audio/*-only test here rejected .mpeg/.mpg uploads (browsers claim
+  // "video/mpeg" for MPEG *audio*) AFTER the presign schema had deliberately
+  // accepted them — the file made it to storage and then died at attach.
+  if (!isAcceptableAudioContentTypeClaim(String(head.ContentType ?? ""))) {
     throw Object.assign(new Error("uploaded_object_is_not_audio"), {
       statusCode: 415,
     });
@@ -269,7 +291,15 @@ export async function verifyUploadedAudio(
     throw Object.assign(new Error("unsupported_or_invalid_audio"), {
       statusCode: 415,
     });
-  const normalizedExpected = expectedFormat === "mp4" ? "m4a" : expectedFormat;
+  // .mpeg/.mpg ARE the MP3 family (see the presign schema): the sniff reports
+  // MPEG audio frames as "mp3", so an "mpeg"/"mpg" expectation must compare as
+  // mp3 or a legitimate file fails on naming alone.
+  const normalizedExpected =
+    expectedFormat === "mp4"
+      ? "m4a"
+      : expectedFormat === "mpeg" || expectedFormat === "mpg"
+        ? "mp3"
+        : expectedFormat;
   if (normalizedExpected && normalizedExpected !== format) {
     throw Object.assign(
       new Error(`audio_format_mismatch_${normalizedExpected}_${format}`),

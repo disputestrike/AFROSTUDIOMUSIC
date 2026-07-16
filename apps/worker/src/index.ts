@@ -565,6 +565,10 @@ async function writeWorkerHeartbeat(): Promise<void> {
     at: new Date().toISOString(),
     startedAt: workerStartedAt,
     pid: process.pid,
+    // DEPLOY VERIFIABILITY (2026-07-16): the worker has no HTTP surface — this
+    // heartbeat IS its health surface, so the build sha rides here and the
+    // API's /health/ready reports it (sha only; no secrets, no config).
+    sha: process.env.RAILWAY_GIT_COMMIT_SHA ?? null,
   });
   await prisma.systemSetting.upsert({
     where: { key: workerHeartbeatKey },

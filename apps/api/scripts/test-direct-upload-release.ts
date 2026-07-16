@@ -5,6 +5,10 @@ import {
   buildDirectUploadReattachmentMeta,
   hasImmutableDirectUploadContentMismatch,
 } from '../src/routes/mixes';
+import {
+  isAcceptableAudioContentTypeClaim,
+  sniffAudioFormat,
+} from '../src/lib/storage';
 
 const rightsConfirmation = { version: 1, confirmed: true } as const;
 const objectKey = 'workspace-1/uploads/owned-song.wav';
@@ -264,5 +268,46 @@ assert.match(
   /originKind: source\.kind,[\s\S]{0,500}beat: null/,
   'direct finished recordings must never receive fabricated beat lineage'
 );
+
+// ---- Upload ContentType CLAIM screen (2026-07-16) ----
+// The claim only screens; the magic-byte sniff is the real content check.
+// Browsers tag MPEG AUDIO (.mpeg/.mpg) as video/mpeg, and some paths store
+// application/octet-stream — rejecting those claims broke uploads the presign
+// schema had deliberately accepted. Anything not plausibly audio still fails.
+for (const ok of [
+  'audio/mpeg',
+  'audio/wav',
+  'AUDIO/X-M4A',
+  'video/mpeg',
+  'video/mpg',
+  'video/x-mpeg',
+  'application/octet-stream',
+  '', // no stored claim at all — the sniff decides
+  'audio/mpeg; charset=binary',
+]) {
+  assert.equal(
+    isAcceptableAudioContentTypeClaim(ok),
+    true,
+    `claim must be accepted (sniff decides): ${ok || '(empty)'}`
+  );
+}
+for (const bad of ['video/mp4', 'video/quicktime', 'image/png', 'text/html', 'application/pdf']) {
+  assert.equal(
+    isAcceptableAudioContentTypeClaim(bad),
+    false,
+    `non-audio claim must still be rejected: ${bad}`
+  );
+}
+// The sniff stays the real gate: MPEG audio frames read as mp3; junk reads null.
+assert.equal(
+  sniffAudioFormat(new Uint8Array([0xff, 0xfb, 0x90, 0x00, ...new Array(12).fill(0)])),
+  'mp3'
+);
+assert.equal(sniffAudioFormat(new TextEncoder().encode('<!doctype html>xxxx')), null);
+// And the storage verifier must map the mpeg/mpg naming family onto the mp3
+// sniff result instead of failing a legitimate file on its extension.
+const storage = readFileSync(new URL('../src/lib/storage.ts', import.meta.url), 'utf8');
+assert.match(storage, /expectedFormat === "mpeg" \|\| expectedFormat === "mpg"/);
+assert.match(storage, /isAcceptableAudioContentTypeClaim\(String\(head\.ContentType/);
 
 console.log('direct owned upload release pipeline: PASS');

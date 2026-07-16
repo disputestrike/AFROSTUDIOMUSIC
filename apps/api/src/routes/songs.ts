@@ -17,7 +17,6 @@ import { languageVocalTag } from '../services/chat-tools';
 import { requireAdmin } from './admin';
 import { presignAssetRef } from '../lib/storage';
 import { safeFetch } from '../lib/url-guard';
-import { queueAssetDeletion, songAssetRefs } from '../lib/asset-lifecycle';
 import { operationErrorBody, runIdempotentOperation } from '../lib/idempotent-operation';
 import { registerBeatForInspection } from '../lib/beat-ingest';
 import {
@@ -48,6 +47,14 @@ type CatalogRow = {
   mixes: PlayableAssetRow[];
   beats: Array<PlayableAssetRow & { stems: unknown[] }>;
   lyric: { id: string; title: string | null } | null;
+  // NEVER-LOSE REPOSITORY: the recovery view (?all=1) must be able to SAY which
+  // rows are soft-deleted or quarantined — omitting these from the mapping made
+  // the deleted/quarantined states indistinguishable in the UI, so the recovery
+  // half (restore / un-quarantine) had nothing to hang off.
+  deletedAt: Date | null;
+  deletedReason: string | null;
+  quarantined: boolean;
+  quarantineReason: string | null;
 };
 
 /**
@@ -69,9 +76,13 @@ export default async function songs(app: FastifyInstance) {
     const rows = await prisma.song.findMany({
       where: {
         workspaceId,
-        // QA quarantine: blocked/pulled songs never appear in the catalogue
-        // (?all=1 still hides them — quarantine is stronger than the shell filter).
-        quarantined: false,
+        // QA quarantine: blocked/pulled songs never appear in the DEFAULT
+        // catalogue — but the repository view (?all=1) surfaces them flagged
+        // with their reason. Hiding them from EVERY view (the old always-on
+        // filter) made auto-quarantined songs vanish without a trace, which is
+        // exactly the "hidden real user data" the honesty law forbids. They
+        // are recoverable here (badge + un-quarantine), never silently gone.
+        ...(showAll ? {} : { quarantined: false }),
         // Soft-deleted songs leave the catalog but are NEVER gone: ?all=1 is the
         // repository view and surfaces them (flagged deleted) so any song ever
         // made can be found and restored.
@@ -132,6 +143,12 @@ export default async function songs(app: FastifyInstance) {
         viralScore: s.viralScore,
         coverUrl: coverByProject.get(s.projectId) ?? null,
         createdAt: s.createdAt,
+        // Recovery truth: the UI can only offer Restore / Un-quarantine if the
+        // list says which rows need it (booleans + the stored reasons).
+        deleted: !!s.deletedAt,
+        deletedReason: s.deletedReason,
+        quarantined: s.quarantined,
+        quarantineReason: s.quarantineReason,
       };
     });
   });
@@ -481,17 +498,26 @@ export default async function songs(app: FastifyInstance) {
     const target = audio[index];
     if (!target) return reply.code(400).send({ error: 'no_such_version', have: audio.length });
     if (index === audio.length - 1) return { ok: true, alreadyCurrent: true };
-    if (!target.certification.certified) {
-      return reply.code(409).send({
-        error: 'version_not_certified',
-        message: 'Only an approved, hashed, QC-passed version can become the current master.',
-      });
-    }
+    // CERTIFICATION GATES RELEASE, NOT CATALOG OPERATIONS (doctrine, f6f0465).
+    // This used to 409 ('version_not_certified') on every pre-certification-era
+    // take — the owner's whole legacy catalog could play its old versions but
+    // never make one current again. An uncertified take now reverts through the
+    // 'revert-source-unproven' wrapper below with releaseLineageCertified:false
+    // and an honest sourceCertification marker; the RELEASE side keeps its own
+    // strict approved+hash+QC query and is untouched by this.
+    const targetCertified = target.certification.certified;
     const label = index === 0 ? 'Original' : 'Take ' + String(index + 1);
-    const targetContentHash = target.certification.contentHash!;
+    // Null for uncertified legacy takes — recorded as null, never invented.
+    const targetContentHash = target.certification.contentHash;
     const master = await prisma.$transaction(async (tx) => {
-      let sourceMix: { id: string; contentHash: string } | null = null;
-      if (target.type === 'mix') {
+      let sourceMix: { id: string; contentHash: string | null } | null = null;
+      // Exact certified lineage is only ever RESOLVED from a certified target;
+      // probing these queries with a null hash could false-match legacy rows
+      // whose contentHash is also null. Uncertified targets go straight to the
+      // honest unproven wrapper.
+      if (!targetCertified) {
+        /* fall through to the revert-source-unproven wrapper below */
+      } else if (target.type === 'mix') {
         const row = await tx.mix.findFirst({
           where: {
             id: target.id,
@@ -586,7 +612,9 @@ export default async function songs(app: FastifyInstance) {
             songId: song.id,
             preset: 'revert-source-unproven',
             url: target.url,
-            notes: 'Playable revert wrapper; inherited release source is unavailable',
+            notes: targetCertified
+              ? 'Playable revert wrapper; inherited release source is unavailable'
+              : 'Playable revert wrapper for an uncertified legacy take; certification gates release, not catalog reverts',
             qualityState: target.certification.qualityState,
             contentHash: targetContentHash,
             verifiedAt: target.certification.verifiedAt,
@@ -594,6 +622,10 @@ export default async function songs(app: FastifyInstance) {
             meta: {
               derivedFrom: { type: target.type, id: target.id, contentHash: targetContentHash },
               releaseLineageCertified: false,
+              // Honest lineage marker: this take predates (or failed) the
+              // hash+QC certification era. It plays and reverts fine; a
+              // user-triggered re-master is what certifies it.
+              ...(targetCertified ? {} : { sourceCertification: 'unverified-legacy' }),
             } as never,
           },
         });
@@ -614,6 +646,7 @@ export default async function songs(app: FastifyInstance) {
             sourceMixId: sourceMix.id,
             sourceContentHash: sourceMix.contentHash,
             revertedFrom: { type: target.type, id: target.id, contentHash: targetContentHash },
+            ...(targetCertified ? {} : { sourceCertification: 'unverified-legacy' }),
           } as never,
         },
       });
@@ -635,6 +668,8 @@ export default async function songs(app: FastifyInstance) {
       masterId: master.id,
       url: target.url,
       sourceAudio: playableAssetRef(target),
+      // Truthful state for the UI's tag: 'certified' or 'uncertified'.
+      sourceCertification: target.certification.status,
     };
   });
 
@@ -839,18 +874,60 @@ export default async function songs(app: FastifyInstance) {
     const latestBeat = song.beats[0];
     const current = currentPlayableAsset(song);
     if (!current) return reply.code(400).send({ error: 'nothing_to_master' });
-    if (!current.certification.certified) {
-      return reply.code(409).send({
-        error: 'master_source_not_certified',
-        message: 'Inspect and approve the current audio before mastering it.',
-      });
-    }
+    // THE CIRCULAR TRAP, BROKEN (2026-07-16): this used to 409
+    // ('master_source_not_certified') whenever the current audio was
+    // uncertified — but certification is PRODUCED by this very master pipeline
+    // (the worker hashes + QC-verifies its outputs). The whole legacy catalog
+    // was locked out of the one action that would have certified it, and the
+    // catalog's "verifies automatically on next master" tag was a false
+    // promise. An uncertified source now PROCEEDS through an honestly-marked
+    // legacy wrapper: the worker certifies the source bytes at render time and
+    // the lineage records sourceCertification:'unverified-legacy'. Release
+    // keeps its own strict certified-lineage checks — untouched. This path is
+    // user-triggered only and charges a master credit like any re-master.
+    const legacySource = !current.certification.certified;
 
     const realMix = current.type === 'mix' && latestMix?.id === current.id
       ? latestMix
       : null;
     let mixId: string;
-    if (realMix) {
+    if (legacySource) {
+      // Reuse an identical pending wrapper (repeat clicks before the worker
+      // runs) instead of stacking rows; a certified wrapper gets a NEW url
+      // from the worker, so it can never be re-matched here.
+      const candidate = await prisma.mix.findFirst({
+        where: {
+          projectId: song.projectId,
+          songId: song.id,
+          project: { workspaceId },
+          preset: 'legacy-source',
+          url: current.url,
+        },
+        orderBy: { createdAt: 'desc' },
+        select: { id: true },
+      });
+      const mix = candidate ?? await prisma.mix.create({
+        data: {
+          projectId: song.projectId,
+          songId: song.id,
+          preset: 'legacy-source',
+          url: current.url,
+          notes: 'Re-master source from uncertified legacy catalog audio; the master worker hashes + QC-verifies these bytes at render',
+          // The truth as stored — never a fabricated 'passed'.
+          qualityState: current.certification.qualityState,
+          contentHash: current.certification.contentHash,
+          verifiedAt: current.certification.verifiedAt,
+          approved: false,
+          meta: {
+            derivedFrom: { type: current.type, id: current.id },
+            sourceCertification: 'unverified-legacy',
+            releaseLineageCertified: false,
+          } as never,
+        },
+        select: { id: true },
+      });
+      mixId = mix.id;
+    } else if (realMix) {
       mixId = realMix.id;
     } else if (current.type === 'master') {
       const currentMaster = song.masters.find((master: { id: string; meta: unknown }) => master.id === current.id);
@@ -993,13 +1070,15 @@ export default async function songs(app: FastifyInstance) {
       projectId: song.projectId,
       kind: 'master',
       provider: 'internal',
-      inputJson: { songId: song.id, mixId, preset, finished, sourceAsset: playableAssetRef(current) },
+      // sourceCertification marks the job's lineage honestly when the source
+      // was legacy-uncertified — the master OUTPUT is still fully certified.
+      inputJson: { songId: song.id, mixId, preset, finished, sourceAsset: playableAssetRef(current), ...(legacySource ? { sourceCertification: 'unverified-legacy' } : {}) },
       charge,
       idempotencyKey,
       payload: (jobId) => ({ jobId, workspaceId, projectId: song.projectId, songId: song.id, mixId, preset, finished }),
     });
     reply.code(202);
-    return { jobId: job.jobId, mixId, sourceAudio: playableAssetRef(current), replayed: job.replayed };
+    return { jobId: job.jobId, mixId, sourceAudio: playableAssetRef(current), replayed: job.replayed, sourceCertification: current.certification.status };
   });
 
   // ---- Reuse the beat in a NEW song (optionally a different project) ----

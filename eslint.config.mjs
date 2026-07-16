@@ -16,6 +16,10 @@ export default tseslint.config(
       '**/Python/**',
       '**/next-env.d.ts',
       'packages/db/seed/lexicon-all.json',
+      // Agent scratch worktrees (git worktree checkouts under .claude) are
+      // full repo copies — linting them double-reports every finding and
+      // breaks the root lint whenever a sibling session is mid-work.
+      '.claude/**',
     ],
   },
   js.configs.recommended,

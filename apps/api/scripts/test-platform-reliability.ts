@@ -239,7 +239,18 @@ async function main(): Promise<void> {
   );
   assert.match(indexSource, /redis: app\.rateLimitRedis/);
   assert.match(indexSource, /path\.startsWith\("\/health\/"\)/);
-  assert.match(indexSource, /reply\.code\(systemOk \? 200 : 503\)/);
+  // READINESS IS PER-INSTANCE (see the WHY block in index.ts): the deploy gate
+  // is the API's OWN dependencies (database + redis); a dead worker is
+  // REPORTED (systemOk + dependencies.worker) but never blocks an API deploy.
+  // This assertion used to pin the old systemOk gate — the exact shape that
+  // turned any worker outage into a silent deploy freeze — and was failing
+  // against the shipped fix (stale test, updated 2026-07-16).
+  assert.match(indexSource, /reply\.code\(apiReady \? 200 : 503\)/);
+  assert.match(indexSource, /const systemOk = apiReady && worker/);
+  // DEPLOY VERIFIABILITY (2026-07-16): the public /health answer carries the
+  // build sha — and only the sha — so "is prod running the fix?" is a curl.
+  assert.match(indexSource, /sha: process\.env\.RAILWAY_GIT_COMMIT_SHA \?\? null/);
+  assert.match(indexSource, /workerSha/);
   const uploadsSource = readFileSync(
     new URL('../src/routes/uploads.ts', import.meta.url),
     'utf8'

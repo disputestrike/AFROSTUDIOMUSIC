@@ -339,6 +339,21 @@ async function assertRequestedRoleWiring(): Promise<void> {
       /requestedRoleProvenance:\s*roleRequest\.provenance/,
     );
   }
+  // OWN + VOCALS (2026-07-16): the chat/drop path must NEVER dead-end a sung
+  // ask on Our Engine — the own branch renders the instrumental bed and says
+  // so honestly (the note below), instead of 422ing AFTER the hooks+lyrics
+  // LLM spend. The REST path keeps its pre-spend guard for direct callers.
+  assert.doesNotMatch(
+    chatSource,
+    /error:\s*["']own_vocal_pipeline_unavailable["']/,
+    "createBeatJob must coerce own+vocals to the instrumental bed, not reject",
+  );
+  assert.match(
+    chatSource,
+    /Add a vocal by upload/,
+    "the own branch's instrumental disclosure must be live code",
+  );
+  assert.match(beatsSource, /error:\s*['"]own_vocal_pipeline_unavailable['"]/);
   assert.match(
     ownEngineSource,
     /missingExactRequestedMaterialRoles\(\s*picks,\s*requestedRoles\s*\)/,
@@ -384,10 +399,15 @@ async function assertZapPromptSafety(): Promise<void> {
       artist: "SECRET ARTIST",
       drums: "COPY THIS IDENTITY-SPECIFIC DRUM DESCRIPTION",
       learnedRecipe: "COPY THE RECORD",
+      // THE HONESTY LAW (learned.ts measuredValue): only source:'measured'
+      // may speak as measured — absent provenance is not evidence. This
+      // fixture predated that hardening and carried bare {value} wrappers,
+      // which the law now (correctly) refuses to print as measurements; the
+      // fixture represents a genuinely DSP-measured zap ref, so it must SAY so.
       measured: {
         engineOk: true,
-        tempoBpm: { value: 118 },
-        swingRatio: { value: 0.61 },
+        tempoBpm: { value: 118, source: "measured" },
+        swingRatio: { value: 0.61, source: "measured" },
       },
     },
   };

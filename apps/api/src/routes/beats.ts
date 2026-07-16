@@ -100,10 +100,13 @@ export default async function beats(app: FastifyInstance) {
     async (req, reply) => {
       const { workspaceId } = requireAuth(req);
       const input = generateBeatInputSchema.omit({ projectId: true }).parse(req.body);
+      // Fires BEFORE any lookup or spend, and the message now says the honest
+      // way through (the web client sends withVocals:false for 'own' since
+      // 2026-07-16; this guards direct API callers with a clear next step).
       if (input.withVocals && input.songEngine === 'own') {
         return reply.code(422).send({
           error: 'own_vocal_pipeline_unavailable',
-          message: 'Our Engine currently produces instrumentals only. Choose a vocal-capable engine for a sung song.',
+          message: 'Our Engine currently produces instrumentals only. Send withVocals:false for the instrumental bed (add vocals by upload or re-sing), or choose a vocal-capable engine for a sung song.',
         });
       }
       const project = await prisma.project.findFirstOrThrow({

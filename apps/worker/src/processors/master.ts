@@ -76,13 +76,24 @@ export async function processMaster(payload: MasterPayload): Promise<void> {
       && typeof mix.contentHash === 'string'
       && /^[a-f0-9]{64}$/i.test(mix.contentHash)
       && !!mix.verifiedAt;
+    // THE CIRCULAR TRAP, WORKER HALF (2026-07-16): certification is produced
+    // HERE, so a legacy (pre-certification-era) source must be allowed in — the
+    // API marks such a wrapper mix with sourceCertification:'unverified-legacy'
+    // and this run certifies the actual source bytes (hash + QC) before
+    // mastering them. The lineage keeps releaseLineageCertified:false so the
+    // release gate stays exactly as strict as before.
+    const legacySource =
+      record(mix.meta)?.sourceCertification === 'unverified-legacy';
     if (sourceAlreadyCertified) {
       assertStoredContentHash(sourceBytes, mix.contentHash, 'master_source_mix');
     } else {
       if (
-        !payload.finished
-        || !['uploaded', 'imported'].includes(mix.preset)
-        || !isAttestedDirectUpload(mix.meta)
+        !legacySource
+        && (
+          !payload.finished
+          || !['uploaded', 'imported'].includes(mix.preset)
+          || !isAttestedDirectUpload(mix.meta)
+        )
       ) {
         throw new Error('master_source_mix_not_certified');
       }
@@ -104,11 +115,18 @@ export async function processMaster(payload: MasterPayload): Promise<void> {
           approved: true,
           meta: {
             ...existingMeta,
-            directOwnedUpload: {
-              ...directOwnedUpload,
-              sourceContentHash: certifiedSource.contentHash,
-              certifiedAt: certifiedSource.verifiedAt.toISOString(),
-            },
+            // A legacy catalog source is NOT a direct owned upload — never
+            // fabricate that attestation; its own honest marker (already in
+            // existingMeta) travels instead.
+            ...(legacySource
+              ? {}
+              : {
+                  directOwnedUpload: {
+                    ...directOwnedUpload,
+                    sourceContentHash: certifiedSource.contentHash,
+                    certifiedAt: certifiedSource.verifiedAt.toISOString(),
+                  },
+                }),
             qc: certifiedSource.qc,
             releaseLineageCertified: false,
           } as never,
@@ -185,6 +203,9 @@ export async function processMaster(payload: MasterPayload): Promise<void> {
             genre: genre ?? null,
             sourceMixId: mix.id,
             sourceContentHash: mix.contentHash,
+            // Honest lineage: this master's source predated certification.
+            // The master itself IS certified (hashed + QC'd above).
+            ...(legacySource ? { sourceCertification: 'unverified-legacy' } : {}),
             releaseLineageCertified:
               record(mix.meta)?.releaseLineageCertified === true,
             deliveryMp3: {
