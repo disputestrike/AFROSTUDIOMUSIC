@@ -1,5 +1,9 @@
 import { prisma } from '@afrohit/db';
-import { GENRES, genreSignature, learnedGenreMatches, selectLearnedRefs } from '@afrohit/shared';
+import { GENRES, genreSignature, learnedGenreMatches, selectLearnedRefs, type MeasuredSource } from '@afrohit/shared';
+
+/** A persisted Measured<T> as it arrives from the DB (JSON), carrying the
+ *  provenance that decides whether it may speak as a measurement. */
+type MeasuredLike<T> = { value?: T | null; source?: MeasuredSource };
 
 /**
  * The "listen & learn" retrieval — rebuilt for FIDELITY:
@@ -34,17 +38,23 @@ export interface RecipeShape {
   identitySafe?: boolean;
   /** DSP MeasuredAnalysis when the ear actually ran (engineOk=true). The
    *  genuinely reference-specific signal — distinct from the LLM prose above. */
+  // Every wrapper below carries `source` because the real Measured<T> always
+  // does. This type used to omit it, which is precisely why the compiler could
+  // not see that measuredValue() was unwrapping INFERRED fields and printing
+  // them as "(measured)" — the provenance was invisible at the type level, so
+  // the honesty law had nothing to enforce it. Keeping `source` here means any
+  // future unwrap that ignores it is a type error, not a silent lie.
   measured?: {
     engineOk?: boolean;
-    tempoBpm?: { value?: number | null };
-    key?: { value?: string | null };
-    mode?: { value?: string | null };
-    swingRatio?: number | { value?: number | null };
-    syncopationIndex?: number | { value?: number | null };
-    logDrumLikelihood?: number | { value?: number | null };
-    shakerContinuity?: number | { value?: number | null };
-    introLengthBars?: number | { value?: number | null };
-    firstDropAtS?: number | { value?: number | null };
+    tempoBpm?: MeasuredLike<number>;
+    key?: MeasuredLike<string>;
+    mode?: MeasuredLike<string>;
+    swingRatio?: number | MeasuredLike<number>;
+    syncopationIndex?: number | MeasuredLike<number>;
+    logDrumLikelihood?: number | MeasuredLike<number>;
+    shakerContinuity?: number | MeasuredLike<number>;
+    introLengthBars?: number | MeasuredLike<number>;
+    firstDropAtS?: number | MeasuredLike<number>;
   } | null;
 }
 
@@ -147,10 +157,30 @@ async function fetchRefs(workspaceId: string, genre: string, pinnedId?: string |
   );
 }
 
-function measuredValue<T>(fact: T | { value?: T | null } | null | undefined): T | undefined {
+/**
+ * Unwrap a Measured<T> ONLY when it is genuinely measured.
+ *
+ * THE HONESTY LAW: only `source === 'measured'` may speak as measured;
+ * 'inferred' and 'unknown' are honourable answers that must say so. This used to
+ * unwrap ANY `{ value }` wrapper without ever looking at `.source`, and
+ * measuredPromptFacts() below then printed the result to the LLM with a literal
+ * "(measured)" suffix. So an INFERRED log-drum — e.g. one carrying
+ * method:'synthetic-calibration', which is explicitly evidence of nothing — was
+ * fed to the writer labelled as a measurement of a real record. That is the
+ * exact claim the whole provenance system exists to make impossible.
+ *
+ * A field whose source is missing is NOT trusted: absent provenance is not
+ * evidence, and treating it as measured is how the lie got in. A bare unwrapped
+ * number has no wrapper to interrogate and is passed through unchanged.
+ */
+function measuredValue<T>(
+  fact: T | { value?: T | null; source?: MeasuredSource } | null | undefined
+): T | undefined {
   if (fact == null) return undefined;
   if (typeof fact === 'object' && 'value' in fact) {
-    return fact.value ?? undefined;
+    const wrapped = fact as { value?: T | null; source?: MeasuredSource };
+    if (wrapped.source !== 'measured') return undefined;
+    return wrapped.value ?? undefined;
   }
   return fact as T;
 }

@@ -72,6 +72,10 @@ export default async function songs(app: FastifyInstance) {
         // QA quarantine: blocked/pulled songs never appear in the catalogue
         // (?all=1 still hides them — quarantine is stronger than the shell filter).
         quarantined: false,
+        // Soft-deleted songs leave the catalog but are NEVER gone: ?all=1 is the
+        // repository view and surfaces them (flagged deleted) so any song ever
+        // made can be found and restored.
+        ...(showAll ? {} : { deletedAt: null }),
         ...(showAll
           ? {}
           : {
@@ -256,16 +260,70 @@ export default async function songs(app: FastifyInstance) {
     return updated;
   });
 
+  /**
+   * Resolve THIS song's lyric, and only this song's.
+   *
+   * `song.lyric` (via `include`) traverses LyricDraft.songId, which is the one
+   * real binding — so it is already the correct answer whenever it exists.
+   *
+   * The ADOPT below is a self-healing repair for rows written before the
+   * project-scoped fallback was removed. Historically a lyric could be created
+   * with songId = null and only ever reached through that fallback; with the
+   * fallback gone such a draft would read as "no lyrics" even though the words
+   * are sitting right there — indistinguishable, to the artist, from losing
+   * them. So an ORPHAN draft (songId IS NULL — owned by no song at all) in this
+   * song's project is claimed by this song.
+   *
+   * Why this is safe, and why it is NOT the old bug returning:
+   *   - It only ever claims a draft that belongs to NOBODY. A draft already
+   *     bound to a sibling is never touched, so a sibling's words can never be
+   *     shown, overwritten, or sung here — which was the entire defect.
+   *   - The updateMany is conditional on songId still being null, so it is
+   *     atomic: if two songs in one project race for the same orphan, exactly
+   *     one wins and the loser correctly reports no lyric (LyricDraft.songId is
+   *     @unique, so a blind update would throw instead).
+   *   - It is idempotent and converges: once claimed, `song.lyric` answers
+   *     forever and this never runs again.
+   *
+   * The 20260715200000_song_scoped_lyrics migration does this same repair in
+   * bulk. This exists so correctness does not DEPEND on that migration having
+   * run — the API heals itself on read either way.
+   */
+  type LyricRow = NonNullable<Awaited<ReturnType<typeof prisma.lyricDraft.findUnique>>>;
+  async function songLyric(song: {
+    id: string;
+    projectId: string;
+    lyric?: LyricRow | null;
+  }): Promise<LyricRow | null> {
+    if (song.lyric) return song.lyric;
+    const orphan = await prisma.lyricDraft.findFirst({
+      where: { projectId: song.projectId, songId: null },
+      orderBy: { createdAt: 'desc' },
+      select: { id: true },
+    });
+    if (!orphan) return null;
+    const claimed = await prisma.lyricDraft.updateMany({
+      where: { id: orphan.id, songId: null },
+      data: { songId: song.id },
+    });
+    if (claimed.count === 0) return null; // another song won the race — it owns it
+    return prisma.lyricDraft.findUnique({ where: { id: orphan.id } });
+  }
+
   // ---- Lyrics: view + EDIT (persist) ----
   app.get<{ Params: { id: string } }>('/:id/lyrics', async (req, reply) => {
     const { workspaceId } = requireAuth(req);
     const song = await prisma.song.findFirst({ where: { id: req.params.id, workspaceId }, include: { lyric: true } });
     if (!song) return reply.code(404).send({ error: 'song_not_found' });
-    // Fall back to the project's latest lyric if the song isn't linked to one yet.
-    const lyric =
-      song.lyric ??
-      (await prisma.lyricDraft.findFirst({ where: { projectId: song.projectId }, orderBy: { createdAt: 'desc' } }));
-    return { lyric };
+    // SONG SCOPE LAW — a song's lyric is ONLY the draft bound to it via
+    // LyricDraft.songId (which is exactly what `include: { lyric: true }`
+    // resolves). There used to be a fallback to the project's NEWEST lyric
+    // here. A project holds many songs (reuse-beat and reuse-instrumental each
+    // mint a sibling song with no lyric of its own), so that fallback served a
+    // DIFFERENT song's words — and because the same fallback fed PATCH and
+    // re-sing, it also overwrote the sibling's row in place and sang the wrong
+    // words into a render. Unbound now means "no lyric yet", said honestly.
+    return { lyric: await songLyric(song) };
   });
 
   const lyricPatchSchema = z.object({
@@ -279,11 +337,13 @@ export default async function songs(app: FastifyInstance) {
     const body = lyricPatchSchema.parse(req.body);
     const song = await prisma.song.findFirst({ where: { id: req.params.id, workspaceId }, include: { lyric: true } });
     if (!song) return reply.code(404).send({ error: 'song_not_found' });
-    let lyricId = song.lyric?.id;
-    if (!lyricId) {
-      const latest = await prisma.lyricDraft.findFirst({ where: { projectId: song.projectId }, orderBy: { createdAt: 'desc' } });
-      lyricId = latest?.id;
-    }
+    // SONG SCOPE LAW (see GET /:id/lyrics). This resolved an unbound song to the
+    // project's newest lyric and then ran update({ where: { id: lyricId } })
+    // below — so editing THIS song's lyrics silently overwrote a SIBLING song's
+    // row, and snapshotted the edit onto the sibling's history too. Resolving
+    // only the bound draft means an unbound song falls into the create branch
+    // below, which already correctly mints a draft bound to this song.
+    const lyricId = (await songLyric(song))?.id;
     // If the song already has an AI-sung vocal, the edit won't be audible until a
     // re-sing — tell the UI so it can offer "Save & re-sing" (surgical edit).
     const needsRegeneration =
@@ -310,7 +370,9 @@ export default async function songs(app: FastifyInstance) {
     const { workspaceId } = requireAuth(req);
     const song = await prisma.song.findFirst({ where: { id: req.params.id, workspaceId }, include: { lyric: true } });
     if (!song) return reply.code(404).send({ error: 'song_not_found' });
-    const lyric = song.lyric ?? (await prisma.lyricDraft.findFirst({ where: { projectId: song.projectId }, orderBy: { createdAt: 'desc' } }));
+    // SONG SCOPE LAW — reverting used to be able to rewrite a SIBLING song's
+    // lyric from this song's UI.
+    const lyric = await songLyric(song);
     if (!lyric) return reply.code(404).send({ error: 'no_lyric' });
     const versions = readVersions(lyric.versions);
     const idx = Math.max(0, Number(req.body?.index ?? 0));
@@ -1018,8 +1080,9 @@ export default async function songs(app: FastifyInstance) {
       include: { lyric: true },
     });
     if (!song) return reply.code(404).send({ error: 'song_not_found' });
-    const lyric =
-      song.lyric ?? (await prisma.lyricDraft.findFirst({ where: { projectId: song.projectId }, orderBy: { createdAt: 'desc' } }));
+    // SONG SCOPE LAW — "reuse THIS song's lyrics" must copy THIS song's lyrics,
+    // not whichever draft in the project happened to be written most recently.
+    const lyric = await songLyric(song);
     if (!lyric) return reply.code(400).send({ error: 'no_lyrics_to_reuse', message: 'This song has no lyrics yet — write or generate lyrics first.' });
 
     const targetProjectId = (req.body?.targetProjectId as string) || song.projectId;
@@ -1109,7 +1172,10 @@ export default async function songs(app: FastifyInstance) {
     const currentAudio = audioHistory.at(-1) ?? null;
     const currentArrangement = playableArrangement(audioHistory, currentAudio);
     const latestBeat = song.beats.at(-1);
-    const lyric = song.lyric ?? (await prisma.lyricDraft.findFirst({ where: { projectId: song.projectId }, orderBy: { createdAt: 'desc' } }));
+    // SONG SCOPE LAW — this is the path that puts words in the singer's mouth.
+    // The project fallback here meant a song with no lyric of its own got RENDERED
+    // singing a sibling song's words, and that render became its current audio.
+    const lyric = await songLyric(song);
     const lyrics = lyric?.cleanVersion ?? lyric?.body ?? undefined;
     if (!lyrics) return reply.code(400).send({ error: 'no_lyrics', message: 'Write or edit lyrics first, then re-sing.' });
 
@@ -1437,28 +1503,44 @@ export default async function songs(app: FastifyInstance) {
     return { jobId: res.jobId, status: 'queued', whatChanged: res.whatChanged, message: 'A&R notes implemented — re-singing the bigger version. It auto-masters and re-scores when done.' };
   });
 
-  app.delete<{ Params: { id: string } }>('/:id', async (req, reply) => {
+  // NEVER LOSE A SONG — delete is a SOFT delete.
+  //
+  // This route used to queue every one of the song's assets for reaping and then
+  // run tx.song.delete(), which cascaded through LyricDraft, BeatAsset, Stem,
+  // VocalRender, Mix, Master, Export, RightsReceipt, ReleaseAttestation and
+  // Release. One hover-and-click in the catalog and the song, its words, every
+  // take and every byte of audio were gone — no tombstone, no undo, nothing to
+  // restore from. The schema's own quarantine doctrine already says a song is
+  // "Reversible; never hard-deleted so the audit evidence survives"; this route
+  // simply never honoured it.
+  //
+  // Now: stamp deletedAt, keep everything. The song leaves the catalog, "Show
+  // ALL songs" surfaces it flagged as deleted, and POST /:id/restore brings it
+  // back whole. The assets are deliberately NOT queued for cleanup — a deleted
+  // song that lost its audio would be unrestorable, which is the very thing
+  // this exists to prevent.
+  app.delete<{ Params: { id: string }; Querystring: { reason?: string } }>('/:id', async (req, reply) => {
     const { workspaceId } = requireAuth(req);
     requireRole(req, ['OWNER', 'ADMIN']);
-    const song = await prisma.song.findFirst({
-      where: { id: req.params.id, workspaceId },
-      include: {
-        beats: { select: { url: true, stems: { select: { url: true } } } },
-        vocalRenders: { select: { url: true } },
-        mixes: { select: { url: true } },
-        masters: { select: { url: true } },
-        exports: { select: { bundle: true } },
-      },
-    });
-    if (song) {
-      const refs = songAssetRefs(song);
-      await prisma.$transaction(async (tx) => {
-        await queueAssetDeletion(tx, { workspaceId, refs, reason: `song:${song.id}` });
-        await tx.song.delete({ where: { id: song.id } });
+    const song = await prisma.song.findFirst({ where: { id: req.params.id, workspaceId }, select: { id: true, deletedAt: true } });
+    if (song && !song.deletedAt) {
+      await prisma.song.update({
+        where: { id: song.id },
+        data: { deletedAt: new Date(), deletedReason: req.query?.reason ?? null },
       });
-      void app.dispatchPendingJobs().catch((error) => req.log.error({ err: error }, 'asset cleanup dispatch failed'));
     }
     reply.code(204);
     return null;
+  });
+
+  // Undo a soft delete — the other half of "you can't lose any song".
+  app.post<{ Params: { id: string } }>('/:id/restore', async (req, reply) => {
+    const { workspaceId } = requireAuth(req);
+    requireRole(req, ['OWNER', 'ADMIN']);
+    const song = await prisma.song.findFirst({ where: { id: req.params.id, workspaceId }, select: { id: true, deletedAt: true } });
+    if (!song) return reply.code(404).send({ error: 'song_not_found' });
+    if (!song.deletedAt) return { restored: false, message: 'This song is not deleted.' };
+    await prisma.song.update({ where: { id: song.id }, data: { deletedAt: null, deletedReason: null } });
+    return { restored: true, message: 'Song restored to the catalog.' };
   });
 }
