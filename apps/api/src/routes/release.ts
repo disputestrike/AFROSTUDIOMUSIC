@@ -362,7 +362,7 @@ async function statusFor(options: {
   const displayedCover = latestRelease?.coverAsset ?? null;
   const artworkSelected =
     !!displayedCover &&
-    latestRelease.coverAssetId === displayedCover.id &&
+    latestRelease?.coverAssetId === displayedCover.id &&
     artworkBelongsToSong(displayedCover, {
       projectId: options.projectId,
     });
