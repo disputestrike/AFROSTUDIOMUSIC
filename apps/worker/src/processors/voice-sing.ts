@@ -1,5 +1,11 @@
 import { createHash } from "node:crypto";
-import { JobStatus, openSecret, prisma } from "@afrohit/db";
+import {
+  JobStatus,
+  openSecret,
+  prisma,
+  releaseEvidenceHash,
+  type Prisma,
+} from "@afrohit/db";
 import {
   singWithVoice,
   type SingPitchChange,
@@ -16,6 +22,11 @@ import {
   uploadBytes,
 } from "../lib/storage";
 import { inspectIsolatedVocal } from "../lib/vocal-inspection";
+import { assertStoredContentHash } from "../lib/certified-assets";
+import {
+  resolveCertifiedDerivedAudioSource,
+  type CertifiedSourceAssetRef,
+} from "../lib/derived-audio-lineage";
 
 interface SingConvertPayload {
   jobId: string;
@@ -47,6 +58,30 @@ type AuthorizedVoice = {
     revokedAt: Date | null;
   };
   voiceDataset: { id: string; workspaceId: string; contentHash: string } | null;
+};
+
+type CertifiedSourceAsset = {
+  id: string;
+  url: string;
+  contentHash: string | null;
+};
+
+type CertifiedSourceMix = CertifiedSourceAsset & { meta: unknown };
+type CertifiedSourceMaster = CertifiedSourceAsset & {
+  mixId: string | null;
+};
+
+export type CertifiedVoiceSingSourceLineage = {
+  input: {
+    kind: "beat" | "mix" | "master";
+    id: string;
+    url: string;
+    contentHash: string;
+  };
+  beat: { id: string; contentHash: string };
+  mix: { id: string; contentHash: string } | null;
+  master: { id: string; contentHash: string } | null;
+  sourceVocals: Array<{ id: string; contentHash: string }>;
 };
 
 function objectValue(value: unknown): Record<string, unknown> {
@@ -277,6 +312,90 @@ export async function processSingConvert(
         ? (input.tuning as SingTuning)
         : undefined;
 
+    let providerSongInputUrl = songInputUrl;
+    let sourceIdentity: {
+      type: 'beat' | 'mix' | 'master' | 'external';
+      id: string;
+      contentHash: string;
+      claim: Record<string, unknown> | null;
+      claimHash: string | null;
+    };
+    if (songId && projectId) {
+      const source = objectValue(input.sourceAsset);
+      const type = source.type;
+      if (type !== 'beat' && type !== 'mix' && type !== 'master') {
+        throw new Error('voice_job_source_asset_missing');
+      }
+      if (typeof source.id !== 'string' || !source.id) {
+        throw new Error('voice_job_source_asset_id_missing');
+      }
+      const certification = objectValue(source.certification);
+      const sourceRef: CertifiedSourceAssetRef = {
+        type,
+        id: source.id,
+        url: typeof source.url === 'string' ? source.url : undefined,
+        certification: {
+          contentHash: typeof certification.contentHash === 'string'
+            ? certification.contentHash
+            : null,
+        },
+      };
+      const resolved = await resolveCertifiedDerivedAudioSource({
+        workspaceId: payload.workspaceId,
+        projectId,
+        songId,
+        source: sourceRef,
+      });
+      if (songInputUrl !== resolved.url) throw new Error('voice_job_source_url_changed');
+      const sourceBytes = await downloadToBuffer(resolved.url, {
+        maxBytes: 256 * 1024 * 1024,
+      });
+      assertStoredContentHash(sourceBytes, resolved.contentHash, 'voice_conversion_source_audio');
+      providerSongInputUrl = resolved.url;
+      sourceIdentity = {
+        type: resolved.type,
+        id: resolved.id,
+        contentHash: resolved.contentHash,
+        claim: resolved.claim,
+        claimHash: resolved.claimHash,
+      };
+    } else {
+      if (input.externalRightsConfirmed !== true) {
+        throw new Error('voice_job_external_source_rights_unconfirmed');
+      }
+      const sourceBytes = await downloadToBuffer(songInputUrl, {
+        maxBytes: 256 * 1024 * 1024,
+      });
+      const snapshotBytes = await transformAudio(sourceBytes, {});
+      const sourceContentHash = createHash('sha256').update(snapshotBytes).digest('hex');
+      const snapshotUrl = await uploadBytes({
+        workspaceId: payload.workspaceId,
+        kind: 'voice-input-snapshots',
+        bytes: snapshotBytes,
+        contentType: 'audio/wav',
+        ext: 'wav',
+      });
+      transientStemUrls.add(snapshotUrl);
+      providerSongInputUrl = snapshotUrl;
+      const claim = {
+        schemaVersion: 1,
+        kind: 'direct_owned_upload',
+        sourceKind: 'url_import',
+        sourceContentHash,
+        parentSourceContentHash: null,
+        parentClaimHash: null,
+        rightsConfirmationVersion: 1,
+        rightsConfirmed: true,
+      };
+      sourceIdentity = {
+        type: 'external',
+        id: 'external-performance',
+        contentHash: sourceContentHash,
+        claim,
+        claimHash: releaseEvidenceHash(claim),
+      };
+    }
+
     const workspace = await prisma.workspace.findUnique({
       where: { id: payload.workspaceId },
       select: { musicProvider: true, musicApiKey: true },
@@ -285,7 +404,7 @@ export async function processSingConvert(
       workspace?.musicProvider === "replicate"
         ? openSecret(workspace.musicApiKey)
         : undefined;
-    const resolvedSongInputUrl = await resolveAssetForProvider(songInputUrl);
+    const resolvedSongInputUrl = await resolveAssetForProvider(providerSongInputUrl);
     const currentModelUrl = trainedVoiceModelUrl(profile)!;
     const resolvedModelUrl = await resolveAssetForProvider(currentModelUrl);
 
@@ -328,6 +447,12 @@ export async function processSingConvert(
       voiceDatasetId: invocationProfile.voiceDatasetId,
       datasetContentHash: invocationProfile.voiceDataset?.contentHash ?? null,
       modelArtifactId,
+      sourceAsset: {
+        type: sourceIdentity.type,
+        id: sourceIdentity.id,
+        contentHash: sourceIdentity.contentHash,
+        claimHash: sourceIdentity.claimHash,
+      },
     };
 
     if (!songId || !projectId) {
@@ -478,7 +603,7 @@ export async function processSingConvert(
       .digest("hex");
     const instrumentalVerifiedAt = new Date();
     const sourceFingerprint = createHash("sha256")
-      .update(songInputUrl)
+      .update(sourceIdentity.contentHash)
       .digest("hex")
       .slice(0, 24);
     const persistenceProfile = await loadAuthorizedVoice(payload);
@@ -582,6 +707,18 @@ export async function processSingConvert(
               beatContentHash: instrumentalContentHash,
               vocalRenderIds: [vocal.id],
               vocalRenderContentHashes: [vocalInspection.contentHash],
+            },
+            derivedFrom: {
+              type: sourceIdentity.type,
+              id: sourceIdentity.id,
+              contentHash: sourceIdentity.contentHash,
+              claimHash: sourceIdentity.claimHash,
+              claim: sourceIdentity.claim,
+              operation: {
+                kind: "voice_conversion",
+                voiceProfileId: persistenceProfile.id,
+                modelArtifactId,
+              },
             },
             ...lineageReceipt,
           } as never,

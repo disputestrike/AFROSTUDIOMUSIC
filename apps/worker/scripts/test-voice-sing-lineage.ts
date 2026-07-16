@@ -35,5 +35,11 @@ assert.equal(
   true
 );
 assert.equal(source.includes("voice_conversion_instrumental_qc_failed"), true);
+assert.equal(source.includes("resolveCertifiedDerivedAudioSource"), true);
+assert.equal(source.includes("assertStoredContentHash(sourceBytes"), true);
+assert.equal(source.includes("externalRightsConfirmed"), true);
+assert.equal(persistence.includes("derivedFrom:"), true);
+assert.equal(persistence.includes("claimHash: sourceIdentity.claimHash"), true);
+assert.equal(persistence.includes("claim: sourceIdentity.claim"), true);
 
 console.log("voice singing release lineage: PASS");

@@ -21,6 +21,8 @@ import { assertSafeUrl, safeFetch } from '../lib/url-guard';
 import { enqueueHarvest, enqueueLearn } from '../lib/harvest';
 import { registerVocalForInspection } from '../lib/vocal-ingest';
 import { registerBeatForInspection } from '../lib/beat-ingest';
+import { createQueuedProviderJob, scopedRequestKey } from '../lib/queued-job';
+import { arReadAfterRender } from '../lib/ar-read';
 
 /**
  * Bring-your-own-audio uploads + legal URL import.
@@ -1019,8 +1021,69 @@ export default async function uploads(app: FastifyInstance) {
           sourceUrl: url,
           rightsConfirmation: input.rightsConfirmation,
         });
-        reply.code(201);
-        return { kind: 'song', asset: mix, songId };
+        if (!input.autoMaster) {
+          reply.code(201);
+          return { kind: 'song', asset: mix, songId, mastered: false };
+        }
+
+        const sourceFingerprint = createHash('sha256').update(bytes).digest('hex');
+        const masterIdempotencyKey = scopedRequestKey(
+          req.headers as Record<string, unknown>,
+          'imported-song-master',
+        ) ?? `imported-song-master:${songId}:${sourceFingerprint}`;
+        const charge = await app.chargeCredits({
+          workspaceId,
+          key: 'master_preset',
+          refTable: 'Song',
+          refId: songId,
+          idempotencyKey: masterIdempotencyKey,
+        });
+        if (!charge.ok) {
+          reply.code(201);
+          return {
+            kind: 'song',
+            asset: mix,
+            songId,
+            mastered: false,
+            masterError: 'insufficient_credits',
+          };
+        }
+        const job = await createQueuedProviderJob({
+          app,
+          queue: app.queues.master,
+          jobName: 'create-master',
+          workspaceId,
+          projectId: project.id,
+          kind: 'master',
+          provider: 'internal',
+          inputJson: {
+            songId,
+            mixId: mix.id,
+            preset: input.masterPreset,
+            finished: true,
+          },
+          charge,
+          idempotencyKey: masterIdempotencyKey,
+          payload: (jobId) => ({
+            jobId,
+            workspaceId,
+            projectId: project.id,
+            songId,
+            mixId: mix.id,
+            preset: input.masterPreset,
+            finished: true,
+          }),
+        });
+        await arReadAfterRender(app, workspaceId, [{ songId, jobId: job.jobId }]);
+        reply.code(202);
+        return {
+          kind: 'song',
+          asset: mix,
+          songId,
+          mastered: true,
+          jobId: job.jobId,
+          replayed: job.replayed,
+        };
       }
 
       if (input.kind === 'reference') {

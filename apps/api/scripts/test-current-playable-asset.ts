@@ -10,6 +10,7 @@ import {
 } from '../src/lib/current-playable-asset';
 
 const at = (seconds: number) => new Date(1_700_000_000_000 + seconds * 1000);
+const hash = (digit: string) => digit.repeat(64);
 const row = (id: string, url: string, seconds: number, extra: Partial<PlayableAssetRow> = {}): PlayableAssetRow => ({
   id,
   url,
@@ -23,7 +24,7 @@ const beat = row('beat-1', 'https://audio/beat.wav', 1, {
   bpm: 100,
   approved: true,
   qualityState: 'passed',
-  contentHash: 'beat-hash',
+  contentHash: hash('a'),
   verifiedAt: at(1),
   meta: {
     measured: {
@@ -37,7 +38,7 @@ const beat = row('beat-1', 'https://audio/beat.wav', 1, {
 const oldMaster = row('master-1', 'https://audio/master.wav', 2, {
   approved: true,
   qualityState: 'passed',
-  contentHash: 'master-hash',
+  contentHash: hash('b'),
   verifiedAt: at(2),
   meta: { qc: { durationS: 120 } },
 });
@@ -60,7 +61,7 @@ const newerMix = row('mix-1', 'https://audio/new-mix.wav', 3, {
     certified: true,
     approved: true,
     qualityState: 'passed',
-    contentHash: 'master-hash',
+    contentHash: hash('b'),
     verifiedAt: at(2),
   });
 
@@ -78,11 +79,22 @@ const newerMix = row('mix-1', 'https://audio/new-mix.wav', 3, {
     mixes: [row('failed', 'https://audio/failed.wav', 21, {
       approved: true,
       qualityState: 'failed',
-      contentHash: 'failed-hash',
+      contentHash: hash('c'),
       verifiedAt: at(21),
     })],
   });
   assert.equal(current, null, 'a song with no certified audio has no canonical playable asset');
+}
+{
+  const current = currentPlayableAsset({
+    masters: [row('malformed-hash', 'https://audio/malformed.wav', 22, {
+      approved: true,
+      qualityState: 'passed',
+      contentHash: 'not-a-sha256',
+      verifiedAt: at(22),
+    })],
+  });
+  assert.equal(current, null, 'malformed hashes cannot satisfy playback certification');
 }
 {
   const current = currentPlayableAsset({
@@ -143,10 +155,22 @@ const voicesSource = readFileSync(
 );
 assert.equal(voicesSource.includes('const current = currentPlayableAsset(s);'), true);
 assert.equal(voicesSource.includes('songInputUrl = current?.url ?? null;'), true);
+assert.match(
+  voicesSource,
+  /masters: \{ orderBy: \{ createdAt: "desc" \}, take: 20 \},[\s\S]*mixes: \{ orderBy: \{ createdAt: "desc" \}, take: 20 \}/,
+  'voice conversion must load enough history for certified fallback',
+);
+const songsSource = readFileSync(
+  new URL('../src/routes/songs.ts', import.meta.url),
+  'utf8'
+);
 assert.equal(
   voicesSource.includes('const cands = [s.masters[0], s.mixes[0], s.beats[0]]'),
   false,
   'voice conversion must not select an uncertified source by timestamp'
 );
+assert.match(songsSource, /mixId: sourceMix\.id,[\s\S]{0,200}preset: 'reverted'/);
+assert.match(songsSource, /sourceMixId: sourceMix\.id/);
+assert.match(songsSource, /vocalRenderContentHashes: \[\]/);
 
 console.log('current playable asset: chronology, identity, certification, and arrangement passed');

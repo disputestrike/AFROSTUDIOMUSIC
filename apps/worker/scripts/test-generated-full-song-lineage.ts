@@ -13,20 +13,25 @@ const prelude = source.slice(Math.max(0, start - 1_500), start);
 const block = source.slice(start, end);
 assert.equal(prelude.includes("const releaseLineageCertified = false"), true);
 assert.equal(
-  block.split("approved: releaseLineageCertified").length - 1,
-  2,
-  "both provider full-song Mix and Master must remain non-approved without exact stems"
+  block.includes("approved: quality?.verdict === 'pass'"),
+  true,
+  "a QC-passed provider mix must remain playable"
 );
-assert.equal(block.includes("approved: true"), false);
+assert.equal(
+  block.includes("approved: true"),
+  true,
+  "a QC-passed provider master must satisfy canonical playback and Drop"
+);
 assert.equal(
   block.includes("source: {"),
   false,
   "provider full-song persistence must not fabricate beat/vocal lineage"
 );
 assert.equal(
-  block.split("releaseLineageCertified").length - 1 >= 3,
+  block.split("releaseLineageCertified").length - 1 >= 2,
   true,
   "the non-release state must be persisted as evidence"
 );
+assert.equal(block.includes("sourceMixId: mixRow.id"), true);
 
 console.log("generated full-song release lineage: PASS");

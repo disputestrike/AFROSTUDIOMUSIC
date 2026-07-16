@@ -13,6 +13,7 @@ export interface ReleaseArtifactSnapshot {
     id: string;
     contentHash: string;
     source: { kind: 'mix'; id: string; contentHash: string } | null;
+    sourceClaimHash: string | null;
   } | null;
   cover: { id: string; contentHash: string } | null;
   lyric: { id: string; contentHash: string } | null;
@@ -110,6 +111,122 @@ function normalizedLanguages(value: unknown): string[] {
   return [...new Set(value.map((language) => String(language).trim().toLowerCase()).filter(Boolean))].sort();
 }
 
+function certifiedContentHash(value: unknown): string | null {
+  return typeof value === 'string' && /^[a-f0-9]{64}$/i.test(value)
+    ? value.toLowerCase()
+    : null;
+}
+
+function strictStringArray(value: unknown): string[] | null {
+  if (!Array.isArray(value)) return null;
+  const values = value.map((entry) => typeof entry === 'string' ? entry.trim() : '');
+  if (values.some((entry) => !entry) || new Set(values).size !== values.length) return null;
+  return values;
+}
+
+export function releaseMixSourceClaim(meta: unknown): JsonRecord | null {
+  const metadata = record(meta);
+  const component = record(metadata?.source);
+  const direct = record(metadata?.directOwnedUpload);
+  if (!!component === !!direct) return null;
+  const rawDerivation = record(metadata?.derivedFrom);
+  let derivation: JsonRecord | null = null;
+  if (rawDerivation) {
+    const type = rawDerivation.type;
+    const id = typeof rawDerivation.id === 'string' ? rawDerivation.id.trim() : '';
+    const sourceContentHash = certifiedContentHash(rawDerivation.contentHash);
+    const claimHash = certifiedContentHash(rawDerivation.claimHash);
+    const claim = record(rawDerivation.claim);
+    if (
+      !['beat', 'mix', 'master', 'external'].includes(String(type))
+      || !id
+      || !sourceContentHash
+      || !claimHash
+      || !claim
+      || releaseEvidenceHash(claim) !== claimHash
+    ) {
+      return null;
+    }
+    derivation = { type, id, sourceContentHash, claimHash };
+  }
+
+  if (direct) {
+    const rights = record(direct.rightsConfirmation);
+    const sourceContentHash = certifiedContentHash(direct.sourceContentHash);
+    if (
+      direct.schemaVersion !== 1
+      || (
+        direct.sourceKind !== 'workspace_upload'
+        && direct.sourceKind !== 'url_import'
+        && direct.sourceKind !== 'owned_derivative'
+      )
+      || rights?.version !== 1
+      || rights.confirmed !== true
+      || !sourceContentHash
+    ) {
+      return null;
+    }
+    const parentSourceContentHash = direct.sourceKind === 'owned_derivative'
+      ? certifiedContentHash(direct.parentSourceContentHash)
+      : null;
+    const parentClaimHash = direct.sourceKind === 'owned_derivative'
+      ? certifiedContentHash(direct.parentClaimHash)
+      : null;
+    if (direct.sourceKind === 'owned_derivative' && (!parentSourceContentHash || !parentClaimHash)) {
+      return null;
+    }
+    return {
+      schemaVersion: 1,
+      kind: 'direct_owned_upload',
+      sourceKind: direct.sourceKind,
+      sourceContentHash,
+      parentSourceContentHash,
+      parentClaimHash,
+      rightsConfirmationVersion: 1,
+      rightsConfirmed: true,
+      ...(derivation ? { derivedFrom: derivation } : {}),
+    };
+  }
+
+  const beatId = typeof component?.beatId === 'string' && component.beatId.trim()
+    ? component.beatId.trim()
+    : null;
+  const beatIds = component?.beatIds === undefined
+    ? []
+    : strictStringArray(component.beatIds);
+  const exactBeatIds = beatIds
+    ? [...new Set([...(beatId ? [beatId] : []), ...beatIds])]
+    : [];
+  const beatContentHash = certifiedContentHash(component?.beatContentHash);
+  const vocalRenderIds = strictStringArray(component?.vocalRenderIds);
+  const rawVocalHashes = Array.isArray(component?.vocalRenderContentHashes)
+    ? component.vocalRenderContentHashes
+    : null;
+  const vocalRenderContentHashes = rawVocalHashes?.map(certifiedContentHash) ?? null;
+  if (
+    exactBeatIds.length !== 1
+    || !beatContentHash
+    || !vocalRenderIds
+    || !vocalRenderContentHashes
+    || vocalRenderIds.length !== vocalRenderContentHashes.length
+    || vocalRenderContentHashes.some((hash) => !hash)
+  ) {
+    return null;
+  }
+  const vocals = vocalRenderIds
+    .map((id, index) => ({ id, contentHash: vocalRenderContentHashes[index]! }))
+    .sort((left, right) => left.id.localeCompare(right.id));
+  return {
+    schemaVersion: 1,
+    kind: 'derived_mix',
+    beatId: exactBeatIds[0]!,
+    beatContentHash,
+    vocalRenderIds: vocals.map((vocal) => vocal.id),
+    vocalRenderContentHashes: vocals.map((vocal) => vocal.contentHash),
+    ...(derivation ? { derivedFrom: derivation } : {}),
+  };
+}
+
 export async function loadReleaseCertification(
   db: PrismaClient | Prisma.TransactionClient,
   options: {
@@ -184,6 +301,7 @@ export async function loadReleaseCertification(
               qualityState: true,
               contentHash: true,
               verifiedAt: true,
+              meta: true,
             },
           },
         },
@@ -229,7 +347,12 @@ export async function loadReleaseCertification(
     }),
   ]);
 
+  const masterMeta = record(master?.meta);
+  const masterSourceReceiptMatches = !!master?.mix
+    && masterMeta?.sourceMixId === master.mix.id
+    && certifiedContentHash(masterMeta?.sourceContentHash) === master.mix.contentHash?.toLowerCase();
   const certifiedSourceMix = master?.mix
+    && masterSourceReceiptMatches
     && master.mix.songId === song.id
     && master.mix.projectId === song.projectId
     && master.mix.approved
@@ -243,6 +366,8 @@ export async function loadReleaseCertification(
     : mix
       ? { kind: 'mix' as const, ...mix, source: null }
       : null;
+  const sourceClaim = releaseMixSourceClaim(master?.mix?.meta ?? mix?.meta);
+  const sourceClaimHash = sourceClaim ? releaseEvidenceHash(sourceClaim) : null;
   const lyric = song.lyric;
   const lyricHash = lyric
     ? releaseEvidenceHash({
@@ -259,6 +384,7 @@ export async function loadReleaseCertification(
           id: canonicalAudio.id,
           contentHash: canonicalAudio.contentHash,
           source: canonicalAudio.source,
+          sourceClaimHash,
         }
       : null,
     cover: cover?.contentHash ? { id: cover.id, contentHash: cover.contentHash } : null,
@@ -338,12 +464,14 @@ export async function loadReleaseCertification(
 
   const lineageCheck: ReleaseReadinessCheck = {
     name: 'Exact audio lineage',
-    ok: !master?.mixId || certifiedSourceMix !== null,
-    detail: master?.mixId
-      ? certifiedSourceMix
-        ? 'master is bound to certified source mix ' + certifiedSourceMix.id
-        : 'master source mix is missing, stale, or uncertified'
-      : 'certified direct artifact identity is bound',
+    ok: (!master?.mixId || certifiedSourceMix !== null) && sourceClaimHash !== null,
+    detail: sourceClaimHash === null
+      ? 'audio source claim is missing, ambiguous, or does not bind exact component hashes'
+      : master?.mixId
+        ? certifiedSourceMix
+          ? 'master is bound to certified source mix ' + certifiedSourceMix.id
+          : 'master source mix receipt is missing, stale, or uncertified'
+        : 'certified direct artifact identity and source claim are bound',
   };
   const readiness = {
     ready: baseReadiness.ready && lineageCheck.ok,

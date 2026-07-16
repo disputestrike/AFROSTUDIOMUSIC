@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { buildMixSourceLineage, selectAudibleConsoleSettings } from '../src/processors/mix';
 
 const hash = (digit: string) => digit.repeat(64);
@@ -39,4 +40,8 @@ assert.deepEqual(lineageFor(solo), {
 });
 assert.throws(() => lineageFor([setting('beat-a', true), setting('vocal-a')]), /received 0/);
 assert.throws(() => lineageFor([setting('beat-a'), setting('beat-b')]), /received 2/);
+const source = readFileSync(new URL('../src/processors/mix.ts', import.meta.url), 'utf8');
+assert.match(source, /assertStoredContentHash\(beatBytes, beat\.contentHash/);
+assert.match(source, /assertStoredContentHash\(vocalBytes, vocal\.contentHash/);
+assert.match(source, /console_mix_source_/);
 console.log('mix lineage tests passed');

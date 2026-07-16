@@ -1,8 +1,13 @@
 import { Prisma, prisma } from '@afrohit/db';
-import { certifyAudioBytes } from '../lib/certified-assets';
+import { assertStoredContentHash, certifyAudioBytes } from '../lib/certified-assets';
 import { transformAudio } from '../lib/ffmpeg';
 import { markFailed, markRunning } from '../lib/jobs';
 import { deleteObjectByUrl, downloadToBuffer } from '../lib/storage';
+import {
+  derivedMixLineageMeta,
+  resolveCertifiedDerivedAudioSource,
+  type CertifiedSourceAssetRef,
+} from '../lib/derived-audio-lineage';
 
 export interface TransformPayload {
   jobId: string;
@@ -10,6 +15,7 @@ export interface TransformPayload {
   projectId: string;
   songId: string;
   sourceUrl: string;
+  sourceAsset: CertifiedSourceAssetRef;
   tempo?: number;
   semitones?: number;
 }
@@ -26,7 +32,17 @@ export async function processTransform(payload: TransformPayload): Promise<void>
       },
     });
     void song;
-    const source = await downloadToBuffer(payload.sourceUrl);
+    const resolvedSource = await resolveCertifiedDerivedAudioSource({
+      workspaceId: payload.workspaceId,
+      projectId: payload.projectId,
+      songId: payload.songId,
+      source: payload.sourceAsset,
+    });
+    if (payload.sourceUrl !== resolvedSource.url) {
+      throw new Error('transform_source_url_changed');
+    }
+    const source = await downloadToBuffer(resolvedSource.url);
+    assertStoredContentHash(source, resolvedSource.contentHash, 'transform_source_audio');
     const output = await transformAudio(source, {
       tempo: payload.tempo,
       semitones: payload.semitones,
@@ -44,11 +60,37 @@ export async function processTransform(payload: TransformPayload): Promise<void>
         : null,
     ].filter(Boolean).join(' ') || 'copy';
 
+    const lineageMeta = derivedMixLineageMeta({
+      source: resolvedSource,
+      outputContentHash: certified.contentHash,
+      derivedAt: certified.verifiedAt,
+      operation: { kind: 'transform', tempo: payload.tempo, semitones: payload.semitones },
+      preservesSourceContributors: true,
+    });
     const master = await prisma.$transaction(async (tx) => {
+      const mix = await tx.mix.create({
+        data: {
+          projectId: payload.projectId,
+          songId: payload.songId,
+          preset: 'transform-source',
+          url: certified.url,
+          notes: 'Certified transformed mix source',
+          qualityState: certified.qualityState,
+          contentHash: certified.contentHash,
+          verifiedAt: certified.verifiedAt,
+          approved: true,
+          meta: {
+            qc: certified.qc,
+            ...lineageMeta,
+            transform: { tempo: payload.tempo, semitones: payload.semitones },
+          } as never,
+        },
+      });
       const created = await tx.master.create({
         data: {
           projectId: payload.projectId,
           songId: payload.songId,
+          mixId: mix.id,
           preset: 'transform ' + label,
           url: certified.url,
           qualityState: certified.qualityState,
@@ -57,7 +99,8 @@ export async function processTransform(payload: TransformPayload): Promise<void>
           approved: true,
           meta: {
             qc: certified.qc,
-            sourceUrl: payload.sourceUrl,
+            sourceMixId: mix.id,
+            sourceContentHash: mix.contentHash,
             transform: { tempo: payload.tempo, semitones: payload.semitones },
           } as never,
         },
@@ -79,6 +122,7 @@ export async function processTransform(payload: TransformPayload): Promise<void>
           finishedAt: new Date(),
           outputJson: {
             masterId: created.id,
+            mixId: mix.id,
             url: created.url,
             label,
             qualityState: created.qualityState,

@@ -88,6 +88,8 @@ jobs:
           pnpm --filter @afrohit/api test:platform-reliability
           pnpm --filter @afrohit/api test:benchmark-pair-attestation
           pnpm --filter @afrohit/api test:session-revocation
+          pnpm --filter @afrohit/api test:source-mix-lineage
+          pnpm --filter @afrohit/api test:direct-upload-release
           pnpm --filter @afrohit/web test:create-payment-cleanup
           pnpm --filter @afrohit/db test:orphan-charge-recovery
           pnpm --filter @afrohit/worker test:release-lineage-integrity

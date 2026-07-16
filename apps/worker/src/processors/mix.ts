@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { prisma } from '@afrohit/db';
 import { markFailed, markRunning } from '../lib/jobs';
 import { deleteObjectByUrl, downloadToBuffer, uploadBytes } from '../lib/storage';
+import { assertStoredContentHash } from '../lib/certified-assets';
 import {
   ffmpegAvailable,
   measureAudioQuality,
@@ -214,6 +215,8 @@ export async function processMix(payload: MixPayload): Promise<void> {
       downloadToBuffer(beat.url),
       downloadToBuffer(vocal.url),
     ]);
+    assertStoredContentHash(beatBytes, beat.contentHash, 'mix_source_beat');
+    assertStoredContentHash(vocalBytes, vocal.contentHash, 'mix_source_vocal');
     const mixed = await mixdown({ beat: beatBytes, vocal: vocalBytes, preset: payload.preset });
     await persistSuccess({
       payload,
@@ -268,7 +271,9 @@ async function processConsoleMix(payload: MixPayload, songTitle: string): Promis
   const dir = await mkdtemp(join(tmpdir(), 'afrohit-console-in-'));
   try {
     const tracks: ConsoleTrack[] = await Promise.all(audibleSettings.map(async (setting, index) => {
-      const bytes = await downloadToBuffer(assets.get(setting.id)!.url);
+      const asset = assets.get(setting.id)!;
+      const bytes = await downloadToBuffer(asset.url);
+      assertStoredContentHash(bytes, asset.contentHash, `console_mix_source_${setting.id}`);
       const path = join(dir, `track-${index}.bin`);
       await writeFile(path, bytes);
       return {

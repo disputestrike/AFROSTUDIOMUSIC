@@ -29,7 +29,7 @@ for (const [name, source] of writers) {
 
   assert.match(
     source,
-    /const sourceEvidence = \{[\s\S]*beatId: current\.id,[\s\S]*beatContentHash: sourceContentHash,[\s\S]*vocalRenderIds: \[\]/
+    /const sourceEvidence = \{[\s\S]*beatId: current\.id,[\s\S]*beatContentHash: sourceContentHash,[\s\S]*vocalRenderIds: \[\] as string\[\],[\s\S]*vocalRenderContentHashes: \[\] as string\[\]/
   );
   assert.match(source, /qualityState: ["']passed["']/);
   assert.match(source, /contentHash: sourceContentHash/);
@@ -38,6 +38,7 @@ for (const [name, source] of writers) {
   assert.match(source, /candidateSource\?\.beatId === current\.id/);
   assert.match(source, /candidateSource\.beatContentHash === sourceContentHash/);
   assert.match(source, /candidateSource\.vocalRenderIds\.length === 0/);
+  assert.match(source, /candidateSource\.vocalRenderContentHashes\.length === 0/);
   assert.doesNotMatch(source, /meta:\s*current\.meta/, `${name} must not copy arbitrary metadata`);
   assert.doesNotMatch(
     source,

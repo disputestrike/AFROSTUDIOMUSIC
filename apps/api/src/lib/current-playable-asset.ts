@@ -88,7 +88,10 @@ const numericArray = (value: unknown): number[] => {
 function certificationOf(row: PlayableAssetRow): PlayableAssetCertification {
   const approved = row.approved === true;
   const qualityState = row.qualityState ?? 'unmeasured';
-  const contentHash = row.contentHash?.trim() || null;
+  const candidateHash = row.contentHash?.trim() || null;
+  const contentHash = candidateHash && /^[a-f0-9]{64}$/i.test(candidateHash)
+    ? candidateHash.toLowerCase()
+    : null;
   const verifiedAt = row.verifiedAt instanceof Date && Number.isFinite(row.verifiedAt.getTime())
     ? row.verifiedAt
     : null;

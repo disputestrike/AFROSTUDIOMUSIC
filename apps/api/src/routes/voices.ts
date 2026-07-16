@@ -29,7 +29,10 @@ import {
   voiceTrainerConfig,
   type VoiceTrainerConfig,
 } from "../lib/voice-training";
-import { currentPlayableAsset } from "../lib/current-playable-asset";
+import {
+  currentPlayableAsset,
+  playableAssetRef,
+} from "../lib/current-playable-asset";
 
 /**
  * The usable TRAINED MODEL FILE URL for a READY voice profile, read defensively:
@@ -2285,6 +2288,7 @@ export default async function voices(app: FastifyInstance) {
       // Resolve the performance to convert: explicit URL, or the song's
       // freshest playable audio (master → mix → beat by createdAt).
       let songInputUrl = input.songUrl ?? null;
+      let sourceAsset: ReturnType<typeof playableAssetRef> = null;
       if (songInputUrl) {
         if (input.rightsConfirmed !== true) {
           return reply.code(422).send({
@@ -2306,14 +2310,15 @@ export default async function voices(app: FastifyInstance) {
         const s = await prisma.song.findFirst({
           where: { id: input.songId, workspaceId },
           include: {
-            masters: { orderBy: { createdAt: "desc" }, take: 1 },
-            mixes: { orderBy: { createdAt: "desc" }, take: 1 },
-            beats: { orderBy: { createdAt: "desc" }, take: 1 },
+            masters: { orderBy: { createdAt: "desc" }, take: 20 },
+            mixes: { orderBy: { createdAt: "desc" }, take: 20 },
+            beats: { orderBy: { createdAt: "desc" }, take: 20 },
           },
         });
         if (!s) return reply.code(404).send({ error: "song_not_found" });
         const current = currentPlayableAsset(s);
         songInputUrl = current?.url ?? null;
+        sourceAsset = playableAssetRef(current);
         if (!songInputUrl) {
           return reply.code(400).send({
             error: "song_has_no_audio",
@@ -2410,6 +2415,8 @@ export default async function voices(app: FastifyInstance) {
           modelArtifactId: invocationArtifactId,
           songId: song?.id,
           songInputUrl,
+          sourceAsset,
+          externalRightsConfirmed: !sourceAsset && input.rightsConfirmed === true,
           pitchChange: input.pitchChange,
           tuning: input.tuning,
         },
@@ -2423,6 +2430,8 @@ export default async function voices(app: FastifyInstance) {
           consentId: invocationVoice.consentId,
           modelUrl: invocationModelUrl,
           songInputUrl,
+          sourceAsset,
+          externalRightsConfirmed: !sourceAsset && input.rightsConfirmed === true,
           pitchChange: input.pitchChange,
           tuning: input.tuning,
           songId: song?.id,

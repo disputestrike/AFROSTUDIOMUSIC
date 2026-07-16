@@ -344,8 +344,10 @@ export async function processExport(payload: ExportPayload): Promise<void> {
       'artwork/cover-3000x3000-rgb.jpg',
       'audio/' + base + '.wav',
       'audio/' + base + '.mp3',
-      'performance/' + base + '-backing-track.wav',
     ];
+    if (lineage.beat) {
+      requiredArchivePaths.push('performance/' + base + '-backing-track.wav');
+    }
     const existing = await prisma.export.findUnique({
       where: { songId_sourceFingerprint: { songId: payload.songId, sourceFingerprint } },
     });

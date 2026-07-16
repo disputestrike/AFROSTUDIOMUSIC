@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { releaseEvidenceHash } from "@afrohit/db";
+import { releaseEvidenceHash, releaseMixSourceClaim } from "@afrohit/db";
 import { distributionSubmissionPayload } from "../src/lib/distribution";
 import {
   publicReleaseRevisionSnapshot,
@@ -12,6 +12,105 @@ import {
 const artifactFingerprint = "a".repeat(64);
 const sourceFingerprint = "b".repeat(64);
 const receiptId = "receipt-exact";
+
+const derivedClaim = releaseMixSourceClaim({
+  source: {
+    beatId: 'beat-1',
+    beatContentHash: '1'.repeat(64),
+    vocalRenderIds: ['vocal-b', 'vocal-a'],
+    vocalRenderContentHashes: ['3'.repeat(64), '2'.repeat(64)],
+  },
+});
+assert.deepEqual(derivedClaim, {
+  schemaVersion: 1,
+  kind: 'derived_mix',
+  beatId: 'beat-1',
+  beatContentHash: '1'.repeat(64),
+  vocalRenderIds: ['vocal-a', 'vocal-b'],
+  vocalRenderContentHashes: ['2'.repeat(64), '3'.repeat(64)],
+});
+assert.equal(
+  releaseMixSourceClaim({
+    source: {
+      beatId: 'beat-1',
+      beatContentHash: '1'.repeat(64),
+      vocalRenderIds: ['vocal-a'],
+      vocalRenderContentHashes: [],
+    },
+  }),
+  null,
+  'component claims without one exact hash per vocal must fail closed',
+);
+const parentClaim = {
+  schemaVersion: 1,
+  kind: 'derived_mix',
+  beatId: 'parent-beat',
+  beatContentHash: '5'.repeat(64),
+  vocalRenderIds: [],
+  vocalRenderContentHashes: [],
+};
+const parentClaimHash = releaseEvidenceHash(parentClaim);
+const derivedWithParentClaim = releaseMixSourceClaim({
+  source: {
+    beatId: 'output-beat',
+    beatContentHash: '6'.repeat(64),
+    vocalRenderIds: [],
+    vocalRenderContentHashes: [],
+  },
+  derivedFrom: {
+    type: 'master',
+    id: 'parent-master',
+    contentHash: '7'.repeat(64),
+    claimHash: parentClaimHash,
+    claim: parentClaim,
+  },
+});
+assert.deepEqual(derivedWithParentClaim?.derivedFrom, {
+  type: 'master',
+  id: 'parent-master',
+  sourceContentHash: '7'.repeat(64),
+  claimHash: parentClaimHash,
+});
+assert.equal(
+  releaseMixSourceClaim({
+    source: {
+      beatId: 'output-beat',
+      beatContentHash: '6'.repeat(64),
+      vocalRenderIds: [],
+      vocalRenderContentHashes: [],
+    },
+    derivedFrom: {
+      type: 'master',
+      id: 'parent-master',
+      contentHash: '7'.repeat(64),
+      claimHash: '8'.repeat(64),
+      claim: parentClaim,
+    },
+  }),
+  null,
+  'a derived source claim must fail if its embedded parent evidence changes',
+);
+const directClaim = releaseMixSourceClaim({
+  directOwnedUpload: {
+    schemaVersion: 1,
+    sourceKind: 'workspace_upload',
+    rightsConfirmation: { version: 1, confirmed: true },
+    sourceContentHash: '4'.repeat(64),
+    objectKey: 'private/workspace/source.wav',
+    recordedAt: '2026-07-15T12:00:00.000Z',
+  },
+});
+assert.deepEqual(directClaim, {
+  schemaVersion: 1,
+  kind: 'direct_owned_upload',
+  sourceKind: 'workspace_upload',
+  sourceContentHash: '4'.repeat(64),
+  parentSourceContentHash: null,
+  parentClaimHash: null,
+  rightsConfirmationVersion: 1,
+  rightsConfirmed: true,
+});
+assert.doesNotMatch(JSON.stringify(directClaim), /private|recordedAt/);
 
 const releaseExport = {
   qualityState: "ready",

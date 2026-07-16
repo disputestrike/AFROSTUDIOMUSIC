@@ -87,9 +87,9 @@ export default async function songs(app: FastifyInstance) {
       take: 100,
       include: {
         project: { select: { id: true, title: true, genre: true, bpm: true, artist: { select: { stageName: true } } } },
-        masters: { orderBy: { createdAt: 'desc' }, take: 1 },
-        mixes: { orderBy: { createdAt: 'desc' }, take: 1 },
-        beats: { orderBy: { createdAt: 'desc' }, take: 1, include: { stems: true } },
+        masters: { orderBy: { createdAt: 'desc' }, take: 20 },
+        mixes: { orderBy: { createdAt: 'desc' }, take: 20 },
+        beats: { orderBy: { createdAt: 'desc' }, take: 20, include: { stems: true } },
         lyric: { select: { id: true, title: true } },
       },
     });
@@ -139,9 +139,9 @@ export default async function songs(app: FastifyInstance) {
       where: { id: req.params.id, workspaceId },
       include: {
         project: { select: { id: true, title: true, genre: true, bpm: true } },
-        masters: { orderBy: { createdAt: 'desc' }, take: 3 },
-        mixes: { orderBy: { createdAt: 'desc' }, take: 3 },
-        beats: { orderBy: { createdAt: 'desc' }, take: 1, include: { stems: true } },
+        masters: { orderBy: { createdAt: 'desc' }, take: 20 },
+        mixes: { orderBy: { createdAt: 'desc' }, take: 20 },
+        beats: { orderBy: { createdAt: 'desc' }, take: 20, include: { stems: true } },
         lyric: true,
       },
     });
@@ -406,18 +406,133 @@ export default async function songs(app: FastifyInstance) {
       });
     }
     const label = index === 0 ? 'Original' : 'Take ' + String(index + 1);
+    const targetContentHash = target.certification.contentHash!;
     const master = await prisma.$transaction(async (tx) => {
+      let sourceMix: { id: string; contentHash: string } | null = null;
+      if (target.type === 'mix') {
+        const row = await tx.mix.findFirst({
+          where: {
+            id: target.id,
+            projectId: song.projectId,
+            songId: song.id,
+            project: { workspaceId },
+            approved: true,
+            qualityState: 'passed',
+            contentHash: targetContentHash,
+            verifiedAt: { not: null },
+          },
+          select: { id: true, contentHash: true },
+        });
+        if (row?.contentHash) sourceMix = { id: row.id, contentHash: row.contentHash };
+      } else if (target.type === 'master') {
+        const row = await tx.master.findFirst({
+          where: {
+            id: target.id,
+            projectId: song.projectId,
+            songId: song.id,
+            project: { workspaceId },
+            approved: true,
+            qualityState: 'passed',
+            contentHash: targetContentHash,
+            verifiedAt: { not: null },
+          },
+          select: {
+            mixId: true,
+            meta: true,
+            mix: { select: { id: true, contentHash: true, approved: true, qualityState: true, verifiedAt: true } },
+          },
+        });
+        const meta = row?.meta && typeof row.meta === 'object' && !Array.isArray(row.meta)
+          ? row.meta as Record<string, unknown>
+          : null;
+        if (
+          row?.mix
+          && row.mixId === row.mix.id
+          && row.mix.approved
+          && row.mix.qualityState === 'passed'
+          && row.mix.verifiedAt
+          && typeof row.mix.contentHash === 'string'
+          && meta?.sourceMixId === row.mix.id
+          && meta?.sourceContentHash === row.mix.contentHash
+        ) {
+          sourceMix = { id: row.mix.id, contentHash: row.mix.contentHash };
+        }
+      } else {
+        const beat = await tx.beatAsset.findFirst({
+          where: {
+            id: target.id,
+            projectId: song.projectId,
+            songId: song.id,
+            project: { workspaceId },
+            assetKind: 'instrumental',
+            approved: true,
+            qualityState: 'passed',
+            contentHash: targetContentHash,
+            verifiedAt: { not: null },
+          },
+          select: { id: true, contentHash: true },
+        });
+        if (beat?.contentHash) {
+          const mix = await tx.mix.create({
+            data: {
+              projectId: song.projectId,
+              songId: song.id,
+              preset: 'revert-source',
+              url: target.url,
+              notes: 'Certified beat wrapper for version revert',
+              qualityState: 'passed',
+              contentHash: beat.contentHash,
+              verifiedAt: target.certification.verifiedAt,
+              approved: true,
+              meta: {
+                source: {
+                  beatId: beat.id,
+                  beatContentHash: beat.contentHash,
+                  vocalRenderIds: [],
+                  vocalRenderContentHashes: [],
+                },
+              } as never,
+            },
+          });
+          sourceMix = { id: mix.id, contentHash: beat.contentHash };
+        }
+      }
+      if (!sourceMix) {
+        const mix = await tx.mix.create({
+          data: {
+            projectId: song.projectId,
+            songId: song.id,
+            preset: 'revert-source-unproven',
+            url: target.url,
+            notes: 'Playable revert wrapper; inherited release source is unavailable',
+            qualityState: target.certification.qualityState,
+            contentHash: targetContentHash,
+            verifiedAt: target.certification.verifiedAt,
+            approved: true,
+            meta: {
+              derivedFrom: { type: target.type, id: target.id, contentHash: targetContentHash },
+              releaseLineageCertified: false,
+            } as never,
+          },
+        });
+        sourceMix = { id: mix.id, contentHash: targetContentHash };
+      }
       const created = await tx.master.create({
         data: {
           projectId: song.projectId,
           songId: song.id,
+          mixId: sourceMix.id,
           preset: 'reverted',
           url: target.url,
           qualityState: target.certification.qualityState,
           contentHash: target.certification.contentHash,
           verifiedAt: target.certification.verifiedAt,
           approved: true,
-          meta: target.meta == null ? undefined : target.meta as never,
+          meta: {
+            sourceMixId: sourceMix.id,
+            sourceContentHash: sourceMix.contentHash,
+            revertedFrom: { type: target.type, id: target.id, contentHash: targetContentHash },
+          } as never,
         },
       });
       await tx.song.update({
@@ -483,9 +598,9 @@ export default async function songs(app: FastifyInstance) {
     const song = await prisma.song.findFirst({
       where: { id: req.params.id, workspaceId },
       include: {
-        masters: { orderBy: { createdAt: 'desc' }, take: 1 },
-        mixes: { orderBy: { createdAt: 'desc' }, take: 1 },
-        beats: { orderBy: { createdAt: 'desc' }, take: 1, include: { stems: true } },
+        masters: { orderBy: { createdAt: 'desc' }, take: 20 },
+        mixes: { orderBy: { createdAt: 'desc' }, take: 20 },
+        beats: { orderBy: { createdAt: 'desc' }, take: 20, include: { stems: true } },
         lyric: true,
       },
     });
@@ -587,9 +702,9 @@ export default async function songs(app: FastifyInstance) {
     const song = await prisma.song.findFirst({
       where: { id: req.params.id, workspaceId },
       include: {
-        masters: { orderBy: { createdAt: 'desc' }, take: 1 },
-        mixes: { orderBy: { createdAt: 'desc' }, take: 1 },
-        beats: { orderBy: { createdAt: 'desc' }, take: 1 },
+        masters: { orderBy: { createdAt: 'desc' }, take: 20 },
+        mixes: { orderBy: { createdAt: 'desc' }, take: 20 },
+        beats: { orderBy: { createdAt: 'desc' }, take: 20 },
       },
     });
     if (!song) return reply.code(404).send({ error: 'song_not_found' });
@@ -607,7 +722,15 @@ export default async function songs(app: FastifyInstance) {
       provider: 'internal',
       inputJson: { transform: true, songId: song.id, sourceAsset: playableAssetRef(sourceAudio), ...input },
       idempotencyKey,
-      payload: (jobId) => ({ jobId, workspaceId, projectId: song.projectId, songId: song.id, sourceUrl, ...input }),
+      payload: (jobId) => ({
+        jobId,
+        workspaceId,
+        projectId: song.projectId,
+        songId: song.id,
+        sourceUrl,
+        sourceAsset: playableAssetRef(sourceAudio)!,
+        ...input,
+      }),
     });
     reply.code(202);
     return { jobId: job.jobId, status: 'queued', replayed: job.replayed, note: 'New version lands in Compare Versions in seconds; revert anytime.' };
@@ -619,9 +742,9 @@ export default async function songs(app: FastifyInstance) {
     const song = await prisma.song.findFirst({
       where: { id: req.params.id, workspaceId },
       include: {
-        mixes: { orderBy: { createdAt: 'desc' }, take: 1 },
-        masters: { orderBy: { createdAt: 'desc' }, take: 1 },
-        beats: { orderBy: { createdAt: 'desc' }, take: 1 },
+        mixes: { orderBy: { createdAt: 'desc' }, take: 20 },
+        masters: { orderBy: { createdAt: 'desc' }, take: 20 },
+        beats: { orderBy: { createdAt: 'desc' }, take: 20 },
       },
     });
     if (!song) return reply.code(404).send({ error: 'song_not_found' });
@@ -720,6 +843,7 @@ export default async function songs(app: FastifyInstance) {
         beatId: current.id,
         beatContentHash: sourceContentHash,
         vocalRenderIds: [] as string[],
+        vocalRenderContentHashes: [] as string[],
       };
       const candidate = await prisma.mix.findFirst({
         where: {
@@ -742,6 +866,8 @@ export default async function songs(app: FastifyInstance) {
         && candidateSource.beatContentHash === sourceContentHash
         && Array.isArray(candidateSource.vocalRenderIds)
         && candidateSource.vocalRenderIds.length === 0
+        && Array.isArray(candidateSource.vocalRenderContentHashes)
+        && candidateSource.vocalRenderContentHashes.length === 0
         ? candidate
         : null;
       const mix = existing ?? await prisma.mix.create({
@@ -1148,9 +1274,9 @@ export default async function songs(app: FastifyInstance) {
     const song = await prisma.song.findFirst({
       where: { id: req.params.id, workspaceId },
       include: {
-        masters: { orderBy: { createdAt: 'desc' }, take: 1 },
-        mixes: { orderBy: { createdAt: 'desc' }, take: 1 },
-        beats: { orderBy: { createdAt: 'desc' }, take: 1 },
+        masters: { orderBy: { createdAt: 'desc' }, take: 20 },
+        mixes: { orderBy: { createdAt: 'desc' }, take: 20 },
+        beats: { orderBy: { createdAt: 'desc' }, take: 20 },
       },
     });
     if (!song) return reply.code(404).send({ error: 'song_not_found' });

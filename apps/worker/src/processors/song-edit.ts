@@ -10,7 +10,7 @@
 import { prisma, Prisma } from '@afrohit/db';
 import { forgeKitFor, materialCoverage, seedFrom, selectMaterialRows, withCoarseMaterialRoles } from '@afrohit/shared';
 import { deleteObjectByUrl, downloadToBuffer } from '../lib/storage';
-import { certifyAudioBytes } from '../lib/certified-assets';
+import { assertStoredContentHash, certifyAudioBytes } from '../lib/certified-assets';
 import { mixBuffers, runFfmpeg } from '../lib/ffmpeg';
 import { markRunning, markFailed } from '../lib/jobs';
 import { melodyLayer } from './own-engine';
@@ -19,6 +19,11 @@ import { processAssembleBeat } from './material';
 import { mkdtemp, writeFile, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import {
+  derivedMixLineageMeta,
+  resolveCertifiedDerivedAudioSource,
+  type CertifiedSourceAssetRef,
+} from '../lib/derived-audio-lineage';
 
 export type SongEditOp =
   | { kind: 'add_layer'; prompt: string }
@@ -33,7 +38,7 @@ export type SongEditOp =
 export interface SongEditPayload {
   jobId: string; workspaceId: string; projectId: string; songId: string;
   sourceUrl: string;
-  sourceAsset?: { type: 'beat' | 'mix' | 'master'; id: string; url?: string } | null;
+  sourceAsset: CertifiedSourceAssetRef;
   genre?: string | null; durationS?: number; bpm?: number | null; boundaries?: number[]; op: SongEditOp;
 }
 
@@ -258,7 +263,15 @@ export async function processSongEdit(p: SongEditPayload): Promise<void> {
   await markRunning(p.jobId);
   let storedUrl: string | null = null;
   try {
-    const src = await downloadToBuffer(p.sourceUrl);
+    const resolvedSource = await resolveCertifiedDerivedAudioSource({
+      workspaceId: p.workspaceId,
+      projectId: p.projectId,
+      songId: p.songId,
+      source: p.sourceAsset,
+    });
+    if (p.sourceUrl !== resolvedSource.url) throw new Error('song_edit_source_url_changed');
+    const src = await downloadToBuffer(resolvedSource.url);
+    assertStoredContentHash(src, resolvedSource.contentHash, 'song_edit_source_audio');
     const sourceDurationS = p.durationS ?? 180;
     const arrangementPlan = planSongEditArrangement(sourceDurationS, p.boundaries, p.op);
     let out: Buffer;
@@ -381,11 +394,44 @@ export async function processSongEdit(p: SongEditPayload): Promise<void> {
     });
     const arrangement = reconcileArrangementDuration(arrangementPlan, certified.qc.durationS);
     storedUrl = certified.url;
+    const preservesSourceContributors = [
+      'cut',
+      'move_section',
+      'duplicate_section',
+      'stem_fx',
+      'vocal_drop',
+    ].includes(p.op.kind);
+    const lineageMeta = derivedMixLineageMeta({
+      source: resolvedSource,
+      outputContentHash: certified.contentHash,
+      derivedAt: certified.verifiedAt,
+      operation: p.op,
+      preservesSourceContributors,
+    });
     await prisma.$transaction(async (tx) => {
+      const mix = await tx.mix.create({
+        data: {
+          projectId: p.projectId,
+          songId: p.songId,
+          preset: 'song-edit-source',
+          url: certified.url,
+          notes: `Certified song edit source: ${label}`.slice(0, 500),
+          qualityState: certified.qualityState,
+          contentHash: certified.contentHash,
+          verifiedAt: certified.verifiedAt,
+          approved: true,
+          meta: {
+            qc: certified.qc,
+            ...lineageMeta,
+            operation: p.op,
+          } as never,
+        },
+      });
       const master = await tx.master.create({
         data: {
           projectId: p.projectId,
           songId: p.songId,
+          mixId: mix.id,
           preset: `chat ${label}`.slice(0, 60),
           url: certified.url,
           qualityState: certified.qualityState,
@@ -394,7 +440,8 @@ export async function processSongEdit(p: SongEditPayload): Promise<void> {
           approved: true,
           meta: {
             qc: certified.qc,
-            sourceUrl: p.sourceUrl,
+            sourceMixId: mix.id,
+            sourceContentHash: mix.contentHash,
             sourceAsset: p.sourceAsset ?? null,
             operation: p.op,
             arrangement: {
@@ -441,6 +488,7 @@ export async function processSongEdit(p: SongEditPayload): Promise<void> {
           finishedAt: new Date(),
           outputJson: {
             masterId: master.id,
+            mixId: mix.id,
             url: master.url,
             label,
             durationS: arrangement.durationS,

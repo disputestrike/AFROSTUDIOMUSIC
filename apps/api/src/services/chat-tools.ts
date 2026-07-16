@@ -2041,9 +2041,9 @@ async function masterSongTool(ctx: Ctx, songId: string, preset?: string) {
   const song = await prisma.song.findFirst({
     where: { id: songId, workspaceId: ctx.workspaceId },
     include: {
-      mixes: { orderBy: { createdAt: "desc" }, take: 1 },
-      masters: { orderBy: { createdAt: "desc" }, take: 1 },
-      beats: { orderBy: { createdAt: "desc" }, take: 1 },
+      mixes: { orderBy: { createdAt: "desc" }, take: 20 },
+      masters: { orderBy: { createdAt: "desc" }, take: 20 },
+      beats: { orderBy: { createdAt: "desc" }, take: 20 },
     },
   });
   if (!song) return { error: "song_not_found" };
@@ -2156,6 +2156,7 @@ async function masterSongTool(ctx: Ctx, songId: string, preset?: string) {
       beatId: current.id,
       beatContentHash: sourceContentHash,
       vocalRenderIds: [] as string[],
+      vocalRenderContentHashes: [] as string[],
     };
     const candidate = await prisma.mix.findFirst({
       where: {
@@ -2180,7 +2181,9 @@ async function masterSongTool(ctx: Ctx, songId: string, preset?: string) {
       candidateSource?.beatId === current.id &&
       candidateSource.beatContentHash === sourceContentHash &&
       Array.isArray(candidateSource.vocalRenderIds) &&
-      candidateSource.vocalRenderIds.length === 0
+      candidateSource.vocalRenderIds.length === 0 &&
+      Array.isArray(candidateSource.vocalRenderContentHashes) &&
+      candidateSource.vocalRenderContentHashes.length === 0
         ? candidate
         : null;
     const mix =

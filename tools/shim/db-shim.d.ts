@@ -45,6 +45,9 @@ declare module "@afrohit/db" {
     ...args: any[]
   ) => Promise<any>;
   export const releaseEvidenceHash: (value: unknown) => string;
+  export const releaseMixSourceClaim: (
+    value: unknown
+  ) => Record<string, unknown> | null;
   export const normalizeSplitSheet: (
     value: unknown
   ) => Array<{ name: string; role: string; share: number }>;

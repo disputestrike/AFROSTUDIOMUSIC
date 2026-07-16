@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import {
   cutTimeSlices,
   nonEmptyTimeSlices,
@@ -73,5 +74,13 @@ assert.throws(
   () => cutTimeSlices(60, 0, 60),
   /cut must leave some audio/,
 );
+
+const source = readFileSync(new URL('../src/processors/song-edit.ts', import.meta.url), 'utf8');
+assert.match(source, /resolveCertifiedDerivedAudioSource/);
+assert.match(source, /assertStoredContentHash\(src, resolvedSource\.contentHash/);
+assert.match(source, /const mix = await tx\.mix\.create/);
+assert.match(source, /mixId: mix\.id/);
+assert.match(source, /sourceMixId: mix\.id/);
+assert.match(source, /preservesSourceContributors/);
 
 console.log('song edit arrangement: slices, cuts, moves, duplicates, and measured duration passed');

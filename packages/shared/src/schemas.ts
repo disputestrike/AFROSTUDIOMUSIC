@@ -576,6 +576,10 @@ export const importUrlSchema = z
     /** kind 'song' only: learn + harvest WITHOUT filing a catalog Song — training
      *  uploads must never appear in the artist's working catalog. */
     trainingOnly: z.boolean().optional(),
+    /** Finished-song imports use the same durable certification/mastering path
+     * as direct workspace uploads. Other import kinds ignore these fields. */
+    masterPreset: z.enum(MASTER_PRESETS).default("afro_stream_-9"),
+    autoMaster: z.boolean().default(true),
     rightsConfirmation: ownedAudioRightsConfirmationSchema,
   })
   .strict();

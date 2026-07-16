@@ -165,6 +165,11 @@ const TS: Array<[string, string]> = [
   ["Security boundaries", "test-security-boundaries.ts"],
   ["Durable jobs + billing receipts", "test-durable-workflows.ts"],
   ["Job redelivery + refund durability", "test-job-durability.ts"],
+  ["Mix source lineage", "test-mix-lineage.ts"],
+  ["Generated full-song lineage", "test-generated-full-song-lineage.ts"],
+  ["Voice singing lineage", "test-voice-sing-lineage.ts"],
+  ["Release lineage integrity", "test-release-lineage-integrity.mjs"],
+  ["Derived audio lineage", "test-derived-audio-lineage.ts"],
 ];
 for (const [name, file] of TS) {
   if (!existsSync(join(scripts, file))) {
