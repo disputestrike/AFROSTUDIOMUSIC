@@ -2,7 +2,13 @@
   "$schema": "https://railway.com/railway.schema.json",
   "build": {
     "buildCommand": "pnpm install --frozen-lockfile --prod=false && pnpm --filter @afrohit/shared build && pnpm --filter @afrohit/web build",
-    "watchPatterns": ["apps/web/**", "packages/shared/**", "pnpm-lock.yaml", "pnpm-workspace.yaml", "package.json"]
+    "watchPatterns": [
+      "/apps/web/**",
+      "/packages/shared/**",
+      "/pnpm-lock.yaml",
+      "/pnpm-workspace.yaml",
+      "/package.json"
+    ]
   },
   "deploy": {
     "startCommand": "pnpm --filter @afrohit/web start",

@@ -3,7 +3,13 @@
   "build": {
     "builder": "DOCKERFILE",
     "dockerfilePath": "apps/worker/Dockerfile",
-    "watchPatterns": ["apps/worker/**", "packages/**", "pnpm-lock.yaml", "pnpm-workspace.yaml", "package.json"]
+    "watchPatterns": [
+      "/apps/worker/**",
+      "/packages/**",
+      "/pnpm-lock.yaml",
+      "/pnpm-workspace.yaml",
+      "/package.json"
+    ]
   },
   "deploy": {
     "startCommand": "pnpm --filter @afrohit/worker start",
