@@ -16,19 +16,30 @@
  */
 
 export const MATERIAL_FAMILIES = {
-  // Kit drums — the backbone of the groove.
+  // Kit drums — the backbone of the groove. Includes the modern Afrobeats drum
+  // PROGRAMMING roles (owner's law, 2026-07 "drums and snares still missing"):
+  // the melodic afro tom roll, military/marching snare, snare rush, triplet hat
+  // rolls, rolled 808 kicks, gqom's broken kick pattern and the all-drums
+  // percussion break — these are as much the genre's identity as the instruments.
   drumkit: [
     'kick', 'kick_808', 'soft_kick', 'club_kick', 'live_kick',
-    'snare', 'rimshot', 'clap', 'snap',
+    'snare', 'rimshot', 'clap', 'snap', 'military_snare',
     'closed_hat', 'open_hat', 'ride', 'crash',
     'tom', 'tom_fill', 'snare_roll', 'drum_roll', 'brushes',
     'trap_hat_roll', 'drill_hat_slide',
+    'afro_tom_roll', 'snare_rush', 'triplet_hat_roll', '808_roll',
+    'gqom_drums', 'percussion_break',
   ],
-  // African / diaspora percussion — the identity of Afro lanes.
+  // African / diaspora percussion — the identity of Afro lanes. Organology facts:
+  // gbedu (deep Yoruba drum), the gangan/omele talking-drum family beyond the
+  // generic 'talking_drum', the Igbo trio ogene (twin bell) / ekwe (slit drum) /
+  // igba (membrane drum), Ghana's kpanlogo and fontomfrom, the agidigbo
+  // bass-lamellophone, and the offbeat shaker feel distinct from continuous 16ths.
   african_perc: [
-    'talking_drum', 'dundun', 'sakara', 'bata', 'djembe', 'ashiko', 'udu',
-    'shekere', 'agogo', 'cowbell', 'conga', 'bongo', 'cabasa', 'shaker',
-    'maraca', 'woodblock', 'claves', 'kalimba', 'mbira', 'balafon', 'kora', 'ngoni',
+    'talking_drum', 'dundun', 'gangan', 'omele', 'sakara', 'bata', 'gbedu',
+    'djembe', 'ashiko', 'udu', 'ogene', 'ekwe', 'igba', 'kpanlogo', 'fontomfrom',
+    'shekere', 'agogo', 'cowbell', 'conga', 'bongo', 'cabasa', 'shaker', 'shaker_offbeat',
+    'maraca', 'woodblock', 'claves', 'kalimba', 'mbira', 'balafon', 'kora', 'ngoni', 'agidigbo',
   ],
   // Latin / world percussion.
   global_perc: [
@@ -37,9 +48,11 @@ export const MATERIAL_FAMILIES = {
   ],
   // Tuned/mallet percussion.
   mallets: ['glockenspiel', 'xylophone', 'marimba', 'vibraphone', 'tubular_bells', 'chimes', 'gong'],
-  // Low end.
+  // Low end. log_drum = the amapiano BASS workhorse; log_drum_lead = the
+  // higher-pitched MELODIC log-drum line that answers it (two distinct feels a
+  // real amapiano session carries — both keyed, both forgeable).
   bass: [
-    'sub_bass', 'bass_808', 'sliding_808', 'log_drum', 'bass_guitar', 'fretless_bass',
+    'sub_bass', 'bass_808', 'sliding_808', 'log_drum', 'log_drum_lead', 'bass_guitar', 'fretless_bass',
     'upright_bass', 'synth_bass', 'moog_bass', 'reese_bass', 'pluck_bass', 'organ_bass', 'slap_bass',
   ],
   // Chordal / harmonic instruments.

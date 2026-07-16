@@ -8,10 +8,10 @@
  * those directly.
  */
 import { prisma, Prisma } from '@afrohit/db';
-import { forgeKitFor, materialCoverage, materialGenreMatches, seedFrom, selectMaterialRows, withCoarseMaterialRoles } from '@afrohit/shared';
+import { forgeKitFor, grooveOffsetMs, isMaterialRole, materialCoverage, materialGainFor, materialGenreMatches, materialPanFor, seedFrom, selectMaterialRows, withCoarseMaterialRoles } from '@afrohit/shared';
 import { deleteObjectByUrl, downloadToBuffer } from '../lib/storage';
 import { assertStoredContentHash, certifyAudioBytes } from '../lib/certified-assets';
-import { mixBuffers, runFfmpeg } from '../lib/ffmpeg';
+import { mixBuffers, probeAudioBufferDurationS, runFfmpeg, trimToLoop } from '../lib/ffmpeg';
 import { markRunning, markFailed } from '../lib/jobs';
 import { melodyLayer } from './own-engine';
 import { separateStemsRouted } from '../lib/demucs-local';
@@ -26,7 +26,11 @@ import {
 } from '../lib/derived-audio-lineage';
 
 export type SongEditOp =
-  | { kind: 'add_layer'; prompt: string }
+  // add_layer has two REAL paths: `role` (preferred — "add the missing drum":
+  // a bar-aligned GROOVE loop of that material role from the workspace shelf,
+  // overlaid across the whole take at doctrine gain × intensity) and `prompt`
+  // (legacy — MusicGen conditioned on this song). Role wins when both present.
+  | { kind: 'add_layer'; prompt?: string; role?: string; intensity?: number }
   | { kind: 'add_fill'; timesS: number[] }
   | { kind: 'cut'; fromS: number; toS: number }
   | { kind: 'move_section'; fromIndex: number; toIndex: number }
@@ -170,6 +174,55 @@ async function overlayAtTimes(bed: Buffer, hit: Buffer, timesS: number[], gain =
   } finally { await rm(dir, { recursive: true, force: true }).catch(() => {}); }
 }
 
+
+/** Pitch-preserving tempo conform (atempo, one stage 0.5–2.0 — plenty for a
+ *  shelf loop vs any sane take tempo). Used by the add_layer role path so the
+ *  overlaid groove locks to the take's grid before the bar trim. */
+async function stretchToRatio(input: Buffer, ratio: number): Promise<Buffer> {
+  const r = Math.min(Math.max(ratio, 0.5), 2.0);
+  if (Math.abs(r - 1) < 0.005) return input;
+  const dir = await mkdtemp(join(tmpdir(), 'stretch-'));
+  try {
+    const inP = join(dir, 'in.wav'); const outP = join(dir, 'out.wav');
+    await writeFile(inP, input);
+    await runFfmpeg(['-i', inP, '-af', `atempo=${r.toFixed(4)}`, '-ac', '2', '-ar', '44100', outP]);
+    return await readFile(outP);
+  } finally { await rm(dir, { recursive: true, force: true }).catch(() => {}); }
+}
+
+/** SONG-EDIT "ADD THE MISSING DRUM" — overlay a bar-aligned GROOVE loop of one
+ *  material role across the WHOLE take (unlike a one-bar fill accent). Same
+ *  overlay discipline as the fills path: amix normalize=0 + alimiter
+ *  level=false at the -1 dB ceiling (the level=true auto-boost defeated the
+ *  bus headroom, live 2026-07-12); the layer is panned and groove-offset by
+ *  the same producer doctrine every assembled kit layer follows. */
+async function overlayRoleLoop(
+  bed: Buffer,
+  loop: Buffer,
+  opts: { durationS: number; gain: number; pan: number; grooveMs: number },
+): Promise<Buffer> {
+  const dir = await mkdtemp(join(tmpdir(), 'layer-'));
+  try {
+    const bedP = join(dir, 'bed.wav'); const loopP = join(dir, 'loop.wav'); const outP = join(dir, 'out.wav');
+    await writeFile(bedP, bed); await writeFile(loopP, loop);
+    const pan = Math.max(-1, Math.min(1, opts.pan));
+    const panF = pan !== 0 ? `,stereotools=balance_out=${pan.toFixed(2)}` : '';
+    const groove = Math.min(10, Math.max(0, Math.round(opts.grooveMs)));
+    const grooveF = groove > 0 ? `,adelay=${groove}|${groove}` : '';
+    const fc = `[1:a]aformat=channel_layouts=stereo,volume=${opts.gain.toFixed(2)}${panF}${grooveF}[l];`
+      + `[0:a][l]amix=inputs=2:normalize=0:duration=first[mix];`
+      + `[mix]alimiter=level=false:limit=0.891:attack=2:release=80[out]`;
+    await runFfmpeg([
+      '-i', bedP,
+      '-stream_loop', '-1', '-t', (opts.durationS + 1).toFixed(3), '-i', loopP,
+      '-filter_complex', fc, '-map', '[out]', '-ac', '2', '-ar', '44100', outP,
+    ]);
+    return await readFile(outP);
+  } finally { await rm(dir, { recursive: true, force: true }).catch(() => {}); }
+}
+
+const COARSE_LAYER_ROLES = new Set(['drums', 'percussion', 'bass', 'chords']);
+const normalizeLayerRole = (role: string) => role.toLowerCase().trim().replace(/[\s/-]+/g, '_');
 
 /** Section plan from measured boundaries: contiguous [s,e) segments, 1-based for humans. */
 export function segmentsFrom(durationS: number, boundaries?: number[]): TimeSlice[] {
@@ -389,15 +442,63 @@ export async function processSongEdit(p: SongEditPayload): Promise<void> {
         out = await mixBuffers(instrNew, vox, 1.0);
         label = `S${p.op.index} re-played — fresh beat under your original vocal`;
       } finally { await rm(dir, { recursive: true, force: true }).catch(() => {}); }
-    } else {
-      // add_layer — MusicGen conditioned on THIS song, mixed under it (fail-closed:
-      // if the layer can't render, the edit fails honestly rather than faking it).
+    } else if (p.op.kind === 'add_layer' && typeof p.op.role === 'string' && p.op.role.trim()) {
+      // ADD THE MISSING DRUM — overlay a bar-aligned groove loop of the named
+      // role from the workspace shelf across the whole take. Shelf semantics
+      // mirror add_fill exactly (ready/passed/rights-known; WITH a genre only
+      // canonically genre-matching rows qualify, WITHOUT one the newest wins).
+      const role = normalizeLayerRole(p.op.role);
+      if (!isMaterialRole(role) && !COARSE_LAYER_ROLES.has(role)) {
+        throw new Error(`unknown material role '${role}' — use a taxonomy role (e.g. military_snare, gbedu, talking_drum, shaker) or drums/percussion/bass/chords`);
+      }
+      const shelf = await prisma.materialAsset.findMany({
+        where: {
+          workspaceId: p.workspaceId,
+          role,
+          readiness: 'ready',
+          qualityState: 'passed',
+          rightsBasis: { not: 'unknown' },
+        },
+        orderBy: { createdAt: 'desc' },
+        take: 40,
+      });
+      const row = p.genre ? shelf.find((r) => materialGenreMatches(r.genre, p.genre)) : shelf[0];
+      if (!row) throw new Error(`no ${role} on the shelf yet — forge it (materials/synth) or let the nightly kit forge stock it`);
+      let loop = await downloadToBuffer(row.url);
+      const bpm = p.bpm ?? null;
+      if (bpm && bpm > 0) {
+        // Conform the loop to the take's grid: tempo-stretch when the shelf
+        // knows its bpm, then trim to WHOLE BARS at the take tempo (forged
+        // loops start on the grid by construction → startS 0, never the 0.5s
+        // legacy guess).
+        if (row.bpm && row.bpm > 0) loop = await stretchToRatio(loop, bpm / row.bpm);
+        const secPerBar = (60 / bpm) * 4;
+        const loopDurS = await probeAudioBufferDurationS(loop);
+        const wholeBars = loopDurS > 0 ? Math.floor((loopDurS + 0.05) / secPerBar) : 0;
+        const bars = Math.max(1, Math.min(8, wholeBars || 1));
+        loop = await trimToLoop(loop, bpm, bars, { startS: 0 });
+      }
+      const intensity = Math.min(1.5, Math.max(0.2, p.op.intensity ?? 1));
+      const gain = Math.min(1.2, Math.round(materialGainFor(role) * 0.9 * intensity * 100) / 100);
+      out = await overlayRoleLoop(src, loop, {
+        durationS: sourceDurationS,
+        gain,
+        pan: materialPanFor(role),
+        grooveMs: grooveOffsetMs(role),
+      });
+      label = `layer: ${role} groove (${Math.round(intensity * 100)}%)`;
+    } else if (p.op.kind === 'add_layer' && typeof p.op.prompt === 'string' && p.op.prompt.trim()) {
+      // add_layer (prompt) — MusicGen conditioned on THIS song, mixed under it
+      // (fail-closed: if the layer can't render, the edit fails honestly rather
+      // than faking it).
       const dur = Math.min(30, Math.max(8, Math.round(sourceDurationS)));
       const mel = await melodyLayer(p.sourceUrl, p.op.prompt, dur);
       if (!mel.url) throw new Error(mel.note);
       const layer = await downloadToBuffer(mel.url);
       out = await mixBuffers(src, layer, 0.8);
       label = `layer: ${p.op.prompt.slice(0, 40)}`;
+    } else {
+      throw new Error('add_layer needs a material role (preferred) or a prompt');
     }
 
     const certified = await certifyAudioBytes({

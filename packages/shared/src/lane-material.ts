@@ -60,7 +60,13 @@ export interface MaterialSelection {
 /** Producer gain doctrine per material role — ONE source of truth for the API
  *  arranger and the worker's own-engine/section-replay (which used to pass raw
  *  DB rows with no gain at all and crash the assembler). */
-export const MATERIAL_GAINS: Record<string, number> = { drums: 1.0, log_drum: 1.05, bass: 0.95, talking_drum: 0.85, percussion: 0.8, chords: 0.7 };
+export const MATERIAL_GAINS: Record<string, number> = {
+  drums: 1.0, log_drum: 1.05, bass: 0.95, talking_drum: 0.85, percussion: 0.8, chords: 0.7,
+  // Afro vocabulary extension (2026-07): the lead log drum sits UNDER the 1.05
+  // bass workhorse; gbedu/808_roll are deep foundations just under the kick;
+  // a percussion break IS the kit for its bars; agidigbo is a bass-register texture.
+  log_drum_lead: 0.85, gbedu: 0.9, '808_roll': 0.9, percussion_break: 0.95, agidigbo: 0.75,
+};
 
 // Family-level gain defaults for the RICH kit roles (Executive-Summary mixing
 // spec): rhythm foundation loudest, low end just under, harmony/melody tucked,
@@ -80,9 +86,13 @@ export function materialGainFor(role: string): number {
  *  DEAD CENTER; shakers/shekere wide; congas/bells off-center opposite sides;
  *  guitars/keys gently spread. -1 = hard left, +1 = hard right. */
 const ROLE_PANS: Record<string, number> = {
-  shaker: 0.6, shekere: -0.6, cabasa: 0.5, maraca: -0.5,
+  shaker: 0.6, shekere: -0.6, cabasa: 0.5, maraca: -0.5, shaker_offbeat: -0.55,
   conga: -0.35, bongo: 0.35, agogo: 0.45, cowbell: -0.45, woodblock: 0.4, claves: -0.4,
   talking_drum: 0.25, djembe: -0.25, udu: 0.3, bata: -0.3,
+  // Afro vocabulary extension: hand drums/bells off-center on opposite sides;
+  // deep drums (gbedu/fontomfrom) NEAR center — their weight is low-end.
+  gangan: 0.25, omele: 0.35, ogene: -0.4, ekwe: 0.35, igba: -0.3, kpanlogo: -0.35,
+  fontomfrom: -0.15, gbedu: 0, agidigbo: -0.3, afro_tom_roll: 0.15,
   highlife_guitar: 0.3, palmwine_guitar: -0.3, guitar_chords: -0.25, lead_guitar: 0.25, clean_guitar_riff: 0.3,
   piano: -0.15, rhodes: 0.15, kalimba: 0.35, marimba: -0.35, balafon: 0.3, kora: -0.3,
   flute: 0.2, sax: -0.2, trumpet: 0.2, brass_section: 0.15, synth_pluck: 0.25, bell_lead: -0.25,
@@ -98,14 +108,26 @@ export function materialPanFor(role: string): number {
  *  melody barely off. Deterministic per role — the same beat assembles the
  *  same way twice — and capped ≤10ms so it reads as feel, never as sloppiness. */
 const ROLE_GROOVE_MS: Record<string, number> = {
-  shaker: 7, shekere: 8, cabasa: 6, maraca: 6,
+  shaker: 7, shekere: 8, cabasa: 6, maraca: 6, shaker_offbeat: 7,
   conga: 5, bongo: 4, agogo: 5, cowbell: 4, woodblock: 4, claves: 5,
   talking_drum: 6, djembe: 5, udu: 6, bata: 5, dundun: 6, sakara: 6,
+  // Afro vocabulary extension: hand drums a few ms behind (the laid-back
+  // pocket); melodic tom rolls + triplet hats ride like toms/hats.
+  gangan: 6, omele: 5, gbedu: 4, ogene: 5, ekwe: 4, igba: 5, kpanlogo: 5,
+  fontomfrom: 4, agidigbo: 4, afro_tom_roll: 3, triplet_hat_roll: 3,
   closed_hat: 3, open_hat: 4, ride: 3, tom: 3,
   highlife_guitar: 3, palmwine_guitar: 3, guitar_chords: 2, rhodes: 2, piano: 2,
   kalimba: 4, marimba: 3, balafon: 4,
 };
-const GROOVE_ANCHORS = new Set(['kick', 'kick_808', 'soft_kick', 'club_kick', 'live_kick', 'snare', 'rimshot', 'clap', 'snap', 'bass', 'bass_guitar', 'sub_bass', 'bass_808', 'sliding_808', 'synth_bass', 'log_drum', 'drums']);
+// Timekeepers hold the grid dead-on. The snare/roll/transition programming
+// family (military_snare, snare_rush, 808_roll, gqom_drums, percussion_break)
+// and the keyed log-drum pair are anchors too — a roll INTO a downbeat that
+// starts late reads as sloppy, never as pocket.
+const GROOVE_ANCHORS = new Set([
+  'kick', 'kick_808', 'soft_kick', 'club_kick', 'live_kick', 'snare', 'rimshot', 'clap', 'snap',
+  'military_snare', 'snare_rush', '808_roll', 'gqom_drums', 'percussion_break',
+  'bass', 'bass_guitar', 'sub_bass', 'bass_808', 'sliding_808', 'synth_bass', 'log_drum', 'log_drum_lead', 'drums',
+]);
 export function grooveOffsetMs(role: string): number {
   if (GROOVE_ANCHORS.has(role)) return 0;
   if (ROLE_GROOVE_MS[role] != null) return ROLE_GROOVE_MS[role]!;

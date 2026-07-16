@@ -75,6 +75,68 @@ for (const genre of ['afrobeats', 'amapiano', 'afro_fusion', 'afro_pop', 'street
   if (fams('fx') < 1) fail(`[${genre}] depth law: no FX roles (needs risers/transitions)`);
 }
 
+// ---- 3c: SNARE & TOM LAW — the owner's "drums and snares still missing" ---
+// Every Afro-core lane's forge kit carries the separated snare backbone (>=2
+// distinct snare-class roles — never one monolithic 'drums' blob) and at least
+// one tom/roll-class role (the melodic tom rolls and builds that lift Afro
+// records into sections), on top of the >=4 african_perc depth law above.
+const AFRO_CORE = ['afrobeats', 'amapiano', 'afro_fusion', 'afro_pop', 'street_pop', 'highlife', 'afro_dancehall', 'afro_gospel', 'afro_house', 'praise'];
+const SNARE_CLASS = new Set(['snare', 'rimshot', 'clap', 'snap', 'military_snare', 'snare_rush']);
+const TOM_ROLL_CLASS = new Set(['tom', 'tom_fill', 'afro_tom_roll', 'snare_roll', 'drum_roll', '808_roll']);
+for (const genre of AFRO_CORE) {
+  const kit = forgeKitFor(genre);
+  const snares = kit.filter((r) => SNARE_CLASS.has(r));
+  if (snares.length < 2) fail(`[${genre}] snare law: only {${snares.join(',')}} — needs >=2 distinct snare-class roles (snare/rimshot/clap/snap/military_snare/snare_rush)`);
+  const rolls = kit.filter((r) => TOM_ROLL_CLASS.has(r));
+  if (rolls.length < 1) fail(`[${genre}] tom/roll law: no tom or roll-class role (tom/tom_fill/afro_tom_roll/snare_roll/drum_roll/808_roll) in ${kit.join(',')}`);
+  const apc = kit.filter((r) => isMaterialRole(r) && familyOf(r as MaterialRole) === 'african_perc');
+  if (apc.length < 4) fail(`[${genre}] african-perc law: only ${apc.length} african_perc roles in the forge kit (needs 4+)`);
+}
+
+// ---- 3d: AFRO VOCABULARY EXTENSION (2026-07) — every new role resolves ----
+// The 17 roles added for the owner's gap report must each map to the right
+// family, carry a sane doctrine gain/pan, and forge with an isolation-phrased
+// prompt (keyed ONLY when pitched). Placement spot-checks pin the per-genre
+// palette homes so a refactor can never silently drop the vocabulary.
+const NEW_AFRO_ROLES: Array<[string, string]> = [
+  ['military_snare', 'drumkit'], ['snare_rush', 'drumkit'], ['afro_tom_roll', 'drumkit'],
+  ['triplet_hat_roll', 'drumkit'], ['808_roll', 'drumkit'], ['gqom_drums', 'drumkit'], ['percussion_break', 'drumkit'],
+  ['gbedu', 'african_perc'], ['gangan', 'african_perc'], ['omele', 'african_perc'],
+  ['ogene', 'african_perc'], ['ekwe', 'african_perc'], ['igba', 'african_perc'],
+  ['kpanlogo', 'african_perc'], ['fontomfrom', 'african_perc'], ['agidigbo', 'african_perc'],
+  ['shaker_offbeat', 'african_perc'], ['log_drum_lead', 'bass'],
+];
+for (const [role, fam] of NEW_AFRO_ROLES) {
+  if (!isMaterialRole(role)) { fail(`new role '${role}' is not in the material taxonomy`); continue; }
+  if (familyOf(role as MaterialRole) !== fam) fail(`new role '${role}' mapped to family '${familyOf(role as MaterialRole)}', expected '${fam}'`);
+  const gain = materialGainFor(role);
+  if (!(gain >= 0.3 && gain <= 1.2)) fail(`new role '${role}' gain ${gain} out of range`);
+  if (Math.abs(materialPanFor(role)) > 0.7) fail(`new role '${role}' pan ${materialPanFor(role)} too extreme`);
+  const prompt = forgePromptFor(role, 'afrobeats', 108, 'A minor');
+  if (!prompt) { fail(`new role '${role}' has NO forge prompt`); continue; }
+  if (!/solo|only/i.test(prompt)) fail(`new role '${role}' prompt is not isolation-phrased`);
+  if (!/seamless loop|one build|one fill/i.test(prompt)) fail(`new role '${role}' prompt missing the loop/one-shot contract`);
+  if (isKeyedRole(role) && !/A minor/.test(prompt)) fail(`new keyed role '${role}' prompt ignores the key`);
+  if (!isKeyedRole(role) && /A minor/.test(prompt)) fail(`new unpitched role '${role}' prompt wrongly carries a key`);
+}
+// log_drum_lead is the KEYED melodic counterpart of the log_drum bass workhorse.
+if (!isKeyedRole('log_drum_lead')) fail('log_drum_lead must be keyed (melodic log drum line)');
+// Palette homes: the vocabulary lives where the music actually uses it.
+const paletteHas = (g: string, r: string) => (GENRE_PALETTES[g] ?? []).includes(r);
+if (!paletteHas('afrobeats', 'gbedu')) fail('afrobeats palette missing gbedu');
+if (!paletteHas('afrobeats', 'afro_tom_roll')) fail('afrobeats palette missing afro_tom_roll');
+if (!paletteHas('afrobeats', 'military_snare')) fail('afrobeats palette missing military_snare');
+if (!paletteHas('street_pop', 'gbedu')) fail('street_pop palette missing gbedu');
+if (!paletteHas('street_pop', '808_roll')) fail('street_pop palette missing 808_roll');
+if (!paletteHas('amapiano', 'log_drum_lead')) fail('amapiano palette missing log_drum_lead');
+if (!paletteHas('amapiano', 'shaker_offbeat')) fail('amapiano palette missing shaker_offbeat');
+if (!paletteHas('gqom', 'gqom_drums')) fail('gqom palette missing gqom_drums');
+if (!paletteHas('fuji', 'gangan') || !paletteHas('fuji', 'omele')) fail('fuji palette missing gangan/omele (talking-drum family)');
+if (!paletteHas('juju', 'agidigbo') || !paletteHas('apala', 'agidigbo')) fail('juju/apala palettes missing agidigbo');
+if (!paletteHas('highlife', 'ogene') || !paletteHas('highlife', 'kpanlogo') || !paletteHas('highlife', 'fontomfrom')) fail('highlife palette missing ogene/kpanlogo/fontomfrom');
+if (!paletteHas('highlife', 'ekwe') || !paletteHas('highlife', 'igba')) fail('highlife palette missing the Igbo ekwe/igba drums');
+if (!paletteHas('azonto', 'kpanlogo')) fail('azonto palette missing kpanlogo (Ghana)');
+
 // ---- 4: gain/pan doctrine sane for every taxonomy role --------------------
 for (const genre of GENRE_KIT_KEYS) {
   for (const role of forgeKitFor(genre)) {
@@ -187,4 +249,4 @@ const engineDown = { ...kicky, engineOk: false };
 if (!materialRolePurity('shaker', engineDown).ok) fail('purity: engineOk=false means nothing was measured — no fabricated failure');
 
 if (failures) { console.error(`material-system: ${failures} failure(s)`); process.exit(1); }
-console.log(`material-system: ${GENRE_KIT_KEYS.length} genres — kit-driven forge, isolated keyed prompts, layering law (3+ rhythm), gain/pan doctrine, ${SCENARIOS.length} PDF scenarios, slow-bpm bars cap, octave-folded tempo verification, role-purity absence gates — all enforced`);
+console.log(`material-system: ${GENRE_KIT_KEYS.length} genres — kit-driven forge, isolated keyed prompts, layering law (3+ rhythm), snare & tom law (${AFRO_CORE.length} Afro-core lanes), ${NEW_AFRO_ROLES.length}-role Afro vocabulary extension, gain/pan doctrine, ${SCENARIOS.length} PDF scenarios, slow-bpm bars cap, octave-folded tempo verification, role-purity absence gates — all enforced`);

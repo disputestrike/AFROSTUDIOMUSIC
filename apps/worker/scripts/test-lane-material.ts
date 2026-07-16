@@ -8,6 +8,7 @@
  */
 import {
   buildLaneProfile, laneMaterialNeeds, selectLaneMaterials, describeMaterialSelection, planFills,
+  grooveOffsetMs, materialGainFor, materialPanFor, MATERIAL_GAINS,
   measured, unknownAnalysis, type MeasuredAnalysis, type MaterialLite,
 } from '@afrohit/shared';
 
@@ -84,5 +85,26 @@ const cadence = planFills(120, 60, null, 8); // no boundaries -> every 8 bars
 console.log('fills (cadence, no boundaries):', cadence.map((f) => f.atS.toFixed(1) + 's').join(', '));
 assert(cadence.length >= 1 && cadence.every((f) => f.atS < 60), 'cadence fills placed within the track');
 assert(planFills(0, 60).length === 0 && planFills(120, 0).length === 0, 'no fills without bpm/duration (no fabrication)');
+
+// AFRO VOCABULARY EXTENSION (2026-07) — the groove/gain/pan doctrine covers the
+// new roles: timekeepers and roll/build programming hold the grid dead-on;
+// hand percussion sits a few ms BEHIND it (never >10ms); the lead log drum
+// sits UNDER the bass log-drum workhorse; the offbeat shaker pans wide on the
+// OPPOSITE side of the continuous-16ths shaker.
+console.log('\nAfro vocabulary doctrine:');
+for (const anchor of ['military_snare', 'snare_rush', '808_roll', 'gqom_drums', 'percussion_break', 'log_drum_lead']) {
+  assert(grooveOffsetMs(anchor) === 0, `'${anchor}' is a groove anchor (0ms — rolls/builds/timekeepers hold the grid)`);
+}
+for (const hand of ['gbedu', 'gangan', 'omele', 'ogene', 'ekwe', 'igba', 'kpanlogo', 'fontomfrom', 'agidigbo', 'shaker_offbeat']) {
+  const ms = grooveOffsetMs(hand);
+  assert(ms > 0 && ms <= 10, `'${hand}' hand percussion sits behind the grid (${ms}ms, capped at 10)`);
+}
+assert(materialGainFor('log_drum_lead') < MATERIAL_GAINS.log_drum!, 'log_drum_lead sits under the log_drum bass workhorse');
+assert(materialPanFor('shaker_offbeat') < 0 && materialPanFor('shaker') > 0, 'shaker_offbeat pans wide OPPOSITE the continuous shaker');
+assert(materialPanFor('gbedu') === 0, 'gbedu (deep drum) stays center — its weight is low-end');
+for (const r of ['military_snare', 'snare_rush', 'afro_tom_roll', 'triplet_hat_roll', '808_roll', 'gqom_drums', 'percussion_break', 'gbedu', 'gangan', 'omele', 'ogene', 'ekwe', 'igba', 'kpanlogo', 'fontomfrom', 'agidigbo', 'shaker_offbeat', 'log_drum_lead']) {
+  const g = materialGainFor(r);
+  assert(g >= 0.3 && g <= 1.2 && Math.abs(materialPanFor(r)) <= 0.7, `'${r}' gain/pan within producer doctrine (gain ${g}, pan ${materialPanFor(r)})`);
+}
 
 console.log(process.exitCode ? '\n❌ LaneMaterial test FAILED' : '\n✅ LaneMaterial test PASSED');
