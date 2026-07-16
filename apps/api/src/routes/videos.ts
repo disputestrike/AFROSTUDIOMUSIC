@@ -266,9 +266,59 @@ export default async function videos(app: FastifyInstance) {
 
       const concept = await prisma.videoConcept.findFirstOrThrow({
         where: { id: input.conceptId, project: { workspaceId } },
+        include: { project: { select: { artistId: true } } },
       });
       if (concept.projectId !== input.projectId) {
         return reply.code(409).send({ error: "concept_project_mismatch" });
+      }
+
+      // ENGINE CLASS (public/internal wall): users pick a class, never a
+      // vendor. Absent = 'standard' — the default tier decision. Billing is
+      // untouched: videoRenderUsage below is identical for every class.
+      const engineClass = input.engineClass ?? "standard";
+
+      // LIKENESS (own-face keyframe → image-to-video). Only when explicitly
+      // requested, only when a TRAINED likeness exists for THIS project's
+      // artist under an UNREVOKED consent — otherwise an honest 409, never a
+      // silent render without the face the user asked for.
+      let likenessPayload: {
+        trainedModelRef: string;
+        triggerWord: string;
+        consentId: string;
+        rightsBasis: "user-attested-likeness";
+      } | null = null;
+      if (input.useLikeness) {
+        const trained = await prisma.artistLikeness.findFirst({
+          where: {
+            workspaceId,
+            artistId: concept.project.artistId,
+            deletedAt: null,
+            status: "trained",
+            trainedModelRef: { not: null },
+            consent: { workspaceId, revokedAt: null },
+          },
+          orderBy: { createdAt: "desc" },
+          select: { trainedModelRef: true, consentId: true, meta: true },
+        });
+        if (!trained?.trainedModelRef) {
+          return reply.code(409).send({
+            error: "no_trained_likeness",
+            note: "Train your likeness first (My Likeness) — this render was asked to feature your face and there is no trained, consented likeness to use.",
+          });
+        }
+        const trainedMeta =
+          trained.meta && typeof trained.meta === "object" && !Array.isArray(trained.meta)
+            ? (trained.meta as Record<string, unknown>)
+            : {};
+        likenessPayload = {
+          trainedModelRef: trained.trainedModelRef,
+          triggerWord:
+            typeof trainedMeta.triggerWord === "string" && trainedMeta.triggerWord
+              ? trainedMeta.triggerWord
+              : "AFROHITFACE",
+          consentId: trained.consentId,
+          rightsBasis: "user-attested-likeness",
+        };
       }
 
       // Flat shots from EITHER storage shape — the legacy array or the
@@ -316,6 +366,8 @@ export default async function videos(app: FastifyInstance) {
           shotIndex: input.shotIndex,
           shots,
           format: concept.format,
+          engineClass,
+          ...(likenessPayload ? { likeness: likenessPayload } : {}),
         }),
       });
 

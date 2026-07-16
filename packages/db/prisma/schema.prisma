@@ -47,6 +47,8 @@ model Workspace {
   voiceConsents        VoiceConsent[]
   voiceProfiles        VoiceProfile[]
   voiceDatasets        VoiceDataset[]
+  likenessConsents     LikenessConsent[]
+  artistLikenesses     ArtistLikeness[]
   brandKits            BrandKit[]
   songs                Song[]
   jobs                 ProviderJob[]
@@ -92,6 +94,7 @@ model User {
   chatThreads           ChatThread[]
   approvals             Approval[]
   voiceConsents         VoiceConsent[]
+  likenessConsents      LikenessConsent[]
   benchmarkPairsCreated BenchmarkPair[]     @relation("BenchmarkPairCreator")
   benchmarkJudgments    BenchmarkJudgment[] @relation("BenchmarkJudge")
 }
@@ -157,13 +160,15 @@ model Artist {
   createdAt       DateTime @default(now()) @db.Timestamptz(6)
   updatedAt       DateTime @updatedAt @db.Timestamptz(6)
 
-  workspace     Workspace           @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  projects      Project[]
-  voiceProfiles VoiceProfile[]
-  voiceConsents VoiceConsent[]
-  brandKits     BrandKit[]
-  releases      Release[]
-  memoryChunks  ArtistMemoryChunk[]
+  workspace        Workspace           @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  projects         Project[]
+  voiceProfiles    VoiceProfile[]
+  voiceConsents    VoiceConsent[]
+  brandKits        BrandKit[]
+  releases         Release[]
+  memoryChunks     ArtistMemoryChunk[]
+  likenessConsents LikenessConsent[]
+  likenesses       ArtistLikeness[]
 
   @@index([workspaceId])
 }
@@ -258,6 +263,68 @@ enum VoiceProfileStatus {
   READY
   FAILED
   REVOKED
+}
+
+// ===========================================================================
+// Likeness (consent + own-face photos + trained visual model)
+// ===========================================================================
+
+/// Versioned likeness consent — mirrors VoiceConsent (own-face-only doctrine).
+/// A separate model rather than reusing VoiceConsent so revoking a voice never
+/// silently kills a likeness (and vice versa), and each consent text stays a
+/// verbatim, hashable record of what was actually signed for that modality.
+model LikenessConsent {
+  id              String    @id @default(cuid())
+  workspaceId     String
+  artistId        String
+  signerUserId    String?
+  legalName       String
+  email           String
+  consentText     String    @db.Text
+  consentVersion  String
+  consentTextHash String?
+  ipHash          String?
+  userAgent       String?
+  signedAt        DateTime  @default(now()) @db.Timestamptz(6)
+  revokedAt       DateTime? @db.Timestamptz(6)
+
+  workspace  Workspace        @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  artist     Artist           @relation(fields: [artistId], references: [id], onDelete: Cascade)
+  signer     User?            @relation(fields: [signerUserId], references: [id], onDelete: SetNull)
+  likenesses ArtistLikeness[]
+
+  @@index([workspaceId])
+  @@index([artistId])
+  @@index([signerUserId])
+}
+
+/// One likeness ASSET (an uploaded own-face photo; 'video' reserved for
+/// motion reference uploads). Training flips the participating photo rows
+/// pending → training → trained/failed and stamps the SAME trainedModelRef on
+/// every row that fed the run — "a trained likeness exists" means: a live
+/// (non-deleted) trained row with a model ref under an unrevoked consent.
+model ArtistLikeness {
+  id              String    @id @default(cuid())
+  workspaceId     String
+  artistId        String
+  kind            String // 'photo' | 'video'
+  url             String // private storage URI (s3://...), never public
+  contentHash     String? // sha256 of the uploaded bytes — dedupe + provenance
+  consentId       String
+  status          String    @default("pending") // 'pending'|'training'|'trained'|'failed'
+  trainedModelRef String? // Replicate "owner/model:version" once trained
+  meta            Json? // {trainingJobId, trainer, triggerWord, trainedAt, error?, rightsBasis}
+  createdAt       DateTime  @default(now()) @db.Timestamptz(6)
+  deletedAt       DateTime? @db.Timestamptz(6) // soft delete — rows never vanish from provenance
+
+  workspace Workspace       @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  artist    Artist          @relation(fields: [artistId], references: [id], onDelete: Cascade)
+  consent   LikenessConsent @relation(fields: [consentId], references: [id])
+
+  @@unique([workspaceId, contentHash])
+  @@index([workspaceId])
+  @@index([artistId, status])
+  @@index([consentId])
 }
 
 // ===========================================================================

@@ -4,6 +4,11 @@
  */
 import { z } from "zod";
 import { VOICE_CONSENT_TEXT, VOICE_CONSENT_VERSION } from "./voice-consent";
+import {
+  LIKENESS_CONSENT_TEXT,
+  LIKENESS_CONSENT_VERSION,
+  VIDEO_ENGINE_CLASSES,
+} from "./likeness";
 import { isMaterialRole, type MaterialRole } from "./material-roles";
 import {
   GENRES,
@@ -317,6 +322,63 @@ export const voiceTrainInputSchema = z
   })
   .strict();
 
+// ---------- Artist likeness (consent-gated, own-face-only) ------------------
+
+/** Mirrors voiceConsentInputSchema: the signer types the versioned consent
+ *  back verbatim (literal match) so a stale client can never record consent
+ *  to text the user did not see. */
+export const likenessConsentInputSchema = z
+  .object({
+    artistId: z.string().cuid(),
+    legalName: z.string().trim().min(2).max(120),
+    email: z.string().trim().email().max(200),
+    consentText: z.literal(LIKENESS_CONSENT_TEXT),
+    consentVersion: z.literal(LIKENESS_CONSENT_VERSION),
+    accepted: z.literal(true),
+  })
+  .strict();
+
+export const LIKENESS_IMAGE_FORMATS = ["png", "jpg", "jpeg", "webp"] as const;
+export const MAX_LIKENESS_PHOTO_BYTES = 15 * 1024 * 1024;
+
+/** Presign a browser→storage PUT for ONE likeness photo. Image claims only —
+ *  the attach step's magic-byte sniff is the real content check. */
+export const likenessPhotoPresignSchema = z
+  .object({
+    contentType: z
+      .string()
+      .regex(/^image\/(png|jpe?g|webp)$/i)
+      .max(60),
+    ext: z.enum(LIKENESS_IMAGE_FORMATS),
+    sizeBytes: z.number().int().min(1_000).max(MAX_LIKENESS_PHOTO_BYTES),
+  })
+  .strict();
+
+/** Attach an uploaded photo to the artist under a recorded consent. */
+export const likenessPhotoAttachSchema = z
+  .object({
+    key: z.string().min(4).max(512),
+    artistId: z.string().cuid(),
+    consentId: z.string().cuid(),
+  })
+  .strict();
+
+/** Kick off likeness training (Flux LoRA on the artist's OWN photos). */
+export const likenessTrainInputSchema = z
+  .object({
+    artistId: z.string().cuid(),
+    consentId: z.string().cuid(),
+    /** Optional "user/model" destination in the operator's Replicate account. */
+    destination: z
+      .string()
+      .regex(
+        /^[a-z0-9][a-z0-9-]*\/[a-zA-Z0-9][a-zA-Z0-9._-]*$/,
+        'destination must be "user/model"'
+      )
+      .optional(),
+  })
+  .strict();
+
 /** DATASET BUILDER: raw recordings → a trainer-ready zip (layout
  *  `dataset/<name>/split_<i>.wav`, 48k mono, ~10s segments) — exactly what the
  *  default trainer (replicate/train-rvc-model) expects. Two minutes is the
@@ -419,6 +481,21 @@ export const renderVideoInputSchema = z.object({
   projectId: z.string().cuid(),
   conceptId: z.string().cuid(),
   shotIndex: z.number().int().nonnegative().optional(),
+  /**
+   * ENGINE CLASS — the public/internal wall applied to video. Users pick
+   * 'draft' | 'standard' | 'flagship'; which model backs each class is
+   * internal operator config. Optional so every existing caller keeps its
+   * exact contract (absent → 'standard'). Billing is untouched: the same
+   * per-shot videoRenderUsage applies to every class.
+   */
+  engineClass: z.enum(VIDEO_ENGINE_CLASSES).optional(),
+  /**
+   * Ask for the artist's TRAINED LIKENESS in this render: a keyframe is
+   * generated from the trained model first, then image-to-video. Requires a
+   * trained likeness under an unrevoked consent — the route 409s honestly
+   * when there is none rather than quietly rendering without the face.
+   */
+  useLikeness: z.boolean().optional(),
 });
 
 // ---------- Taste / Rights / Approval --------------------------------------

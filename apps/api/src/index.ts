@@ -44,6 +44,7 @@ import beats from "./routes/beats";
 import vocals from "./routes/vocals";
 import mixes from "./routes/mixes";
 import voices from "./routes/voices";
+import likeness from "./routes/likeness";
 import images from "./routes/images";
 import videos from "./routes/videos";
 import taste from "./routes/taste";
@@ -451,6 +452,7 @@ async function bootstrap() {
       await api.register(images, { prefix: "/images" });
       await api.register(videos, { prefix: "/videos" });
       await api.register(voices, { prefix: "/voices" });
+      await api.register(likeness, { prefix: "/likeness" });
       await api.register(taste, { prefix: "/taste" });
       await api.register(rights, { prefix: "/rights" });
       await api.register(shares, { prefix: "/share" });

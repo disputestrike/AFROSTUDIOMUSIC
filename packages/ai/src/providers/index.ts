@@ -2,5 +2,7 @@ export * from './types';
 export * from './music';
 export * from './voice';
 export * from './video';
+export * from './video-replicate';
+export * from './likeness';
 export * from './image';
 export * from './text';

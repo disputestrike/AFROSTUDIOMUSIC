@@ -332,6 +332,8 @@ async function runOfflineTests(): Promise<void> {
     ["Engine adapters (no silent stub)", "test-engine-adapters.ts"],
     ["Production runtime safety", "test-runtime-safety.ts"],
     ["Video provider contracts", "test-video-providers.ts"],
+    ["Video engine tiers (class wall + payloads)", "test-video-engine-tiers.ts"],
+    ["Likeness laws (consent/photos/status)", "test-likeness-laws.ts"],
     ["Video shot billing", "test-video-storyboard.ts"],
     ["Video render evidence", "test-video-evidence.ts"],
     ["Media adapters fail closed", "test-media-adapter-safety.ts"],

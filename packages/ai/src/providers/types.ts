@@ -155,6 +155,13 @@ export interface VideoShotInput {
   lighting?: string;
   aspectRatio: "9:16" | "1:1" | "16:9";
   negativePrompt?: string;
+  /**
+   * KEYFRAME (image-to-video): a fetchable URL for the shot's first frame —
+   * e.g. a likeness keyframe generated from the artist's own trained model.
+   * Adapters whose model cannot condition on an image MUST fail closed when
+   * this is set (capabilities.imageToVideo === false), never silently drop it.
+   */
+  keyframeUrl?: string;
 }
 
 export interface VideoRenderOutput {
@@ -164,8 +171,16 @@ export interface VideoRenderOutput {
   format: "mp4";
 }
 
+/** Honest per-adapter capability flags — what the backing model actually does. */
+export interface VideoEngineCapabilities {
+  textToVideo: boolean;
+  imageToVideo: boolean;
+}
+
 export interface VideoProviderAdapter {
   readonly name: string;
+  /** Absent = legacy adapter (veo/sora/stub): text-to-video only. */
+  readonly capabilities?: VideoEngineCapabilities;
   renderShot(
     input: VideoShotInput
   ): Promise<ProviderJobResult<VideoRenderOutput>>;

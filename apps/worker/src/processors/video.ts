@@ -4,14 +4,22 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { prisma } from "@afrohit/db";
+import { openSecret, prisma } from "@afrohit/db";
 import {
+  generateLikenessKeyframe,
   videoAdapter,
+  videoAdapterForClass,
+  type VideoEngineClass,
+  type VideoProviderAdapter,
   type VideoRenderOutput,
   type VideoShotInput,
 } from "@afrohit/ai";
 import { markFailed, markRunning, markSucceeded } from "../lib/jobs";
-import { downloadToBuffer, uploadBytes } from "../lib/storage";
+import {
+  downloadToBuffer,
+  resolveAssetForProvider,
+  uploadBytes,
+} from "../lib/storage";
 import {
   estimateVideoCostUsd,
   inspectVideoBytes,
@@ -35,6 +43,15 @@ interface VideoPayload {
   shotIndex?: number;
   shots: VideoShot[];
   format: "vertical" | "square" | "landscape";
+  /** Engine class (public wall): absent on legacy queued jobs → env adapter. */
+  engineClass?: VideoEngineClass;
+  /** Own-face likeness: keyframe-first (LoRA image) then image-to-video. */
+  likeness?: {
+    trainedModelRef: string;
+    triggerWord: string;
+    consentId: string;
+    rightsBasis: "user-attested-likeness";
+  };
 }
 
 interface VideoProgress {
@@ -48,6 +65,9 @@ interface VideoProgress {
   width?: number;
   height?: number;
   costUsd?: number;
+  /** Keyframe provenance (likeness path): stored ref + provider run id. */
+  keyframeRef?: string;
+  keyframeExternalId?: string;
 }
 
 const ASPECT: Record<VideoPayload["format"], VideoShotInput["aspectRatio"]> = {
@@ -191,7 +211,25 @@ export async function processVideo(p: VideoPayload) {
   let hasCostEvidence = false;
   let costEvidenceComplete = true;
   try {
-    const adapter = videoAdapter();
+    // ENGINE SELECTION. Class-tagged payloads (draft|standard|flagship) route
+    // to the Replicate-backed tier adapters; a workspace-pasted Replicate key
+    // (Settings → Music engine) overrides env, matching the voices pattern.
+    // No Replicate token → fall back to the legacy env adapter (veo/sora)
+    // so existing installs keep their exact behavior; nothing configured →
+    // honest failure. Legacy payloads (no engineClass) skip the tiers.
+    const ws = await prisma.workspace.findUnique({
+      where: { id: p.workspaceId },
+      select: { musicProvider: true, musicApiKey: true },
+    });
+    const workspaceKey =
+      ws?.musicProvider === "replicate"
+        ? (openSecret(ws.musicApiKey) ?? undefined)
+        : undefined;
+    let adapter: VideoProviderAdapter | null = null;
+    if (p.engineClass) {
+      adapter = videoAdapterForClass(p.engineClass, workspaceKey);
+    }
+    adapter = adapter ?? videoAdapter();
     if (adapter.name === "stub" && process.env.ALLOW_STUB_AUDIO !== "1") {
       await markFailed(p.jobId, "video_failed: no video engine configured");
       return;
@@ -200,14 +238,21 @@ export async function processVideo(p: VideoPayload) {
       where: { id: p.jobId, workspaceId: p.workspaceId },
       data: { provider: adapter.name },
     });
-    if (
-      adapter.name !== "veo" &&
-      adapter.name !== "sora" &&
-      adapter.name !== "stub"
-    ) {
+    const supportedEngines = ["veo", "sora", "stub", "wan", "hailuo", "kling"];
+    if (!supportedEngines.includes(adapter.name)) {
       await markFailed(
         p.jobId,
         `video_failed: unsupported video engine ${adapter.name}`
+      );
+      return;
+    }
+    // CAPABILITY GATE — a likeness render is keyframe-first (image-to-video).
+    // An engine that cannot condition on an image must refuse the job here,
+    // not silently render a face-less video the user paid for.
+    if (p.likeness && adapter.capabilities?.imageToVideo !== true) {
+      await markFailed(
+        p.jobId,
+        `video_failed: the selected ${p.engineClass ?? "configured"} engine cannot start from a likeness keyframe — pick a class that supports it`
       );
       return;
     }
@@ -233,6 +278,8 @@ export async function processVideo(p: VideoPayload) {
       width: number;
       height: number;
       qualityState: "passed";
+      /** Likeness path: the stored keyframe this shot was rendered from. */
+      keyframeRef?: string | null;
     }> = [];
 
     const maxPollAttempts = Math.max(
@@ -304,11 +351,59 @@ export async function processVideo(p: VideoPayload) {
           width: existing.width,
           height: existing.height,
           qualityState: "passed",
+          keyframeRef: existing.keyframeRef ?? null,
         });
         continue;
       }
 
       const input = shotInput(shot, p.format);
+
+      // LIKENESS KEYFRAME (own-face path): generate the shot's first frame
+      // from the artist's TRAINED model, store it in owned storage, then run
+      // the engine image-to-video from it. Resumable — a stored keyframeRef
+      // is reused on retry, never regenerated (and never re-billed).
+      if (p.likeness) {
+        let entry =
+          existing ?? progress.find(item => item.shotIndex === shotIndex);
+        if (!entry) {
+          entry = { shotIndex, state: "submitted" };
+          progress.push(entry);
+        }
+        if (!entry.keyframeRef) {
+          const keyframe = await generateLikenessKeyframe(
+            {
+              trainedModelRef: p.likeness.trainedModelRef,
+              prompt: shot.prompt,
+              triggerWord: p.likeness.triggerWord,
+              aspectRatio: input.aspectRatio,
+            },
+            { apiKey: workspaceKey }
+          );
+          if (keyframe.status !== "succeeded" || !keyframe.imageUrl) {
+            throw new Error(
+              `likeness keyframe failed: ${keyframe.error ?? "no image returned"}`
+            );
+          }
+          const imageBytes = await downloadToBuffer(keyframe.imageUrl, {
+            maxBytes: 30 * 1024 * 1024,
+            timeoutMs: 120_000,
+          });
+          entry.keyframeRef = await uploadBytes({
+            workspaceId: p.workspaceId,
+            kind: "videos/keyframes",
+            bytes: imageBytes,
+            contentType: "image/png",
+            ext: "png",
+          });
+          entry.keyframeExternalId = keyframe.externalId;
+          await save(entry.externalId);
+        }
+        input.keyframeUrl = await resolveAssetForProvider(
+          entry.keyframeRef,
+          3600
+        );
+      }
+
       let render =
         existing?.externalId && adapter.poll
           ? await adapter.poll(existing.externalId, input)
@@ -383,6 +478,37 @@ export async function processVideo(p: VideoPayload) {
         .update(`${p.jobId}:${shotIndex}`)
         .digest("hex")
         .slice(0, 24)}`;
+      const renderMeta = {
+        shotIndex,
+        shotPrompt: shot.prompt,
+        motion: shot.motion,
+        contentHash: stored.inspection.contentHash,
+        sizeBytes: stored.inspection.sizeBytes,
+        width: stored.inspection.width,
+        height: stored.inspection.height,
+        measuredDurationS: stored.inspection.durationS,
+        codec: stored.inspection.codec,
+        container: stored.inspection.container,
+        qualityState: stored.inspection.qualityState,
+        sourceAspectRatio:
+          input.aspectRatio === "1:1" ? "16:9" : input.aspectRatio,
+        outputAspectRatio: input.aspectRatio,
+        // Class language for user surfaces; the provider column stays internal.
+        engineClass: p.engineClass ?? null,
+        // LIKENESS PROVENANCE — every likeness render says whose face, under
+        // which consent, from which keyframe. Rights basis is the law.
+        ...(p.likeness
+          ? {
+              likeness: {
+                rightsBasis: p.likeness.rightsBasis,
+                trainedModelRef: p.likeness.trainedModelRef,
+                consentId: p.likeness.consentId,
+                keyframeRef: entry.keyframeRef ?? null,
+                keyframeExternalId: entry.keyframeExternalId ?? null,
+              },
+            }
+          : {}),
+      };
       await prisma.videoRender.upsert({
         where: { id: renderId },
         create: {
@@ -392,43 +518,13 @@ export async function processVideo(p: VideoPayload) {
           url: stored.url,
           durationS: stored.inspection.durationS,
           provider: adapter.name,
-          meta: {
-            shotIndex,
-            shotPrompt: shot.prompt,
-            motion: shot.motion,
-            contentHash: stored.inspection.contentHash,
-            sizeBytes: stored.inspection.sizeBytes,
-            width: stored.inspection.width,
-            height: stored.inspection.height,
-            measuredDurationS: stored.inspection.durationS,
-            codec: stored.inspection.codec,
-            container: stored.inspection.container,
-            qualityState: stored.inspection.qualityState,
-            sourceAspectRatio:
-              input.aspectRatio === "1:1" ? "16:9" : input.aspectRatio,
-            outputAspectRatio: input.aspectRatio,
-          } as never,
+          meta: renderMeta as never,
         },
         update: {
           url: stored.url,
           durationS: stored.inspection.durationS,
           provider: adapter.name,
-          meta: {
-            shotIndex,
-            shotPrompt: shot.prompt,
-            motion: shot.motion,
-            contentHash: stored.inspection.contentHash,
-            sizeBytes: stored.inspection.sizeBytes,
-            width: stored.inspection.width,
-            height: stored.inspection.height,
-            measuredDurationS: stored.inspection.durationS,
-            codec: stored.inspection.codec,
-            container: stored.inspection.container,
-            qualityState: stored.inspection.qualityState,
-            sourceAspectRatio:
-              input.aspectRatio === "1:1" ? "16:9" : input.aspectRatio,
-            outputAspectRatio: input.aspectRatio,
-          } as never,
+          meta: renderMeta as never,
         },
       });
 
@@ -450,6 +546,7 @@ export async function processVideo(p: VideoPayload) {
         width: stored.inspection.width,
         height: stored.inspection.height,
         qualityState: stored.inspection.qualityState,
+        keyframeRef: entry.keyframeRef ?? null,
       });
     }
 
@@ -457,6 +554,16 @@ export async function processVideo(p: VideoPayload) {
       p.jobId,
       {
         renders: results,
+        // HONEST PER-STEP PROVENANCE: which class rendered, and — on the
+        // likeness path — whose consented face seeded each shot's keyframe.
+        engineClass: p.engineClass ?? null,
+        likeness: p.likeness
+          ? {
+              rightsBasis: p.likeness.rightsBasis,
+              trainedModelRef: p.likeness.trainedModelRef,
+              consentId: p.likeness.consentId,
+            }
+          : null,
         estimatedCostUsd:
           costEvidenceComplete && hasCostEvidence ? knownCostUsd : null,
         knownCostUsd: hasCostEvidence ? knownCostUsd : null,

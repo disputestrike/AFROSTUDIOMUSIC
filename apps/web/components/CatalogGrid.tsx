@@ -37,7 +37,11 @@ import { SongChat } from "./SongChat";
 import {
   storyboardShots,
   videoTreatmentOf,
+  videoRenderUsage,
+  formatCredits,
+  CREDIT_COSTS,
   type NormalizedVideoTreatment,
+  type VideoEngineClass,
 } from "@afrohit/shared";
 
 interface HitPrediction {
@@ -366,6 +370,15 @@ export default function CatalogGrid({ initial }: { initial: SongRow[] }) {
   // the same discipline the lyrics themselves now follow server-side.
   const [videoOpen, setVideoOpen] = useState<SongRow | null>(null);
   const [makingVideo, setMakingVideo] = useState(false);
+  // PER-SCENE RENDER (Wave 4): engine CLASS picker (draft/standard/flagship —
+  // class language only, per the wall), optional own-face likeness when a
+  // trained likeness exists, armed two-step confirm carrying the honest cost.
+  const [sceneEngine, setSceneEngine] = useState<VideoEngineClass>("standard");
+  const [withLikeness, setWithLikeness] = useState(false);
+  const [likenessTrained, setLikenessTrained] = useState(false);
+  const [renderingScene, setRenderingScene] = useState<number | null>(null);
+  const [armedScene, setArmedScene] = useState<number | null>(null);
+  const [sceneJobs, setSceneJobs] = useState<Record<string, string>>({});
   const [videoConcept, setVideoConcept] = useState<{
     songId: string;
     state: "loading" | "ready";
@@ -914,6 +927,114 @@ export default function CatalogGrid({ initial }: { initial: SongRow[] }) {
     }
   }
 
+  /** Does a TRAINED, consented likeness exist? Decides whether the "with my
+   *  face" toggle appears — honest absence, never a dead switch. */
+  async function loadLikenessStatus() {
+    try {
+      const s = await api.get<{ trained: { trainedModelRef: string } | null }>(
+        "/likeness"
+      );
+      setLikenessTrained(!!s.trained);
+      setWithLikeness(!!s.trained);
+    } catch {
+      setLikenessTrained(false);
+      setWithLikeness(false);
+    }
+  }
+
+  /** The honest per-scene price from the SAME law the server bills by. */
+  function sceneCost(shots: VideoShot[], shotIndex: number): string {
+    const usage = videoRenderUsage(shots, shotIndex);
+    if (!usage) return "";
+    return formatCredits(CREDIT_COSTS[usage.creditKey] * usage.billingUnits);
+  }
+
+  /** Per-shot render on the EXISTING /videos/renders route (same per-shot
+   *  billing) — armed two-step confirm, first click shows the exact cost. */
+  async function renderScene(
+    s: SongRow,
+    concept: VideoConceptRow,
+    shotIndex: number
+  ) {
+    if (renderingScene !== null) return;
+    if (armedScene !== shotIndex) {
+      setArmedScene(shotIndex);
+      setTimeout(
+        () => setArmedScene(cur => (cur === shotIndex ? null : cur)),
+        5000
+      );
+      return;
+    }
+    setArmedScene(null);
+    setRenderingScene(shotIndex);
+    try {
+      const r = await api.post<{ jobId: string }>(`/videos/renders`, {
+        projectId: s.projectId,
+        conceptId: concept.id,
+        shotIndex,
+        engineClass: sceneEngine,
+        ...(withLikeness && likenessTrained ? { useLikeness: true } : {}),
+      });
+      setSceneJobs(prev => ({ ...prev, [`${concept.id}:${shotIndex}`]: r.jobId }));
+      flash(
+        `Scene ${shotIndex + 1} render started on the ${sceneEngine} engine${
+          withLikeness && likenessTrained ? " with your likeness" : ""
+        }.`
+      );
+    } catch (e) {
+      const message = (e as Error).message;
+      flash(
+        /insufficient_credits|\b402\b/.test(message)
+          ? "Not enough credits for this scene — top up in Billing."
+          : /no_trained_likeness/.test(message)
+            ? "No trained likeness yet — train it under My Likeness first."
+            : `Couldn't start the render: ${message.slice(0, 120)}`
+      );
+    } finally {
+      setRenderingScene(null);
+    }
+  }
+
+  /** The per-shot render control — armed confirm carries the EXACT cost the
+   *  server will bill (same videoRenderUsage law both sides). */
+  const sceneRenderButton = (
+    s: SongRow,
+    concept: VideoConceptRow,
+    shotIndex: number
+  ) => {
+    const jobId = sceneJobs[`${concept.id}:${shotIndex}`];
+    const cost = sceneCost(concept.storyboard, shotIndex);
+    return (
+      <div className="mt-1.5 flex flex-wrap items-center gap-2">
+        <button
+          onClick={() => void renderScene(s, concept, shotIndex)}
+          disabled={renderingScene !== null}
+          className={`inline-flex items-center gap-1 rounded-full border px-2.5 py-1 text-[11px] disabled:opacity-40 ${
+            armedScene === shotIndex
+              ? "border-amber-400/50 bg-amber-500/15 text-amber-200"
+              : "border-white/15 text-slate-300 hover:bg-white/10"
+          }`}
+        >
+          {renderingScene === shotIndex ? (
+            <Loader2 className="h-3 w-3 animate-spin" />
+          ) : (
+            <Clapperboard className="h-3 w-3" />
+          )}
+          {armedScene === shotIndex
+            ? `Confirm — spends ${cost}`
+            : jobId
+              ? "Render again"
+              : `Render this scene (${cost})`}
+        </button>
+        {jobId && (
+          <span className="text-[10px] text-emerald-300">
+            render started · job {jobId.slice(0, 8)}…
+          </span>
+        )}
+      </div>
+    );
+  };
+
   async function openLyrics(s: SongRow) {
     setBusy(`${s.id}:lyrics`);
     try {
@@ -1335,6 +1456,7 @@ export default function CatalogGrid({ initial }: { initial: SongRow[] }) {
                   onClick={() => {
                     setVideoOpen(s);
                     void loadVideoConcept(s.id);
+                    void loadLikenessStatus();
                   }}
                 />
                 <Action
@@ -1765,8 +1887,45 @@ export default function CatalogGrid({ initial }: { initial: SongRow[] }) {
                       : null}
                   </span>
                 </div>
+                {/* SCENE-RENDER CONTROLS — engine CLASS language only (the
+                    wall) + the own-face toggle, shown only when a trained,
+                    consented likeness actually exists. */}
+                <div className="mb-3 flex flex-wrap items-center gap-3 rounded-lg border border-white/10 bg-black/20 px-3 py-2 text-xs">
+                  <label className="flex items-center gap-1.5 text-slate-400">
+                    Engine
+                    <select
+                      className="rounded border border-white/10 bg-slate-900 px-1.5 py-1 text-xs text-slate-200"
+                      value={sceneEngine}
+                      onChange={e =>
+                        setSceneEngine(e.target.value as VideoEngineClass)
+                      }
+                    >
+                      <option value="draft">Draft — cheapest, iterate fast</option>
+                      <option value="standard">Standard — the default</option>
+                      <option value="flagship">Flagship — best quality</option>
+                    </select>
+                  </label>
+                  {likenessTrained ? (
+                    <label className="flex items-center gap-1.5 text-slate-300">
+                      <input
+                        type="checkbox"
+                        checked={withLikeness}
+                        onChange={e => setWithLikeness(e.target.checked)}
+                      />
+                      Feature my face (trained likeness)
+                    </label>
+                  ) : (
+                    <span className="text-slate-600">
+                      Want your face in these scenes? Train it under{" "}
+                      <a href="/likeness" className="underline">
+                        My Likeness
+                      </a>
+                      .
+                    </span>
+                  )}
+                </div>
                 {videoConcept.concept.treatment ? (
-                  (t => (
+                  ((t, conceptRow) => (
                     <div>
                       {/* CONCEPT FIRST — the idea before the shots. */}
                       <div className="mb-3 rounded-lg border border-white/10 bg-black/20 p-3">
@@ -1876,6 +2035,7 @@ export default function CatalogGrid({ initial }: { initial: SongRow[] }) {
                                           .join(" · ")}
                                       </div>
                                     ) : null}
+                                    {sceneRenderButton(videoOpen, conceptRow, i)}
                                   </li>
                                 );
                               })}
@@ -1909,27 +2069,30 @@ export default function CatalogGrid({ initial }: { initial: SongRow[] }) {
                         ) : null}
                       </div>
                     </div>
-                  ))(videoConcept.concept.treatment)
+                  ))(videoConcept.concept.treatment, videoConcept.concept)
                 ) : (
-                  <ol className="space-y-2">
-                    {videoConcept.concept.storyboard.map(shot => (
-                      <li
-                        key={shot.index}
-                        className="rounded-lg border border-white/5 bg-black/20 px-3 py-2 text-xs leading-relaxed text-slate-400"
-                      >
-                        <span className="font-medium text-slate-300">
-                          Scene {shot.index + 1}
-                        </span>
-                        <span className="text-slate-600"> · {shot.duration_s}s</span>
-                        <div className="mt-1 text-slate-400">{shot.prompt}</div>
-                        {shot.motion || shot.lighting ? (
-                          <div className="mt-1 text-slate-600">
-                            {[shot.motion, shot.lighting].filter(Boolean).join(" · ")}
-                          </div>
-                        ) : null}
-                      </li>
-                    ))}
-                  </ol>
+                  (conceptRow => (
+                    <ol className="space-y-2">
+                      {conceptRow.storyboard.map(shot => (
+                        <li
+                          key={shot.index}
+                          className="rounded-lg border border-white/5 bg-black/20 px-3 py-2 text-xs leading-relaxed text-slate-400"
+                        >
+                          <span className="font-medium text-slate-300">
+                            Scene {shot.index + 1}
+                          </span>
+                          <span className="text-slate-600"> · {shot.duration_s}s</span>
+                          <div className="mt-1 text-slate-400">{shot.prompt}</div>
+                          {shot.motion || shot.lighting ? (
+                            <div className="mt-1 text-slate-600">
+                              {[shot.motion, shot.lighting].filter(Boolean).join(" · ")}
+                            </div>
+                          ) : null}
+                          {sceneRenderButton(videoOpen, conceptRow, shot.index)}
+                        </li>
+                      ))}
+                    </ol>
+                  ))(videoConcept.concept)
                 )}
                 {/* REWRITE (owner-requested): plans written before the
                     PERFORMER LAW (0475f1d) carry the wrong lead — and plans

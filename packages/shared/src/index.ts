@@ -40,3 +40,4 @@ export * from "./redact";
 export * from "./chat-user-messages";
 export * from "./html";
 export * from "./voice-consent";
+export * from "./likeness";

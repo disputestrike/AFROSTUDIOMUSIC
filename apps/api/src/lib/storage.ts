@@ -357,6 +357,120 @@ export async function fingerprintUploadedAudio(
   };
 }
 
+export type ImageFormat = "png" | "jpeg" | "webp";
+
+/** Magic-byte sniff for likeness photo uploads — the mirror of
+ * sniffAudioFormat: the presign schema only screens the CLAIM, this checks
+ * the actual bytes (PNG / JPEG / WebP signatures). */
+export function sniffImageFormat(bytes: Uint8Array): ImageFormat | null {
+  if (bytes.byteLength < 12) return null;
+  if (
+    bytes[0] === 0x89 &&
+    bytes[1] === 0x50 &&
+    bytes[2] === 0x4e &&
+    bytes[3] === 0x47 &&
+    bytes[4] === 0x0d &&
+    bytes[5] === 0x0a &&
+    bytes[6] === 0x1a &&
+    bytes[7] === 0x0a
+  ) {
+    return "png";
+  }
+  if (bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) return "jpeg";
+  const text = (start: number, end: number) =>
+    Buffer.from(bytes.subarray(start, end)).toString("ascii");
+  if (text(0, 4) === "RIFF" && text(8, 12) === "WEBP") return "webp";
+  return null;
+}
+
+/**
+ * Verify an uploaded likeness photo: workspace-owned key, size caps, the
+ * stored content-type claim is image/*, the BYTES are a real PNG/JPEG/WebP,
+ * and every byte is hashed (contentHash = dedupe + provenance). Fail-closed —
+ * anything that is not provably an image never becomes an ArtistLikeness row.
+ */
+export async function verifyUploadedImage(
+  workspaceId: string,
+  key: string,
+  maxBytes = 15 * 1024 * 1024
+): Promise<{
+  key: string;
+  assetRef: string;
+  sizeBytes: number;
+  format: ImageFormat;
+  contentHash: string;
+}> {
+  const ownedKey = assertOwnedKey(workspaceId, key);
+  let head;
+  try {
+    head = await client().send(
+      new HeadObjectCommand({ Bucket: bucket, Key: ownedKey })
+    );
+  } catch {
+    throw Object.assign(new Error("uploaded_image_not_found"), {
+      statusCode: 404,
+    });
+  }
+  const sizeBytes = Number(head.ContentLength ?? 0);
+  if (sizeBytes < 1_000 || sizeBytes > maxBytes) {
+    throw Object.assign(new Error("uploaded_image_size_invalid"), {
+      statusCode: 413,
+    });
+  }
+  const claim = String(head.ContentType ?? "")
+    .trim()
+    .toLowerCase()
+    .split(";")[0]!;
+  if (claim && claim !== "application/octet-stream" && !claim.startsWith("image/")) {
+    throw Object.assign(new Error("uploaded_object_is_not_an_image"), {
+      statusCode: 415,
+    });
+  }
+  const object = await client().send(
+    new GetObjectCommand({ Bucket: bucket, Key: ownedKey })
+  );
+  if (!object.Body || !(Symbol.asyncIterator in object.Body)) {
+    throw Object.assign(new Error("uploaded_image_unreadable"), {
+      statusCode: 422,
+    });
+  }
+  const hash = createHash("sha256");
+  let total = 0;
+  let prefix: Buffer | null = null;
+  for await (const chunk of object.Body as AsyncIterable<Uint8Array>) {
+    const bytes = Buffer.from(chunk);
+    total += bytes.length;
+    if (total > maxBytes) {
+      throw Object.assign(new Error("uploaded_image_size_invalid"), {
+        statusCode: 413,
+      });
+    }
+    if (!prefix) prefix = bytes.subarray(0, 16);
+    else if (prefix.length < 16) {
+      prefix = Buffer.concat([prefix, bytes]).subarray(0, 16);
+    }
+    hash.update(bytes);
+  }
+  const format = prefix ? sniffImageFormat(prefix) : null;
+  if (!format) {
+    throw Object.assign(new Error("unsupported_or_invalid_image"), {
+      statusCode: 415,
+    });
+  }
+  if (total !== sizeBytes) {
+    throw Object.assign(new Error("uploaded_image_changed_during_verification"), {
+      statusCode: 409,
+    });
+  }
+  return {
+    key: ownedKey,
+    assetRef: storageUri(bucket, ownedKey),
+    sizeBytes,
+    format,
+    contentHash: hash.digest("hex"),
+  };
+}
+
 /** Compatibility name retained while callers migrate from public URLs. */
 export function publicUrlFor(key: string): string {
   return storageUri(bucket, key);

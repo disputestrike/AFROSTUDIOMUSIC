@@ -49,6 +49,7 @@ import {
   processBeatQcBackfill,
 } from "./processors/beat-inspect";
 import { processImage } from "./processors/image";
+import { processLikenessTrain } from "./processors/likeness-train";
 import { processVideo } from "./processors/video";
 import { processMix } from "./processors/mix";
 import { processMaster } from "./processors/master";
@@ -448,8 +449,12 @@ const workers = [
       await processVoiceCleanup(job.data as never);
     else await processVoice(job.data as never);
   }),
-  makeWorker("image", async (job: { data: never }) => {
-    await processImage(job.data as never);
+  makeWorker("image", async (job: { data: never; name: string }) => {
+    // LIKENESS TRAINING rides the image lane (it is image work: an own-face
+    // LoRA). Dispatch by job name — everything else stays processImage.
+    if (job.name === "likeness-train")
+      await processLikenessTrain(job.data as never);
+    else await processImage(job.data as never);
   }),
   makeWorker("video", async (job: { data: never }) => {
     await processVideo(job.data as never);

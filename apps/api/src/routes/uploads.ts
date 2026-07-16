@@ -423,7 +423,7 @@ export async function enforceDistributedUploadRate(
   }
 }
 
-async function reserveUploadBytes(
+export async function reserveUploadBytes(
   workspaceId: string,
   input: {
     objectKey: string;
@@ -578,7 +578,7 @@ async function reserveUploadBytes(
   }
 }
 
-function uploadPolicyErrorResponse(reply: FastifyReply, error: unknown) {
+export function uploadPolicyErrorResponse(reply: FastifyReply, error: unknown) {
   if (!(error instanceof UploadPolicyError)) throw error;
   if (error.cause) {
     reply.request.log.warn(

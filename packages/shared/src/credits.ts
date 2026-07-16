@@ -30,6 +30,9 @@ export const CREDIT_COSTS = {
   voice_clone_training: 50_000, // $5.00
   voice_sing_render: 15_000, // $1.50
 
+  // Likeness (own-face Flux LoRA training; provider cost ~$2-5 per run)
+  likeness_training: 50_000, // $5.00
+
   // Mix and master
   mix_preset: 10_000, // $1.00
   master_preset: 15_000, // $1.50

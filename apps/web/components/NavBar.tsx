@@ -10,6 +10,7 @@ const LINKS = [
   { href: '/create', label: 'Create' },
   { href: '/zap', label: 'Zap' },
   { href: '/voice', label: 'My Voice' },
+  { href: '/likeness', label: 'My Likeness' },
   { href: '/listen', label: 'Listen' },
   { href: '/studio', label: 'Chat' },
   { href: '/projects', label: 'Projects' },
