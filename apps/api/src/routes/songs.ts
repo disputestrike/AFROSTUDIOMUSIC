@@ -236,6 +236,9 @@ export default async function songs(app: FastifyInstance) {
         id: s.id,
         title: s.lyric?.title || s.title,
         versionLabel: s.versionLabel,
+        // CATALOG TYPE: song | instrumental | film_sound — the filter chips'
+        // single source of truth.
+        kind: (s as { kind?: string }).kind ?? 'song',
         status: s.status,
         artist: s.project.artist.stageName,
         projectId: s.projectId,

@@ -116,6 +116,35 @@ export default async function beats(app: FastifyInstance) {
       if (input.songId) {
         await prisma.song.findFirstOrThrow({ where: { id: input.songId, projectId: project.id, workspaceId } });
       }
+      // EVERY CREATION HAS A CATALOG HOME (owner: "it's basically saved…
+      // would that be my catalog? I can't see anything"): doors 2/3 used to
+      // render into an ORPHAN BeatAsset (songId NULL, no Song row) that no
+      // catalog view could ever show — the finished beat was undownloadable
+      // by invisibility. Mint the Song up front, TYPED, exactly like the
+      // upload route always did; the workers bind the audio to it and the
+      // catalog card exists from the first second.
+      const effectiveSongId =
+        input.songId ??
+        (
+          await prisma.song.create({
+            data: {
+              workspaceId,
+              projectId: project.id,
+              title:
+                project.title +
+                (input.creationKind === 'film_sound'
+                  ? ' — film cue'
+                  : input.withVocals
+                    ? ''
+                    : ' — instrumental'),
+              status: 'SKETCH',
+              kind:
+                input.creationKind ??
+                (input.withVocals ? 'song' : 'instrumental'),
+            },
+            select: { id: true },
+          })
+        ).id;
 
       // Full song WITH AI vocals: use provided lyrics, else pull the latest.
       let lyrics = input.lyrics;
@@ -295,7 +324,7 @@ export default async function beats(app: FastifyInstance) {
             jobId,
             workspaceId,
             projectId: project.id,
-            songId: input.songId,
+            songId: effectiveSongId,
             genre,
             bpm: ownBpm,
             melodyPrompt: genreSignature(genre).melodyPrompt,
@@ -378,7 +407,7 @@ export default async function beats(app: FastifyInstance) {
           jobId,
           workspaceId,
           projectId: project.id,
-          songId: input.songId,
+          songId: effectiveSongId,
           input: {
             ...input,
             // Pin the SELECTED genre so the worker's tags/kit render THIS lane,

@@ -424,6 +424,31 @@ export const STUDIO_CHAT_TOOLS = [
   },
   {
     type: 'function' as const,
+    name: 'feature_on_landing',
+    description:
+      'Pin a finished song onto the public landing wall so visitors can play it right there (or unpin it). House curation only; refuses songs with no playable audio.',
+    parameters: {
+      type: 'object',
+      properties: {
+        songId: { type: 'string' },
+        featured: { type: 'boolean', description: 'true to pin, false to remove; omit to toggle' },
+      },
+      required: ['songId'],
+    },
+  },
+  {
+    type: 'function' as const,
+    name: 'get_download_links',
+    description:
+      "List a song's downloadable files (current audio, master, mix, beat, instrumental, acapella, stems) with short-lived download URLs.",
+    parameters: {
+      type: 'object',
+      properties: { songId: { type: 'string' } },
+      required: ['songId'],
+    },
+  },
+  {
+    type: 'function' as const,
     name: 'request_approval',
     description: 'Ask the user to approve a gate (brief|hook|lyrics|beat|voice|mix|rights|release).',
     parameters: {

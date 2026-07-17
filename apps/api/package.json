@@ -27,7 +27,8 @@
     "test:tenant-surface-isolation": "tsx scripts/test-tenant-surface-isolation.ts",
     "test:source-mix-lineage": "tsx scripts/test-source-mix-lineage.ts",
     "test:direct-upload-release": "tsx scripts/test-direct-upload-release.ts",
-    "test:chat-error-humanizer": "tsx scripts/test-chat-error-humanizer.ts"
+    "test:chat-error-humanizer": "tsx scripts/test-chat-error-humanizer.ts",
+    "test:catalog-types": "tsx scripts/test-catalog-types.ts"
   },
   "dependencies": {
     "@afrohit/ai": "workspace:*",

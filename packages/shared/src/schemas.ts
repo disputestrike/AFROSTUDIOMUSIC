@@ -240,6 +240,9 @@ export const instrumentSelectionsSchema = z
 export const generateBeatInputSchema = z.object({
   projectId: z.string().cuid(),
   songId: z.string().cuid().optional(),
+  /** CATALOG TYPE stamp for door 2/3 creations (instrumental | film_sound).
+   *  Absent → 'song' for vocal renders, 'instrumental' for beds. */
+  creationKind: z.enum(['instrumental', 'film_sound']).optional(),
   genre: genreSchema,
   // FUSION: extra genres blended into the primary (primary = backbone).
   fusionGenres: z.array(genreSchema).max(2).optional(),

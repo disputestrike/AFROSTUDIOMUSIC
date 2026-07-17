@@ -481,6 +481,10 @@ model Song {
   workspaceId      String
   projectId        String
   title            String
+  /// CATALOG TYPE (owner: "should I create my catalog based on type?"):
+  /// song | instrumental | film_sound — stamped at creation so every door's
+  /// output is findable and filterable.
+  kind             String     @default("song")
   versionLabel     String? // "demo-1", "club-mix"
   albumId          String? // album this song belongs to (style-anchored)
   status           SongStatus @default(SKETCH)

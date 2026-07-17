@@ -703,6 +703,7 @@ export default function CreatePage() {
           bpm,
           withStems: false,
           withVocals: false,
+          creationKind: 'instrumental',
           songEngine: engine === 'auto' ? undefined : engine,
           instruments: instruments.length ? instruments : undefined,
           // OUR ENGINE'S ROUTING CONTRACT (beats.ts resolveOwnEngineRouting):
@@ -780,6 +781,7 @@ export default function CreatePage() {
           durationS: filmDuration,
           withStems: false,
           withVocals: false,
+          creationKind: 'film_sound',
           mood: filmMoods[0],
           vibePrompt,
         });

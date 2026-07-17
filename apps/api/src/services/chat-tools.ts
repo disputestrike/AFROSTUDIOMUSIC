@@ -72,6 +72,8 @@ import {
 } from "../lib/idempotent-operation";
 import { BLOW_TARGET } from "../lib/will-it-blow";
 import { currentPlayableAsset } from "../lib/current-playable-asset";
+import { readFeaturedSongIds, writeFeaturedSongIds } from "../lib/landing-featured";
+import { isFirstPartyBilling } from "../middleware/credits";
 
 type Ctx = {
   app: FastifyInstance;
@@ -287,6 +289,14 @@ async function dispatchChatTool(
       );
     case "show_data_lake":
       return dataLakeReport(ctx.workspaceId);
+    case "feature_on_landing":
+      return featureOnLandingTool(
+        ctx,
+        String(a.songId ?? ""),
+        typeof a.featured === "boolean" ? a.featured : undefined
+      );
+    case "get_download_links":
+      return downloadLinksTool(ctx, String(a.songId ?? ""));
     default:
       return { error: `unknown_tool:${name}` };
   }
@@ -2425,6 +2435,77 @@ async function listBeatsTool(ctx: Ctx) {
         url: b.url,
       })
     ),
+  };
+}
+
+// FEATURE ON LANDING via chat ("everything should work through chat" —
+// owner). Same laws as POST /songs/:id/feature: house curation only,
+// quarantined/deleted refused, and a song with no playable audio can never
+// reach the public wall.
+async function featureOnLandingTool(
+  ctx: Ctx,
+  songId: string,
+  featured?: boolean
+) {
+  if (!songId) return { error: "songId required" };
+  const song = await prisma.song.findFirst({
+    where: { id: songId, workspaceId: ctx.workspaceId },
+    include: {
+      masters: { orderBy: { createdAt: "desc" }, take: 20 },
+      mixes: { orderBy: { createdAt: "desc" }, take: 20 },
+      beats: { orderBy: { createdAt: "desc" }, take: 20 },
+      lyric: { select: { title: true } },
+    },
+  });
+  if (!song) return { error: "song_not_found" };
+  if (!(await isFirstPartyBilling(ctx.workspaceId))) {
+    return { error: "forbidden", note: "Only the house curates the landing wall." };
+  }
+  const current = await readFeaturedSongIds();
+  const want = featured ?? !current.includes(song.id);
+  if (want) {
+    if (song.quarantined || song.deletedAt) {
+      return { error: "not_featureable", note: "A quarantined or deleted song cannot go on the public wall." };
+    }
+    if (!currentPlayableAsset(song)) {
+      return { error: "no_playable_audio", note: "This song has no playable audio yet — the wall never shows a card that cannot play." };
+    }
+    await writeFeaturedSongIds([song.id, ...current.filter((id) => id !== song.id)]);
+    return { featured: true, title: song.lyric?.title || song.title, note: "On the landing wall — visitors can play it right there now." };
+  }
+  await writeFeaturedSongIds(current.filter((id) => id !== song.id));
+  return { featured: false, title: song.lyric?.title || song.title };
+}
+
+// DOWNLOAD LINKS via chat — the same manifest GET /songs/:id/download
+// serves, so chat can hand the user their files without a screen hunt.
+async function downloadLinksTool(ctx: Ctx, songId: string) {
+  if (!songId) return { error: "songId required" };
+  const song = await prisma.song.findFirst({
+    where: { id: songId, workspaceId: ctx.workspaceId },
+    include: {
+      masters: { orderBy: { createdAt: "desc" }, take: 20 },
+      mixes: { orderBy: { createdAt: "desc" }, take: 20 },
+      beats: { orderBy: { createdAt: "desc" }, take: 20, include: { stems: true } },
+      lyric: { select: { title: true } },
+    },
+  });
+  if (!song) return { error: "song_not_found" };
+  const beat = song.beats[0];
+  const currentAudio = currentPlayableAsset(song);
+  const files = [
+    currentAudio && { label: `Current audio (${currentAudio.type})`, dl: `/songs/${song.id}/file?type=audio` },
+    song.masters[0] && { label: "Latest master (WAV)", dl: `/songs/${song.id}/file?type=master` },
+    song.mixes[0] && { label: "Latest mix (WAV)", dl: `/songs/${song.id}/file?type=mix` },
+    beat && { label: `Latest beat (${beat.format?.toUpperCase() ?? "MP3"})`, dl: `/songs/${song.id}/file?type=beat` },
+    song.instrumentalUrl && { label: "Instrumental — full song, voice removed", dl: `/songs/${song.id}/file?type=instrumental` },
+    song.acapellaUrl && { label: "Acapella", dl: `/songs/${song.id}/file?type=acapella` },
+    ...(beat?.stems ?? []).map((st: { role: string }) => ({ label: `Stem — ${st.role}`, dl: `/songs/${song.id}/file?type=stem&stem=${encodeURIComponent(st.role)}` })),
+  ].filter(Boolean);
+  return {
+    title: song.lyric?.title || song.title,
+    files,
+    note: files.length ? "Each dl path downloads with a readable filename." : "No downloadable audio yet — render or recreate the song first.",
   };
 }
 

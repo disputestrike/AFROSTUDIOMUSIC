@@ -134,7 +134,7 @@ export async function presignDownload(
       // browsers; the disposition header is the only reliable way.
       ...(downloadName
         ? {
-            ResponseContentDisposition: `attachment; filename="${downloadName.replace(/[^\w .,()\-\[\]&']/g, '_')}"`,
+            ResponseContentDisposition: `attachment; filename="${downloadName.replace(/[^\w .,()[\]&'-]/g, '_')}"`,
           }
         : {}),
     }),

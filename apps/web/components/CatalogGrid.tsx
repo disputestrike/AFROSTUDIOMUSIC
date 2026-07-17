@@ -91,6 +91,8 @@ export interface SongRow {
   id: string;
   title: string;
   versionLabel?: string | null;
+  /** Catalog type: song | instrumental | film_sound. */
+  kind?: string;
   status: string;
   artist: string;
   projectId: string;
@@ -411,6 +413,18 @@ export default function CatalogGrid({ initial }: { initial: SongRow[] }) {
   const api = useApi();
   const router = useRouter();
   const [songs, setSongs] = useState<SongRow[]>(initial);
+  // CATALOG BY TYPE (owner: "should I create my catalog based on type?
+  // right now everything is in my catalog"): one chip row, pure client-side
+  // filter over the typed rows the API now returns.
+  const [typeFilter, setTypeFilter] = useState<
+    "all" | "song" | "instrumental" | "film_sound" | "with_video"
+  >("all");
+  const visibleSongs =
+    typeFilter === "all"
+      ? songs
+      : typeFilter === "with_video"
+        ? songs.filter(s => s.video || (s.videoScenesReady ?? 0) > 0)
+        : songs.filter(s => (s.kind ?? "song") === typeFilter);
   const [openId, setOpenId] = useState<string | null>(null);
   const [busy, setBusy] = useState<string>(""); // `${id}:${action}`
   const [toast, setToast] = useState<string>("");
@@ -590,7 +604,7 @@ export default function CatalogGrid({ initial }: { initial: SongRow[] }) {
     playAt(ids, idx);
   };
   const startPlayAll = () => {
-    const ids = songs.filter(x => x.audioUrl).map(x => x.id);
+    const ids = visibleSongs.filter(x => x.audioUrl).map(x => x.id);
     if (!ids.length) {
       flash("Nothing playable in this view yet.");
       return;
@@ -738,6 +752,26 @@ export default function CatalogGrid({ initial }: { initial: SongRow[] }) {
       );
     } catch (e) {
       flash((e as Error).message || "Could not update the landing wall");
+    } finally {
+      setBusy("");
+    }
+  }
+
+  // RECREATE (owner law): a song that never rendered (or lost its audio) is
+  // re-run from what's already saved — the lyric and settings — never by
+  // retyping. Rides the same re-sing route the lyric editor uses.
+  async function recreate(s: SongRow) {
+    setBusy(`${s.id}:recreate`);
+    try {
+      await api.post(`/songs/${s.id}/regenerate-beat`, {});
+      flash("Recreating from your saved words — refresh in ~1–2 min.");
+    } catch (e) {
+      const message = (e as Error).message || "";
+      flash(
+        /no_lyrics/.test(message)
+          ? "This one has no saved lyrics to recreate from — open Create to make it fresh."
+          : message.slice(0, 140) || "Could not recreate"
+      );
     } finally {
       setBusy("");
     }
@@ -1493,7 +1527,7 @@ export default function CatalogGrid({ initial }: { initial: SongRow[] }) {
         </div>
       )}
 
-      <div className="mb-4 flex items-center justify-between gap-2">
+      <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
         {/* PLAY ALL (owner-requested): the visible songs, in order, one after
             the other — the AudioSolo listener keeps it one-at-a-time. */}
         <button
@@ -1502,6 +1536,30 @@ export default function CatalogGrid({ initial }: { initial: SongRow[] }) {
         >
           {playAll ? "⏹ Stop play all" : "▶ Play all"}
         </button>
+        {/* TYPE CHIPS — the catalog splits by what you made. */}
+        <div className="flex flex-wrap items-center gap-1.5">
+          {(
+            [
+              ["all", "All"],
+              ["song", "🎤 Songs"],
+              ["instrumental", "🎹 Instrumentals"],
+              ["film_sound", "🎬 Film sounds"],
+              ["with_video", "📽 With videos"],
+            ] as const
+          ).map(([key, label]) => (
+            <button
+              key={key}
+              onClick={() => setTypeFilter(key)}
+              className={`rounded-full border px-3 py-1.5 text-xs transition-colors ${
+                typeFilter === key
+                  ? "border-afrobrand-500/50 bg-afrobrand-500/15 text-afrobrand-300"
+                  : "border-white/15 text-slate-400 hover:bg-white/10"
+              }`}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
         <button
           onClick={() => void toggleShowAll()}
           className="rounded-full border border-white/15 px-3 py-1.5 text-xs text-slate-300 hover:bg-white/10"
@@ -1537,7 +1595,7 @@ export default function CatalogGrid({ initial }: { initial: SongRow[] }) {
       )}
 
       <div className="grid gap-5 sm:grid-cols-2 lg:grid-cols-3">
-        {songs.map(s => (
+        {visibleSongs.map(s => (
           <div
             key={s.id}
             className="group relative overflow-hidden rounded-2xl border border-slate-800 bg-slate-900/40"
@@ -1686,8 +1744,25 @@ export default function CatalogGrid({ initial }: { initial: SongRow[] }) {
                   </div>
                 </>
               ) : (
-                <div className="mt-3 text-xs text-slate-600">
-                  No audio rendered yet.
+                <div className="mt-3 flex flex-wrap items-center gap-2">
+                  <span className="text-xs text-slate-600">
+                    No audio rendered yet.
+                  </span>
+                  {/* RECREATE (owner: "why can't I just hit recreate instead
+                      of typing stuff again?") — one tap re-runs the render
+                      from the words and settings already saved here. */}
+                  <button
+                    onClick={() => void recreate(s)}
+                    disabled={isBusy(s.id, "recreate")}
+                    className="inline-flex items-center gap-1 rounded-full border border-afrobrand-500/40 bg-afrobrand-500/10 px-2.5 py-1 text-xs text-afrobrand-300 hover:bg-afrobrand-500/20 disabled:opacity-50"
+                  >
+                    {isBusy(s.id, "recreate") ? (
+                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                    ) : (
+                      "↻"
+                    )}{" "}
+                    Recreate
+                  </button>
                 </div>
               )}
 
