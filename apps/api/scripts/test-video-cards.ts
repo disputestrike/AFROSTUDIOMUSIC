@@ -113,7 +113,7 @@ console.log("video cards: presence law, presigned cuts, card player, no-hidden-r
     2, // both render payload sites (the import carries no paren)
     "both render payloads carry continuity + fronting-lead decoration"
   );
-  assert.match(videosB, /meta: \{ performers \} as never/, "the roster rides the concept for the sheet generator");
+  assert.match(videosB, /meta: \{ performers[,}]/, "the roster rides the concept for the sheet generator (Package C also folds in criticReport)");
   const sheetsAt = workerB.indexOf("async function ensureCharacterSheets");
   const claimAt = workerB.indexOf("characterSheetsClaim", sheetsAt);
   const generateAt = workerB.indexOf("adapter.generate(", sheetsAt);
