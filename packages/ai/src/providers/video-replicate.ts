@@ -99,18 +99,18 @@ export function videoEngineSpec(
       return {
         name: "hailuo",
         engineClass: "standard",
-        // OWNER-APPROVED SWITCH (2026-07-17, "switch it to the hailuo 2.3
-        // fast"): hailuo-2.3-fast replaces video-01 as the standard default —
-        // two generations newer, tuned for human motion/dance, $0.19 vs
-        // $0.50 per 6s clip (verified live pricing). Env pins still win.
+        // OWNER-APPROVED SWITCH (2026-07-17), corrected after the live 422:
+        // hailuo-2.3-FAST is IMAGE-to-video ONLY ("a lower-latency
+        // image-to-video version" — model page), so it can never carry the
+        // t2v scene flow. Standard tier: t2v = hailuo-2.3 (supports both
+        // modes, dance/human-motion tuned, $0.28/6s vs video-01's $0.50);
+        // i2v/keyframe scenes = hailuo-2.3-fast ($0.19). Env pins still win.
         t2vModel:
-          env.REPLICATE_VIDEO_STANDARD_MODEL?.trim() ||
-          "minimax/hailuo-2.3-fast",
+          env.REPLICATE_VIDEO_STANDARD_MODEL?.trim() || "minimax/hailuo-2.3",
         i2vModel:
           env.REPLICATE_VIDEO_STANDARD_I2V_MODEL === ""
             ? null
             : env.REPLICATE_VIDEO_STANDARD_I2V_MODEL?.trim() ||
-              env.REPLICATE_VIDEO_STANDARD_MODEL?.trim() ||
               "minimax/hailuo-2.3-fast",
         t2vVersionEnv: "REPLICATE_VIDEO_STANDARD_VERSION",
         i2vVersionEnv: "REPLICATE_VIDEO_STANDARD_I2V_VERSION",
@@ -196,9 +196,12 @@ export function videoModelInput(
         ...(modernMiniMax
           ? {
               duration: durationS >= 10 ? 10 : 6,
-              resolution:
+              // Lowercase by API law — the live 422 said: resolution must be
+              // one of "768p", "1080p". (1080p caps at 6s.)
+              resolution: (
                 process.env.REPLICATE_VIDEO_STANDARD_RESOLUTION?.trim() ||
-                "768P",
+                "768p"
+              ).toLowerCase(),
             }
           : {}),
       };
@@ -334,22 +337,39 @@ export class ReplicateVideoAdapter implements VideoProviderAdapter {
       const resolved = await resolveModelVersion(request.slug, pin, token);
       if ("error" in resolved) return { status: "failed", error: resolved.error };
 
-      const res = await fetch(`${REPLICATE_API}/predictions`, {
-        method: "POST",
-        signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
-        headers: {
-          authorization: `Bearer ${token}`,
-          "content-type": "application/json",
-        },
-        body: JSON.stringify({ version: resolved.version, input: request.body }),
-      });
-      if (!res.ok) {
+      // 429 PATIENCE (live incident 2026-07-17): a low provider balance
+      // throttles prediction creation to a trickle (burst of 5) — a
+      // whole-batch submit used to fail every scene instantly. A throttle is
+      // a WAIT, not a failure: back off and retry a few times so the batch
+      // spreads itself under the limit. Every other non-OK stays an honest
+      // immediate failure.
+      const backoffMs = Math.max(
+        1,
+        Number(process.env.REPLICATE_429_RETRY_MS ?? 20_000)
+      );
+      let res: Response | undefined;
+      for (let attempt = 1; attempt <= 4; attempt++) {
+        res = await fetch(`${REPLICATE_API}/predictions`, {
+          method: "POST",
+          signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+          headers: {
+            authorization: `Bearer ${token}`,
+            "content-type": "application/json",
+          },
+          body: JSON.stringify({ version: resolved.version, input: request.body }),
+        });
+        if (res.status !== 429 || attempt === 4) break;
+        await new Promise(resolve =>
+          setTimeout(resolve, backoffMs * attempt + Math.random() * backoffMs)
+        );
+      }
+      if (!res!.ok) {
         return {
           status: "failed",
-          error: `video engine ${res.status}: ${(await res.text()).slice(0, 200)}`,
+          error: `video engine ${res!.status}: ${(await res!.text()).slice(0, 200)}`,
         };
       }
-      return this.toResult((await res.json()) as ReplicatePrediction, input);
+      return this.toResult((await res!.json()) as ReplicatePrediction, input);
     } catch (error) {
       return { status: "failed", error: (error as Error).message };
     }

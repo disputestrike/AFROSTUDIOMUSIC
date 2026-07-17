@@ -60,9 +60,11 @@ async function main() {
     await check("class mapping: draft=wan, standard=hailuo, flagship=kling", () => {
       assert.equal(videoEngineSpec("draft", {}).t2vModel, "wavespeedai/wan-2.1-t2v-480p");
       assert.equal(videoEngineSpec("draft", {}).i2vModel, "wavespeedai/wan-2.1-i2v-480p");
-      // OWNER-APPROVED SWITCH (2026-07-17): hailuo-2.3-fast is the standard
-      // default — better human-motion quality at $0.19/clip vs video-01's $0.50.
-      assert.equal(videoEngineSpec("standard", {}).t2vModel, "minimax/hailuo-2.3-fast");
+      // OWNER-APPROVED SWITCH (2026-07-17, corrected after the live 422):
+      // t2v = hailuo-2.3 (supports both modes); i2v = hailuo-2.3-fast
+      // (image-to-video ONLY — it can never be the t2v default).
+      assert.equal(videoEngineSpec("standard", {}).t2vModel, "minimax/hailuo-2.3");
+      assert.equal(videoEngineSpec("standard", {}).i2vModel, "minimax/hailuo-2.3-fast");
       assert.equal(videoEngineSpec("flagship", {}).t2vModel, "kwaivgi/kling-v2.1");
     });
 
@@ -117,12 +119,13 @@ async function main() {
     await check("standard t2v payload is the exact modern-MiniMax body", () => {
       const request = videoModelInput(videoEngineSpec("standard", {}), shot);
       assert.ok(!("error" in request));
-      assert.equal(request.slug, "minimax/hailuo-2.3-fast");
+      assert.equal(request.slug, "minimax/hailuo-2.3");
       assert.deepEqual(request.body, {
         prompt: composed,
         prompt_optimizer: true,
         duration: 6,
-        resolution: "768P",
+        // Lowercase by API law — the live 422 named the exact enum.
+        resolution: "768p",
       });
     });
 
@@ -132,11 +135,12 @@ async function main() {
         keyframeUrl: "https://storage.example/keyframe.png",
       });
       assert.ok(!("error" in request));
+      assert.equal(request.slug, "minimax/hailuo-2.3-fast");
       assert.deepEqual(request.body, {
         prompt: composed,
         prompt_optimizer: true,
         duration: 6,
-        resolution: "768P",
+        resolution: "768p",
         first_frame_image: "https://storage.example/keyframe.png",
       });
     });
@@ -234,7 +238,7 @@ async function main() {
           url,
           body: init?.body ? JSON.parse(String(init.body)) : undefined,
         });
-        if (url === "https://api.replicate.com/v1/models/minimax/hailuo-2.3-fast") {
+        if (url === "https://api.replicate.com/v1/models/minimax/hailuo-2.3") {
           return json({ latest_version: { id: "std-version-hash" } });
         }
         if (url === "https://api.replicate.com/v1/predictions" && init?.method === "POST") {
@@ -260,7 +264,7 @@ async function main() {
       // The law: model lookup FIRST, then the versioned predictions POST.
       assert.equal(
         calls[0]!.url,
-        "https://api.replicate.com/v1/models/minimax/hailuo-2.3-fast"
+        "https://api.replicate.com/v1/models/minimax/hailuo-2.3"
       );
       assert.equal(calls[1]!.url, "https://api.replicate.com/v1/predictions");
       assert.deepEqual(calls[1]!.body, {
@@ -269,7 +273,7 @@ async function main() {
           prompt: composed,
           prompt_optimizer: true,
           duration: 6,
-          resolution: "768P",
+          resolution: "768p",
         },
       });
 
@@ -277,6 +281,33 @@ async function main() {
       assert.equal(done.status, "succeeded");
       assert.equal(done.output?.videoUrl, "https://replicate.delivery/video.mp4");
       assert.equal(done.output?.durationS, 6); // snapped to the engine's real length
+    });
+
+    // ---- 429 PATIENCE: a throttle is a WAIT, not a failure ----
+    await check("a 429 on prediction-create retries with backoff and succeeds", async () => {
+      process.env.REPLICATE_API_TOKEN = "test-token";
+      process.env.REPLICATE_429_RETRY_MS = "1";
+      let posts = 0;
+      globalThis.fetch = (async (request: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(request);
+        if (url === "https://api.replicate.com/v1/models/minimax/hailuo-2.3") {
+          return json({ latest_version: { id: "std-version-hash" } });
+        }
+        if (url === "https://api.replicate.com/v1/predictions" && init?.method === "POST") {
+          posts += 1;
+          if (posts < 3) return json({ detail: "Request was throttled." }, 429);
+          return json({ id: "pred_429_ok", status: "starting" });
+        }
+        return json({ error: "unexpected URL " + url }, 500);
+      }) as typeof fetch;
+      const adapter = videoAdapterForClass("standard", undefined, {
+        REPLICATE_API_TOKEN: "test-token",
+      })!;
+      const started = await adapter.renderShot(shot);
+      assert.equal(posts, 3, "two throttles absorbed, third attempt landed");
+      assert.equal(started.status, "running");
+      assert.equal(started.externalId, "pred_429_ok");
+      delete process.env.REPLICATE_429_RETRY_MS;
     });
 
     await check("provider failure stays a failure with the reason", async () => {
