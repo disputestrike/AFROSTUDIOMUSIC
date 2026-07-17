@@ -374,6 +374,40 @@ async function main() {
       );
       assert.ok(Math.abs(capped.durationS - 6) <= 0.2, `min(video,audio) law: expected 6s, measured ${capped.durationS}`);
       assert.ok(Math.abs(capped.coveredS - 8) <= 0.2, "coveredS still reports the full timeline");
+      assert.equal(capped.loopedCycles, 1, "min-law cut never loops");
+    }
+
+    // ---- FULL-SONG COVERAGE LAW (2026-07-17): the record leads ------------
+    // 8s of rendered scenes under a 30s song + coverAudio → the cut runs the
+    // WHOLE song by cycling the scenes; loopedCycles says so honestly.
+    {
+      const song = join(dir, "song30.wav");
+      await runFfmpeg(["-f", "lavfi", "-i", "sine=frequency=330:duration=30", "-ar", "44100", "-ac", "2", song]);
+      const covered = await assembleMusicVideoTimeline({
+        workDir: await mkdtemp(join(dir, "cover-")),
+        kind: "full",
+        clips: [
+          { path: clips.a1!, slotS: 4, sequenceIndex: 0, shotIndex: 0 },
+          { path: clips.b0!, slotS: 4, sequenceIndex: 1, shotIndex: 1 },
+        ],
+        audioPath: song,
+        audioStartS: 0,
+        maxDurationS: null,
+        coverAudio: true,
+      });
+      measurements.push(
+        `full-song coverage: 8s scenes over 30s song → ${covered.durationS}s cut, ${covered.loopedCycles} cycles (coveredS ${covered.coveredS}s unique)`
+      );
+      assert.ok(
+        Math.abs(covered.durationS - 30) <= 0.3,
+        `the cut must run the whole record: expected 30s, measured ${covered.durationS}`
+      );
+      assert.ok(covered.loopedCycles >= 4, `8s scenes need >=4 cycles for 30s, got ${covered.loopedCycles}`);
+      assert.ok(Math.abs(covered.coveredS - 8) <= 0.3, "coveredS still reports UNIQUE visual length");
+      const coveredProbe = await probeJson(covered.path);
+      assert.equal(coveredProbe.acodec, "aac", "the song must be muxed through the whole cut");
+      const loopTailDb = await audioRmsDb(covered.path, 27, 1);
+      assert.ok(loopTailDb > -40, `the song must still be audible near the end (measured ${loopTailDb} dB at 27s)`);
     }
 
     console.log("\n==== WAVE 9 PROOF — every assertion passed ====");

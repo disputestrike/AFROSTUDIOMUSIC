@@ -1967,6 +1967,9 @@ export interface AssemblyTimelineResult {
   height: number;
   fps: number;
   crossfadeCount: number;
+  /** FULL-SONG COVERAGE provenance: how many times the rendered timeline
+   *  plays in the final cut (1 = no looping). */
+  loopedCycles: number;
 }
 
 /**
@@ -1996,6 +1999,14 @@ export async function assembleMusicVideoTimeline(opts: {
   audioPath: string;
   audioStartS: number;
   maxDurationS?: number | null;
+  /** FULL-SONG COVERAGE LAW (2026-07-17, owner: "the song and the video go
+   *  together — it covers the full length so we can put out on socials").
+   *  When set, the cut runs the WHOLE record: if the rendered timeline is
+   *  shorter than the song, the scenes CYCLE to fill it (free local CPU,
+   *  standard music-video practice). Honest provenance: loopedCycles rides
+   *  the result and the assembly meta; coveredS still reports the length of
+   *  UNIQUE visuals. */
+  coverAudio?: boolean;
   onStage?: (stage: 'normalizing' | 'concatenating' | 'muxing') => void | Promise<void>;
 }): Promise<AssemblyTimelineResult> {
   if (!opts.clips.length) throw new Error('assembly has no clips');
@@ -2089,10 +2100,24 @@ export async function assembleMusicVideoTimeline(opts: {
     typeof opts.maxDurationS === 'number' && Number.isFinite(opts.maxDurationS) && opts.maxDurationS > 0
       ? opts.maxDurationS
       : Number.POSITIVE_INFINITY;
-  const durationS = Math.min(coveredS, audioAvailableS, capS);
+
+  // FULL-SONG COVERAGE: cycle the timeline until it reaches the song's end.
+  // The record leads; the visuals follow. Without coverAudio the historic
+  // min-law stands (the cut is as long as its shortest truth).
+  let muxSource = timeline;
+  let loopedCycles = 1;
+  const songTargetS = Math.min(audioAvailableS, capS);
+  if (opts.coverAudio && songTargetS > coveredS + 0.5) {
+    loopedCycles = Math.ceil(songTargetS / coveredS);
+    const looped = join(opts.workDir, 'looped-timeline.mp4');
+    await concatVideoClips(Array.from({ length: loopedCycles }, () => timeline), looped);
+    muxSource = looped;
+  }
+  const durationS = Math.min(coveredS * loopedCycles, audioAvailableS, capS);
+
   const output = join(opts.workDir, `assembled-${opts.kind}.mp4`);
   await muxTimelineAudio({
-    video: timeline,
+    video: muxSource,
     audio: opts.audioPath,
     output,
     audioStartS: Math.max(0, opts.audioStartS),
@@ -2108,5 +2133,6 @@ export async function assembleMusicVideoTimeline(opts: {
     height: target.height,
     fps: ASSEMBLY_FPS,
     crossfadeCount,
+    loopedCycles,
   };
 }

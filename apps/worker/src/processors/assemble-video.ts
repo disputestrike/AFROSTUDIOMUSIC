@@ -139,6 +139,10 @@ export async function processAssembleVideo(p: AssembleVideoPayload) {
       audioPath,
       audioStartS: p.audio.startS,
       maxDurationS: p.maxDurationS,
+      // FULL-SONG COVERAGE LAW: the full cut runs the WHOLE record — "the
+      // song and the video go together" (owner). Scenes cycle to fill the
+      // song; the teaser keeps its exact social cut length.
+      coverAudio: p.kind === "full",
       onStage: name => stage(name),
     });
 
@@ -173,6 +177,9 @@ export async function processAssembleVideo(p: AssembleVideoPayload) {
       renderIdsUsed: p.clips.map(clip => clip.renderId),
       sequenceCount: new Set(p.clips.map(clip => clip.sequenceIndex)).size,
       crossfades: result.crossfadeCount,
+      // HONEST LOOP PROVENANCE — 1 means every frame is unique; >1 means the
+      // rendered scenes cycle to carry the whole record.
+      loopedCycles: result.loopedCycles,
       width: inspection.width,
       height: inspection.height,
       fps: ASSEMBLY_FPS,
