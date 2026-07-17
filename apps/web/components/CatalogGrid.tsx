@@ -1240,6 +1240,68 @@ export default function CatalogGrid({ initial }: { initial: SongRow[] }) {
     }
   }
 
+  // ONE PRESS → WHOLE VIDEO (owner, 2026-07-17: "once I say make a video, just
+  // go ahead and make it — I shouldn't press this and that and that"). Writes
+  // the treatment (respecting the vision box), then renders every scene, which
+  // auto-assembles the release cut. One action; the disclosure/cost is shown
+  // once on the arming press.
+  const [wholeVideoBusy, setWholeVideoBusy] = useState(false);
+  async function makeWholeVideo(s: SongRow) {
+    if (wholeVideoBusy || renderAllBusy) return;
+    setWholeVideoBusy(true);
+    try {
+      // 1) Ensure a treatment exists (write one if missing / vision provided).
+      let concept = await api
+        .get<{ concept: VideoConceptRow | null }>(`/songs/${s.id}/video-concept`)
+        .then(r => r.concept)
+        .catch(() => null);
+      if (!concept || visionText.trim()) {
+        await api.post(`/videos/storyboards`, {
+          projectId: s.projectId,
+          songId: s.id,
+          ...(visionText.trim() ? { vision: visionText.trim(), visionMode } : {}),
+        });
+        concept = await api
+          .get<{ concept: VideoConceptRow | null }>(`/songs/${s.id}/video-concept`)
+          .then(r => r.concept)
+          .catch(() => null);
+      }
+      if (!concept) {
+        flash("Couldn't write the video plan — try again.");
+        return;
+      }
+      await loadVideoConcept(s.id);
+      // 2) Render every scene — the worker auto-assembles the full cut when the
+      //    last scene lands (one upfront charge, unrendered scenes only).
+      const r = await api.post<{ queuedShotIndexes: number[] }>(
+        `/videos/render-all`,
+        {
+          conceptId: concept.id,
+          engineClass: sceneEngine,
+          ...(withLikeness && likenessTrained ? { useLikeness: true } : {}),
+        }
+      );
+      setRenderAllWatch({ conceptId: concept.id, since: Date.now() });
+      await loadAssembly(concept.id);
+      flash(
+        `On it — ${r.queuedShotIndexes.length} scene${
+          r.queuedShotIndexes.length === 1 ? "" : "s"
+        } rendering; the full video assembles itself when they finish.`
+      );
+    } catch (e) {
+      const message = (e as Error).message;
+      flash(
+        /nothing_to_render/.test(message)
+          ? "Every scene is already rendered — assemble below (free)."
+          : /insufficient_credits|\b402\b/.test(message)
+            ? "Not enough credits for the full video — top up in Billing."
+            : `Couldn't make the video: ${message.slice(0, 120)}`
+      );
+    } finally {
+      setWholeVideoBusy(false);
+    }
+  }
+
   // While a one-click batch renders, keep the coverage chips and the finished
   // artifact fresh (the SAME GET assembly endpoint the panel already reads).
   useEffect(() => {
@@ -2919,19 +2981,38 @@ export default function CatalogGrid({ initial }: { initial: SongRow[] }) {
                     </div>
                   ) : null}
                 </div>
-                <button
-                  disabled={makingVideo}
-                  onClick={() => void makeVideoPlan(videoOpen)}
-                  className="rounded-full bg-brand-gradient px-4 py-2 text-sm font-medium text-ink shadow-glow disabled:opacity-40"
-                >
-                  {makingVideo
-                    ? "Writing the treatment…"
-                    : visionText.trim()
-                      ? visionMode === "strict"
-                        ? "🎬 Build the treatment from MY script"
-                        : "🎬 Write the treatment — enhance my script"
-                      : "🎬 Write the full-song treatment"}
-                </button>
+                {/* ONE PRESS → WHOLE VIDEO (owner: "just make it — one time").
+                    Writes the treatment AND renders AND assembles from a single
+                    click. The disclosure is right here. */}
+                <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+                  <button
+                    disabled={wholeVideoBusy || makingVideo || renderAllBusy}
+                    onClick={() => void makeWholeVideo(videoOpen)}
+                    className="rounded-full bg-brand-gradient px-5 py-2.5 text-sm font-semibold text-ink shadow-glow disabled:opacity-40"
+                  >
+                    {wholeVideoBusy
+                      ? "Making your video…"
+                      : houseBilling
+                        ? "🎬 Make the whole video — one click (free · house)"
+                        : "🎬 Make the whole video — one click"}
+                  </button>
+                  <button
+                    disabled={makingVideo || wholeVideoBusy}
+                    onClick={() => void makeVideoPlan(videoOpen)}
+                    className="rounded-full border border-white/15 px-4 py-2 text-xs text-slate-300 hover:bg-white/10 disabled:opacity-40"
+                  >
+                    {makingVideo
+                      ? "Writing the treatment…"
+                      : "Just write the plan first (review before rendering)"}
+                  </button>
+                </div>
+                {!houseBilling ? (
+                  <p className="mt-2 text-[11px] text-slate-500">
+                    One click writes the treatment, renders every scene, and
+                    assembles the full video. Scenes are billed once at your
+                    plan's per-scene rate; you can watch the cost as it renders.
+                  </p>
+                ) : null}
               </div>
             )}
           </div>
