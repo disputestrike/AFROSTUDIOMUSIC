@@ -152,6 +152,57 @@ def render(role, bpm, seed=7, genre='afrobeats', key='A minor', four_on_floor=Fa
     scale = scale_freqs(root_semi, is_minor)
     root_bass = midi_freq(24 + root_semi)  # octave-1 root for bass
 
+    # ROLE FAMILY FALLBACK (2026-07-17, live own-engine incident: "unknown
+    # role: shekere" hard-failed a whole render). The synth has 6 base voices;
+    # the taxonomy has dozens of Afro role names. Map any role to its nearest
+    # synthesizable base by FAMILY so the forge always produces something in
+    # the right character — never a hard fail. The material keeps its real
+    # role name (the caller labels it); only the SYNTH VOICE degrades.
+    ROLE_FAMILY = {
+        # African / hand percussion + all shakers → the shaker/percussion voice
+        'shekere': 'percussion', 'shaker': 'percussion', 'shaker_offbeat': 'percussion',
+        'cabasa': 'percussion', 'maraca': 'percussion', 'guiro': 'percussion',
+        'agogo': 'percussion', 'ogene': 'percussion', 'ekwe': 'percussion',
+        'cowbell': 'percussion', 'triangle': 'percussion', 'clap_perc': 'percussion',
+        'omele': 'percussion', 'woodblock': 'percussion', 'claves': 'percussion',
+        # Drums / membranes / toms → the drum-kit voice
+        'djembe': 'drums', 'conga': 'drums', 'bongo': 'drums', 'gangan': 'drums',
+        'talking_drum': 'drums', 'gbedu': 'drums', 'igba': 'drums', 'kpanlogo': 'drums',
+        'fontomfrom': 'drums', 'sabar': 'drums', 'udu': 'drums', 'tom': 'drums',
+        'afro_tom_roll': 'fill', 'snare_rush': 'fill', 'military_snare': 'fill',
+        'percussion_break': 'fill', 'triplet_hat_roll': 'fill', '808_roll': 'fill',
+        'gqom_drums': 'drums', 'kick': 'drums', 'snare': 'drums', 'hats': 'drums',
+        'clap': 'drums', '808': 'bass', 'sub': 'bass', 'sub_bass': 'bass',
+        'log_drum_lead': 'log_drum',
+        # Harmony / pads / keys / strings → the chord (EP) voice
+        'synth_pad': 'chords', 'pad': 'chords', 'strings_line': 'chords',
+        'strings': 'chords', 'keys': 'chords', 'piano': 'chords', 'organ': 'chords',
+        'rhodes': 'chords', 'ep': 'chords', 'harmony': 'chords', 'guitar_chords': 'chords',
+        'brass': 'chords', 'brass_stab': 'chords', 'horns': 'chords',
+        # Melody / leads / plucks → the chord voice (closest tonal base)
+        'flute': 'chords', 'melody': 'chords', 'lead': 'chords', 'riff': 'chords',
+        'guitar_line': 'chords', 'pluck': 'chords', 'kalimba': 'chords',
+        'agidigbo': 'chords', 'mbira': 'chords', 'balafon': 'chords',
+    }
+    SYNTHESIZABLE = {'drums', 'log_drum', 'percussion', 'chords', 'fill', 'bass'}
+    if role not in SYNTHESIZABLE:
+        mapped = ROLE_FAMILY.get(role)
+        if mapped is None:
+            # Unknown role: guess the family from the name, else a neutral
+            # percussion bed (never a crash).
+            low = role.lower()
+            if any(w in low for w in ('bass', '808', 'sub')):
+                mapped = 'bass'
+            elif any(w in low for w in ('pad', 'string', 'key', 'chord', 'piano', 'organ', 'harmon', 'melod', 'lead', 'flute', 'guitar', 'brass', 'horn', 'pluck')):
+                mapped = 'chords'
+            elif any(w in low for w in ('drum', 'kick', 'snare', 'clap', 'hat', 'tom', 'conga', 'djembe')):
+                mapped = 'drums'
+            elif any(w in low for w in ('fill', 'roll', 'rush', 'break')):
+                mapped = 'fill'
+            else:
+                mapped = 'percussion'
+        role = mapped
+
     if role == 'drums':
         # kick + snare/clap + hats, patterned by feel.
         if four_on_floor:                              # house / edm / afro_house / gqom

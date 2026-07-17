@@ -35,7 +35,6 @@ import {
   type MeasuredAnalysis,
   type MelodyScore,
   withCoarseMaterialRoles,
-  isSynthesizable,
   hasExactMaterialRoleEvidence,
   missingExactRequestedMaterialRoles,
   REQUESTED_MATERIAL_ROLES_VERSION,
@@ -58,7 +57,9 @@ import { measureAudio, dspAvailable } from "../lib/dsp";
 import { markRunning, markSucceeded, markFailed } from "../lib/jobs";
 import { assessLaneCompliance } from "../lib/lane-assess";
 import { processSynthMaterial } from "./synth-material";
-import { processAssembleBeat } from "./material";
+import { processAssembleBeat, processForgeMaterial } from "./material";
+import { forgePromptFor } from "../lib/forge-prompts";
+import { replicateToken } from "@afrohit/ai";
 
 export interface OwnEnginePayload {
   jobId: string;
@@ -456,12 +457,80 @@ export async function processOwnEngine(p: OwnEnginePayload): Promise<void> {
       requestedRoles
     );
     const haveRoles = new Set(picks.map(x => x.role));
-    // Genre-correct primitives (afrobeats gets drums, NOT amapiano's log_drum).
+    // MATERIALS FROM THE RICH FORGE FIRST, synth only as the floor (owner,
+    // 2026-07-17: "use all African instruments — not a stand-in"). Two tiers,
+    // same as the nightly kit-forge:
+    //   Tier 1 (REAL): every missing REQUESTED role that has a real forge
+    //     prompt (the 105-role African vocabulary) is rendered on the
+    //     connected engine — a real shekere/djembe/talking-drum, not math.
+    //   Tier 2 (FLOOR): base primitives + any role the real forge can't do
+    //     are synth-forged (family-mapped so they never hard-fail).
+    // On-demand real forging is bounded so one song can't spend the night;
+    // the nightly kit-forge grows each lane so this rarely fires twice.
+    const engineConnected =
+      Boolean(replicateToken()) ||
+      (await (async () => {
+        const ws = await prisma.workspace.findUnique({
+          where: { id: p.workspaceId },
+          select: { musicProvider: true, musicApiKey: true },
+        });
+        return (
+          ws?.musicProvider === "replicate" && Boolean(openSecret(ws.musicApiKey))
+        );
+      })());
+    const forgeCap = Math.max(
+      0,
+      Number(process.env.OWN_ENGINE_ONDEMAND_FORGE ?? 6) || 6
+    );
+    const realForged: string[] = [];
+    if (engineConnected && forgeCap > 0) {
+      const richMissing = requestedRoles
+        .filter(r => !haveRoles.has(r))
+        .filter(r => Boolean(forgePromptFor(r, p.genre, bpm, homeKey)))
+        .slice(0, forgeCap);
+      for (const role of richMissing) {
+        try {
+          const forgeJob = await prisma.providerJob.create({
+            data: {
+              workspaceId: p.workspaceId,
+              kind: "material",
+              provider: "replicate",
+              status: "QUEUED",
+              inputJson: {
+                genre: p.genre,
+                role,
+                bpm,
+                keySignature: homeKey,
+                auto: "own-engine-ondemand",
+              } as never,
+            },
+            select: { id: true },
+          });
+          await processForgeMaterial({
+            jobId: forgeJob.id,
+            workspaceId: p.workspaceId,
+            genre: p.genre,
+            role,
+            bpm,
+            keySignature: homeKey,
+          });
+          realForged.push(role);
+          haveRoles.add(role);
+        } catch (err) {
+          // Real forge unavailable/throttled/failed for this role → it falls
+          // to the synth floor below. Never fatal.
+          console.warn(
+            `[own-engine] real forge skipped for ${role}:`,
+            (err as Error)?.message
+          );
+        }
+      }
+      if (realForged.length) notes.push(`kit: forged real ${realForged.join("+")}`);
+    }
+    // The synth FLOOR: base primitives + any requested role the real forge
+    // didn't cover. Family-mapped so it never hard-fails.
     const synthTargets = [
-      ...new Set([
-        ...synthKitFor(p.genre),
-        ...requestedRoles.filter(role => isSynthesizable(role)),
-      ]),
+      ...new Set([...synthKitFor(p.genre), ...requestedRoles]),
     ];
     const missing = synthTargets.filter(r => !haveRoles.has(r));
     if (missing.length) {
@@ -473,6 +542,8 @@ export async function processOwnEngine(p: OwnEnginePayload): Promise<void> {
         keySignature: homeKey,
         roles: missing,
       });
+    }
+    if (missing.length || realForged.length) {
       picks = await pickKit(
         p.workspaceId,
         p.genre,
