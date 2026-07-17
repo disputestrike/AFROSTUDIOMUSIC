@@ -2877,6 +2877,48 @@ export default function CatalogGrid({ initial }: { initial: SongRow[] }) {
                   treatment from this song&apos;s own words and structure —
                   text only, no video credits spent.
                 </p>
+                {/* USE MY SCRIPT (owner, 2026-07-17: "if they already have
+                    their own script for the video — even straight scenes —
+                    you have to use their script"). Available BEFORE the
+                    first treatment exists, not only on rewrites. */}
+                <div className="mb-3 rounded-lg border border-white/10 bg-black/20 p-3 text-left">
+                  <div className="mb-1.5 text-xs font-medium text-slate-300">
+                    📜 Have your own script or video idea? (optional)
+                  </div>
+                  <textarea
+                    value={visionText}
+                    onChange={e => setVisionText(e.target.value)}
+                    maxLength={6000}
+                    rows={3}
+                    placeholder="Paste your script, scene list, or idea. Leave empty and the director writes it from the song."
+                    className="w-full rounded-md border border-white/10 bg-black/30 p-2 text-xs text-slate-200 placeholder:text-slate-600"
+                  />
+                  {visionText.trim() ? (
+                    <div className="mt-1.5 flex flex-wrap items-center gap-1.5 text-[11px]">
+                      <span className="text-slate-500">The director should:</span>
+                      <button
+                        onClick={() => setVisionMode("strict")}
+                        className={`rounded-full border px-2.5 py-1 ${
+                          visionMode === "strict"
+                            ? "border-afrobrand-500/50 bg-afrobrand-500/15 text-afrobrand-300"
+                            : "border-white/15 text-slate-400 hover:bg-white/10"
+                        }`}
+                      >
+                        🔒 Use MY script exactly
+                      </button>
+                      <button
+                        onClick={() => setVisionMode("enhance")}
+                        className={`rounded-full border px-2.5 py-1 ${
+                          visionMode === "enhance"
+                            ? "border-afrobrand-500/50 bg-afrobrand-500/15 text-afrobrand-300"
+                            : "border-white/15 text-slate-400 hover:bg-white/10"
+                        }`}
+                      >
+                        ✨ Enhance it
+                      </button>
+                    </div>
+                  ) : null}
+                </div>
                 <button
                   disabled={makingVideo}
                   onClick={() => void makeVideoPlan(videoOpen)}
@@ -2884,7 +2926,11 @@ export default function CatalogGrid({ initial }: { initial: SongRow[] }) {
                 >
                   {makingVideo
                     ? "Writing the treatment…"
-                    : "🎬 Write the full-song treatment"}
+                    : visionText.trim()
+                      ? visionMode === "strict"
+                        ? "🎬 Build the treatment from MY script"
+                        : "🎬 Write the treatment — enhance my script"
+                      : "🎬 Write the full-song treatment"}
                 </button>
               </div>
             )}
