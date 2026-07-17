@@ -190,9 +190,15 @@ export function videoModelInput(
       // duration 6|10 + resolution 768P/1080P are real inputs — send them so
       // the clip is deliberate, not defaulted.
       const modernMiniMax = !/\/video-01$/.test(slug);
+      // PERFORMER/CAST fidelity (2026-07-17): the optimizer may REWRITE our
+      // prompt — treatment prompts are already rich and carry locked cast
+      // descriptions that must reach the engine verbatim. MiniMax has no
+      // native negative_prompt field, so the avoid-list rides the prompt.
+      const avoid = input.negativePrompt?.trim();
       const body: Record<string, unknown> = {
-        prompt,
-        prompt_optimizer: true,
+        prompt: avoid ? `${prompt}
+Avoid: ${avoid}.` : prompt,
+        prompt_optimizer: false,
         ...(modernMiniMax
           ? {
               duration: durationS >= 10 ? 10 : 6,

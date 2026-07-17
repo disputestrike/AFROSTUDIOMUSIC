@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { normalizeStoryboardShots, videoRenderUsage } from "@afrohit/shared";
+import { missingDuetLeads, normalizeStoryboardShots, performersFromVoice, videoRenderUsage } from "@afrohit/shared";
 
 // THE CAST LAW (2026-07-17, owner feedback: the rendered cast defaulted to
 // engine training-set bias). Both video brains must direct the cast
@@ -83,3 +83,46 @@ assert.equal(
 );
 
 console.log("video storyboard: normalization and shot-aware billing passed");
+
+// PERFORMER ROSTER LAW (2026-07-17, duet incident: the female singer never
+// appeared). Pure laws under test: voice → roster mapping, and the duet gate
+// that rejects a plan which forgot a lead BEFORE a cent is spent.
+{
+  assert.deepEqual(performersFromVoice("duet"), {
+    mode: "duet",
+    roster: [
+      { id: "LEAD_A", vocal: "female" },
+      { id: "LEAD_B", vocal: "male" },
+    ],
+  });
+  assert.deepEqual(performersFromVoice("female").roster, [{ id: "LEAD_A", vocal: "female" }]);
+  assert.equal(performersFromVoice("auto").mode, "unknown");
+  assert.equal(performersFromVoice(null).roster.length, 0);
+
+  const duet = performersFromVoice("duet");
+  // The exact live failure: one male lead throughout, no female anywhere.
+  const oneManShow = {
+    castingNotes: "LEAD_B — the male lead: a Nigerian man in a leather jacket",
+    sequences: [{ performers: ["LEAD_B"] }, {}],
+    shots: [{ prompt: "the man walks Lagos streets at dusk" }],
+  };
+  assert.deepEqual(
+    missingDuetLeads(duet, oneManShow),
+    ["LEAD_A"],
+    "a duet plan without the female lead must be rejected"
+  );
+  // A proper duet plan passes.
+  const properDuet = {
+    castingNotes:
+      "LEAD_A — the female lead: dark-skinned Nigerian woman, gold braids. LEAD_B — the male lead: tall man in agbada.",
+    sequences: [{ performers: ["LEAD_A"] }, { performers: ["LEAD_A", "LEAD_B"] }],
+    shots: [
+      { prompt: "LEAD_A sings under neon rain" },
+      { prompt: "LEAD_A and LEAD_B share the frame on the hook" },
+    ],
+  };
+  assert.deepEqual(missingDuetLeads(duet, properDuet), []);
+  // Solo plans never trip the duet gate.
+  assert.deepEqual(missingDuetLeads(performersFromVoice("female"), oneManShow), []);
+  console.log("performer roster law: voice mapping and the duet gate hold");
+}

@@ -13,6 +13,11 @@ import { generateJson } from './generate';
 export interface EnrichedVocal {
   enrichedLyrics: string;
   styleTags: string[];
+  /** MACHINE-READABLE voicing per lyric section (duet/group only): who sings
+   *  which passage. The lyric TEXT stays unlabeled (singer engines sing
+   *  parentheticals); this field is for the VIDEO brain — who SINGS a
+   *  passage decides who is ON SCREEN in it (PERFORMER LAW vocal-sync). */
+  sectionVoicing?: Array<{ section: string; voices: string[] }>;
 }
 
 const ARRANGER_SYSTEM = `You are an Afrobeats/Afro-fusion vocal arranger and ad-lib specialist — the energy behind Wizkid, Davido, Rema, Asake, Burna Boy records. You turn a plain lyric into a PERFORMANCE SCRIPT that makes an AI singer sound alive and human. Listeners feel the emotion before they understand the words — the IN-BETWEEN vocal textures are what make a record feel finished.
@@ -116,7 +121,22 @@ export async function enrichLyricsForVocals(opts: {
       ? { ...out0, enrichedLyrics: scrubProductionJargon(out0.enrichedLyrics ?? '', opts.genre), styleTags: [...new Set([...(out0.styleTags ?? []), 'drum fill into every hook and section change', 'human feel: natural breaths, relaxed timing, minimal tuning', ...(isRap ? ['rap delivery, rhythmic flow on verses'] : [])])] }
       : out0;
     if (!out?.enrichedLyrics) return null;
-    return { enrichedLyrics: out.enrichedLyrics, styleTags: out.styleTags ?? [] };
+    const sectionVoicing = Array.isArray(out0?.sectionVoicing)
+      ? out0!.sectionVoicing
+          .map((entry: { section?: unknown; voices?: unknown }) => ({
+            section: typeof entry?.section === 'string' ? entry.section.trim().slice(0, 60) : '',
+            voices: Array.isArray(entry?.voices)
+              ? entry.voices.filter((v: unknown): v is string => typeof v === 'string').slice(0, 4)
+              : [],
+          }))
+          .filter((entry: { section: string; voices: string[] }) => entry.section && entry.voices.length)
+          .slice(0, 24)
+      : undefined;
+    return {
+      enrichedLyrics: out.enrichedLyrics,
+      styleTags: out.styleTags ?? [],
+      ...(sectionVoicing?.length ? { sectionVoicing } : {}),
+    };
   } catch {
     return null; // graceful — caller falls back to the plain lyric
   }

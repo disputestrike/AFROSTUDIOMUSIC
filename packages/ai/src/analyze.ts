@@ -29,7 +29,7 @@ export interface AudioProfile {
   energy: string | null;
   instruments: string[];
   // VOICE — so a created song matches the vocal it heard, not just the tempo.
-  vocalGender: string | null; // "male" | "female" | "group" | "instrumental" | null
+  vocalGender: string | null; // "male" | "female" | "duet" | "group" | "instrumental" | null
   vocalStyle: string | null; // tone/delivery, e.g. "smooth melodic tenor, laid-back"
   language: string | null; // language(s) heard, e.g. "pidgin/yoruba"
   // DEEP PRODUCTION — the "learn the beats/drums/flow" fields (the actual craft).
@@ -284,7 +284,7 @@ export async function analyzeAudio(url: string, apiKey?: string, ctx?: AnalyzeCo
     'the stated genre anchors typical BPM, drums, percussion, bass and arrangement; the audio-model description (if present) is your most direct read of the drums/groove. ' +
     'Where you must estimate (e.g. BPM/key with no detector), give the typical value for that genre and keep it plausible — do not fabricate specifics you have no basis for. ' +
     'Return ONLY JSON with fields: bpm (number|null), key (string|null), genre (string|null), mood (string|null), energy (string|null), ' +
-    'instruments (string[]), vocalGender ("male"|"female"|"group"|"instrumental"|null), vocalStyle (string|null), language (string|null), ' +
+    'instruments (string[]), vocalGender ("male"|"female"|"duet"|"group"|"instrumental"|null — "duet" when you hear BOTH a male and a female lead voice), vocalStyle (string|null), language (string|null), ' +
     'drums (string|null), percussion (string|null), bass (string|null), groove (string|null), arrangement (string|null), flow (string|null), complexity (string|null), ' +
     'vibe (one line), suggestedVibePrompt (vivid prompt for a fresh original in this style, matching the vocal + groove, never naming/copying the source), ' +
     'learnedRecipe (a detailed multi-line production recipe combining drums/percussion/bass/groove/arrangement/flow so a generator can rebuild this SOUND).';

@@ -4,8 +4,10 @@ import { prisma } from "@afrohit/db";
 import {
   assumedThreeActSections,
   generateStoryboardInputSchema,
+  missingDuetLeads,
   normalizeStoryboardShots,
   normalizeVideoTreatment,
+  performersFromVoice,
   perShotRenders,
   planVideoAssembly,
   renderAllVideoInputSchema,
@@ -137,24 +139,61 @@ export default async function videos(app: FastifyInstance) {
       // it here so the PERFORMER LAW has something to enforce. 'auto'/absent
       // stays honest: the model must infer from the lyrics' first-person voice.
       let vocalist: string = "unknown — infer from the lyrics' first-person voice";
+      let recoveredVoice: string | null = null;
+      let sectionVoicing: Array<{ section: string; voices: string[] }> = [];
       if (song) {
         const renderJobs = await prisma.providerJob.findMany({
           where: { workspaceId, projectId: project.id, kind: "music" },
           orderBy: { createdAt: "desc" },
-          take: 10,
+          take: 20,
           select: { inputJson: true },
         });
-        for (const job of renderJobs) {
-          const inputJson = job.inputJson as { songId?: unknown; voice?: unknown } | null;
-          const jobSongId = typeof inputJson?.songId === "string" ? inputJson.songId : null;
-          const voice = typeof inputJson?.voice === "string" ? inputJson.voice : null;
-          if (jobSongId && jobSongId !== song.id) continue;
-          if (voice && voice !== "auto") {
-            vocalist = voice; // 'female' | 'male' | 'duet' | 'group'
-            break;
+        // TWO-PASS RECOVERY (duet incident, 2026-07-17): exact-song jobs
+        // first; project-level jobs WITHOUT a songId only as a legacy
+        // fallback. The old single pass let a no-songId job from a SIBLING
+        // record cast this song's video.
+        const readJob = (inputJson: unknown) => {
+          const row = inputJson as {
+            songId?: unknown;
+            voice?: unknown;
+            sectionVoicing?: unknown;
+          } | null;
+          return {
+            songId: typeof row?.songId === "string" ? row.songId : null,
+            voice: typeof row?.voice === "string" ? row.voice : null,
+            voicing: Array.isArray(row?.sectionVoicing)
+              ? (row!.sectionVoicing as Array<{ section?: unknown; voices?: unknown }>)
+                  .map(entry => ({
+                    section: typeof entry?.section === "string" ? entry.section : "",
+                    voices: Array.isArray(entry?.voices)
+                      ? entry.voices.filter((v): v is string => typeof v === "string")
+                      : [],
+                  }))
+                  .filter(entry => entry.section && entry.voices.length)
+              : [],
+          };
+        };
+        const jobs = renderJobs.map(job => readJob(job.inputJson));
+        for (const pass of [
+          jobs.filter(job => job.songId === song.id),
+          jobs.filter(job => !job.songId),
+        ]) {
+          for (const job of pass) {
+            if (!recoveredVoice && job.voice && job.voice !== "auto") {
+              recoveredVoice = job.voice; // 'female' | 'male' | 'duet' | 'group'
+              vocalist = job.voice;
+            }
+            if (!sectionVoicing.length && job.voicing.length) {
+              sectionVoicing = job.voicing;
+            }
+            if (recoveredVoice && sectionVoicing.length) break;
           }
+          if (recoveredVoice) break;
         }
       }
+      // PERFORMER ROSTER — the structured cast the treatment brain must
+      // serve; the scalar vocalist stays alongside for one release.
+      const performers = performersFromVoice(recoveredVoice);
 
       // The song itself: its title, its lane, its tempo and its actual WORDS.
       // The treatment should come from what this record is about — that is the
@@ -167,6 +206,9 @@ export default async function videos(app: FastifyInstance) {
             genre: project.genre,
             bpm: project.bpm,
             vocalist,
+            // PERFORMER LAW input: the structured roster the treatment brain
+            // must cast — every roster member is a LEAD.
+            performers,
             lyrics: song.lyric?.cleanVersion ?? song.lyric?.body ?? null,
             madeAt: song.createdAt.toISOString(),
           }
@@ -258,6 +300,31 @@ export default async function videos(app: FastifyInstance) {
       // Claude-first with the OpenAI/Cerebras failure ladder. A full treatment
       // is long-form: give it token room and a longer timeout. Text only —
       // this never spends a video-render credit.
+      // VOCAL-SYNC input: map the arranger-declared section voicing onto the
+      // MEASURED sections by label, in order — who SINGS a passage decides
+      // who is ON SCREEN in it. Imperfect mapping degrades honestly (no
+      // vocal field, the law simply has less to bind).
+      const voicingPool = [...sectionVoicing];
+      const sectionsForBrain = sections.map(section => {
+        const matchIndex = voicingPool.findIndex(
+          entry =>
+            entry.section.trim().toLowerCase() ===
+            section.label.trim().toLowerCase()
+        );
+        if (matchIndex < 0) return section;
+        const [match] = voicingPool.splice(matchIndex, 1);
+        const voices = new Set(match!.voices.map(voice => voice.toLowerCase()));
+        const vocal =
+          voices.size > 1
+            ? "both"
+            : voices.has("female")
+              ? "female"
+              : voices.has("male")
+                ? "male"
+                : "ensemble";
+        return { ...section, vocal };
+      });
+
       const result = await generateJson<Record<string, unknown>>({
         task: "video-treatment",
         system: prompts.VIDEO_TREATMENT_SYSTEM,
@@ -271,7 +338,7 @@ export default async function videos(app: FastifyInstance) {
           structure: {
             source: structureSource,
             durationS: targetDurationS,
-            sections,
+            sections: sectionsForBrain,
           },
           format: input.format,
           teaser: { allowedDurations: [15, 30], format: "vertical" },
@@ -289,6 +356,16 @@ export default async function videos(app: FastifyInstance) {
       });
       if (!treatment) {
         return reply.code(502).send({ error: "invalid_storyboard_output" });
+      }
+      // DUET GATE (owner incident: "there was a female singer as well, but we
+      // never saw her"): a duet plan that forgot a lead is REJECTED here —
+      // before it can ever spend a render credit. Code mirrors the prompt law.
+      const missingLeads = missingDuetLeads(performers, treatment);
+      if (missingLeads.length) {
+        return reply.code(502).send({
+          error: "invalid_storyboard_output",
+          note: `performer law failed — missing lead(s): ${missingLeads.join(", ")}. Regenerate the plan.`,
+        });
       }
       const title =
         typeof result.title === "string" && result.title.trim()

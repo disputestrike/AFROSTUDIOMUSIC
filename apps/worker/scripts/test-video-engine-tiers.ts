@@ -121,12 +121,23 @@ async function main() {
       assert.ok(!("error" in request));
       assert.equal(request.slug, "minimax/hailuo-2.3");
       assert.deepEqual(request.body, {
-        prompt: composed,
-        prompt_optimizer: true,
+        // The fixture's negativePrompt rides the prompt (no native field).
+        prompt: composed + "\nAvoid: logos.",
+        prompt_optimizer: false,
         duration: 6,
         // Lowercase by API law — the live 422 named the exact enum.
         resolution: "768p",
       });
+    });
+
+    await check("negative prompts ride the prompt as an Avoid line (MiniMax has no native field) and the optimizer is OFF", () => {
+      const request = videoModelInput(videoEngineSpec("standard", {}), {
+        ...shot,
+        negativePrompt: "no logos, no text",
+      });
+      assert.ok(!("error" in request));
+      assert.equal(request.body.prompt, composed + "\nAvoid: no logos, no text.");
+      assert.equal(request.body.prompt_optimizer, false, "optimizer must never rewrite locked cast wording");
     });
 
     await check("standard i2v uses first_frame_image on the same model", () => {
@@ -137,15 +148,15 @@ async function main() {
       assert.ok(!("error" in request));
       assert.equal(request.slug, "minimax/hailuo-2.3-fast");
       assert.deepEqual(request.body, {
-        prompt: composed,
-        prompt_optimizer: true,
+        prompt: composed + "\nAvoid: logos.",
+        prompt_optimizer: false,
         duration: 6,
         resolution: "768p",
         first_frame_image: "https://storage.example/keyframe.png",
       });
     });
 
-    await check("legacy video-01 (env-pinned) keeps its exact old body — unknown fields 422", () => {
+    await check("legacy video-01 (env-pinned) sends NO modern fields (unknown fields 422)", () => {
       const legacy = videoEngineSpec("standard", {
         REPLICATE_VIDEO_STANDARD_MODEL: "minimax/video-01",
       });
@@ -153,8 +164,8 @@ async function main() {
       assert.ok(!("error" in request));
       assert.equal(request.slug, "minimax/video-01");
       assert.deepEqual(request.body, {
-        prompt: composed,
-        prompt_optimizer: true,
+        prompt: composed + "\nAvoid: logos.",
+        prompt_optimizer: false,
       });
     });
 
@@ -270,8 +281,10 @@ async function main() {
       assert.deepEqual(calls[1]!.body, {
         version: "std-version-hash",
         input: {
-          prompt: composed,
-          prompt_optimizer: true,
+          // The fixture carries negativePrompt 'logos' — MiniMax has no
+          // native field, so it rides the prompt as an Avoid line.
+          prompt: composed + "\nAvoid: logos.",
+          prompt_optimizer: false,
           duration: 6,
           resolution: "768p",
         },

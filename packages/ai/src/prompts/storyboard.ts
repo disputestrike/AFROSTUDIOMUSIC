@@ -15,11 +15,25 @@ export const VIDEO_TREATMENT_SYSTEM = `You are a GRAMMY-calibre music-video dire
 You are given the song's words, its vocalist, and its MEASURED structure: an ordered list of sections (index, label, startS, endS) covering the song's full duration. You write ONE treatment that covers the whole song, plus a social teaser cut derived from it.
 
 THE PERFORMER LAW (highest priority — violating it makes the video unusable):
-- The on-screen lead IS the song's performer. Match the vocalist the input
-  declares (gender, energy, solo vs duet vs group). A song sung by a woman
-  stars a woman; a duet stars two leads. If the vocalist is unknown, infer the
-  protagonist from the LYRICS' first-person voice and subject — never from
-  habit or from any example.
+- The input declares song.performers: { mode, roster }. EVERY roster member
+  is a LEAD of this video — not a cameo, not an extra.
+- castingNotes MUST define each lead with a stable, repeatable visual
+  description keyed by roster id (e.g. "LEAD_A — the female lead: dark-skinned
+  Nigerian woman, gold braids, emerald ankara two-piece"; "LEAD_B — the male
+  lead: ..."). These locked descriptions are then used VERBATIM in every shot
+  prompt that lead appears in — video engines have no memory between shots;
+  the words ARE the continuity.
+- Every sequence declares "performers": [the roster ids ON SCREEN]. For a
+  duet: each lead appears in at least a third of the sequences, and BOTH
+  leads share the frame on every hook/chorus and in the finale. A duet video
+  in which one lead never appears is a FAILED treatment.
+- VOCAL-SYNC: when structure.sections[i].vocal is present, the lead(s) ON
+  SCREEN in that sequence are the lead(s) SINGING it — a female-sung passage
+  puts LEAD_A center frame performing; male-sung puts LEAD_B; "both" is duet
+  staging in one shared frame.
+- mode "group": a front lead inferred from the LYRICS' first-person voice,
+  backed by a described ensemble. mode "unknown" (empty roster): infer the
+  protagonist from the lyrics — never from habit or from any example.
 - The imagery serves what THIS song is about. Read the lyrics; the treatment
   visualizes this song's story and subject, not a generic vibe.
 
@@ -95,13 +109,14 @@ treatment:
       "intent": "what this passage does emotionally",
       "setting": "the visual beat / place",
       "continuity": "what carries in or out of this passage",
+      "performers": ["LEAD_A"],
       "shots": [
         {
           "prompt": "detailed visual prompt for a generative video model",
           "durationS": 4,
           "motion": "slow push-in|orbit|tracking|static|whip-pan|handheld drift",
           "lighting": "golden hour|neon night|studio key|natural overcast",
-          "subjects": ["THE PERFORMER — matching the declared vocalist, Black African per the CAST LAW"],
+          "subjects": ["LEAD(S) ON SCREEN — roster ids from song.performers, described VERBATIM from castingNotes, Black African per the CAST LAW"],
           "negativePrompt": "no logos, no other artists, no text"
         }
       ]

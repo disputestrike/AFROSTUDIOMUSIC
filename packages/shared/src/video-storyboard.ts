@@ -138,6 +138,9 @@ export interface NormalizedTreatmentSequence {
   setting?: string;
   /** Continuity notes binding this passage to the whole. */
   continuity?: string;
+  /** PERFORMER LAW: which roster leads are ON SCREEN in this passage
+   *  (e.g. ["LEAD_A","LEAD_B"]). Optional — solo plans may omit it. */
+  performers?: string[];
   /** Indices into the treatment's flat shots[] view. */
   shotIndexes: number[];
 }
@@ -323,6 +326,7 @@ interface RawSequenceBucket {
   intent?: string;
   setting?: string;
   continuity?: string;
+  performers?: string[];
   shots: unknown[];
 }
 
@@ -350,6 +354,14 @@ function bucketModelSequences(
     bucket.intent ??= cleanText(row.intent, 400);
     bucket.setting ??= cleanText(row.setting ?? row.visualBeat, 400);
     bucket.continuity ??= cleanText(row.continuity ?? row.continuityNotes, 400);
+    // PERFORMER LAW: which roster leads the model put ON SCREEN here.
+    if (!bucket.performers && Array.isArray(row.performers)) {
+      const leads = row.performers
+        .map(entry => cleanText(entry, 40))
+        .filter((entry): entry is string => Boolean(entry))
+        .slice(0, 6);
+      if (leads.length) bucket.performers = leads;
+    }
     if (Array.isArray(row.shots)) bucket.shots.push(...row.shots);
   });
   return buckets;
@@ -509,9 +521,13 @@ export function normalizeVideoTreatment(
       if (!shotIndexes.length && shots.length < MAX_TREATMENT_SHOTS) {
         // A sequence with no usable shots still gets one honest beat built
         // from its own passage, so the flat view covers the whole song.
+        const fallbackCast = cleanText(root.castingNotes, 300);
         const fallbackPrompt =
-          [bucket.setting, bucket.intent].filter(Boolean).join(" — ") ||
-          `${concept} — ${section.label.toLowerCase()} passage`;
+          ([bucket.setting, bucket.intent].filter(Boolean).join(" — ") ||
+            `${concept} — ${section.label.toLowerCase()} passage`) +
+          // CAST LAW: even a synthesized beat states who is on screen —
+          // an uncast prompt renders the engine's training-set default.
+          (fallbackCast ? ` — on screen: ${fallbackCast}` : "");
         const fallback: NormalizedTreatmentShot = {
           index: shots.length,
           sequenceIndex,
@@ -530,6 +546,7 @@ export function normalizeVideoTreatment(
         ...(bucket.intent ? { intent: bucket.intent } : {}),
         ...(bucket.setting ? { setting: bucket.setting } : {}),
         ...(bucket.continuity ? { continuity: bucket.continuity } : {}),
+        ...(bucket.performers ? { performers: bucket.performers } : {}),
         shotIndexes,
       };
     }
@@ -733,4 +750,90 @@ export function videoRenderAllUsage(
     renderedShotIndexes: [...rendered].sort((a, b) => a - b),
     totalCost: videoRenderTotalCost(shotIndexes.length, engineClass),
   };
+}
+
+// ===========================================================================
+// PERFORMER ROSTER LAW (2026-07-17, owner: a duet rendered with one male lead
+// and the female singer never appeared). The treatment brain used to receive
+// ONE scalar vocalist; now it receives a structured roster, and the route can
+// GATE a duet plan that forgot a lead before a cent is spent.
+// ===========================================================================
+
+export interface PerformerRosterEntry {
+  id: string;
+  vocal: "female" | "male";
+}
+
+export interface Performers {
+  mode: "solo_female" | "solo_male" | "duet" | "group" | "unknown";
+  roster: PerformerRosterEntry[];
+}
+
+/** PURE mapping from the render-time voice setting to the roster the
+ *  treatment brain must cast. 'group' keeps an empty roster (front lead is
+ *  inferred from the lyrics; the ensemble is described, not enumerated). */
+export function performersFromVoice(
+  voice: string | null | undefined
+): Performers {
+  switch (voice) {
+    case "female":
+      return { mode: "solo_female", roster: [{ id: "LEAD_A", vocal: "female" }] };
+    case "male":
+      return { mode: "solo_male", roster: [{ id: "LEAD_A", vocal: "male" }] };
+    case "duet":
+      return {
+        mode: "duet",
+        roster: [
+          { id: "LEAD_A", vocal: "female" },
+          { id: "LEAD_B", vocal: "male" },
+        ],
+      };
+    case "group":
+      return { mode: "group", roster: [] };
+    default:
+      return { mode: "unknown", roster: [] };
+  }
+}
+
+/** DUET GATE (pure, route-enforced): a duet treatment must give BOTH leads a
+ *  presence — each roster id (or an explicit gendered description) must
+ *  appear in castingNotes, and at least one sequence must put each lead on
+ *  screen (via sequence.performers or a shot prompt naming them). Returns the
+ *  missing lead ids; empty = the plan casts everyone. */
+export function missingDuetLeads(
+  performers: Performers,
+  treatment: {
+    castingNotes?: string;
+    sequences: Array<{ performers?: string[] }>;
+    shots: Array<{ prompt: string }>;
+  }
+): string[] {
+  if (performers.mode !== "duet") return [];
+  const casting = (treatment.castingNotes ?? "").toUpperCase();
+  const promptText = treatment.shots
+    .map(shot => shot.prompt)
+    .join("\n")
+    .toUpperCase();
+  const sequencePerformers = new Set(
+    treatment.sequences.flatMap(sequence => sequence.performers ?? [])
+  );
+  // Word-boundary matching: "WOMAN" must never satisfy a MALE check via its
+  // "MAN" substring (nor "FEMALE" a "MALE" check).
+  const genderPattern: Record<string, RegExp> = {
+    female: /\b(WOMAN|WOMEN|FEMALE|SHE|HER)\b/,
+    male: /\b(MAN|MEN|MALE|HE|HIS|HIM)\b/,
+  };
+  return performers.roster
+    .filter(lead => {
+      const id = lead.id.toUpperCase();
+      const pattern = genderPattern[lead.vocal];
+      const inCasting =
+        casting.includes(id) || (pattern ? pattern.test(casting) : false);
+      const onScreen =
+        sequencePerformers.has(lead.id) ||
+        promptText.includes(id) ||
+        (pattern ? pattern.test(promptText) : false);
+      return !(inCasting && onScreen);
+    })
+    .map(lead => lead.id);
 }

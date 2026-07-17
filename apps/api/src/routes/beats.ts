@@ -229,6 +229,7 @@ export default async function beats(app: FastifyInstance) {
       // Arrange the vocal to sound ALIVE (ad-libs, doubled/harmonized hook).
       // SKIPPED for artist-authored lyrics — enrichment rewrites lines, and the
       // artist's words must reach the engine verbatim.
+      let sectionVoicing: Array<{ section: string; voices: string[] }> | undefined;
       if (input.withVocals && lyrics && input.richVocals && !artistAuthored) {
         const enriched = await enrichLyricsForVocals({
           genre,
@@ -241,6 +242,10 @@ export default async function beats(app: FastifyInstance) {
         if (enriched) {
           lyrics = enriched.enrichedLyrics;
           styleHints = enriched.styleTags;
+          // PERFORMER LAW hand-off: the arranger's who-sings-what record is
+          // persisted in the job input so the VIDEO brain can put the singer
+          // of a passage ON SCREEN in it (duet incident, 2026-07-17).
+          sectionVoicing = enriched.sectionVoicing;
         }
       }
 
@@ -400,7 +405,7 @@ export default async function beats(app: FastifyInstance) {
         projectId: project.id,
         kind: 'music',
         provider: input.songEngine ?? 'auto',
-        inputJson: { ...input, genre, trainingUsage, dnaTags: finalDnaTags, ...(sungForm ? { sungForm } : {}) },
+        inputJson: { ...input, genre, trainingUsage, dnaTags: finalDnaTags, ...(sungForm ? { sungForm } : {}), ...(sectionVoicing?.length ? { sectionVoicing } : {}) },
         charge,
         idempotencyKey,
         payload: (jobId) => ({

@@ -39,6 +39,9 @@ interface VideoShot {
   duration_s: number;
   motion?: string;
   lighting?: string;
+  /** PERFORMER/CAST LAW: who is on screen — folded into the engine prompt
+   *  (engines only ever see prompt text; dropping this dropped the cast). */
+  subjects?: string[];
   negativePrompt?: string;
 }
 
@@ -122,8 +125,14 @@ function shotInput(
   shot: VideoShot,
   format: VideoPayload["format"]
 ): VideoShotInput {
+  const cast = (shot.subjects ?? []).filter(
+    subject => typeof subject === "string" && subject.trim()
+  );
   return {
-    prompt: shot.prompt,
+    prompt: cast.length
+      ? `${shot.prompt}
+On screen: ${cast.join("; ")}.`
+      : shot.prompt,
     durationS: shot.duration_s,
     motion: shot.motion,
     lighting: shot.lighting,
