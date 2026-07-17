@@ -143,8 +143,9 @@ export default function Landing() {
           Make the <span className="text-gradient">record</span> you hear in your head
         </h1>
         <p className="mx-auto mt-6 max-w-2xl text-base leading-relaxed text-slate-300 sm:text-lg">
-          Write, sing, mix and master real records in your lane. Every song is measured before it ships
-          and rights-clean when it lands.
+          Write, sing, mix and master real records in your lane — then turn them into{" "}
+          <span className="font-semibold text-slate-100">full music videos</span>: your story, your
+          cast, your name in the credits. Already have a song? Bring it — leave with the video.
         </p>
 
         {/* CHAT HERO (Wave 8b): the primary CTA is a chat box — the visitor's
