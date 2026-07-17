@@ -3,9 +3,10 @@
 /**
  * LANDING SONG WALL — the studio demos itself.
  *
- * Renders REAL releaseReady records from GET /public/trending. Honesty laws:
- * no fabricated play counts, no placeholder songs — if the studio hasn't
- * green-lit a record yet, the wall says so instead of faking one.
+ * Renders REAL records from GET /public/trending — owner-featured pins first,
+ * then releaseReady drops. Honesty laws: no fabricated play counts, no
+ * placeholder songs — if the studio hasn't put a record up yet, the wall says
+ * so instead of faking one.
  *
  * Audio is lazy (an <audio> element is created only on first play) and solo —
  * pressing play on one card pauses whichever card was playing.
@@ -105,8 +106,9 @@ export function LandingSongWall() {
         </div>
         <h3 className="mt-5 font-display text-3xl tracking-tight">First records dropping soon</h3>
         <p className="mx-auto mt-3 max-w-md text-sm leading-relaxed text-slate-400">
-          This wall only shows real records the studio has measured, mastered and green-lit for release —
-          no demo filler, no fake plays. The first drops are in the pipeline now.
+          This wall only shows real records off the studio floor — measured, mastered and
+          hand-picked by the house. No demo filler, no fake plays. The first drops are in the
+          pipeline now.
         </p>
       </div>
     );

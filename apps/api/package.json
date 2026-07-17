@@ -19,6 +19,7 @@
     "test:release-artifact-integrity": "tsx scripts/test-release-artifact-integrity.ts",
     "test:platform-reliability": "tsx scripts/test-platform-reliability.ts",
     "test:video-salvage": "tsx scripts/test-video-salvage.ts",
+    "test:landing-featured": "tsx scripts/test-landing-featured.ts",
     "test:benchmark-pair-attestation": "tsx scripts/test-benchmark-pair-attestation.ts",
     "test:session-revocation": "tsx scripts/test-session-revocation.ts",
     "test:tenant-surface-isolation": "tsx scripts/test-tenant-surface-isolation.ts",

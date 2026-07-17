@@ -1,6 +1,8 @@
 import type { FastifyInstance } from 'fastify';
 import { prisma } from '@afrohit/db';
 import { presignAssetRef } from '../lib/storage';
+import { orderFeaturedFirst, readFeaturedSongIds } from '../lib/landing-featured';
+import { currentPlayableAsset } from '../lib/current-playable-asset';
 
 /**
  * Public release page data (the pre-save / smart-link catch-page). No workspace
@@ -10,31 +12,50 @@ import { presignAssetRef } from '../lib/storage';
  */
 export default async function publicRoutes(app: FastifyInstance) {
   /**
-   * The landing-page song wall. Up to 12 REAL, releaseReady songs — the studio
-   * demos itself with records the artist green-lit, never placeholders. Gate:
-   * releaseReady && !quarantined && !deleted, and a playable approved
-   * master/mix must exist (a wall card you can't press play on is a dead card).
-   * Only public-safe fields leave: no workspace ids, no scores, no internals.
+   * The landing-page song wall. Owner-FEATURED records first (hand-picked REAL
+   * songs the house pins — e.g. A.I Baddie — curated order preserved), then up
+   * to 12 REAL, releaseReady songs. The studio demos itself with real records,
+   * never placeholders. Gate: !quarantined && !deleted, and a playable approved
+   * master/mix must exist (a wall card you can't press play on is a dead card —
+   * that null-drop below is also what keeps a featured-but-audioless song off
+   * the wall). Only public-safe fields leave: no workspace ids, no internals.
    */
   app.get('/trending', async (_req, reply) => {
-    const songs = await prisma.song.findMany({
-      where: { releaseReady: true, quarantined: false, deletedAt: null },
-      orderBy: { createdAt: 'desc' },
-      take: 24, // over-fetch; songs without a playable asset are dropped below
-      include: { project: { include: { artist: true } } },
-    });
+    const wallInclude = {
+      project: { include: { artist: true } },
+      masters: { orderBy: { createdAt: 'desc' }, take: 20 },
+      mixes: { orderBy: { createdAt: 'desc' }, take: 20 },
+      beats: { orderBy: { createdAt: 'desc' }, take: 20 },
+    } as const;
+    const featuredIds = await readFeaturedSongIds();
+    const [featured, trending] = await Promise.all([
+      featuredIds.length
+        ? prisma.song.findMany({
+            where: { id: { in: featuredIds }, quarantined: false, deletedAt: null },
+            include: wallInclude,
+          })
+        : Promise.resolve([]),
+      prisma.song.findMany({
+        where: { releaseReady: true, quarantined: false, deletedAt: null },
+        orderBy: { createdAt: 'desc' },
+        take: 24, // over-fetch; songs without a playable asset are dropped below
+        include: wallInclude,
+      }),
+    ]);
+    const songs = orderFeaturedFirst(featuredIds, featured, trending);
 
     const cards = await Promise.all(
       songs.map(async (song) => {
-        const [master, mix, cover] = await Promise.all([
-          prisma.master.findFirst({ where: { songId: song.id, approved: true }, orderBy: { createdAt: 'desc' } }),
-          prisma.mix.findFirst({ where: { songId: song.id, approved: true }, orderBy: { createdAt: 'desc' } }),
-          prisma.imageAsset.findFirst({
-            where: { projectId: song.projectId, kind: 'cover', approved: true },
-            orderBy: { createdAt: 'desc' },
-          }),
-        ]);
-        const streamRef = master?.url ?? mix?.url;
+        // THE SAME PLAYABLE-ASSET LAW the catalog plays by — a featured full
+        // song whose audio lives as a generated render (not a formal master)
+        // still plays; the wall and the catalog can never disagree on what a
+        // song sounds like.
+        const current = currentPlayableAsset(song);
+        const cover = await prisma.imageAsset.findFirst({
+          where: { projectId: song.projectId, kind: 'cover', approved: true },
+          orderBy: { createdAt: 'desc' },
+        });
+        const streamRef = current?.url;
         if (!streamRef) return null;
         const [coverUrl, streamUrl] = await Promise.all([
           cover?.url ? presignAssetRef(cover.url, 900) : null,

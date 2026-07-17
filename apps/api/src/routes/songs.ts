@@ -14,7 +14,9 @@ import { improveSongOnce } from '../lib/will-it-blow';
 import { snapshotLyricVersion, readVersions } from '../lib/lyric-versions';
 import { recordFeedback } from '../services/artist-memory';
 import { languageVocalTag } from '../services/chat-tools';
-import { requireAdmin } from './admin';
+import { hasAdminAccess, requireAdmin } from './admin';
+import { isFirstPartyBilling } from '../middleware/credits';
+import { readFeaturedSongIds, writeFeaturedSongIds } from '../lib/landing-featured';
 import { presignAssetRef } from '../lib/storage';
 import { safeFetch } from '../lib/url-guard';
 import { operationErrorBody, runIdempotentOperation } from '../lib/idempotent-operation';
@@ -165,6 +167,7 @@ export default async function songs(app: FastifyInstance) {
       },
     });
 
+    const featuredOnLanding = new Set(await readFeaturedSongIds());
     const projectIds = [...new Set(rows.map((s: CatalogRow) => s.projectId))];
     const covers = await prisma.imageAsset.findMany({
       where: { projectId: { in: projectIds }, kind: 'cover' },
@@ -195,6 +198,7 @@ export default async function songs(app: FastifyInstance) {
         stemCount: s.beats[0]?.stems.length ?? 0,
         hasLyrics: !!s.lyric,
         releaseReady: s.releaseReady,
+        featuredOnLanding: featuredOnLanding.has(s.id),
         hitScore: s.hitScore,
         viralScore: s.viralScore,
         coverUrl: coverByProject.get(s.projectId) ?? null,
@@ -314,6 +318,53 @@ export default async function songs(app: FastifyInstance) {
 
   app.get<{ Params: { id: string } }>('/:id/bridge-export', bridgeExport);
   app.get<{ Params: { id: string } }>('/:id/suno-export', bridgeExport);
+
+  /**
+   * FEATURE ON LANDING (owner curation — "let them play it right there").
+   * First-party/operator only: pins this REAL record onto the public landing
+   * wall (or unpins it). Honesty gates: quarantined/deleted songs can never
+   * go public, and a song with no playable audio cannot be pinned — the wall
+   * never gets a card that cannot play.
+   */
+  app.post<{ Params: { id: string }; Body: { featured?: boolean } }>('/:id/feature', async (req, reply) => {
+    const { workspaceId } = requireAuth(req);
+    const song = await prisma.song.findFirst({
+      where: { id: req.params.id, workspaceId },
+      include: {
+        masters: { orderBy: { createdAt: 'desc' }, take: 20 },
+        mixes: { orderBy: { createdAt: 'desc' }, take: 20 },
+        beats: { orderBy: { createdAt: 'desc' }, take: 20 },
+      },
+    });
+    if (!song) return reply.code(404).send({ error: 'not_found' });
+    const [operator, firstParty] = await Promise.all([
+      hasAdminAccess(req),
+      isFirstPartyBilling(workspaceId),
+    ]);
+    if (!operator && !firstParty) {
+      return reply.code(403).send({ error: 'forbidden', note: 'Only the house curates the landing wall.' });
+    }
+    const current = await readFeaturedSongIds();
+    const want = (req.body as { featured?: boolean } | null)?.featured ?? !current.includes(song.id);
+    if (want) {
+      if (song.quarantined || song.deletedAt) {
+        return reply.code(409).send({
+          error: 'not_featureable',
+          note: 'A quarantined or deleted song cannot go on the public wall.',
+        });
+      }
+      if (!currentPlayableAsset(song)) {
+        return reply.code(409).send({
+          error: 'no_playable_audio',
+          note: 'This song has no playable audio yet — the wall never shows a card that cannot play.',
+        });
+      }
+      const next = await writeFeaturedSongIds([song.id, ...current.filter((id) => id !== song.id)]);
+      return { featured: true, featuredSongIds: next };
+    }
+    const next = await writeFeaturedSongIds(current.filter((id) => id !== song.id));
+    return { featured: false, featuredSongIds: next };
+  });
 
   // ---- General edit (rename / version / status) — "not one-shot" ----
   const patchSchema = z.object({

@@ -212,7 +212,7 @@ export default function Landing() {
               Hear what it <span className="text-gradient">makes</span>
             </h2>
             <p className="mt-3 max-w-xl text-sm leading-relaxed text-slate-400 sm:text-base">
-              Real records off the studio floor — measured, mastered and green-lit for release. Nothing staged.
+              Real records off the studio floor — measured and mastered, hand-picked by the house. Nothing staged.
             </p>
           </div>
         </div>

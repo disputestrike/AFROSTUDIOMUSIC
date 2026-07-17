@@ -107,6 +107,8 @@ export interface SongRow {
   stemCount?: number;
   hasLyrics?: boolean;
   releaseReady?: boolean;
+  /** Owner-pinned onto the public landing wall (house curation). */
+  featuredOnLanding?: boolean;
   hitScore?: number | null;
   viralScore?: number | null;
   coverUrl: string | null;
@@ -690,6 +692,33 @@ export default function CatalogGrid({ initial }: { initial: SongRow[] }) {
       // a silently-failed delete is exactly the "it always comes back" bug.
       setSongs(before);
       flash(`Couldn’t delete: ${(e as Error).message.slice(0, 120)}`);
+    }
+  }
+
+  // FEATURE ON LANDING (house curation): pins the record onto the public
+  // landing wall so visitors can play it right there. Server enforces the
+  // first-party/operator gate and the can-actually-play honesty gate.
+  async function toggleFeature(s: SongRow) {
+    setBusy(`${s.id}:feature`);
+    try {
+      const res = await api.post<{ featured: boolean }>(
+        `/songs/${s.id}/feature`,
+        {}
+      );
+      setSongs(list =>
+        list.map(x =>
+          x.id === s.id ? { ...x, featuredOnLanding: res.featured } : x
+        )
+      );
+      flash(
+        res.featured
+          ? "On the landing wall — visitors can play it right there now."
+          : "Removed from the landing wall."
+      );
+    } catch (e) {
+      flash((e as Error).message || "Could not update the landing wall");
+    } finally {
+      setBusy("");
     }
   }
 
@@ -1685,6 +1714,27 @@ export default function CatalogGrid({ initial }: { initial: SongRow[] }) {
                   busy={isBusy(s.id, "master")}
                   onClick={() => void remaster(s)}
                 />
+                {/* HOUSE CURATION: pin this record onto the public landing
+                    wall ("let them play it right there"). House/operator
+                    surfaces only — the server enforces the same gate. */}
+                {(houseBilling || firstParty) && (
+                  <button
+                    onClick={() => void toggleFeature(s)}
+                    disabled={isBusy(s.id, "feature")}
+                    title={
+                      s.featuredOnLanding
+                        ? "Remove this record from the public landing wall"
+                        : "Put this record on the public landing wall with a player"
+                    }
+                    className={`inline-flex items-center gap-1 rounded-full border px-2.5 py-1 text-xs transition-colors ${
+                      s.featuredOnLanding
+                        ? "border-amber-400/50 bg-amber-400/15 text-amber-300 hover:bg-amber-400/25"
+                        : "border-white/10 bg-white/5 text-slate-300 hover:bg-white/10"
+                    }`}
+                  >
+                    ⭐ {s.featuredOnLanding ? "On landing" : "Feature on landing"}
+                  </button>
+                )}
                 {/* §1.11 THE WALL: the bridge is a FIRST-PARTY tool — rendered only
                     when the operator has unlocked with the admin key. Customers
                     never see it; public copy never names the vendor. */}
