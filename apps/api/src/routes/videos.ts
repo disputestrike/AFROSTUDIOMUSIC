@@ -3,6 +3,7 @@ import { z } from "zod";
 import { prisma } from "@afrohit/db";
 import {
   assumedThreeActSections,
+  checkGenerativeContent,
   generateStoryboardInputSchema,
   normalizeStoryboardShots,
   normalizeVideoTreatment,
@@ -99,6 +100,16 @@ export default async function videos(app: FastifyInstance) {
     async (req, reply) => {
       const { workspaceId } = requireAuth(req);
       const input = generateStoryboardInputSchema.parse(req.body);
+      // CONTENT-ABUSE GATE (audit 2026-07-17): the free-text prompt reaches
+      // image/video engines. Refuse high-confidence violations (real-person
+      // likeness, copyrighted characters, prohibited content) before spend.
+      const promptCheck = checkGenerativeContent(input.prompt);
+      if (!promptCheck.ok) {
+        return reply.code(422).send({
+          error: "content_not_allowed",
+          note: `This video idea can't be used (${promptCheck.reason}). Keep it to your own story and cast.`,
+        });
+      }
 
       const project = await prisma.project.findFirstOrThrow({
         where: { id: input.projectId, workspaceId },
