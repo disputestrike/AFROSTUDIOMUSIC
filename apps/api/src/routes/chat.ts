@@ -19,7 +19,16 @@ import { prisma } from '@afrohit/db';
 import { chatMessageInputSchema, humanizeChatError, scrubVendorNames } from '@afrohit/shared';
 import { prompts, studioChat } from '@afrohit/ai';
 import { requireAuth } from '../middleware/auth';
+import { workspaceThrottle } from '../lib/workspace-throttle';
 import { runChatTool } from '../services/chat-tools';
+
+/** Per-workspace chat throttle (audit 2026-07-17). Env-tunable; autopilot is
+ *  far more expensive per request, so it gets a tighter budget. */
+const CHAT_PER_MIN = Math.max(1, Number(process.env.CHAT_PER_MIN ?? 30) || 30);
+const CHAT_AUTOPILOT_PER_MIN = Math.max(
+  1,
+  Number(process.env.CHAT_AUTOPILOT_PER_MIN ?? 6) || 6
+);
 import { dataLakeSummary } from '../lib/data-lake';
 import { scopedRequestKey } from '../lib/queued-job';
 import { operationErrorBody, runIdempotentOperation } from '../lib/idempotent-operation';
@@ -86,6 +95,22 @@ async function modelTurnWithTimeout<T>(work: Promise<T>): Promise<T> {
  * lazily create a default artist + project and attach it to the thread. This
  * makes "make me a song" work with zero setup.
  */
+/** TENANT ISOLATION (audit 2026-07-17): a caller-supplied projectId is honored
+ *  ONLY when it belongs to THIS workspace. A foreign or unknown id becomes
+ *  null (the thread then binds to the workspace's own default project), so
+ *  chat context and tools can never read or write another tenant's project. */
+async function ownedProjectId(
+  workspaceId: string,
+  projectId: string | null | undefined
+): Promise<string | null> {
+  if (!projectId) return null;
+  const owned = await prisma.project.findFirst({
+    where: { id: projectId, workspaceId },
+    select: { id: true },
+  });
+  return owned?.id ?? null;
+}
+
 async function ensureThreadProject(
   workspaceId: string,
   thread: { id: string; projectId: string | null }
@@ -196,6 +221,18 @@ export default async function chat(app: FastifyInstance) {
     async (req: FastifyRequest, reply: FastifyReply) => {
       const { workspaceId, userId } = requireAuth(req);
       const body = chatMessageInputSchema.parse(req.body);
+      // PER-WORKSPACE THROTTLE (audit 2026-07-17): chat drives uncharged LLM
+      // spend; the per-IP global limit doesn't bound one workspace behind a
+      // proxy pool. Autopilot (up to 14 model rounds) is throttled harder.
+      const chatGate = await workspaceThrottle(app, {
+        workspaceId,
+        action: body.autopilot ? 'chat-autopilot' : 'chat',
+        max: body.autopilot ? CHAT_AUTOPILOT_PER_MIN : CHAT_PER_MIN,
+        windowS: 60,
+      });
+      if (!chatGate.ok) {
+        return reply.code(429).send({ error: 'rate_limited', retryInS: chatGate.retryInS });
+      }
       const idempotencyKey = scopedRequestKey(req.headers as Record<string, unknown>, 'chat-message');
 
       const operation = await runIdempotentOperation({
@@ -210,7 +247,15 @@ export default async function chat(app: FastifyInstance) {
             where: { id: body.threadId, workspaceId, userId },
           })
         : await prisma.chatThread.create({
-            data: { workspaceId, userId, projectId: body.projectId ?? null, title: body.content.slice(0, 60) },
+            // TENANT ISOLATION (audit 2026-07-17, CONFIRMED cross-tenant IDOR):
+            // a caller-supplied projectId must belong to THIS workspace, or the
+            // chat context + tools would read/write another tenant's project.
+            data: {
+              workspaceId,
+              userId,
+              projectId: await ownedProjectId(workspaceId, body.projectId),
+              title: body.content.slice(0, 60),
+            },
           });
 
       // Persist user message
@@ -381,6 +426,17 @@ export default async function chat(app: FastifyInstance) {
     async (req: FastifyRequest, reply: FastifyReply) => {
       const { workspaceId, userId } = requireAuth(req);
       const body = chatMessageInputSchema.parse(req.body);
+      // PER-WORKSPACE THROTTLE — same law as /messages (the stream path is
+      // where autopilot's rounds actually spend).
+      const streamGate = await workspaceThrottle(app, {
+        workspaceId,
+        action: body.autopilot ? 'chat-autopilot' : 'chat',
+        max: body.autopilot ? CHAT_AUTOPILOT_PER_MIN : CHAT_PER_MIN,
+        windowS: 60,
+      });
+      if (!streamGate.ok) {
+        return reply.code(429).send({ error: 'rate_limited', retryInS: streamGate.retryInS });
+      }
       const idempotencyKey = scopedRequestKey(req.headers as Record<string, unknown>, 'chat-message-stream');
 
       reply.raw.writeHead(200, {
@@ -425,7 +481,12 @@ export default async function chat(app: FastifyInstance) {
               where: { id: body.threadId, workspaceId, userId },
             })
           : await prisma.chatThread.create({
-              data: { workspaceId, userId, projectId: body.projectId ?? null, title: body.content.slice(0, 60) },
+              data: {
+                workspaceId,
+                userId,
+                projectId: await ownedProjectId(workspaceId, body.projectId),
+                title: body.content.slice(0, 60),
+              },
             });
         send({ type: 'thread', threadId: thread.id });
 

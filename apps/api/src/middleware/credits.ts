@@ -166,6 +166,10 @@ export async function isFirstPartyBilling(workspaceId: string): Promise<boolean>
  */
 const billingEnforced = () => process.env.BILLING_ENFORCEMENT === "on";
 const betaDailyCap = () => Number(process.env.BETA_DAILY_GENERATIONS ?? 25);
+/** Hard per-day money ceiling for a beta workspace, in 1/100-cent units.
+ *  Default $25 = 250000. Set BETA_DAILY_SPEND_CEILING to change; 0 disables. */
+const betaDailyCostCeiling = () =>
+  Number(process.env.BETA_DAILY_SPEND_CEILING ?? 250_000);
 
 export const creditsPlugin = fp(async function (app) {
   app.decorate(
@@ -187,6 +191,12 @@ export const creditsPlugin = fp(async function (app) {
           enforceGenerationCap: true,
           dailyCap: betaDailyCap(),
           monthlyCap: Number(process.env.BETA_MONTHLY_GENERATIONS ?? 300),
+          // HARD MONEY CEILING (audit 2026-07-17): even inside the beta's free
+          // operation cap, a stranger doing expensive video renders can rack
+          // up real provider cost. Cap actual spend per beta workspace per day
+          // — default ~$25 (250000 1/100-cent units), operator-tunable. The
+          // house (first-party) path below never gets this ceiling.
+          dailyCostCeiling: betaDailyCostCeiling(),
         });
       }
       if (firstParty) {

@@ -2,6 +2,7 @@ import type { FastifyInstance } from 'fastify';
 import { createHmac, randomBytes } from 'node:crypto';
 import { prisma } from '@afrohit/db';
 import { createShareLinkSchema, logShareEventSchema } from '@afrohit/shared';
+import { isAllowedShareTarget } from '@afrohit/shared';
 import { requireAuth } from '../middleware/auth';
 
 function newShortCode(): string {
@@ -89,6 +90,12 @@ export default async function shares(app: FastifyInstance) {
     if (!link || !link.active) return reply.code(404).send({ error: 'not_found' });
     const parsed = createShareLinkSchema.shape.targetUrl.safeParse(link.targetUrl);
     if (!parsed.success) return reply.code(410).send({ error: 'invalid_legacy_target' });
+    // OPEN-REDIRECT DEFENSE (audit 2026-07-17): the trusted short domain may
+    // only forward to allowlisted hosts (own domains + real music/social
+    // platforms). A target outside the list is a phishing launder — refuse it.
+    if (!isAllowedShareTarget(parsed.data)) {
+      return reply.code(403).send({ error: 'redirect_target_not_allowed' });
+    }
     // fire-and-forget event log
     await prisma.shareEvent.create({
       data: {

@@ -237,7 +237,23 @@ async function bootstrap() {
   }
   await bootstrapOwnerAccount(app.log);
   await app.register(sensible);
-  await app.register(helmet, { contentSecurityPolicy: false });
+  // CSP (audit 2026-07-17): the API serves JSON + presigned redirects, not
+  // HTML apps, so a strict default-src 'none' policy is safe here and adds a
+  // header-level defense against any reflected content. The Next web app sets
+  // its own CSP; this only governs API responses. Opt back to off with
+  // API_CSP=off if a future HTML surface needs a bespoke policy.
+  await app.register(helmet, {
+    contentSecurityPolicy:
+      process.env.API_CSP === "off"
+        ? false
+        : {
+            directives: {
+              defaultSrc: ["'none'"],
+              frameAncestors: ["'none'"],
+              baseUri: ["'none'"],
+            },
+          },
+  });
   await app.register(cors, {
     origin: configuredWebOrigins(),
     credentials: true,
@@ -256,7 +272,13 @@ async function bootstrap() {
     max: maxRequestsPerMinute,
     timeWindow: "1 minute",
     redis: app.rateLimitRedis,
-    skipOnError: false,
+    // RESILIENCE (audit 2026-07-17, CONFIRMED): skipOnError:false made a Redis
+    // blip take the ENTIRE API down — the abuse limiter became a single point
+    // of failure in front of every route. An abuse limiter degrading to
+    // "briefly unmetered" is vastly better than a total outage; the
+    // per-workspace guards below still bound the expensive routes when Redis
+    // is gone. Chaos-safe: the front door stays open.
+    skipOnError: true,
     allowList: req => {
       const path = req.url.split("?")[0] ?? "";
       return (

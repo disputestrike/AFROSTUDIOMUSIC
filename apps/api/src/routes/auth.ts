@@ -4,6 +4,7 @@ import { randomBytes, scrypt, timingSafeEqual } from 'node:crypto';
 import { prisma } from '@afrohit/db';
 import { isInternalMode, requireAuth } from '../middleware/auth';
 import { isFirstPartyBilling } from '../middleware/credits';
+import { captchaRequired, verifyCaptcha } from '../lib/captcha';
 import { hasAdminAccess } from './admin';
 import {
   adminGrantCookie,
@@ -22,6 +23,10 @@ const signupSchema = z.object({
   password: z.string().min(12).max(128),
   name: z.string().min(1).max(80).optional(),
   stageName: z.string().min(1).max(80).optional(),
+  // CAPTCHA token (audit 2026-07-17). Optional in the schema; enforced at
+  // runtime only when CAPTCHA_SECRET is set (verifyCaptcha), so the flow is
+  // unchanged until the operator arms it.
+  captchaToken: z.string().max(4096).optional(),
 });
 const loginSchema = z.object({
   email: z.string().email().max(200),
@@ -102,6 +107,11 @@ export default async function auth(app: FastifyInstance) {
       return reply.code(403).send({ error: 'signup_closed' });
     }
     const input = signupSchema.parse(req.body);
+    // CAPTCHA GATE (audit 2026-07-17): bot-signup defense. No-op until the
+    // operator sets CAPTCHA_SECRET; then a valid token is required.
+    if (captchaRequired() && !(await verifyCaptcha(input.captchaToken))) {
+      return reply.code(400).send({ error: 'captcha_failed' });
+    }
     const email = input.email.toLowerCase().trim();
     const existing = await prisma.user.findUnique({ where: { email }, select: { id: true } });
     if (existing) return reply.code(409).send({ error: 'email_in_use' });

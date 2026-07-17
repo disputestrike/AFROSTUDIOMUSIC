@@ -111,6 +111,9 @@ export interface WorkspaceChargeOptions {
   enforceGenerationCap?: boolean;
   dailyCap?: number;
   monthlyCap?: number;
+  /** Hard per-day money ceiling in 1/100-cent units (0 = disabled). Trips on
+   *  real spend regardless of operation count. */
+  dailyCostCeiling?: number;
   now?: Date;
 }
 
@@ -152,6 +155,28 @@ async function operationUsage(
     _sum: { units: true },
   });
   return result._sum.units ?? 0;
+}
+
+/** COST-AWARE CEILING (audit 2026-07-17): the operation cap counts actions,
+ *  so 25 flagship video renders trip it identically to 25 cheap hooks — a
+ *  real bill of very different size. This sums the ACTUAL debit (delta, in
+ *  1/100-cent units) spent since `since`, so a hard per-day money ceiling can
+ *  cap catastrophic overspend regardless of operation count. */
+async function costUsage(
+  tx: Prisma.TransactionClient,
+  workspaceId: string,
+  since: Date
+): Promise<number> {
+  const result = await tx.creditLedger.aggregate({
+    where: {
+      workspaceId,
+      createdAt: { gte: since },
+      delta: { lt: 0 },
+      reversal: { is: null },
+    },
+    _sum: { delta: true },
+  });
+  return Math.abs(result._sum.delta ?? 0);
 }
 
 async function categoryUsage(
@@ -243,6 +268,20 @@ export async function chargeWorkspaceCredits(
             balance: usedMonth,
             reason: "monthly_cap",
           };
+        }
+        // HARD MONEY CEILING — independent of the operation count. Catches the
+        // "25 flagship videos" abuse the operation cap misses. 0 = disabled.
+        const costCeiling = configuredCap(opts.dailyCostCeiling, 0);
+        if (costCeiling > 0) {
+          const spentToday = await costUsage(tx, opts.workspaceId, dayStart);
+          if (spentToday + cost > costCeiling) {
+            return {
+              ok: false as const,
+              needed: costCeiling,
+              balance: spentToday,
+              reason: "daily_spend_ceiling",
+            };
+          }
         }
       }
 

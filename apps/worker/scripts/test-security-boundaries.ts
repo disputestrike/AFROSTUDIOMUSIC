@@ -207,7 +207,12 @@ async function main() {
     "utf8"
   );
   assert.match(apiIndexSource, /redis:\s*app\.rateLimitRedis/);
-  assert.match(apiIndexSource, /skipOnError: false/);
+  // RESILIENCE (audit 2026-07-17): the limiter now FAILS OPEN — skipOnError
+  // true — so a Redis blip degrades to briefly-unmetered instead of taking
+  // the whole API down. The per-workspace throttles bound the expensive
+  // routes when Redis is gone. (Was `false`; that made the abuse limiter a
+  // single point of failure for every route.)
+  assert.match(apiIndexSource, /skipOnError: true/);
   assert.doesNotMatch(
     apiIndexSource,
     /new Map<string, \{ n: number; reset: number \}>/
