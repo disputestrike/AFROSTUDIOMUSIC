@@ -222,6 +222,18 @@ interface ReplicatePrediction {
   status: "starting" | "processing" | "succeeded" | "failed" | "canceled";
   output?: unknown;
   error?: string | null;
+  logs?: string | null;
+}
+
+/** ENGINE-REPORTED progress only: the LAST "NN%" the engine printed in its
+ *  logs. Returns null when the engine says nothing — the meter law forbids a
+ *  fabricated percent, so null means "honest indeterminate motion". */
+export function progressFromLogs(logs: unknown): number | null {
+  if (typeof logs !== "string" || !logs) return null;
+  const matches = logs.match(/(\d{1,3})\s*%/g);
+  if (!matches?.length) return null;
+  const last = Number.parseInt(matches[matches.length - 1]!, 10);
+  return Number.isFinite(last) && last >= 0 && last <= 100 ? last : null;
 }
 
 /** First fetchable video URL out of Replicate's output shapes
@@ -386,7 +398,13 @@ export class ReplicateVideoAdapter implements VideoProviderAdapter {
         error: data.error?.slice(0, 300) || "video engine failed",
       };
     }
-    return { externalId: data.id, status: "running", pollAfterMs: 10_000 };
+    const progressPct = progressFromLogs(data.logs);
+    return {
+      externalId: data.id,
+      status: "running",
+      pollAfterMs: 10_000,
+      ...(progressPct != null ? { progressPct } : {}),
+    };
   }
 }
 

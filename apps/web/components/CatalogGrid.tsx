@@ -344,9 +344,23 @@ type AssemblyArtifact = {
   songDurationS: number | null;
   createdAt: string;
 };
+/** A scene rendering RIGHT NOW — the worker's honest heartbeat. progressPct
+ *  is only ever an ENGINE-reported number; null means show indeterminate
+ *  motion, never a made-up percent. */
+type InFlightRender = {
+  shotIndex: number | null;
+  jobId: string;
+  status: string;
+  startedAt: string;
+  step: string | null;
+  progressPct: number | null;
+  pollAttempts: number | null;
+  recoverOnly?: boolean;
+};
 type AssemblyStatusResp = {
   conceptId: string;
   shotCount: number;
+  inFlight?: InFlightRender[];
   renderedShotIndexes: number[];
   sequences: Array<{
     index: number;
@@ -1199,6 +1213,19 @@ export default function CatalogGrid({ initial }: { initial: SongRow[] }) {
       flash("The full video is ready — play it below.");
     }
   }, [assembly, renderAllWatch]);
+  // LIVE METER LAW ("it doesn't show anything was working" — owner): while
+  // ANY scene is rendering, keep re-reading the same assembly endpoint so the
+  // per-scene meters move — single-scene renders included, not just the
+  // one-click batch. Self-retriggering: each fresh response schedules the
+  // next look while inFlight stays non-empty.
+  useEffect(() => {
+    if (!videoOpen) return;
+    if (assembly?.state !== "ready") return;
+    if (!(assembly.data?.inFlight?.length ?? 0)) return;
+    const conceptId = assembly.conceptId;
+    const timer = setTimeout(() => void loadAssembly(conceptId), 8_000);
+    return () => clearTimeout(timer);
+  }, [assembly, videoOpen]);
 
   /** Per-shot render on the EXISTING /videos/renders route (same per-shot
    *  billing) — armed two-step confirm, first click shows the exact cost. */
@@ -1232,6 +1259,9 @@ export default function CatalogGrid({ initial }: { initial: SongRow[] }) {
           withLikeness && likenessTrained ? " with your likeness" : ""
         }.`
       );
+      // Start the live meter immediately — the assembly poll loop keeps it
+      // moving until the scene lands.
+      void loadAssembly(concept.id);
     } catch (e) {
       const message = (e as Error).message;
       flash(
@@ -1279,11 +1309,57 @@ export default function CatalogGrid({ initial }: { initial: SongRow[] }) {
               ? "Render again"
               : `Render this scene (${cost})`}
         </button>
-        {jobId && (
-          <span className="text-[10px] text-emerald-300">
-            render started · job {jobId.slice(0, 8)}…
-          </span>
-        )}
+        {(() => {
+          // LIVE METER: real stage + elapsed + engine-reported percent only.
+          // No engine percent → honest indeterminate motion, never a made-up
+          // number ticking toward 100.
+          const live =
+            assembly?.conceptId === concept.id && assembly.state === "ready"
+              ? assembly.data?.inFlight?.find(f => f.shotIndex === shotIndex)
+              : null;
+          if (live) {
+            const elapsedS = Math.max(
+              0,
+              Math.round((Date.now() - new Date(live.startedAt).getTime()) / 1000)
+            );
+            const label =
+              live.status === "QUEUED"
+                ? "Queued for the engine…"
+                : live.step === "downloading"
+                  ? "Downloading the finished clip…"
+                  : live.recoverOnly
+                    ? "Recovering your paid render…"
+                    : `Rendering at the engine${
+                        live.progressPct != null ? ` · ${live.progressPct}%` : ""
+                      }`;
+            return (
+              <span className="flex min-w-[190px] max-w-xs flex-1 flex-col gap-1">
+                <span className="text-[10px] text-sky-300">
+                  {label} · {mmss(elapsedS)} elapsed · scenes typically take 2–5 min
+                </span>
+                <span className="h-1 w-full overflow-hidden rounded-full bg-white/10">
+                  <span
+                    className={
+                      live.progressPct != null
+                        ? "block h-full rounded-full bg-sky-400 transition-all duration-700"
+                        : "block h-full w-1/3 animate-pulse rounded-full bg-sky-400/70"
+                    }
+                    style={
+                      live.progressPct != null
+                        ? { width: `${Math.min(100, Math.max(3, live.progressPct))}%` }
+                        : undefined
+                    }
+                  />
+                </span>
+              </span>
+            );
+          }
+          return jobId ? (
+            <span className="text-[10px] text-emerald-300">
+              render started · job {jobId.slice(0, 8)}…
+            </span>
+          ) : null;
+        })()}
       </div>
     );
   };
@@ -2331,7 +2407,11 @@ export default function CatalogGrid({ initial }: { initial: SongRow[] }) {
                           Assemble the release cut
                           <span className="font-normal text-slate-500">
                             · {a.renderedShotIndexes.length}/{a.shotCount} scenes
-                            rendered · free (your scenes are already paid for)
+                            rendered
+                            {a.inFlight?.length
+                              ? ` · ${a.inFlight.length} rendering now`
+                              : ""}{" "}
+                            · free (your scenes are already paid for)
                           </span>
                         </div>
                         {a.sequences.length > 1 ? (

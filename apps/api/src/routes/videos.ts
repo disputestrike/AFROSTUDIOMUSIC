@@ -775,7 +775,74 @@ export default async function videos(app: FastifyInstance) {
         const artifact = assemblies[kind];
         if (artifact) artifact.url = await presignAssetRef(artifact.url, 3600);
       }
+
+      // LIVE METER ("it doesn't show anything was working" — owner): scenes
+      // rendering RIGHT NOW, carrying the worker's persisted heartbeat —
+      // status, step, poll count, and the engine-reported percent when its
+      // logs printed one. Never a fabricated number: no percent → the UI
+      // shows honest indeterminate motion + elapsed time.
+      const asRecord = (v: unknown): Record<string, unknown> | null =>
+        v != null && typeof v === "object" && !Array.isArray(v)
+          ? (v as Record<string, unknown>)
+          : null;
+      const inFlightJobs = await prisma.providerJob.findMany({
+        where: {
+          workspaceId,
+          kind: "video",
+          status: { in: ["QUEUED", "RUNNING"] },
+          NOT: { provider: "assembler" },
+          inputJson: { path: ["conceptId"], equals: concept.id },
+        },
+        select: {
+          id: true,
+          status: true,
+          createdAt: true,
+          startedAt: true,
+          inputJson: true,
+          outputJson: true,
+        },
+      });
+      const inFlight = inFlightJobs.flatMap(job => {
+        const input = asRecord(job.inputJson);
+        const rowsJson = asRecord(job.outputJson)?.videoProgress;
+        const progressRows = Array.isArray(rowsJson)
+          ? rowsJson
+              .map(asRecord)
+              .filter((r): r is Record<string, unknown> => r !== null)
+          : [];
+        const jobShot =
+          typeof input?.shotIndex === "number" && Number.isInteger(input.shotIndex)
+            ? input.shotIndex
+            : null;
+        const base = {
+          jobId: job.id,
+          status: job.status,
+          startedAt: (job.startedAt ?? job.createdAt).toISOString(),
+          recoverOnly: input?.recoverOnly === true,
+        };
+        const entryFor = (shotIndex: number | null) => {
+          const entry = progressRows.find(r => r.shotIndex === shotIndex);
+          return {
+            ...base,
+            shotIndex,
+            step: typeof entry?.step === "string" ? entry.step : null,
+            progressPct:
+              typeof entry?.progressPct === "number" ? entry.progressPct : null,
+            pollAttempts:
+              typeof entry?.pollAttempts === "number" ? entry.pollAttempts : null,
+          };
+        };
+        if (jobShot != null) return [entryFor(jobShot)];
+        const shotsInProgress = progressRows
+          .map(r => r.shotIndex)
+          .filter((v): v is number => Number.isInteger(v));
+        return shotsInProgress.length
+          ? shotsInProgress.map(entryFor)
+          : [entryFor(null)];
+      });
+
       return {
+        inFlight,
         conceptId: concept.id,
         ...status,
         audio: audio.ok

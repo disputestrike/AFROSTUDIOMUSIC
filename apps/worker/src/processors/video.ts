@@ -87,6 +87,14 @@ interface VideoProgress {
    *  a dead prediction can never trap the scene in a recover-forever loop —
    *  the next render press bills and renders fresh, honestly. */
   unrecoverable?: string;
+  /** LIVE METER heartbeat (persisted every poll tick so the UI can show
+   *  motion that is TRUE): poll count, last-seen time, the engine-reported
+   *  percent when its logs print one (never fabricated), and the current
+   *  step ("engine-rendering" | "downloading" | "done"). */
+  pollAttempts?: number;
+  lastPollAt?: string;
+  progressPct?: number;
+  step?: string;
 }
 
 const ASPECT: Record<VideoPayload["format"], VideoShotInput["aspectRatio"]> = {
@@ -513,6 +521,20 @@ export async function processVideo(p: VideoPayload) {
         if (render.estimatedCostUsd != null) {
           reportedCostUsd = render.estimatedCostUsd;
         }
+        // LIVE METER heartbeat — persist real progress each tick ("it doesn't
+        // show anything was working" — owner). Attempts + engine-reported
+        // percent + step; the assembly endpoint serves these to the meter.
+        const beat =
+          existing ?? progress.find(item => item.shotIndex === shotIndex);
+        if (beat) {
+          beat.pollAttempts = attempts;
+          beat.lastPollAt = new Date().toISOString();
+          if (typeof render.progressPct === "number") {
+            beat.progressPct = render.progressPct;
+          }
+          beat.step = "engine-rendering";
+          await save(beat.externalId ?? render.externalId ?? undefined);
+        }
       }
       if (stillRunning) continue;
       if (render.status !== "succeeded" || !render.output) {
@@ -552,6 +574,7 @@ export async function processVideo(p: VideoPayload) {
         knownCostUsd += shotCost;
         hasCostEvidence = true;
       }
+      entry.step = "downloading";
       await save(entry.externalId);
       let stored: Awaited<ReturnType<typeof storeVideo>>;
       try {
@@ -628,6 +651,7 @@ export async function processVideo(p: VideoPayload) {
       });
 
       entry.state = "succeeded";
+      entry.step = "done";
       entry.externalId = render.externalId ?? entry.externalId;
       entry.url = stored.url;
       entry.durationS = stored.inspection.durationS;

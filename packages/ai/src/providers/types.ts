@@ -12,6 +12,10 @@ export interface ProviderJobResult<T = unknown> {
   error?: string;
   estimatedCostUsd?: number;
   pollAfterMs?: number;
+  /** ENGINE-REPORTED percent complete (parsed from provider logs), 0–100.
+   *  Only ever set from a real engine signal — the UI meter law forbids a
+   *  fabricated number, so absent means "show honest indeterminate motion". */
+  progressPct?: number;
 }
 
 export interface MusicGenerationInput {
