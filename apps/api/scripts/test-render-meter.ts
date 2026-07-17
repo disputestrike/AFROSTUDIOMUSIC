@@ -48,23 +48,30 @@ function testWiring(): void {
     /entry\.step = "downloading";\s*await save\(entry\.externalId\);/,
     "the download stage must be visible"
   );
-  // PAID-BYTES CONFORM LAW (2026-07-17 live incident: nine finished, paid
-  // clips rejected for their shape). A shape mismatch is FIXED locally —
-  // conform + re-inspect; every other QC failure stays fatal.
+  // NATIVE-MASTER LAW (2026-07-17, owner: "once we get the render, we keep
+  // it — fix it on our side"). A shape mismatch keeps the engine's ORIGINAL
+  // pixels verbatim, certified against the shape they actually are; per-cut
+  // copies conform at assembly. Ingest NEVER crops a paid render; every
+  // other QC failure stays fatal.
   assert.match(
     worker,
-    /if \(!\/aspect ratio does not match\/\.test\(\(error as Error\)\.message \?\? ""\)\) \{\s*throw error;\s*\}\s*bytes = await conformAspect\(bytes, format\);\s*conformed = true;/,
-    "aspect mismatch must conform paid bytes, never reject them"
+    /if \(!\/aspect ratio does not match\/\.test\(\(error as Error\)\.message \?\? ""\)\) \{\s*throw error;\s*\}/,
+    "only the shape mismatch is tolerated — other QC failures stay fatal"
   );
   assert.match(
     worker,
-    /aspectConformed: stored\.conformed/,
-    "conformed clips must carry honest provenance"
+    /for \(const actual of \["landscape", "vertical", "square"\] as const\)[\s\S]{0,400}nativeFormat = actual;/,
+    "mismatched clips are certified against their ACTUAL shape"
+  );
+  assert.doesNotMatch(
+    worker.slice(worker.indexOf("async function storeVideo")),
+    /conformAspect\(bytes, format\)/,
+    "ingest must never crop paid pixels (per-cut copies conform at assembly)"
   );
   assert.match(
     worker,
-    /vertical:\s*\n?\s*"crop=min\(iw\\\\,ih\*9\/16\):min\(ih\\\\,iw\*16\/9\),scale=720:1280/,
-    "vertical conform filter present"
+    /aspectNative: true,\s*actualFormat: stored\.nativeFormat,/,
+    "native-kept clips must carry honest provenance"
   );
   assert.match(
     worker,

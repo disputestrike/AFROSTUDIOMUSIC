@@ -224,7 +224,13 @@ async function storeVideo(
   format: VideoPayload["format"],
   output: VideoRenderOutput,
   expectedDurationS: number
-): Promise<{ url: string; inspection: VideoInspection; conformed: boolean }> {
+): Promise<{
+  url: string;
+  inspection: VideoInspection;
+  /** Set when the engine returned a different shape than requested and the
+   *  NATIVE bytes were kept verbatim (certified against their actual shape). */
+  nativeFormat: VideoPayload["format"] | null;
+}> {
   if (!output.videoBytes && !output.videoUrl) {
     throw new Error("video provider returned no media");
   }
@@ -239,7 +245,7 @@ async function storeVideo(
     throw new Error("video provider returned empty or oversized media");
   }
   if (format === "square") bytes = await cropSquare(bytes);
-  let conformed = false;
+  let nativeFormat: VideoPayload["format"] | null = null;
   let inspection: VideoInspection;
   try {
     inspection = await inspectVideoBytes(bytes, {
@@ -248,19 +254,33 @@ async function storeVideo(
       maxBytes: MAX_VIDEO_BYTES,
     });
   } catch (error) {
-    // PAID-BYTES CONFORM LAW: a shape mismatch is FIXED, never fatal. Every
-    // other QC failure (codec, container, duration, corrupt bytes) still
-    // fails honestly.
+    // NATIVE-MASTER LAW (2026-07-17, owner: "once we get the render, we keep
+    // it — fix it on our side"): the engine's original pixels are stored
+    // VERBATIM. Some engines pick their own frame; cropping at ingest
+    // destroyed paid picture (live incident: widescreen masters cropped to a
+    // 9:16 sliver, then pillarboxed back into the widescreen full cut). A
+    // shape mismatch is certified against the shape the clip actually IS —
+    // requested vs actual rides the meta, and each cut (full 16:9 / teaser
+    // 9:16) conforms its own COPY at assembly. Every other QC failure
+    // (codec, container, duration, corrupt bytes) still fails honestly.
     if (!/aspect ratio does not match/.test((error as Error).message ?? "")) {
       throw error;
     }
-    bytes = await conformAspect(bytes, format);
-    conformed = true;
-    inspection = await inspectVideoBytes(bytes, {
-      format,
-      expectedDurationS,
-      maxBytes: MAX_VIDEO_BYTES,
-    });
+    for (const actual of ["landscape", "vertical", "square"] as const) {
+      if (actual === format) continue;
+      try {
+        inspection = await inspectVideoBytes(bytes, {
+          format: actual,
+          expectedDurationS,
+          maxBytes: MAX_VIDEO_BYTES,
+        });
+        nativeFormat = actual;
+        break;
+      } catch {
+        // not this shape either — keep looking
+      }
+    }
+    if (!nativeFormat) throw error; // no known shape fits — honest failure
   }
   const url = await uploadBytes({
     workspaceId,
@@ -269,7 +289,7 @@ async function storeVideo(
     ext: "mp4",
     contentType: "video/mp4",
   });
-  return { url, inspection, conformed };
+  return { url, inspection: inspection!, nativeFormat };
 }
 export async function processVideo(p: VideoPayload) {
   await markRunning(p.jobId);
@@ -652,13 +672,18 @@ export async function processVideo(p: VideoPayload) {
         container: stored.inspection.container,
         qualityState: stored.inspection.qualityState,
         sourceAspectRatio:
-          stored.conformed || input.aspectRatio === "1:1"
-            ? "16:9"
-            : input.aspectRatio,
+          input.aspectRatio === "1:1" ? "16:9" : input.aspectRatio,
         outputAspectRatio: input.aspectRatio,
-        // HONEST PROVENANCE: true when the engine returned a different frame
-        // and we conformed the paid bytes locally instead of rejecting them.
-        aspectConformed: stored.conformed,
+        // NATIVE-MASTER PROVENANCE: when the engine chose its own frame, the
+        // stored clip IS that frame — untouched paid pixels; the requested
+        // shape is derived per-cut at assembly, never at ingest.
+        ...(stored.nativeFormat
+          ? {
+              aspectNative: true,
+              actualFormat: stored.nativeFormat,
+              actualAspectRatio: ASPECT[stored.nativeFormat],
+            }
+          : {}),
         // Class language for user surfaces; the provider column stays internal.
         engineClass: p.engineClass ?? null,
         // LIKENESS PROVENANCE — every likeness render says whose face, under

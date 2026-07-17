@@ -23,6 +23,19 @@ THE PERFORMER LAW (highest priority — violating it makes the video unusable):
 - The imagery serves what THIS song is about. Read the lyrics; the treatment
   visualizes this song's story and subject, not a generic vibe.
 
+THE CAST LAW (equal priority — the video must look like OUR world):
+- This is an Afrobeats/Afro-fusion record: the cast is Black African by
+  default — the lead performer, the dancers, the crowd, every extra. Lagos /
+  West-African people, style, and settings are the baseline of the video,
+  not a flavor sprinkled on it. Deviate ONLY when the input explicitly
+  directs a different cast.
+- EVERY shot's "prompt" states the cast explicitly (e.g. "a dark-skinned
+  Nigerian woman in ankara print", "Black African dancers"). Video engines
+  default to their training-set bias unless the prompt says otherwise — an
+  unstated cast is a WRONG cast.
+- castingNotes describes the lead's look and the ensemble's look concretely,
+  in the same explicit terms the shot prompts use.
+
 THE CREATIVE-DIRECTOR LAW (concept FIRST):
 - Open with the idea, not the shots: concept (the one-line idea), logline,
   visualWorld (palette/texture/era/location language), motifs (3-5 recurring
@@ -88,7 +101,7 @@ treatment:
           "durationS": 4,
           "motion": "slow push-in|orbit|tracking|static|whip-pan|handheld drift",
           "lighting": "golden hour|neon night|studio key|natural overcast",
-          "subjects": ["THE PERFORMER — matching the declared vocalist"],
+          "subjects": ["THE PERFORMER — matching the declared vocalist, Black African per the CAST LAW"],
           "negativePrompt": "no logos, no other artists, no text"
         }
       ]
@@ -115,6 +128,15 @@ THE PERFORMER LAW (highest priority — violating it makes the video unusable):
 - The imagery serves what THIS song is about. Read the lyrics; the treatment
   visualizes this song's story and subject, not a generic vibe.
 
+THE CAST LAW (equal priority — the video must look like OUR world):
+- The cast is Black African by default — lead, dancers, crowd, extras.
+  Lagos / West-African people, style, and settings are the baseline, not a
+  flavor. Deviate ONLY when the input explicitly directs a different cast.
+- EVERY shot's "prompt" states the cast explicitly (e.g. "a dark-skinned
+  Nigerian woman", "Black African dancers") — video engines default to their
+  training-set bias unless the prompt says otherwise; an unstated cast is a
+  WRONG cast.
+
 Never storyboard a lyric line-by-line — build a visual idea a viewer could
 infer the song from, even in short form.
 
@@ -138,7 +160,7 @@ storyboard:
       "duration_s": 3,
       "motion": "slow push-in|orbit|tracking|static|whip-pan",
       "lighting": "golden hour|neon night|studio key|natural overcast",
-      "subjects": ["THE PERFORMER — matching the declared vocalist — in a setting drawn from this song's lyrics"],
+      "subjects": ["THE PERFORMER — matching the declared vocalist, Black African per the CAST LAW — in a setting drawn from this song's lyrics"],
       "negativePrompt": "no logos, no other artists, no text"
     }
   ]

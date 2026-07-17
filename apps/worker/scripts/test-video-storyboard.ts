@@ -1,5 +1,26 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { normalizeStoryboardShots, videoRenderUsage } from "@afrohit/shared";
+
+// THE CAST LAW (2026-07-17, owner feedback: the rendered cast defaulted to
+// engine training-set bias). Both video brains must direct the cast
+// EXPLICITLY in every shot prompt — pin the law in BOTH prompts so no
+// rewrite can silently drop it.
+{
+  const prompts = readFileSync(
+    join(process.cwd(), "../../packages/ai/src/prompts/storyboard.ts"),
+    "utf8"
+  );
+  const castLawCount = (prompts.match(/THE CAST LAW/g) ?? []).length;
+  assert.ok(
+    castLawCount >= 2,
+    "the cast law must live in BOTH video brains (treatment + legacy)"
+  );
+  assert.match(prompts, /Black African by\s+default/);
+  assert.match(prompts, /EVERY shot's "prompt" states the cast explicitly/);
+  assert.match(prompts, /unstated cast is a WRONG cast/);
+}
 
 const normalized = normalizeStoryboardShots(
   [
