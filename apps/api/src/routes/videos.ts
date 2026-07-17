@@ -336,7 +336,9 @@ export default async function videos(app: FastifyInstance) {
 
       const result = await generateJson<Record<string, unknown>>({
         task: "video-treatment",
-        system: prompts.VIDEO_TREATMENT_SYSTEM,
+        // The researched SCENE GRAMMAR rides with the director's laws —
+        // named choreography, section shot-language, BPM cut math, variety.
+        system: prompts.VIDEO_TREATMENT_SYSTEM + "\n\n" + prompts.SCENE_GRAMMAR,
         user: JSON.stringify({
           artist: {
             stageName: project.artist.stageName,
@@ -387,10 +389,94 @@ export default async function videos(app: FastifyInstance) {
           note: `performer law failed — missing lead(s): ${missingLeads.join(", ")}. Regenerate the plan.`,
         });
       }
+
+      // PACKAGE C — THE DIRECTOR'S ROOM. A second brain reviews the plan
+      // against a fixed rubric BEFORE render money exists to spend. The
+      // ANTI-ASSUMPTION TRIPWIRE: a review that cannot quote the lyrics it
+      // grounded in (or says "I assume") is discarded. One MINIMAL repair
+      // round max; the repair changes ONLY what the critic named and must
+      // re-pass the same normalize + duet gates. Best-effort by law: critic
+      // trouble never blocks the artist — the original plan stands.
+      let finalTreatment = treatment;
+      let finalResult: Record<string, unknown> = result;
+      let criticReport: Record<string, unknown> | null = null;
+      try {
+        const lyricsText = songPayload?.lyrics ?? "";
+        if (lyricsText) {
+          const review = await generateJson<{
+            lyricsRead?: string;
+            scores?: Record<string, number>;
+            verdict?: string;
+            fixes?: string[];
+          }>({
+            task: "video-treatment-critic",
+            system: prompts.TREATMENT_CRITIC_SYSTEM,
+            user: JSON.stringify({
+              lyrics: lyricsText,
+              performers,
+              treatment: finalResult,
+            }),
+            temperature: 0.2,
+            maxTokens: 1_200,
+            timeoutMs: 60_000,
+          });
+          const quoted = (review.lyricsRead ?? "").trim();
+          const grounded =
+            quoted.length > 10 &&
+            !/i assume/i.test(quoted) &&
+            quoted
+              .split(/\n|\|/)
+              .some(line => line.trim() && lyricsText.includes(line.trim().slice(0, 24)));
+          if (grounded) {
+            criticReport = {
+              lyricsRead: quoted.slice(0, 500),
+              scores: review.scores ?? {},
+              verdict: review.verdict === "revise" ? "revise" : "pass",
+              fixes: (review.fixes ?? []).slice(0, 8),
+            };
+            if (
+              criticReport.verdict === "revise" &&
+              (criticReport.fixes as string[]).length
+            ) {
+              const repaired = await generateJson<Record<string, unknown>>({
+                task: "video-treatment-repair",
+                system: prompts.TREATMENT_REPAIR_SYSTEM,
+                user: JSON.stringify({
+                  original: finalResult,
+                  fixes: criticReport.fixes,
+                }),
+                temperature: 0.3,
+                maxTokens: 6_000,
+                timeoutMs: 120_000,
+              });
+              const repairedTreatment = normalizeVideoTreatment(repaired, {
+                durationS: targetDurationS,
+                sections,
+                structureSource,
+              });
+              if (
+                repairedTreatment &&
+                !missingDuetLeads(performers, repairedTreatment).length
+              ) {
+                finalTreatment = repairedTreatment;
+                finalResult = repaired;
+                criticReport.repaired = true;
+              } else {
+                criticReport.repairFailed = true; // honest: original stands
+              }
+            }
+          }
+        }
+      } catch (criticError) {
+        req.log.warn(
+          { err: criticError },
+          "treatment critic skipped — the original plan stands"
+        );
+      }
       const title =
-        typeof result.title === "string" && result.title.trim()
-          ? result.title.trim().slice(0, 200)
-          : treatment.concept.slice(0, 200);
+        typeof finalResult.title === "string" && (finalResult.title as string).trim()
+          ? (finalResult.title as string).trim().slice(0, 200)
+          : finalTreatment.concept.slice(0, 200);
       const concept = await prisma.videoConcept.create({
         data: {
           projectId: project.id,
@@ -403,12 +489,13 @@ export default async function videos(app: FastifyInstance) {
           // .shots array is the flat compatibility view every legacy reader
           // (per-shot billing, worker payload, lyric-panel list) extracts via
           // storyboardShots().
-          storyboard: treatment as never,
-          durationS: treatment.durationS,
+          storyboard: finalTreatment as never,
+          durationS: finalTreatment.durationS,
           format: input.format,
           // PACKAGE B: the roster rides the concept so the render worker can
           // build one character sheet per lead ("same faces all video").
-          meta: { performers } as never,
+          // PACKAGE C: the critic's grounded verdict rides beside it.
+          meta: { performers, ...(criticReport ? { criticReport } : {}) } as never,
         },
       });
 

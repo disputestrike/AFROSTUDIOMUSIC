@@ -8,3 +8,4 @@ export * from './storyboard';
 export * from './melody';
 export * from './hit-predictor';
 export * from './hit-craft';
+export * from './scene-grammar';
