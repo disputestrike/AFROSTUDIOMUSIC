@@ -118,10 +118,26 @@ export async function presignUpload(opts: {
   };
 }
 
-export async function presignDownload(key: string, expiresInSec = 3600) {
+export async function presignDownload(
+  key: string,
+  expiresInSec = 3600,
+  downloadName?: string
+) {
   return getSignedUrl(
     client(),
-    new GetObjectCommand({ Bucket: bucket, Key: key }),
+    new GetObjectCommand({
+      Bucket: bucket,
+      Key: key,
+      // NAMED DOWNLOADS ("name the video" — owner): the saved file carries the
+      // record's real name ("BENXP - A.I Baddie (Official Video).mp4"), not a
+      // storage hash. Cross-origin `download` attributes are ignored by
+      // browsers; the disposition header is the only reliable way.
+      ...(downloadName
+        ? {
+            ResponseContentDisposition: `attachment; filename="${downloadName.replace(/[^\w .,()\-\[\]&']/g, '_')}"`,
+          }
+        : {}),
+    }),
     {
       expiresIn: Math.max(60, Math.min(expiresInSec, 3600)),
     }
@@ -130,7 +146,8 @@ export async function presignDownload(key: string, expiresInSec = 3600) {
 
 export async function presignAssetRef(
   value: string,
-  expiresInSec = 3600
+  expiresInSec = 3600,
+  downloadName?: string
 ): Promise<string> {
   const canonical = canonicalAssetRef(value);
   if (!canonical) {
@@ -138,7 +155,7 @@ export async function presignAssetRef(
     return value;
   }
   const location = parseStorageUri(canonical)!;
-  return presignDownload(location.key, expiresInSec);
+  return presignDownload(location.key, expiresInSec, downloadName);
 }
 
 /** Validate a canonical private reference and return true when one was supplied. */

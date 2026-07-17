@@ -339,6 +339,9 @@ type AssemblyArtifact = {
   id: string;
   kind: "full" | "teaser";
   url: string;
+  /** Named download ("ARTIST - TITLE (Official Video).mp4") — disposition-signed. */
+  downloadUrl?: string;
+  displayName?: string;
   durationS: number | null;
   coveredS: number | null;
   songDurationS: number | null;
@@ -2503,9 +2506,10 @@ export default function CatalogGrid({ initial }: { initial: SongRow[] }) {
                           return (
                             <div key={artifact.id} className="mt-2">
                               <div className="mb-1 text-[11px] font-medium text-slate-300">
-                                {kind === "full"
-                                  ? "Full video (1920×1080)"
-                                  : "Teaser (1080×1920)"}
+                                {artifact.displayName ??
+                                  (kind === "full"
+                                    ? "Full video (1920×1080)"
+                                    : "Teaser (1080×1920)")}
                                 {artifact.durationS != null
                                   ? ` · ${mmss(artifact.durationS)}`
                                   : ""}
@@ -2520,7 +2524,7 @@ export default function CatalogGrid({ initial }: { initial: SongRow[] }) {
                               />
                               <div className="mt-1 flex flex-wrap items-center gap-2 text-[11px] text-slate-400">
                                 <a
-                                  href={artifact.url}
+                                  href={artifact.downloadUrl ?? artifact.url}
                                   download
                                   className="underline hover:text-slate-200"
                                 >

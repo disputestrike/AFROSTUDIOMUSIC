@@ -45,7 +45,7 @@ assert.match(
 // --- Assembly endpoint: finished cuts leave presigned, both kinds.
 assert.match(
   videos,
-  /for \(const kind of \["full", "teaser"\] as const\) \{\s*const artifact = assemblies\[kind\];\s*if \(artifact\) artifact\.url = await presignAssetRef\(artifact\.url, 3600\);/,
+  /const storedRef = artifact\.url;\s*artifact\.url = await presignAssetRef\(storedRef, 3600\);/,
   "the assembly endpoint must presign finished cuts before they reach the client"
 );
 
@@ -65,4 +65,38 @@ assert.doesNotMatch(
   "the chip must never trigger a render — surfacing paid work only"
 );
 
-console.log("video cards: presence law, presigned cuts, card player, and no-hidden-render chip all hold");
+// --- VIDEO NAMING LAW ("name the video — name and producer" — owner).
+const assemble = readFileSync(
+  join(process.cwd(), "../worker/src/processors/assemble-video.ts"),
+  "utf8"
+);
+const assembleAt = assemble.indexOf("assembleMusicVideoTimeline({");
+const overlayAt = assemble.indexOf("overlayVideoCredits({", assembleAt);
+const inspectAt = assemble.indexOf("inspectVideoBytes(", overlayAt);
+const uploadAt = assemble.indexOf("uploadBytes(", inspectAt);
+assert.ok(
+  assembleAt >= 0 && overlayAt > assembleAt && inspectAt > overlayAt && uploadAt > inspectAt,
+  "credits burn AFTER assembly and BEFORE certification/upload"
+);
+assert.match(assemble, /credits overlay skipped/, "credits are best-effort — paid work never fails for a font");
+assert.match(assemble, /\n\s+credits,\r?\n/, "assembly meta must carry the credit provenance");
+const ffmpegLib = readFileSync(
+  join(process.cwd(), "../worker/src/lib/ffmpeg.ts"),
+  "utf8"
+);
+assert.match(ffmpegLib, /export async function overlayVideoCredits/, "overlay helper exists");
+assert.match(ffmpegLib, /textfile='/, "credit text rides textfiles (quote/colon-proof)");
+assert.match(ffmpegLib, /enable='between\(t,0\.8,5\.2\)'/, "opening-credit window pinned");
+assert.match(
+  videos,
+  /downloadUrl = await presignAssetRef\(\s*storedRef,\s*3600,\s*`\$\{displayName\}\.mp4`\s*\)/,
+  "downloads are disposition-named after the record"
+);
+assert.match(videos, /Official Video/, "the full cut is named like a release");
+assert.match(
+  grid,
+  /href=\{artifact\.downloadUrl \?\? artifact\.url\}/,
+  "the modal download uses the named URL"
+);
+
+console.log("video cards: presence law, presigned cuts, card player, no-hidden-render chip, and naming law all hold");

@@ -7,7 +7,9 @@ import { markFailed, markRunning, markSucceeded } from "../lib/jobs";
 import { downloadToBuffer, uploadBytes } from "../lib/storage";
 import {
   assembleMusicVideoTimeline,
+  ensureDisplayFont,
   ffmpegAvailable,
+  overlayVideoCredits,
   ASSEMBLY_FPS,
   type AssemblyTimelineClip,
 } from "../lib/ffmpeg";
@@ -146,10 +148,56 @@ export async function processAssembleVideo(p: AssembleVideoPayload) {
       onStage: name => stage(name),
     });
 
+    // 2b) VIDEO NAMING LAW ("name the video — name and producer" — owner):
+    //     burn the opening credit — TITLE / artist / producer — into the cut.
+    //     Best-effort by design: no font or no song row → the cut ships
+    //     uncredited rather than failing paid work; meta.credits says which.
+    let creditedPath = result.path;
+    let credits: { title: string; artist: string; producer: string } | null =
+      null;
+    try {
+      const song = p.audio.songId
+        ? await prisma.song.findFirst({
+            where: { id: p.audio.songId },
+            select: {
+              title: true,
+              lyric: { select: { title: true } },
+              project: { select: { artist: { select: { stageName: true } } } },
+            },
+          })
+        : null;
+      if (song) {
+        const credit = {
+          title: (song.lyric?.title || song.title || "Untitled").trim(),
+          artist: song.project.artist.stageName?.trim() || "AfroHit Artist",
+          producer: "AfroHit Studio",
+        };
+        const fontPath = await ensureDisplayFont();
+        if (fontPath) {
+          const withCredits = join(workDir, `credited-${p.kind}.mp4`);
+          await overlayVideoCredits({
+            input: result.path,
+            output: withCredits,
+            ...credit,
+            fontPath,
+            width: result.width,
+            height: result.height,
+          });
+          creditedPath = withCredits;
+          credits = credit;
+        }
+      }
+    } catch (creditError) {
+      console.warn(
+        `[assemble ${p.jobId}] credits overlay skipped:`,
+        (creditError as Error).message
+      );
+    }
+
     // 3) UPLOAD to owned storage + honest measured metadata. inspectVideoBytes
     //    is the same QC every provider render passes: h264/mp4/aspect/decode.
     await stage("uploading");
-    const bytes = await readFile(result.path);
+    const bytes = await readFile(creditedPath);
     const inspection = await inspectVideoBytes(bytes, {
       format: p.kind === "full" ? "landscape" : "vertical",
       expectedDurationS: result.durationS,
@@ -180,6 +228,9 @@ export async function processAssembleVideo(p: AssembleVideoPayload) {
       // HONEST LOOP PROVENANCE — 1 means every frame is unique; >1 means the
       // rendered scenes cycle to carry the whole record.
       loopedCycles: result.loopedCycles,
+      // VIDEO NAMING provenance — what the opening credit says (null = the
+      // cut shipped uncredited: no font or no bound song).
+      credits,
       width: inspection.width,
       height: inspection.height,
       fps: ASSEMBLY_FPS,

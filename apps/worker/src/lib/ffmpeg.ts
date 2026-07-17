@@ -1947,6 +1947,81 @@ export async function muxTimelineAudio(opts: {
   ]);
 }
 
+/** Best-effort display font for on-video text (cached across jobs). The
+ *  snippet engine's own graceful law: no font → the caller skips the text
+ *  honestly rather than failing the job. */
+export async function ensureDisplayFont(): Promise<string | undefined> {
+  const cached = join(tmpdir(), 'afrohit-anton.ttf');
+  try {
+    const existing = await readFile(cached);
+    if (existing.length > 10_000) return cached;
+  } catch {
+    // not cached yet
+  }
+  try {
+    const res = await fetch('https://github.com/google/fonts/raw/main/ofl/anton/Anton-Regular.ttf');
+    if (!res.ok) return undefined;
+    const buf = Buffer.from(await res.arrayBuffer());
+    await writeFile(cached, buf);
+    return cached;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * VIDEO NAMING LAW ("name the video — name and producer" — owner): burn a
+ * broadcast-style opening credit into an assembled cut. Lower-left, three
+ * lines — TITLE / artist / producer — visible ~0.8s-5.2s with a drop shadow;
+ * text rides textfiles so titles with quotes/colons can never break the
+ * filter. One extra encode pass; the input file is left untouched (the
+ * native-master law applies to finished cuts too).
+ */
+export async function overlayVideoCredits(opts: {
+  input: string;
+  output: string;
+  title: string;
+  artist: string;
+  producer?: string;
+  fontPath: string;
+  width: number;
+  height: number;
+}): Promise<void> {
+  const dir = await mkdtemp(join(tmpdir(), 'credits-'));
+  try {
+    const lines = [
+      { text: opts.title.toUpperCase(), size: Math.round(opts.height * 0.052), dy: 0 },
+      { text: opts.artist, size: Math.round(opts.height * 0.034), dy: Math.round(opts.height * 0.066) },
+      ...(opts.producer
+        ? [{ text: `Prod. ${opts.producer}`, size: Math.round(opts.height * 0.024), dy: Math.round(opts.height * 0.112) }]
+        : []),
+    ];
+    const filters: string[] = [];
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i]!;
+      const textPath = join(dir, `line-${i}.txt`);
+      await writeFile(textPath, line.text);
+      const x = Math.round(opts.width * 0.055);
+      const y = Math.round(opts.height * 0.7) + line.dy;
+      filters.push(
+        `drawtext=fontfile='${opts.fontPath.replace(/\\/g, '/').replace(/:/g, '\\:')}':textfile='${textPath.replace(/\\/g, '/').replace(/:/g, '\\:')}'` +
+          `:fontcolor=white:fontsize=${line.size}:x=${x}:y=${y}` +
+          `:shadowcolor=black@0.75:shadowx=2:shadowy=2:enable='between(t,0.8,5.2)'`
+      );
+    }
+    await runFfmpeg([
+      '-i', opts.input,
+      '-vf', filters.join(','),
+      '-c:a', 'copy',
+      ...ASSEMBLY_ENCODE,
+      '-movflags', '+faststart',
+      opts.output,
+    ]);
+  } finally {
+    await rm(dir, { recursive: true, force: true }).catch(() => {});
+  }
+}
+
 export interface AssemblyTimelineClip {
   /** LOCAL path to the downloaded rendered shot. */
   path: string;

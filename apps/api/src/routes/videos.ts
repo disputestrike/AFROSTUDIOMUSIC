@@ -770,10 +770,34 @@ export default async function videos(app: FastifyInstance) {
       }
       // PLAYABLE BY CONTRACT: a private-storage ref can never reach a <video>
       // tag — the finished cut the modal (and the song card) plays must be a
-      // time-limited streaming URL, exactly like catalog audio.
+      // time-limited streaming URL, exactly like catalog audio. And NAMED
+      // DOWNLOADS ("name the video" — owner): the saved file carries the
+      // record's real name, never a storage hash.
+      const creditSong = concept.songId
+        ? await prisma.song.findFirst({
+            where: { id: concept.songId },
+            select: {
+              title: true,
+              lyric: { select: { title: true } },
+              project: { select: { artist: { select: { stageName: true } } } },
+            },
+          })
+        : null;
+      const displayBase = creditSong
+        ? `${creditSong.project.artist.stageName?.trim() || "AfroHit Artist"} - ${(creditSong.lyric?.title || creditSong.title || "Untitled").trim()}`
+        : "AfroHit Video";
       for (const kind of ["full", "teaser"] as const) {
         const artifact = assemblies[kind];
-        if (artifact) artifact.url = await presignAssetRef(artifact.url, 3600);
+        if (!artifact) continue;
+        const displayName = `${displayBase} (${kind === "full" ? "Official Video" : "Teaser"})`;
+        const storedRef = artifact.url;
+        artifact.url = await presignAssetRef(storedRef, 3600);
+        (artifact as Record<string, unknown>).displayName = displayName;
+        (artifact as Record<string, unknown>).downloadUrl = await presignAssetRef(
+          storedRef,
+          3600,
+          `${displayName}.mp4`
+        );
       }
 
       // LIVE METER ("it doesn't show anything was working" — owner): scenes
