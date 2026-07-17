@@ -82,12 +82,16 @@ const FILM_STEPS = ['Setting up your session', 'Scoring the scene', 'Rendering &
 
 // THE THREE DOORS (owner spec 2026-07-16): "creators and movie creators create
 // SOUNDS, not songs… and people who just wanna create INSTRUMENTS. Three things."
-type Door = 'song' | 'instrumental' | 'film';
+type Door = 'song' | 'instrumental' | 'film' | 'video';
 const DOOR_KEY = 'afrohit.create.door.v1';
 const DOORS: Array<{ id: Door; emoji: string; title: string; sub: string }> = [
   { id: 'song', emoji: '🎤', title: 'Make a song', sub: 'The full record — hooks, lyrics, vocals' },
   { id: 'instrumental', emoji: '🎹', title: 'Make an instrumental', sub: 'A beat, a bed, a groove — no vocals' },
   { id: 'film', emoji: '🎬', title: 'Sounds for film & creators', sub: 'Score beds, risers, stingers for your scenes' },
+  // THE VERTICAL'S FRONT DOOR (owner, 2026-07-17: "somebody with a song,
+  // fully developed, can come in — we make the video for that song exactly
+  // as it is"). Suno owns songs; this door is how we own music videos.
+  { id: 'video', emoji: '🎞', title: 'Make a music video', sub: 'Bring your finished song — leave with the video' },
 ];
 
 // FILM SOUND TYPES — each rides the EXISTING instrumental machinery. A genre is
@@ -1360,6 +1364,10 @@ export default function CreatePage() {
         </div>
       )}
 
+      {door === 'video' && (
+        <VideoDoorPanel />
+      )}
+
       {/* BRING YOUR OWN — beat/chorus/vocal doors. All logic lives in the
           component; a chorus typed there lands in the from-lyrics flow above
           (same hand-off as MumbleBooth). Song-door only: its chorus/vocal
@@ -1442,4 +1450,107 @@ function BillingDiagnosisLine() {
   }, [api]);
   if (!line) return null;
   return <p className="mt-2 text-xs text-slate-500">{line}</p>;
+}
+
+
+/**
+ * DOOR 4 — MAKE A MUSIC VIDEO (the vertical's front door, owner 2026-07-17):
+ * an artist with a FINISHED song walks in, attests it is theirs, uploads it,
+ * and lands on its catalog card — where 🎬 Video writes the treatment and
+ * "Make the full video" does the rest. The song is used EXACTLY as brought
+ * (verbatim-upload law) and auto-mastered to streaming loudness ("make it
+ * perfect"). LEARNING BOUNDARY (owner's own law): we learn from the VIDEO we
+ * make — never from their song.
+ */
+function VideoDoorPanel() {
+  const api = useApi();
+  const router = useRouter();
+  const [title, setTitle] = useState('');
+  const [file, setFile] = useState<File | null>(null);
+  const [attested, setAttested] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [pct, setPct] = useState(0);
+  const [error, setError] = useState('');
+
+  async function submit() {
+    if (!file || !attested || busy) return;
+    setBusy(true);
+    setError('');
+    try {
+      const songTitle = (title.trim() || file.name.replace(/\.[a-z0-9]+$/i, '')).slice(0, 120);
+      const project = await api.post<{ id: string }>('/projects', {
+        title: songTitle,
+        genre: 'afrobeats',
+        bpm: 100,
+      });
+      const { key } = await api.uploadToStorage(file, 'reference', f => setPct(Math.round(f * 100)));
+      await api.post(`/projects/${project.id}/mixes/upload`, {
+        key,
+        title: songTitle,
+        autoMaster: true,
+        masterPreset: 'afro_stream_-9',
+      });
+      router.push('/catalog');
+    } catch (e) {
+      setError((e as Error).message?.slice(0, 160) || 'Upload failed');
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="glass mx-auto max-w-xl rounded-3xl p-6">
+      <h2 className="font-display text-2xl">🎞 Make a music video</h2>
+      <p className="mt-1 text-sm text-slate-400">
+        Bring your finished song — from anywhere. We use it exactly as it is,
+        polish the loudness for streaming, and turn it into a full music video
+        with your treatment, your cast, your credits.
+      </p>
+      <input
+        value={title}
+        onChange={e => setTitle(e.target.value)}
+        maxLength={120}
+        placeholder="Song title (or we use the filename)"
+        className="mt-4 w-full rounded-lg border border-white/10 bg-black/30 p-2.5 text-sm text-slate-200 placeholder:text-slate-600"
+      />
+      <label className="mt-3 block cursor-pointer rounded-lg border border-dashed border-white/20 bg-black/20 p-4 text-center text-sm text-slate-400 hover:bg-black/30">
+        {file ? `🎵 ${file.name}` : 'Choose your song file (MP3/WAV/M4A)'}
+        <input
+          type="file"
+          accept="audio/*"
+          className="hidden"
+          onChange={e => setFile(e.target.files?.[0] ?? null)}
+        />
+      </label>
+      <label className="mt-3 flex items-start gap-2 text-xs text-slate-400">
+        <input
+          type="checkbox"
+          checked={attested}
+          onChange={e => setAttested(e.target.checked)}
+          className="mt-0.5"
+        />
+        <span>
+          I own this recording (or hold the rights to it) and I authorize
+          AfroHit Studio to master it and create a music video from it. It is
+          not ripped from a streaming platform.
+        </span>
+      </label>
+      {busy && (
+        <div className="mt-3 h-1.5 w-full overflow-hidden rounded-full bg-white/10">
+          <div className="h-full rounded-full bg-brand-gradient transition-all" style={{ width: `${pct}%` }} />
+        </div>
+      )}
+      {error && <div className="mt-2 text-xs text-red-300">{error}</div>}
+      <button
+        disabled={!file || !attested || busy}
+        onClick={() => void submit()}
+        className="mt-4 w-full rounded-full bg-brand-gradient px-4 py-2.5 text-sm font-semibold text-ink shadow-glow disabled:opacity-40"
+      >
+        {busy ? `Uploading… ${pct}%` : 'Upload my song → make the video'}
+      </button>
+      <p className="mt-2 text-center text-[11px] text-slate-600">
+        Next: your song appears in Catalog — open its 🎬 Video panel, paste
+        your idea if you have one, and press Make the full video.
+      </p>
+    </div>
+  );
 }
