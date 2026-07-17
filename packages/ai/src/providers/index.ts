@@ -6,3 +6,4 @@ export * from './video-replicate';
 export * from './likeness';
 export * from './image';
 export * from './text';
+export * from './lipsync-replicate';

@@ -3,14 +3,18 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { prisma } from "@afrohit/db";
+import { lipSyncClip } from "@afrohit/ai";
 import { markFailed, markRunning, markSucceeded } from "../lib/jobs";
-import { downloadToBuffer, uploadBytes } from "../lib/storage";
+import { downloadToBuffer, resolveAssetForProvider, uploadBytes } from "../lib/storage";
 import {
   assembleMusicVideoTimeline,
+  computeClipAudioOffsets,
   ensureDisplayFont,
   ffmpegAvailable,
   overlayVideoCredits,
+  sliceAudioWav,
   ASSEMBLY_FPS,
+  ASSEMBLY_XFADE_S,
   type AssemblyTimelineClip,
 } from "../lib/ffmpeg";
 import { inspectVideoBytes } from "../lib/video-inspection";
@@ -133,6 +137,70 @@ export async function processAssembleVideo(p: AssembleVideoPayload) {
     const audioPath = join(workDir, "song-audio.bin");
     await writeFile(audioPath, audioBytes);
 
+    // 1b) LIP-SYNC PASS (owner: "the big issue is lip syncing"). Flag-gated
+    //     (LIPSYNC_ENABLED=1) so it never spends until the operator arms it.
+    //     Each clip is synced to the EXACT slice of the record that plays
+    //     under it (offset math mirrors the assembler's timeline and is
+    //     test-pinned against it). Per-clip BEST EFFORT: a failed sync keeps
+    //     the original clip — a mouth is never worth failing a paid cut.
+    //     First cycle only under the full-song loop law (hooks repeat their
+    //     words, so looped hook clips still roughly match).
+    let lipSync: { synced: number; failed: number; estimatedUsd: number } | null =
+      null;
+    if (process.env.LIPSYNC_ENABLED === "1" && p.kind === "full" && workDir) {
+      const syncDir = workDir;
+      lipSync = { synced: 0, failed: 0, estimatedUsd: 0 };
+      const offsets = computeClipAudioOffsets(
+        p.clips.map(clip => ({
+          slotS: clip.slotS,
+          sequenceIndex: clip.sequenceIndex,
+        })),
+        ASSEMBLY_XFADE_S
+      );
+      await Promise.all(
+        localClips.map(async (clip, index) => {
+          try {
+            const sliceOut = join(syncDir, `sync-slice-${index}.wav`);
+            await sliceAudioWav(
+              audioPath,
+              p.audio.startS + offsets[index]!,
+              clip.slotS,
+              sliceOut
+            );
+            const sliceRef = await uploadBytes({
+              workspaceId: p.workspaceId,
+              kind: "videos/sync-slices",
+              bytes: await readFile(sliceOut),
+              contentType: "audio/wav",
+              ext: "wav",
+            });
+            const result = await lipSyncClip({
+              videoUrl: await resolveAssetForProvider(p.clips[index]!.url, 3600),
+              audioUrl: await resolveAssetForProvider(sliceRef, 3600),
+            });
+            if (result.status !== "succeeded" || !result.videoUrl) {
+              throw new Error(result.error ?? "lip-sync failed");
+            }
+            const syncedBytes = await downloadToBuffer(result.videoUrl, {
+              maxBytes: MAX_CLIP_BYTES,
+              timeoutMs: 10 * 60_000,
+            });
+            if (!syncedBytes.length) throw new Error("empty synced clip");
+            await writeFile(clip.path, syncedBytes);
+            lipSync!.synced += 1;
+            lipSync!.estimatedUsd += clip.slotS * 0.014;
+          } catch (syncError) {
+            lipSync!.failed += 1;
+            console.warn(
+              `[assemble ${p.jobId}] lip-sync kept the original for clip ${index}:`,
+              (syncError as Error).message
+            );
+          }
+        })
+      );
+      lipSync.estimatedUsd = Math.round(lipSync.estimatedUsd * 1000) / 1000;
+    }
+
     // 2) ASSEMBLE — the exact function the proof harness measures.
     const result = await assembleMusicVideoTimeline({
       workDir,
@@ -231,6 +299,9 @@ export async function processAssembleVideo(p: AssembleVideoPayload) {
       // VIDEO NAMING provenance — what the opening credit says (null = the
       // cut shipped uncredited: no font or no bound song).
       credits,
+      // LIP-SYNC receipt (null = pass disabled): clips synced vs kept, and
+      // the honest engine spend estimate.
+      lipSync,
       width: inspection.width,
       height: inspection.height,
       fps: ASSEMBLY_FPS,

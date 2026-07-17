@@ -337,6 +337,7 @@ async function runOfflineTests(): Promise<void> {
     ["Video shot billing", "test-video-storyboard.ts"],
     ["Video class pricing + render-all parity", "test-video-pricing.ts"],
     ["Video assembly gating (full/teaser)", "test-video-assembly.ts"],
+    ["Lip-sync laws (engine body/offsets/gate)", "test-lipsync.ts"],
     ["Video render evidence", "test-video-evidence.ts"],
     ["Media adapters fail closed", "test-media-adapter-safety.ts"],
     ["Email delivery truth", "test-email-delivery.ts"],

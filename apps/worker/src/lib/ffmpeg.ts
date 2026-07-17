@@ -2211,3 +2211,47 @@ export async function assembleMusicVideoTimeline(opts: {
     loopedCycles,
   };
 }
+
+// ===========================================================================
+// LIP-SYNC SUPPORT (2026-07-17). The sync engine takes ONE clip + the EXACT
+// slice of the record that plays under it — these two helpers provide the
+// slice and the math that finds it.
+// ===========================================================================
+
+/** PURE: each clip's start offset (seconds) inside the assembled timeline.
+ *  Hard cuts within a sequence accumulate slots; each sequence boundary in a
+ *  crossfaded ('full') cut overlaps by xfadeS. Mirrors the assembler's own
+ *  timeline construction — pinned by test so they can never drift apart. */
+export function computeClipAudioOffsets(
+  clips: Array<{ slotS: number; sequenceIndex: number }>,
+  xfadeS: number
+): number[] {
+  const offsets: number[] = [];
+  let cursor = 0;
+  for (let i = 0; i < clips.length; i++) {
+    if (i > 0 && clips[i]!.sequenceIndex !== clips[i - 1]!.sequenceIndex) {
+      cursor = Math.max(0, cursor - xfadeS);
+    }
+    offsets.push(Math.round(cursor * 1000) / 1000);
+    cursor += clips[i]!.slotS;
+  }
+  return offsets;
+}
+
+/** Slice [startS, startS+durS) of an audio file to a mono-compatible WAV
+ *  (the sync engine's safest format; <5MB for a 6s slice by construction). */
+export async function sliceAudioWav(
+  input: string,
+  startS: number,
+  durS: number,
+  output: string
+): Promise<void> {
+  await runFfmpeg([
+    '-y', '-hide_banner', '-loglevel', 'error',
+    '-ss', Math.max(0, startS).toFixed(3),
+    '-t', Math.max(0.5, durS).toFixed(3),
+    '-i', input,
+    '-ac', '2', '-ar', '44100', '-c:a', 'pcm_s16le',
+    output,
+  ]);
+}
