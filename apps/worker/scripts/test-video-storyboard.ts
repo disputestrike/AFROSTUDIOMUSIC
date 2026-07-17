@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { missingDuetLeads, normalizeStoryboardShots, performersFromVoice, videoRenderUsage } from "@afrohit/shared";
+import { characterSheetPrompt, decorateTreatmentShotsForRender, missingDuetLeads, normalizeStoryboardShots, performersFromVoice, videoRenderUsage } from "@afrohit/shared";
 
 // THE CAST LAW (2026-07-17, owner feedback: the rendered cast defaulted to
 // engine training-set bias). Both video brains must direct the cast
@@ -125,4 +125,49 @@ console.log("video storyboard: normalization and shot-aware billing passed");
   // Solo plans never trip the duet gate.
   assert.deepEqual(missingDuetLeads(performersFromVoice("female"), oneManShow), []);
   console.log("performer roster law: voice mapping and the duet gate hold");
+}
+
+// PACKAGE B — SAME FACES ALL VIDEO (pure laws): continuity folds into every
+// shot prompt, the sequence's fronting lead rides each shot, and the
+// character-sheet prompt locks onto the lead's own castingNotes line.
+{
+  const storyboard = {
+    kind: "treatment",
+    concept: "test",
+    logline: "test",
+    motifs: [],
+    structureSource: "assumed",
+    durationS: 20,
+    sequences: [
+      { index: 0, label: "Intro", startS: 0, endS: 10, continuity: "gold chain and red jacket carry through", performers: ["LEAD_B"], shotIndexes: [0] },
+      { index: 1, label: "Hook", startS: 10, endS: 20, performers: ["LEAD_A", "LEAD_B"], shotIndexes: [1] },
+    ],
+    shots: [
+      { index: 0, sequenceIndex: 0, prompt: "the man walks in", duration_s: 4 },
+      { index: 1, sequenceIndex: 1, prompt: "both leads share the frame", duration_s: 4 },
+    ],
+    teaserCut: { durationS: 15, format: "vertical", shotRefs: [1] },
+  };
+  const decorated = decorateTreatmentShotsForRender(
+    storyboard,
+    storyboard.shots as never
+  );
+  assert.match(decorated[0]!.prompt, /Continuity: gold chain and red jacket/);
+  assert.equal(decorated[0]!.lead, "LEAD_B", "the sequence's fronting lead rides the shot");
+  assert.equal(decorated[1]!.lead, "LEAD_A");
+  assert.ok(!decorated[1]!.prompt.includes("Continuity:"), "no continuity text → no fold");
+  // Legacy storyboards (no treatment) pass through untouched.
+  const legacy = decorateTreatmentShotsForRender([{ index: 0, prompt: "x", duration_s: 4 }], [
+    { index: 0, prompt: "x", duration_s: 4 },
+  ] as never);
+  assert.equal(legacy[0]!.prompt, "x");
+
+  const sheet = characterSheetPrompt(
+    "LEAD_A — the female lead: dark-skinned Nigerian woman, gold braids. LEAD_B — the male lead: tall man in agbada.",
+    "LEAD_A"
+  );
+  assert.match(sheet, /female lead: dark-skinned Nigerian woman/);
+  assert.match(sheet, /One person only/);
+  assert.doesNotMatch(sheet.split("World:")[0]!, /LEAD_B — the male lead/, "the portrait frames ONE lead");
+  console.log("package B laws: continuity fold, fronting lead, and sheet prompts hold");
 }

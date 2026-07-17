@@ -3,6 +3,7 @@ import { z } from "zod";
 import { prisma } from "@afrohit/db";
 import {
   assumedThreeActSections,
+  decorateTreatmentShotsForRender,
   generateStoryboardInputSchema,
   missingDuetLeads,
   normalizeStoryboardShots,
@@ -405,6 +406,9 @@ export default async function videos(app: FastifyInstance) {
           storyboard: treatment as never,
           durationS: treatment.durationS,
           format: input.format,
+          // PACKAGE B: the roster rides the concept so the render worker can
+          // build one character sheet per lead ("same faces all video").
+          meta: { performers } as never,
         },
       });
 
@@ -457,7 +461,10 @@ export default async function videos(app: FastifyInstance) {
       // worker payload keep the exact same shot element shape either way.
       // CLASS-AWARE BILLING (owner-approved): the class the user picked
       // decides the per-scene price — the same pure law the web modal shows.
-      const shots = storyboardShots(concept.storyboard);
+      const shots = decorateTreatmentShotsForRender(
+        concept.storyboard,
+        storyboardShots(concept.storyboard)
+      );
       const usage = videoRenderUsage(shots, input.shotIndex, engineClass);
       if (!usage) {
         return reply.code(400).send({ error: "invalid_video_shot_selection" });
@@ -578,7 +585,10 @@ export default async function videos(app: FastifyInstance) {
       // Which scenes already have a successful render — the SAME pure law
       // (perShotRenders) the assembly gate reads, so "rendered" can never
       // mean two different things on the billing and assembly sides.
-      const shots = storyboardShots(concept.storyboard);
+      const shots = decorateTreatmentShotsForRender(
+        concept.storyboard,
+        storyboardShots(concept.storyboard)
+      );
       const renders = await prisma.videoRender.findMany({
         where: { conceptId: concept.id },
         orderBy: { createdAt: "asc" },

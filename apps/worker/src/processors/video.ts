@@ -6,13 +6,16 @@ import { join } from "node:path";
 
 import { openSecret, prisma } from "@afrohit/db";
 import {
+  characterSheetPrompt,
   currentPlayableAsset,
   planVideoAssembly,
   playableArrangement,
   playableAssetHistory,
+  videoTreatmentOf,
 } from "@afrohit/shared";
 import {
   generateLikenessKeyframe,
+  imageAdapter,
   videoAdapter,
   videoAdapterForClass,
   type VideoEngineClass,
@@ -43,6 +46,10 @@ interface VideoShot {
    *  (engines only ever see prompt text; dropping this dropped the cast). */
   subjects?: string[];
   negativePrompt?: string;
+  /** PACKAGE B: which treatment sequence this shot belongs to, and the
+   *  roster lead who fronts it (character-sheet keyframe key). */
+  sequenceIndex?: number;
+  lead?: string;
 }
 
 interface VideoPayload {
@@ -300,6 +307,132 @@ async function storeVideo(
   });
   return { url, inspection: inspection!, nativeFormat };
 }
+// ===========================================================================
+// PACKAGE B — CHARACTER SHEETS ("same faces all video", 2026-07-17). Scene
+// renders have no memory; one portrait per roster lead, generated ONCE per
+// concept and used as the i2v keyframe on that lead's scenes, holds identity
+// across the whole video. Best-effort by LAW: a sheet failure never fails a
+// paid render — scenes fall back to t2v exactly as before. Single-generation
+// is enforced by an ATOMIC jsonb claim (the auto-assemble pattern) so
+// parallel per-scene jobs cannot mint duplicate sheets.
+// ===========================================================================
+async function ensureCharacterSheets(
+  p: VideoPayload
+): Promise<Map<string, string>> {
+  const empty = new Map<string, string>();
+  try {
+    const concept = await prisma.videoConcept.findFirst({
+      where: { id: p.conceptId, project: { workspaceId: p.workspaceId } },
+      select: { id: true, storyboard: true, meta: true },
+    });
+    if (!concept) return empty;
+    const meta =
+      concept.meta && typeof concept.meta === "object" && !Array.isArray(concept.meta)
+        ? (concept.meta as Record<string, unknown>)
+        : {};
+    const existing = meta.characterSheets;
+    const readSheets = (value: unknown): Map<string, string> => {
+      const sheets = new Map<string, string>();
+      if (Array.isArray(value)) {
+        for (const row of value) {
+          const entry = row as { rosterId?: unknown; ref?: unknown };
+          if (typeof entry?.rosterId === "string" && typeof entry?.ref === "string") {
+            sheets.set(entry.rosterId, entry.ref);
+          }
+        }
+      }
+      return sheets;
+    };
+    const ready = readSheets(existing);
+    if (ready.size) return ready;
+
+    const performers = meta.performers as
+      | { roster?: Array<{ id?: unknown; vocal?: unknown }> }
+      | undefined;
+    const roster = (performers?.roster ?? []).filter(
+      (lead): lead is { id: string; vocal: string } =>
+        typeof lead?.id === "string"
+    );
+    if (!roster.length) return empty;
+
+    // Atomic claim — exactly one job generates; the rest wait briefly.
+    const claimed = await prisma.$executeRaw`
+      UPDATE "VideoConcept"
+      SET "meta" = jsonb_set(COALESCE("meta", '{}'::jsonb), '{characterSheetsClaim}', 'true'::jsonb)
+      WHERE "id" = ${concept.id}
+        AND COALESCE("meta"->>'characterSheetsClaim', '') = ''
+        AND COALESCE("meta"->>'characterSheets', '') = ''
+    `;
+    if (claimed !== 1) {
+      // Another scene's job is generating — poll up to ~50s, then proceed
+      // honestly sheetless (t2v, exactly the pre-B behavior).
+      for (let attempt = 0; attempt < 10; attempt++) {
+        await new Promise(resolve => setTimeout(resolve, 5_000));
+        const fresh = await prisma.videoConcept.findUnique({
+          where: { id: concept.id },
+          select: { meta: true },
+        });
+        const freshMeta =
+          fresh?.meta && typeof fresh.meta === "object" && !Array.isArray(fresh.meta)
+            ? (fresh.meta as Record<string, unknown>)
+            : {};
+        const sheets = readSheets(freshMeta.characterSheets);
+        if (sheets.size) return sheets;
+      }
+      return empty;
+    }
+
+    const treatment = videoTreatmentOf(concept.storyboard);
+    const castingNotes = treatment?.castingNotes;
+    const adapter = imageAdapter();
+    if (adapter.name === "stub" && process.env.ALLOW_STUB_AUDIO !== "1") {
+      return empty;
+    }
+    const generated: Array<{ rosterId: string; ref: string }> = [];
+    for (const lead of roster) {
+      const result = await adapter.generate({
+        prompt: characterSheetPrompt(castingNotes, lead.id),
+        size: "1024x1024",
+        quality: "medium",
+      });
+      if (result.status !== "succeeded" || !result.output) continue;
+      let bytes: Buffer | null = null;
+      if (result.output.imageBase64) {
+        bytes = Buffer.from(result.output.imageBase64, "base64");
+      } else if (result.output.imageUrl) {
+        bytes = await downloadToBuffer(result.output.imageUrl, {
+          maxBytes: 30 * 1024 * 1024,
+          timeoutMs: 120_000,
+        });
+      }
+      if (!bytes?.length) continue;
+      const ref = await uploadBytes({
+        workspaceId: p.workspaceId,
+        kind: "videos/character-sheets",
+        bytes,
+        contentType: "image/png",
+        ext: "png",
+      });
+      generated.push({ rosterId: lead.id, ref });
+    }
+    await prisma.$executeRaw`
+      UPDATE "VideoConcept"
+      SET "meta" = jsonb_set(COALESCE("meta", '{}'::jsonb), '{characterSheets}', ${JSON.stringify(generated)}::jsonb)
+      WHERE "id" = ${concept.id}
+    `;
+    console.log(
+      `[video ${p.jobId}] character sheets ready for concept ${p.conceptId}: ${generated.map(g => g.rosterId).join(", ") || "none"}`
+    );
+    return readSheets(generated);
+  } catch (error) {
+    console.warn(
+      `[video ${p.jobId}] character sheets skipped:`,
+      (error as Error).message
+    );
+    return empty;
+  }
+}
+
 export async function processVideo(p: VideoPayload) {
   await markRunning(p.jobId);
   let knownCostUsd = 0;
@@ -381,6 +514,15 @@ export async function processVideo(p: VideoPayload) {
       /** Likeness path: the stored keyframe this shot was rendered from. */
       keyframeRef?: string | null;
     }> = [];
+
+    // PACKAGE B: one portrait per lead, used as the i2v keyframe on that
+    // lead's scenes — same faces across the whole video. Never on recovery
+    // runs (no new spend law) and never on the likeness path (its own
+    // keyframes rule there).
+    const characterSheets =
+      !p.recoverOnly && !p.likeness && adapter.capabilities?.imageToVideo === true
+        ? await ensureCharacterSheets(p)
+        : new Map<string, string>();
 
     const maxPollAttempts = Math.max(
       1,
@@ -532,6 +674,16 @@ export async function processVideo(p: VideoPayload) {
           await save(existing.externalId);
         }
       };
+
+      // PACKAGE B keyframe: the fronting lead's character sheet drives the
+      // scene (i2v) so the same face carries shot to shot. Likeness keyframes
+      // (set above) always win; sheetless shots render t2v as before.
+      if (!input.keyframeUrl && shot.lead && characterSheets.has(shot.lead)) {
+        input.keyframeUrl = await resolveAssetForProvider(
+          characterSheets.get(shot.lead)!,
+          3600
+        );
+      }
 
       let render: Awaited<ReturnType<typeof adapter.renderShot>>;
       try {

@@ -837,3 +837,74 @@ export function missingDuetLeads(
     })
     .map(lead => lead.id);
 }
+
+// ===========================================================================
+// PACKAGE B — SAME FACES ALL VIDEO (2026-07-17).
+// Scene renders are independent generations with no memory; identity holds
+// only through (1) verbatim cast descriptions (Package A), (2) sequence
+// continuity text folded into every shot prompt, and (3) ONE character-sheet
+// portrait per lead used as the i2v keyframe on that lead's scenes.
+// ===========================================================================
+
+export interface RenderShotDecoration extends NormalizedStoryboardShot {
+  sequenceIndex?: number;
+  /** The roster lead who fronts this shot (first ON-SCREEN performer of its
+   *  sequence) — the worker keys character-sheet keyframes off this. */
+  lead?: string;
+}
+
+/** PURE: fold each shot's sequence continuity into its prompt and attach the
+ *  sequence's fronting lead. Legacy storyboards (no treatment) pass through
+ *  untouched. */
+export function decorateTreatmentShotsForRender(
+  storyboard: unknown,
+  shots: NormalizedStoryboardShot[]
+): RenderShotDecoration[] {
+  const treatment = videoTreatmentOf(storyboard);
+  if (!treatment) return shots;
+  const bySequence = new Map(
+    treatment.sequences.map(sequence => [sequence.index, sequence])
+  );
+  return shots.map(shot => {
+    const sequenceIndex = (shot as { sequenceIndex?: unknown }).sequenceIndex;
+    const sequence = Number.isInteger(sequenceIndex)
+      ? bySequence.get(sequenceIndex as number)
+      : undefined;
+    const continuity = sequence?.continuity?.trim();
+    const lead = sequence?.performers?.[0];
+    return {
+      ...shot,
+      ...(Number.isInteger(sequenceIndex)
+        ? { sequenceIndex: sequenceIndex as number }
+        : {}),
+      ...(continuity
+        ? { prompt: `${shot.prompt}\nContinuity: ${continuity}` }
+        : {}),
+      ...(lead ? { lead } : {}),
+    };
+  });
+}
+
+/** PURE: build the character-sheet portrait prompt for one roster lead from
+ *  castingNotes (the lead's own locked description leads; the whole notes
+ *  text rides as context so wardrobe/world stay coherent). */
+export function characterSheetPrompt(
+  castingNotes: string | undefined,
+  leadId: string
+): string {
+  const notes = (castingNotes ?? "").trim();
+  const leadLine =
+    notes
+      .split(/(?=LEAD_[A-Z])/)
+      .find(part => part.trim().toUpperCase().startsWith(leadId.toUpperCase()))
+      ?.trim() ?? "";
+  return [
+    "Character reference portrait for a music video.",
+    leadLine || `${leadId} — the lead performer, Black African per the cast law.`,
+    leadLine && notes !== leadLine ? `World: ${notes}` : "",
+    "Three-quarter body, facing camera, neutral stance, clean studio background, soft key light, photorealistic, high detail. One person only. No text, no logos.",
+  ]
+    .filter(Boolean)
+    .join("\n")
+    .slice(0, 3000);
+}

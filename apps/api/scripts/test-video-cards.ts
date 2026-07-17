@@ -100,3 +100,37 @@ assert.match(
 );
 
 console.log("video cards: presence law, presigned cuts, card player, no-hidden-render chip, and naming law all hold");
+
+// PACKAGE B wiring — SAME FACES ALL VIDEO (2026-07-17).
+{
+  const videosB = readFileSync(join(process.cwd(), "src/routes/videos.ts"), "utf8");
+  const workerB = readFileSync(
+    join(process.cwd(), "../worker/src/processors/video.ts"),
+    "utf8"
+  );
+  assert.equal(
+    (videosB.match(/decorateTreatmentShotsForRender\(/g) ?? []).length,
+    2, // both render payload sites (the import carries no paren)
+    "both render payloads carry continuity + fronting-lead decoration"
+  );
+  assert.match(videosB, /meta: \{ performers \} as never/, "the roster rides the concept for the sheet generator");
+  const sheetsAt = workerB.indexOf("async function ensureCharacterSheets");
+  const claimAt = workerB.indexOf("characterSheetsClaim", sheetsAt);
+  const generateAt = workerB.indexOf("adapter.generate(", sheetsAt);
+  assert.ok(
+    sheetsAt >= 0 && claimAt > sheetsAt && claimAt < generateAt,
+    "exactly one job claims BEFORE generating (parallel scenes cannot mint duplicate sheets)"
+  );
+  assert.match(
+    workerB,
+    /!p\.recoverOnly && !p\.likeness && adapter\.capabilities\?\.imageToVideo === true/,
+    "sheets never run on recovery (no new spend) or the likeness path"
+  );
+  assert.match(
+    workerB,
+    /if \(!input\.keyframeUrl && shot\.lead && characterSheets\.has\(shot\.lead\)\)/,
+    "keyframe order: likeness wins, then the lead's sheet, else honest t2v"
+  );
+  assert.match(workerB, /character sheets skipped:/, "sheet failure never fails a paid render");
+  console.log("package B wiring: decoration, roster hand-off, claim law, and keyframe order hold");
+}
