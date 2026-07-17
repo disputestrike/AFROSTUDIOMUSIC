@@ -362,6 +362,46 @@ export default function CreatePage() {
   }, [genres]);
 
   const toggleLang = (l: string) => { langsTouched.current = true; setLangs((p) => (p.includes(l) ? p.filter((x) => x !== l) : [...p, l])); };
+
+  // FAST / SLOW for laypeople (owner, 2026-07-17: "some people don't know all
+  // this music type — just add fast, slow"). RELATIVE to the picked lane's
+  // natural tempo, so "Fast amapiano" and "Fast afrobeats" each stay in-genre.
+  // Not a new category — it just nudges the same BPM the slider already sets.
+  const laneNaturalBpm = () => {
+    const sigs = genres.slice(0, 2).map((g) => genreSignature(g));
+    if (!sigs.length) return 103;
+    return Math.round(sigs.reduce((a, x) => a + x.bpm, 0) / sigs.length);
+  };
+  const setFeel = (delta: number) => {
+    bpmTouched.current = true;
+    setBpm(Math.max(60, Math.min(180, laneNaturalBpm() + delta)));
+  };
+  const feelActive = (delta: number) => {
+    const target = Math.max(60, Math.min(180, laneNaturalBpm() + delta));
+    return Math.abs(bpm - target) <= 3;
+  };
+  const FeelRow = () => (
+    <div className="mt-2 flex gap-2">
+      {[
+        { label: '🐢 Slow', delta: -16 },
+        { label: '🎯 Just right', delta: 0 },
+        { label: '⚡ Fast', delta: 16 },
+      ].map((f) => (
+        <button
+          key={f.label}
+          type="button"
+          onClick={() => setFeel(f.delta)}
+          className={`flex-1 rounded-full border px-3 py-1.5 text-xs transition-colors ${
+            feelActive(f.delta)
+              ? 'border-afrobrand-500/50 bg-afrobrand-500/15 text-afrobrand-300'
+              : 'border-white/15 text-slate-400 hover:bg-white/10'
+          }`}
+        >
+          {f.label}
+        </button>
+      ))}
+    </div>
+  );
   const toggleGenre = (g: string) =>
     setGenres((p) => {
       // The FIRST manual pick REPLACES the default backbone — so you can switch
@@ -1058,7 +1098,8 @@ export default function CreatePage() {
       </div>
       <div className="mt-6">
         <div className="mb-2 flex justify-between text-sm text-slate-400"><span>Tempo</span><span className="tabular-nums text-slate-200">{bpm} BPM</span></div>
-        <input type="range" min={60} max={180} value={bpm} onChange={(e) => { bpmTouched.current = true; setBpm(Number(e.target.value)); }} className="w-full accent-afrobrand-500" />
+        <FeelRow />
+        <input type="range" min={60} max={180} value={bpm} onChange={(e) => { bpmTouched.current = true; setBpm(Number(e.target.value)); }} className="mt-2 w-full accent-afrobrand-500" />
       </div>
       <div className="mt-6"><div className="mb-2 text-sm text-slate-400">Languages</div>
         <div className="flex flex-wrap gap-2">{LANGS.map((l) => (
@@ -1198,7 +1239,8 @@ export default function CreatePage() {
 
       <div className="mt-6">
         <div className="mb-2 flex justify-between text-sm text-slate-400"><span>Tempo</span><span className="tabular-nums text-slate-200">{bpm} BPM</span></div>
-        <input type="range" min={60} max={180} value={bpm} onChange={(e) => { bpmTouched.current = true; setBpm(Number(e.target.value)); }} className="w-full accent-afrobrand-500" />
+        <FeelRow />
+        <input type="range" min={60} max={180} value={bpm} onChange={(e) => { bpmTouched.current = true; setBpm(Number(e.target.value)); }} className="mt-2 w-full accent-afrobrand-500" />
       </div>
 
       <div className="mt-6"><div className="mb-2 text-sm text-slate-400">Feature instruments (optional) <span className="text-xs text-slate-500">— pick up to 5; steering on provider engines, exact on Our Engine</span></div>
