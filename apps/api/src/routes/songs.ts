@@ -1,6 +1,6 @@
 import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import { z } from 'zod';
-import { structureBrief, genreSignature, type SongBlueprint } from '@afrohit/shared';
+import { structureBrief, genreSignature, perShotRenders, type SongBlueprint } from '@afrohit/shared';
 import { prisma, Prisma } from '@afrohit/db';
 import { predictHit, researchTrends, enrichLyricsForVocals, cleanLyricsForMinimax } from '@afrohit/ai';
 import { laneDna, laneDnaBrief } from '../lib/lane-pipeline';
@@ -168,6 +168,59 @@ export default async function songs(app: FastifyInstance) {
     });
 
     const featuredOnLanding = new Set(await readFeaturedSongIds());
+
+    // VIDEO PRESENCE ("where are the videos?" — owner, 2026-07-16): every card
+    // must SAY whether its video exists — paid work is never invisible. Newest
+    // concept per song; the assembled full/teaser cut is presigned so the card
+    // plays it directly; scene-clip coverage counts through the SAME
+    // perShotRenders law the assembly gate counts by.
+    const songIds = rows.map((s: CatalogRow) => s.id);
+    const videoConcepts = songIds.length
+      ? await prisma.videoConcept.findMany({
+          where: { songId: { in: songIds } },
+          orderBy: { createdAt: 'desc' },
+          select: { id: true, songId: true },
+        })
+      : [];
+    const conceptBySong = new Map<string, string>();
+    for (const c of videoConcepts) {
+      if (c.songId && !conceptBySong.has(c.songId)) conceptBySong.set(c.songId, c.id);
+    }
+    const conceptIds = [...conceptBySong.values()];
+    const videoRenderRows = conceptIds.length
+      ? await prisma.videoRender.findMany({
+          where: { conceptId: { in: conceptIds } },
+          orderBy: { createdAt: 'asc' },
+          select: { id: true, createdAt: true, conceptId: true, url: true, durationS: true, meta: true },
+        })
+      : [];
+    type CardVideo = { url: string; kind: 'full' | 'teaser'; durationS: number | null };
+    const videoBySong = new Map<string, CardVideo>();
+    const videoScenesBySong = new Map<string, number>();
+    for (const [songId, conceptId] of conceptBySong) {
+      const rendersFor = videoRenderRows.filter((r) => r.conceptId === conceptId);
+      videoScenesBySong.set(songId, perShotRenders(rendersFor).size);
+      let best: CardVideo | null = null;
+      for (const r of rendersFor) {
+        // asc order → newest assembled cut wins; a full cut always outranks a teaser.
+        const meta = r.meta && typeof r.meta === 'object' && !Array.isArray(r.meta) ? (r.meta as Record<string, unknown>) : {};
+        const assembly =
+          meta.assembly && typeof meta.assembly === 'object' && !Array.isArray(meta.assembly)
+            ? (meta.assembly as Record<string, unknown>)
+            : null;
+        if (!assembly) continue;
+        const kind = assembly.kind === 'teaser' ? ('teaser' as const) : ('full' as const);
+        if (best?.kind === 'full' && kind === 'teaser') continue;
+        best = { url: r.url, kind, durationS: r.durationS };
+      }
+      if (best) videoBySong.set(songId, best);
+    }
+    await Promise.all(
+      [...videoBySong.entries()].map(async ([songId, v]) => {
+        videoBySong.set(songId, { ...v, url: await presignAssetRef(v.url, 3600) });
+      }),
+    );
+
     const projectIds = [...new Set(rows.map((s: CatalogRow) => s.projectId))];
     const covers = await prisma.imageAsset.findMany({
       where: { projectId: { in: projectIds }, kind: 'cover' },
@@ -199,6 +252,8 @@ export default async function songs(app: FastifyInstance) {
         hasLyrics: !!s.lyric,
         releaseReady: s.releaseReady,
         featuredOnLanding: featuredOnLanding.has(s.id),
+        video: videoBySong.get(s.id) ?? null,
+        videoScenesReady: videoScenesBySong.get(s.id) ?? 0,
         hitScore: s.hitScore,
         viralScore: s.viralScore,
         coverUrl: coverByProject.get(s.projectId) ?? null,

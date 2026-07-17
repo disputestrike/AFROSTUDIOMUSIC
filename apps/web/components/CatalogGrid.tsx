@@ -109,6 +109,10 @@ export interface SongRow {
   releaseReady?: boolean;
   /** Owner-pinned onto the public landing wall (house curation). */
   featuredOnLanding?: boolean;
+  /** The song's finished video cut (assembled full/teaser), streamable now. */
+  video?: { url: string; kind: "full" | "teaser"; durationS: number | null } | null;
+  /** Rendered scene clips waiting to be assembled into the full cut. */
+  videoScenesReady?: number;
   hitScore?: number | null;
   viralScore?: number | null;
   coverUrl: string | null;
@@ -1470,8 +1474,27 @@ export default function CatalogGrid({ initial }: { initial: SongRow[] }) {
             >
               💬 Talk
             </button>
-            <div className="aspect-square w-full bg-slate-800">
-              {s.coverUrl ? (
+            <div className="relative aspect-square w-full bg-slate-800">
+              {/* THE VIDEO LIVES ON THE CARD (owner, 2026-07-16): a song whose
+                  video is made PLAYS it right here — paid work is never
+                  invisible. No video yet → cover art; scene clips rendered
+                  but not assembled → an honest chip that opens the Video
+                  panel (never a silent re-render). */}
+              {s.video ? (
+                <>
+                  <video
+                    controls
+                    playsInline
+                    preload="none"
+                    poster={s.coverUrl ?? undefined}
+                    src={s.video.url}
+                    className="h-full w-full bg-black object-cover"
+                  />
+                  <span className="pointer-events-none absolute right-2 top-2 rounded-full bg-black/70 px-2 py-0.5 text-[10px] font-semibold text-orange-300">
+                    🎬 {s.video.kind === "full" ? "Full video" : "Teaser"}
+                  </span>
+                </>
+              ) : s.coverUrl ? (
                 <img
                   src={s.coverUrl}
                   alt={s.title}
@@ -1484,6 +1507,20 @@ export default function CatalogGrid({ initial }: { initial: SongRow[] }) {
                   ♪
                 </div>
               )}
+              {!s.video && (s.videoScenesReady ?? 0) > 0 ? (
+                <button
+                  onClick={() => {
+                    setVideoOpen(s);
+                    void loadVideoConcept(s.id);
+                    void loadLikenessStatus();
+                  }}
+                  title="Scene clips are rendered and paid for — open Video to assemble the full cut (free)"
+                  className="absolute bottom-2 right-2 rounded-full bg-black/70 px-2.5 py-1 text-[11px] font-medium text-orange-300 hover:bg-black/90"
+                >
+                  🎬 {s.videoScenesReady} scene
+                  {(s.videoScenesReady ?? 0) === 1 ? "" : "s"} ready
+                </button>
+              ) : null}
             </div>
             <div className="p-4">
               <div className="flex items-start justify-between gap-2">

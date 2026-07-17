@@ -19,6 +19,7 @@ import {
 } from "@afrohit/shared";
 import { prompts, generateJson } from "@afrohit/ai";
 import { requireAuth } from "../middleware/auth";
+import { presignAssetRef } from "../lib/storage";
 import {
   createQueuedProviderJob,
   scopedRequestKey,
@@ -766,6 +767,13 @@ export default async function videos(app: FastifyInstance) {
       for (const row of renders) {
         const assembled = assemblyOf(row);
         if (assembled) assemblies[assembled.kind] = assembled; // asc order → newest wins
+      }
+      // PLAYABLE BY CONTRACT: a private-storage ref can never reach a <video>
+      // tag — the finished cut the modal (and the song card) plays must be a
+      // time-limited streaming URL, exactly like catalog audio.
+      for (const kind of ["full", "teaser"] as const) {
+        const artifact = assemblies[kind];
+        if (artifact) artifact.url = await presignAssetRef(artifact.url, 3600);
       }
       return {
         conceptId: concept.id,
