@@ -63,6 +63,12 @@ assert.match(songs, /kind: \(s as \{ kind\?: string \}\)\.kind \?\? 'song'/, "th
 // --- Catalog splits by type; Recreate lives where audio is missing.
 assert.match(grid, /"song" \| "instrumental" \| "film_sound" \| "with_video"/, "type filter state exists");
 assert.match(grid, /songs\.filter\(s => \(s\.kind \?\? "song"\) === typeFilter\)/, "kind chips filter by the served type");
+assert.match(
+  grid,
+  /\(s\.kind \?\? "song"\) === "instrumental" \|\| s\.hasInstrumental/,
+  "separated-from-song instrumentals surface under the same chip"
+);
+assert.match(songs, /hasInstrumental: !!s\.instrumentalUrl/, "the list serves the separation flag");
 assert.match(grid, /s\.video \|\| \(s\.videoScenesReady \?\? 0\) > 0/, "the with-videos chip uses real video presence");
 assert.match(grid, /\{visibleSongs\.map\(s => \(/, "the grid renders the filtered set");
 assert.match(grid, /visibleSongs\.filter\(x => x\.audioUrl\)/, "Play all respects the active filter");

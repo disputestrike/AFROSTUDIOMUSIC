@@ -93,6 +93,8 @@ export interface SongRow {
   versionLabel?: string | null;
   /** Catalog type: song | instrumental | film_sound. */
   kind?: string;
+  /** A voice-removed instrumental was separated from this song. */
+  hasInstrumental?: boolean;
   status: string;
   artist: string;
   projectId: string;
@@ -424,7 +426,13 @@ export default function CatalogGrid({ initial }: { initial: SongRow[] }) {
       ? songs
       : typeFilter === "with_video"
         ? songs.filter(s => s.video || (s.videoScenesReady ?? 0) > 0)
-        : songs.filter(s => (s.kind ?? "song") === typeFilter);
+        : typeFilter === "instrumental"
+          ? // Instruments come TWO ways (owner): created directly, or
+            // separated from a finished song — both live under this chip.
+            songs.filter(
+              s => (s.kind ?? "song") === "instrumental" || s.hasInstrumental
+            )
+          : songs.filter(s => (s.kind ?? "song") === typeFilter);
   const [openId, setOpenId] = useState<string | null>(null);
   const [busy, setBusy] = useState<string>(""); // `${id}:${action}`
   const [toast, setToast] = useState<string>("");

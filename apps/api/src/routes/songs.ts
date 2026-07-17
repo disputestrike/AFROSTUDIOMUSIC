@@ -40,6 +40,7 @@ type CatalogRow = {
   versionLabel: string | null;
   status: string;
   projectId: string;
+  instrumentalUrl: string | null;
   releaseReady: boolean;
   hitScore: number | null;
   viralScore: number | null;
@@ -239,6 +240,10 @@ export default async function songs(app: FastifyInstance) {
         // CATALOG TYPE: song | instrumental | film_sound — the filter chips'
         // single source of truth.
         kind: (s as { kind?: string }).kind ?? 'song',
+        // INSTRUMENTS COME TWO WAYS (owner): created directly (kind above) or
+        // SEPARATED from a finished song — this flag makes the second kind
+        // findable under the same 🎹 chip.
+        hasInstrumental: !!s.instrumentalUrl,
         status: s.status,
         artist: s.project.artist.stageName,
         projectId: s.projectId,

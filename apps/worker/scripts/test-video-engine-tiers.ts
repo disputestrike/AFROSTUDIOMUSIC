@@ -60,7 +60,9 @@ async function main() {
     await check("class mapping: draft=wan, standard=hailuo, flagship=kling", () => {
       assert.equal(videoEngineSpec("draft", {}).t2vModel, "wavespeedai/wan-2.1-t2v-480p");
       assert.equal(videoEngineSpec("draft", {}).i2vModel, "wavespeedai/wan-2.1-i2v-480p");
-      assert.equal(videoEngineSpec("standard", {}).t2vModel, "minimax/video-01");
+      // OWNER-APPROVED SWITCH (2026-07-17): hailuo-2.3-fast is the standard
+      // default — better human-motion quality at $0.19/clip vs video-01's $0.50.
+      assert.equal(videoEngineSpec("standard", {}).t2vModel, "minimax/hailuo-2.3-fast");
       assert.equal(videoEngineSpec("flagship", {}).t2vModel, "kwaivgi/kling-v2.1");
     });
 
@@ -112,13 +114,15 @@ async function main() {
       assert.equal(request.body.image, "https://storage.example/keyframe.png?sig=1");
     });
 
-    await check("standard t2v payload is the exact Hailuo body", () => {
+    await check("standard t2v payload is the exact modern-MiniMax body", () => {
       const request = videoModelInput(videoEngineSpec("standard", {}), shot);
       assert.ok(!("error" in request));
-      assert.equal(request.slug, "minimax/video-01");
+      assert.equal(request.slug, "minimax/hailuo-2.3-fast");
       assert.deepEqual(request.body, {
         prompt: composed,
         prompt_optimizer: true,
+        duration: 6,
+        resolution: "768P",
       });
     });
 
@@ -131,7 +135,22 @@ async function main() {
       assert.deepEqual(request.body, {
         prompt: composed,
         prompt_optimizer: true,
+        duration: 6,
+        resolution: "768P",
         first_frame_image: "https://storage.example/keyframe.png",
+      });
+    });
+
+    await check("legacy video-01 (env-pinned) keeps its exact old body — unknown fields 422", () => {
+      const legacy = videoEngineSpec("standard", {
+        REPLICATE_VIDEO_STANDARD_MODEL: "minimax/video-01",
+      });
+      const request = videoModelInput(legacy, shot);
+      assert.ok(!("error" in request));
+      assert.equal(request.slug, "minimax/video-01");
+      assert.deepEqual(request.body, {
+        prompt: composed,
+        prompt_optimizer: true,
       });
     });
 
@@ -215,7 +234,7 @@ async function main() {
           url,
           body: init?.body ? JSON.parse(String(init.body)) : undefined,
         });
-        if (url === "https://api.replicate.com/v1/models/minimax/video-01") {
+        if (url === "https://api.replicate.com/v1/models/minimax/hailuo-2.3-fast") {
           return json({ latest_version: { id: "std-version-hash" } });
         }
         if (url === "https://api.replicate.com/v1/predictions" && init?.method === "POST") {
@@ -241,12 +260,17 @@ async function main() {
       // The law: model lookup FIRST, then the versioned predictions POST.
       assert.equal(
         calls[0]!.url,
-        "https://api.replicate.com/v1/models/minimax/video-01"
+        "https://api.replicate.com/v1/models/minimax/hailuo-2.3-fast"
       );
       assert.equal(calls[1]!.url, "https://api.replicate.com/v1/predictions");
       assert.deepEqual(calls[1]!.body, {
         version: "std-version-hash",
-        input: { prompt: composed, prompt_optimizer: true },
+        input: {
+          prompt: composed,
+          prompt_optimizer: true,
+          duration: 6,
+          resolution: "768P",
+        },
       });
 
       const done = await adapter.poll(started.externalId!, shot);

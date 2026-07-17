@@ -99,14 +99,19 @@ export function videoEngineSpec(
       return {
         name: "hailuo",
         engineClass: "standard",
+        // OWNER-APPROVED SWITCH (2026-07-17, "switch it to the hailuo 2.3
+        // fast"): hailuo-2.3-fast replaces video-01 as the standard default —
+        // two generations newer, tuned for human motion/dance, $0.19 vs
+        // $0.50 per 6s clip (verified live pricing). Env pins still win.
         t2vModel:
-          env.REPLICATE_VIDEO_STANDARD_MODEL?.trim() || "minimax/video-01",
+          env.REPLICATE_VIDEO_STANDARD_MODEL?.trim() ||
+          "minimax/hailuo-2.3-fast",
         i2vModel:
           env.REPLICATE_VIDEO_STANDARD_I2V_MODEL === ""
             ? null
             : env.REPLICATE_VIDEO_STANDARD_I2V_MODEL?.trim() ||
               env.REPLICATE_VIDEO_STANDARD_MODEL?.trim() ||
-              "minimax/video-01",
+              "minimax/hailuo-2.3-fast",
         t2vVersionEnv: "REPLICATE_VIDEO_STANDARD_VERSION",
         i2vVersionEnv: "REPLICATE_VIDEO_STANDARD_I2V_VERSION",
         allowedDurations: [6],
@@ -178,11 +183,24 @@ export function videoModelInput(
       return { slug, body: prune(body) };
     }
     case "hailuo": {
-      // MiniMax video-01 (Hailuo): fixed ~6s; i2v via first_frame_image on the
-      // SAME model. No duration/aspect inputs — the model decides.
+      // MiniMax family, i2v via first_frame_image on the SAME model.
+      // video-01 (legacy): fixed ~6s, NO duration/resolution inputs — unknown
+      // fields 422, so the legacy body stays exactly as it always was.
+      // hailuo-02 / hailuo-2.3(-fast) (the owner-approved standard default):
+      // duration 6|10 + resolution 768P/1080P are real inputs — send them so
+      // the clip is deliberate, not defaulted.
+      const modernMiniMax = !/\/video-01$/.test(slug);
       const body: Record<string, unknown> = {
         prompt,
         prompt_optimizer: true,
+        ...(modernMiniMax
+          ? {
+              duration: durationS >= 10 ? 10 : 6,
+              resolution:
+                process.env.REPLICATE_VIDEO_STANDARD_RESOLUTION?.trim() ||
+                "768P",
+            }
+          : {}),
       };
       if (wantsKeyframe) body.first_frame_image = input.keyframeUrl;
       return { slug, body: prune(body) };
