@@ -48,6 +48,24 @@ function testWiring(): void {
     /entry\.step = "downloading";\s*await save\(entry\.externalId\);/,
     "the download stage must be visible"
   );
+  // PAID-BYTES CONFORM LAW (2026-07-17 live incident: nine finished, paid
+  // clips rejected for their shape). A shape mismatch is FIXED locally —
+  // conform + re-inspect; every other QC failure stays fatal.
+  assert.match(
+    worker,
+    /if \(!\/aspect ratio does not match\/\.test\(\(error as Error\)\.message \?\? ""\)\) \{\s*throw error;\s*\}\s*bytes = await conformAspect\(bytes, format\);\s*conformed = true;/,
+    "aspect mismatch must conform paid bytes, never reject them"
+  );
+  assert.match(
+    worker,
+    /aspectConformed: stored\.conformed/,
+    "conformed clips must carry honest provenance"
+  );
+  assert.match(
+    worker,
+    /vertical:\s*\n?\s*"crop=min\(iw\\\\,ih\*9\/16\):min\(ih\\\\,iw\*16\/9\),scale=720:1280/,
+    "vertical conform filter present"
+  );
   assert.match(
     worker,
     /if \(typeof render\.progressPct === "number"\) \{\s*beat\.progressPct = render\.progressPct;/,

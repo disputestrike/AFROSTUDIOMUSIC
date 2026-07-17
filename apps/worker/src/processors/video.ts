@@ -155,10 +155,28 @@ async function runFfmpeg(args: string[]): Promise<void> {
   });
 }
 
-async function cropSquare(bytes: Uint8Array): Promise<Buffer> {
+// PAID-BYTES CONFORM LAW (2026-07-17). Some engines decide their own frame —
+// the standard engine takes NO aspect input and always returns widescreen —
+// so "output aspect ratio does not match the request" used to reject FINISHED,
+// PAID renders wholesale (nine clips in one press, live incident). A paid
+// render is NEVER rejected for its shape: we center-crop it to the requested
+// format locally (free CPU, same ffmpeg law the square path always used) and
+// certify the conformed bytes instead.
+const CONFORM_FILTER: Record<VideoPayload["format"], string> = {
+  square: "crop=min(iw\\,ih):min(iw\\,ih),scale=720:720:flags=lanczos",
+  vertical:
+    "crop=min(iw\\,ih*9/16):min(ih\\,iw*16/9),scale=720:1280:flags=lanczos",
+  landscape:
+    "crop=min(iw\\,ih*16/9):min(ih\\,iw*9/16),scale=1280:720:flags=lanczos",
+};
+
+async function conformAspect(
+  bytes: Uint8Array,
+  format: VideoPayload["format"]
+): Promise<Buffer> {
   const directory = await mkdtemp(join(tmpdir(), "afrohit-video-"));
   const input = join(directory, "input.mp4");
-  const output = join(directory, "square.mp4");
+  const output = join(directory, "conformed.mp4");
   try {
     await writeFile(input, bytes);
     await runFfmpeg([
@@ -173,7 +191,7 @@ async function cropSquare(bytes: Uint8Array): Promise<Buffer> {
       "-map",
       "0:a?",
       "-vf",
-      "crop=min(iw\\,ih):min(iw\\,ih),scale=720:720:flags=lanczos",
+      CONFORM_FILTER[format],
       "-c:v",
       "libx264",
       "-preset",
@@ -188,22 +206,25 @@ async function cropSquare(bytes: Uint8Array): Promise<Buffer> {
       "+faststart",
       output,
     ]);
-    const cropped = await readFile(output);
-    if (!cropped.length || cropped.length > MAX_VIDEO_BYTES) {
-      throw new Error("cropped video is empty or too large");
+    const conformed = await readFile(output);
+    if (!conformed.length || conformed.length > MAX_VIDEO_BYTES) {
+      throw new Error("conformed video is empty or too large");
     }
-    return cropped;
+    return conformed;
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
 }
+
+const cropSquare = (bytes: Uint8Array): Promise<Buffer> =>
+  conformAspect(bytes, "square");
 
 async function storeVideo(
   workspaceId: string,
   format: VideoPayload["format"],
   output: VideoRenderOutput,
   expectedDurationS: number
-): Promise<{ url: string; inspection: VideoInspection }> {
+): Promise<{ url: string; inspection: VideoInspection; conformed: boolean }> {
   if (!output.videoBytes && !output.videoUrl) {
     throw new Error("video provider returned no media");
   }
@@ -218,11 +239,29 @@ async function storeVideo(
     throw new Error("video provider returned empty or oversized media");
   }
   if (format === "square") bytes = await cropSquare(bytes);
-  const inspection = await inspectVideoBytes(bytes, {
-    format,
-    expectedDurationS,
-    maxBytes: MAX_VIDEO_BYTES,
-  });
+  let conformed = false;
+  let inspection: VideoInspection;
+  try {
+    inspection = await inspectVideoBytes(bytes, {
+      format,
+      expectedDurationS,
+      maxBytes: MAX_VIDEO_BYTES,
+    });
+  } catch (error) {
+    // PAID-BYTES CONFORM LAW: a shape mismatch is FIXED, never fatal. Every
+    // other QC failure (codec, container, duration, corrupt bytes) still
+    // fails honestly.
+    if (!/aspect ratio does not match/.test((error as Error).message ?? "")) {
+      throw error;
+    }
+    bytes = await conformAspect(bytes, format);
+    conformed = true;
+    inspection = await inspectVideoBytes(bytes, {
+      format,
+      expectedDurationS,
+      maxBytes: MAX_VIDEO_BYTES,
+    });
+  }
   const url = await uploadBytes({
     workspaceId,
     kind: "videos",
@@ -230,7 +269,7 @@ async function storeVideo(
     ext: "mp4",
     contentType: "video/mp4",
   });
-  return { url, inspection };
+  return { url, inspection, conformed };
 }
 export async function processVideo(p: VideoPayload) {
   await markRunning(p.jobId);
@@ -613,8 +652,13 @@ export async function processVideo(p: VideoPayload) {
         container: stored.inspection.container,
         qualityState: stored.inspection.qualityState,
         sourceAspectRatio:
-          input.aspectRatio === "1:1" ? "16:9" : input.aspectRatio,
+          stored.conformed || input.aspectRatio === "1:1"
+            ? "16:9"
+            : input.aspectRatio,
         outputAspectRatio: input.aspectRatio,
+        // HONEST PROVENANCE: true when the engine returned a different frame
+        // and we conformed the paid bytes locally instead of rejecting them.
+        aspectConformed: stored.conformed,
         // Class language for user surfaces; the provider column stays internal.
         engineClass: p.engineClass ?? null,
         // LIKENESS PROVENANCE — every likeness render says whose face, under
