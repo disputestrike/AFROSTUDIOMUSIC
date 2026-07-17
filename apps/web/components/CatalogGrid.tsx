@@ -1036,10 +1036,21 @@ export default function CatalogGrid({ initial }: { initial: SongRow[] }) {
   /** Write the video plan for a song ON DEMAND — cheap text generation from
    *  the song's own words; never touches a video-render credit. Legacy songs
    *  predate per-song treatments entirely, so this is how they get theirs. */
+  // THE ARTIST'S VISION (owner: "people have their own ideas for their music
+  // videos — they can bring that, stick with it, or enhance it").
+  const [visionText, setVisionText] = useState("");
+  const [visionMode, setVisionMode] = useState<"strict" | "enhance">("enhance");
+
   async function makeVideoPlan(s: SongRow) {
     setMakingVideo(true);
     try {
-      await api.post(`/videos/storyboards`, { projectId: s.projectId, songId: s.id });
+      await api.post(`/videos/storyboards`, {
+        projectId: s.projectId,
+        songId: s.id,
+        ...(visionText.trim()
+          ? { vision: visionText.trim(), visionMode }
+          : {}),
+      });
       // POST creates a NEW concept row and GET returns the newest — a rewrite
       // therefore replaces what the modal shows without deleting anything.
       await loadVideoConcept(s.id);
@@ -2804,6 +2815,47 @@ export default function CatalogGrid({ initial }: { initial: SongRow[] }) {
                     and the GET returns the newest, so a rewrite replaces the
                     view without deleting anything. Text only — no
                     video-render credits. */}
+                {/* THE ARTIST'S VISION — bring your own idea; the director
+                    either follows it exactly or elevates it. Optional: empty
+                    box = the director writes from the song alone. */}
+                <div className="mt-3 rounded-lg border border-white/10 bg-black/20 p-3">
+                  <div className="mb-1.5 text-xs font-medium text-slate-300">
+                    🎥 Your video idea (optional)
+                  </div>
+                  <textarea
+                    value={visionText}
+                    onChange={e => setVisionText(e.target.value)}
+                    maxLength={6000}
+                    rows={3}
+                    placeholder="Paste your own vision for this video — story, places, moments you want to see. Leave empty to let the director write from the song."
+                    className="w-full rounded-md border border-white/10 bg-black/30 p-2 text-xs text-slate-200 placeholder:text-slate-600"
+                  />
+                  {visionText.trim() ? (
+                    <div className="mt-1.5 flex flex-wrap items-center gap-1.5 text-[11px]">
+                      <span className="text-slate-500">The director should:</span>
+                      <button
+                        onClick={() => setVisionMode("enhance")}
+                        className={`rounded-full border px-2.5 py-1 ${
+                          visionMode === "enhance"
+                            ? "border-afrobrand-500/50 bg-afrobrand-500/15 text-afrobrand-300"
+                            : "border-white/15 text-slate-400 hover:bg-white/10"
+                        }`}
+                      >
+                        ✨ Enhance my idea
+                      </button>
+                      <button
+                        onClick={() => setVisionMode("strict")}
+                        className={`rounded-full border px-2.5 py-1 ${
+                          visionMode === "strict"
+                            ? "border-afrobrand-500/50 bg-afrobrand-500/15 text-afrobrand-300"
+                            : "border-white/15 text-slate-400 hover:bg-white/10"
+                        }`}
+                      >
+                        🔒 Stick to it exactly
+                      </button>
+                    </div>
+                  ) : null}
+                </div>
                 <button
                   disabled={makingVideo}
                   onClick={() => void makeVideoPlan(videoOpen)}
@@ -2811,7 +2863,11 @@ export default function CatalogGrid({ initial }: { initial: SongRow[] }) {
                 >
                   {makingVideo
                     ? "Rewriting the treatment…"
-                    : "✍️ Rewrite full-song treatment"}
+                    : visionText.trim()
+                      ? visionMode === "strict"
+                        ? "✍️ Write the treatment from MY idea"
+                        : "✍️ Write the treatment — enhance my idea"
+                      : "✍️ Rewrite full-song treatment"}
                 </button>
               </div>
             ) : (

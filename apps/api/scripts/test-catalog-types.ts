@@ -93,3 +93,34 @@ assert.ok(
 );
 
 console.log("catalog types: every creation has a home, typed chips filter, recreate law, and chat parity all hold");
+
+// THE ARTIST'S VISION LAW (2026-07-17, owner: "people have their own ideas
+// for their music videos — stick with it, or enhance it").
+{
+  const videosRoute = readFileSync(join(process.cwd(), "src/routes/videos.ts"), "utf8");
+  const prompts = readFileSync(
+    join(process.cwd(), "../../packages/ai/src/prompts/storyboard.ts"),
+    "utf8"
+  );
+  const sharedSchemas = readFileSync(
+    join(process.cwd(), "../../packages/shared/src/schemas.ts"),
+    "utf8"
+  );
+  assert.match(sharedSchemas, /vision: z\.string\(\)\.max\(6000\)\.optional\(\)/);
+  assert.match(sharedSchemas, /visionMode: z\.enum\(\["strict", "enhance"\]\)\.default\("enhance"\)/);
+  assert.equal(
+    (prompts.match(/THE ARTIST'S VISION LAW/g) ?? []).length,
+    2,
+    "the vision law must live in BOTH video brains"
+  );
+  assert.match(prompts, /their vision IS the treatment/);
+  assert.match(prompts, /THEIR\s+idea, made bigger/);
+  assert.match(prompts, /PERFORMER LAW, CAST LAW and the hard constraints still\s+bind/, "a vision can never break the cast or safety laws");
+  assert.equal(
+    (videosRoute.match(/artistVision: \{/g) ?? []).length,
+    2,
+    "BOTH treatment and short-mode payloads carry the vision"
+  );
+  assert.match(grid, /vision: visionText\.trim\(\), visionMode/, "the modal sends the pasted vision");
+  console.log("artist vision law: schema, both brains, both payloads, and the UI hold");
+}

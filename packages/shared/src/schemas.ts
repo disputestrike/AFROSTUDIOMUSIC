@@ -478,6 +478,11 @@ export const generateStoryboardInputSchema = z.object({
   durationS: z.number().int().min(8).max(60).optional(),
   format: z.enum(["vertical", "square", "landscape"]).default("vertical"),
   prompt: z.string().max(2000).optional(),
+  // THE ARTIST'S VISION (owner, 2026-07-17: "people have their own ideas for
+  // their music videos — they can bring that, stick with it, or enhance it").
+  // Pasted vision text + how faithfully the director must serve it.
+  vision: z.string().max(6000).optional(),
+  visionMode: z.enum(["strict", "enhance"]).default("enhance"),
 });
 
 export const renderVideoInputSchema = z.object({

@@ -241,6 +241,14 @@ export default async function videos(app: FastifyInstance) {
             totalDurationS: shortDurationS,
             format: input.format,
             extraPrompt: input.prompt,
+            ...(input.vision?.trim()
+              ? {
+                  artistVision: {
+                    text: input.vision.trim(),
+                    mode: input.visionMode,
+                  },
+                }
+              : {}),
           }),
           temperature: 0.7,
           maxTokens: 1_500,
@@ -343,6 +351,17 @@ export default async function videos(app: FastifyInstance) {
           format: input.format,
           teaser: { allowedDurations: [15, 30], format: "vertical" },
           extraPrompt: input.prompt,
+          // THE ARTIST'S VISION — their own idea for this video, and how
+          // faithfully the director must serve it (strict = translate,
+          // enhance = elevate but keep it recognizably theirs).
+          ...(input.vision?.trim()
+            ? {
+                artistVision: {
+                  text: input.vision.trim(),
+                  mode: input.visionMode,
+                },
+              }
+            : {}),
         }),
         temperature: 0.7,
         maxTokens: 6_000,
