@@ -96,7 +96,7 @@ export default async function lyrics(app: FastifyInstance) {
             learnedRef,
             learnedCraft,
             hitCraft: prompts.hitCraftBrief('lyric', lmood),
-          }, 6000);
+          }, 6000, { forLyrics: true });
         })(),
       });
       // RETRY UNTIL NON-EMPTY — a long lyric returned as JSON comes back empty

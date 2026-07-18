@@ -74,6 +74,24 @@ assert.ok(
   "a sung-only gate failure falls back to the body — it does NOT quarantine a paid record"
 );
 
+// ── Lyric craft survives the lean budget (not truncated out by the beat recipe) ──
+const fuse = read("src/lib/fuse.ts");
+assert.match(
+  fuse,
+  /opts\?: \{ forLyrics\?: boolean \}/,
+  "fuseSoundDna takes a forLyrics option"
+);
+// For lyrics: hitCraft + learnedCraft must come BEFORE dna (so they survive 6k).
+const forLyricsBlock = fuse.slice(fuse.indexOf("forLyrics"), fuse.indexOf("].map"));
+const lyHit = forLyricsBlock.indexOf("cap(p.hitCraft");
+const lyDna = forLyricsBlock.indexOf("cap(p.dna");
+assert.ok(lyHit >= 0 && lyDna > lyHit, "for lyrics, craft (hitCraft/learnedCraft) outranks the beat recipe (dna)");
+assert.match(
+  chatTools,
+  /6000,\s*\r?\n?\s*\{ forLyrics: true \}/,
+  "the drop/chat lyric fuse asks for the lyric ordering so craft isn't dropped"
+);
+
 console.log(
-  "lyric quality floor: band-C weak lyrics are rewritten (not shipped), the language-retry feeds provenance, and produce.ts persists only gated text"
+  "lyric quality floor: weak lyrics rewritten, provenance closed, produce.ts gated, AND the hit-craft survives the lyric prompt budget"
 );

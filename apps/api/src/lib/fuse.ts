@@ -29,22 +29,44 @@ const cap = (s: string | undefined, n: number) => (s ? s.slice(0, n) : '');
  *   more often, so lyrics stay tighter). The word bank + freshness + hard
  *   constraints always survive; the verbose genre-DNA/hit-craft blocks yield first.
  */
-export function fuseSoundDna(p: LakeParts, maxTotal = 11000): string {
+export function fuseSoundDna(p: LakeParts, maxTotal = 11000, opts?: { forLyrics?: boolean }): string {
   // Order: constraints → freshness → WORD BANK → genre DNA → learned → craft →
   // hit modes. Word bank sits high so it always survives and leads word choice.
   // Repair steering + measured lane targets lead — they are the measured TRUTH about
   // the lane and the concrete fixes for this take, so they must never be truncated out.
-  const parts = [
-    cap(p.repair, 900),
-    cap(p.laneTargets, 900),
-    cap(p.extra, 900),
-    cap(p.freshness, 800),
-    cap(p.palette, 1400), // the vocabulary — generous
-    cap(p.dna, 2800),
-    cap(p.learnedRef, 1600),
-    cap(p.learnedCraft, 1400),
-    cap(p.hitCraft, 2200),
-  ].map((s) => s.trim()).filter(Boolean);
+  //
+  // FOR LYRICS (audit 2026-07-18): the studied hit-craft + learned lyric craft are
+  // what make the WORDS land; the verbose beat RECIPE (dna) is the least useful to
+  // the lyricist (who is told not to lean on it). At the lean ~6k lyric budget the
+  // old order let dna eat the room and DROP the craft entirely — the exact "old
+  // habits / bland" cause. So for lyrics, craft outranks dna and dna is trimmed.
+  // The laws + word bank still lead; this only reorders the tail. Hooks keep the
+  // original order (verify: do NOT change the shared hook prompt).
+  const forLyrics = opts?.forLyrics === true;
+  const parts = (forLyrics
+    ? [
+        cap(p.repair, 900),
+        cap(p.laneTargets, 900),
+        cap(p.extra, 900),
+        cap(p.freshness, 800),
+        cap(p.palette, 1400), // the vocabulary — generous
+        cap(p.hitCraft, 2200), // hit modes lead for lyrics — they shape the words
+        cap(p.learnedCraft, 1600),
+        cap(p.learnedRef, 1200),
+        cap(p.dna, 1200), // beat recipe trimmed for the lyricist — least useful here
+      ]
+    : [
+        cap(p.repair, 900),
+        cap(p.laneTargets, 900),
+        cap(p.extra, 900),
+        cap(p.freshness, 800),
+        cap(p.palette, 1400), // the vocabulary — generous
+        cap(p.dna, 2800),
+        cap(p.learnedRef, 1600),
+        cap(p.learnedCraft, 1400),
+        cap(p.hitCraft, 2200),
+      ]
+  ).map((s) => s.trim()).filter(Boolean);
 
   const out: string[] = [];
   let used = 0;

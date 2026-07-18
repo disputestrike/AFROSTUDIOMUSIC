@@ -914,7 +914,8 @@ async function generateLyrics(
         learnedCraft: await learnedLyricCraftBrief(ctx.workspaceId, laneGenre),
         hitCraft: prompts.hitCraftBrief("lyric", lmood),
       },
-      6000
+      6000,
+      { forLyrics: true } // craft outranks the beat recipe so it survives the lean budget
     ); // lyrics: leaner than hooks — a huge input + long output JSON breaks more often
 
     // WRITING BRAIN craft fields (premise/hookCell/anchors/sectionPurposes) ride
