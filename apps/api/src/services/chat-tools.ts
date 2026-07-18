@@ -15,6 +15,8 @@ import {
   joinBriefs,
   prompts,
   generateJson,
+  brainIsBulk,
+  type Brain,
   scoreItems,
   directorRefineHooks,
   researchTrends,
@@ -944,6 +946,14 @@ async function generateLyrics(
     // RETRY UNTIL NON-EMPTY: a long multi-line lyric returned as a JSON string
     // sometimes comes back empty/broken (~1 in 3 live) — regenerate up to 3x
     // instead of failing the take. The last good attempt wins.
+    // PROVENANCE GATE (diagnosis 2026-07-18): when the paid brains are down the
+    // ladder writes the lyric on the BULK brain (Cerebras) — the "songs that
+    // make no sense" the owner reported. Track whether the bulk brain touched
+    // this lyric at ANY stage; if so we refuse to ship it as a DEMO below.
+    let lyricWroteBulk = false;
+    const markBrain = (b: Brain) => {
+      if (brainIsBulk(b)) lyricWroteBulk = true;
+    };
     let firstOutput: LyricOut = { title: "", body: "" };
     for (let attempt = 0; attempt < 3; attempt++) {
       let out = await generateJson<LyricOut>({
@@ -955,6 +965,7 @@ async function generateLyrics(
         timeoutMs: 90_000,
         model: process.env.WRITER_MODEL,
         task: "lyrics-draft",
+        onBrain: markBrain,
       }).catch(() => null);
       // THE CRAFT POLISH (the Blue-Tick lesson): the same brain, shown its own
       // draft through an editor's eyes, writes a clearly better song than any
@@ -987,6 +998,7 @@ async function generateLyrics(
           timeoutMs: 90_000,
           model: process.env.WRITER_MODEL,
           task: "lyric-polish",
+          onBrain: markBrain,
         }).catch(() => null);
         if (polished?.body && polished.body.length > 200) {
           // Craft object from the FINAL pass wins — the polish rewrote the lyric,
@@ -1162,6 +1174,7 @@ async function generateLyrics(
         maxTokens: 4_000,
         timeoutMs: 90_000,
         model: process.env.WRITER_MODEL,
+        onBrain: markBrain,
       }).catch(() => null);
       if (!rewrite?.body || rewrite.body.trim().length < 20) break;
       body = rewrite.body.trim();
@@ -1204,6 +1217,31 @@ async function generateLyrics(
       return {
         error: `lyric_qa_blocked (after 2 corrective rewrites): ${qa.blocks.join("; ")}`,
         qa: { blocks: qa.blocks, band: qa.band },
+      };
+    }
+    // BRAIN-PROVENANCE GATE (diagnosis 2026-07-18): the lyric cleared the QA gate
+    // but the BULK brain wrote it (both paid brains were down) — that is the
+    // "songs that make no sense" the owner reported. A bulk-brain take is DRAFT
+    // quality and must NEVER ship as a finished DEMO. Refund, don't save, and say
+    // so honestly (same plumbing as a QA rejection) so the artist retries once
+    // the paid brain is back — a clear hold beats a bad song.
+    if (lyricWroteBulk) {
+      if (hook.songId)
+        await prisma.song
+          .update({
+            where: { id: hook.songId },
+            data: { quarantined: true, quarantineReason: "brain_degraded: bulk fallback wrote the lyric" },
+          })
+          .catch(() => {});
+      await ctx.app.refundCredits({
+        workspaceId: ctx.workspaceId,
+        key: "lyrics_full",
+        refTable: "Project",
+        refId: hook.projectId,
+        chargeId: charge.chargeId,
+      });
+      return {
+        error: "brain_degraded: the studio brain is degraded right now (running on the fallback), so I held this take instead of shipping a weak lyric — try again in a moment.",
       };
     }
     const lyric = hook.songId

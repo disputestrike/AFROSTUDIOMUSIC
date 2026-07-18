@@ -67,6 +67,16 @@ export interface GenerateOptions {
   task?: string;
   /** Explicit Anthropic model override (e.g. WRITER_MODEL for lyric calls). */
   model?: string;
+  /**
+   * PROVENANCE (diagnosis 2026-07-18): fired SYNCHRONOUSLY the instant the brain
+   * that will produce this result is chosen — before any await returns to the
+   * caller. This is the RACE-SAFE way to know which brain wrote the output: the
+   * module-level `lastBrain` global is clobbered by every concurrent request, so
+   * reading it after `await generateJson(...)` is unreliable. Callers that
+   * PERSIST creative output (lyrics/hooks) use this to refuse shipping a
+   * bulk-brain take as a finished song. Prefer generateJsonWithBrain().
+   */
+  onBrain?: (brain: Brain) => void;
 }
 
 const JSON_ONLY =
@@ -81,9 +91,16 @@ export let lastBrain: Brain = 'openai';
  * which model produced it.
  */
 export async function generateJson<T>(opts: GenerateOptions): Promise<T> {
+  // Set the brain global AND fire the caller's provenance hook in the SAME
+  // synchronous tick (before any await hands control back), so a concurrent
+  // request can't clobber what this caller observes.
+  const setBrain = (b: Brain): void => {
+    lastBrain = b;
+    opts.onBrain?.(b);
+  };
   // Tests: keep the deterministic OpenAI stub path (keyed off the system prompt).
   if (process.env.STUB_AI === '1') {
-    lastBrain = 'stub';
+    setBrain('stub');
     return responsesJson<T>({
       system: opts.system,
       user: opts.user,
@@ -111,7 +128,7 @@ export async function generateJson<T>(opts: GenerateOptions): Promise<T> {
     const t0 = Date.now();
     try {
       const data = await cerebrasJson<T>({ system: opts.system + JSON_ONLY, user: opts.user, maxTokens: opts.maxTokens });
-      lastBrain = 'cerebras';
+      setBrain('cerebras');
       recordLlmUsage({ tier: 'bulk', task: opts.task ?? 'unlabeled', brain: 'cerebras', ms: Date.now() - t0, estCostUsd: lastCerebrasUsage?.estCostUsd ?? null });
       return data;
     } catch (err) {
@@ -129,7 +146,7 @@ export async function generateJson<T>(opts: GenerateOptions): Promise<T> {
     try {
       const t0 = Date.now();
       const data = await responsesJson<T>({ system: opts.system, user: opts.user, temperature: opts.temperature, maxOutputTokens: opts.maxTokens });
-      lastBrain = 'openai';
+      setBrain('openai');
       recordLlmUsage({ tier: 'bulk', task: opts.task ?? 'unlabeled', brain: 'openai', ms: Date.now() - t0, estCostUsd: lastOpenAiUsage?.estCostUsd ?? null, degraded: 'cerebras not configured on this service' });
       return data;
     } catch {
@@ -147,7 +164,7 @@ export async function generateJson<T>(opts: GenerateOptions): Promise<T> {
     const t0 = Date.now();
     try {
       const data = await callClaude();
-      lastBrain = 'claude';
+      setBrain('claude');
       // ESTIMATED judgment cost (the $20-day lesson: null hid the burn). Sonnet
       // rates ~$3/M in, $15/M out; tokens ≈ chars/4. Rough by design — the
       // economics payload labels it an estimate, billing truth lives in the
@@ -178,7 +195,7 @@ export async function generateJson<T>(opts: GenerateOptions): Promise<T> {
   // try, out of reach of the telemetry the catch now records).
   const t0 = Date.now();
   try {
-    lastBrain = 'openai';
+    setBrain('openai');
     // EXPLICIT brain:'openai' (the Writer A/B bench) = the flagship GPT.
     // OWNER DIRECTIVE (2026-07-13): the BRAIN's fallback must match the brain's
     // quality — when a JUDGMENT call (lyrics/hooks/singing retry) falls here
@@ -209,7 +226,7 @@ export async function generateJson<T>(opts: GenerateOptions): Promise<T> {
       await new Promise((r) => setTimeout(r, 1200));
       try {
         const data = await callClaude();
-        lastBrain = 'claude';
+        setBrain('claude');
         return data;
       } catch (e2) {
         // BOTH paid brains dead (lived it: Anthropic 400 credit + OpenAI quota
@@ -218,7 +235,7 @@ export async function generateJson<T>(opts: GenerateOptions): Promise<T> {
         if (cerebrasEnabled() && promptChars < 28_000) {
           console.warn(`[brains] Claude AND OpenAI unavailable (${(e2 as Error).message.slice(0, 100)}) — last-resort Cerebras`);
           const data = await cerebrasJson<T>({ system: opts.system + JSON_ONLY, user: opts.user, maxTokens: opts.maxTokens });
-          lastBrain = 'cerebras';
+          setBrain('cerebras');
           recordLlmUsage({ tier: opts.tier ?? 'judgment', task: opts.task ?? 'unlabeled', brain: 'cerebras', ms: 0, estCostUsd: lastCerebrasUsage?.estCostUsd ?? null, degraded: 'both paid brains unavailable' });
           return data;
         }
@@ -233,7 +250,7 @@ export async function generateJson<T>(opts: GenerateOptions): Promise<T> {
     if (cerebrasEnabled() && promptChars < 28_000) {
       console.warn(`[brains] paid brains failed (${(e as Error).message.slice(0, 100)}) — last-resort Cerebras`);
       const data = await cerebrasJson<T>({ system: opts.system + JSON_ONLY, user: opts.user, maxTokens: opts.maxTokens });
-      lastBrain = 'cerebras';
+      setBrain('cerebras');
       recordLlmUsage({ tier: opts.tier ?? 'judgment', task: opts.task ?? 'unlabeled', brain: 'cerebras', ms: 0, estCostUsd: lastCerebrasUsage?.estCostUsd ?? null, degraded: 'paid brains unavailable' });
       return data;
     }
@@ -242,4 +259,24 @@ export async function generateJson<T>(opts: GenerateOptions): Promise<T> {
     recordLlmUsage({ tier: opts.tier ?? 'judgment', task: opts.task ?? 'unlabeled', brain: 'openai', ms: 0, estCostUsd: null, degraded: `all brains down, no lifeboat (${(e as Error).message.slice(0, 110)})` });
     throw e;
   }
+}
+
+/**
+ * Generate a JSON object AND report the brain that actually wrote it, race-safe.
+ * The brain is captured through the onBrain hook (fired synchronously at
+ * selection), never read from the shared `lastBrain` global — so it is correct
+ * even under concurrent requests. Use this (not generateJson + lastBrain) on any
+ * path that PERSISTS creative output, so a bulk-brain (Cerebras) take can be
+ * held back from shipping as a finished song. See brainIsBulk().
+ */
+export async function generateJsonWithBrain<T>(opts: GenerateOptions): Promise<{ data: T; brain: Brain }> {
+  let brain: Brain = 'openai';
+  const data = await generateJson<T>({ ...opts, onBrain: (b) => { brain = b; } });
+  return { data, brain };
+}
+
+/** True when a brain is the BULK/last-resort tier (Cerebras) — a take written by
+ *  it is DRAFT quality and must not ship as a finished JUDGMENT song. */
+export function brainIsBulk(brain: Brain): boolean {
+  return brain === 'cerebras';
 }

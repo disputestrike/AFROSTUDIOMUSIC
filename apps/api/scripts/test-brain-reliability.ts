@@ -103,6 +103,50 @@ const aiRouteAt = debug.indexOf("app.get('/ai'");
 const adminAt = debug.indexOf("await requireAdmin(req)", aiRouteAt);
 assert.ok(aiRouteAt >= 0 && adminAt > aiRouteAt, "[14] /debug/ai stays operator-only");
 
+// ── BATCH B — brain-provenance gate: never ship a bulk-brain lyric ───────────
+const chatTools = read("src/services/chat-tools.ts");
+// Race-safe provenance primitive (NOT the shared lastBrain global).
+assert.match(
+  generate,
+  /export async function generateJsonWithBrain<T>\(opts: GenerateOptions\): Promise<\{ data: T; brain: Brain \}>/,
+  "[4] generateJsonWithBrain returns the writing brain race-safely"
+);
+assert.match(
+  generate,
+  /export function brainIsBulk\(brain: Brain\): boolean \{\s*\r?\n?\s*return brain === 'cerebras';/,
+  "[4] brainIsBulk identifies the bulk/last-resort brain"
+);
+assert.match(
+  generate,
+  /onBrain\?: \(brain: Brain\) => void;/,
+  "[4] the provenance hook fires synchronously at brain selection"
+);
+assert.match(
+  generate,
+  /const setBrain = \(b: Brain\): void => \{\s*\r?\n?\s*lastBrain = b;\s*\r?\n?\s*opts\.onBrain\?\.\(b\);/,
+  "[4] setBrain fires the hook in the same tick it sets the global (race-safe)"
+);
+// The hot lyric path (drop/chat generateLyrics) tracks + refuses bulk-brain takes.
+assert.match(
+  chatTools,
+  /const markBrain = \(b: Brain\) => \{\s*\r?\n?\s*if \(brainIsBulk\(b\)\) lyricWroteBulk = true;/,
+  "[4] the lyric writer tracks whether the bulk brain touched the take"
+);
+assert.equal(
+  (chatTools.match(/onBrain: markBrain/g) ?? []).length,
+  3,
+  "[4] draft, polish AND qa-fix rewrite all report their brain"
+);
+// The gate must refund + hold, and must sit BEFORE the DEMO persist.
+const gateAt = chatTools.indexOf("if (lyricWroteBulk) {");
+const demoAt = chatTools.indexOf('status: "DEMO"', gateAt);
+assert.ok(gateAt >= 0 && demoAt > gateAt, "[4] the bulk-brain hold sits BEFORE the flip to DEMO");
+assert.match(
+  chatTools,
+  /brain_degraded: the studio brain is degraded right now[\s\S]*?held this take instead of shipping a weak lyric/,
+  "[4] a held take is refunded and surfaced honestly, not shipped as a song"
+);
+
 console.log(
-  "brain reliability (Batch A): auth breaker self-heals, OpenAI + terminal failures are recorded, and /debug/ai names the failing brain"
+  "brain reliability (Batch A+B): failures visible, breaker self-heals, and a bulk-brain lyric is HELD (refunded) instead of shipped as a nonsense song"
 );
