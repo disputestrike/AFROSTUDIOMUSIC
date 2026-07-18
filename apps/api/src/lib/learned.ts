@@ -354,9 +354,10 @@ export async function learnedStyleTags(
 }
 
 /**
- * MEASURED tokens — the genuinely reference-SPECIFIC signal (audit PARTIAL: the
- * DSP-measured facts never reached the fresh-render prompt, only ranking used
- * them). Reads recipe.measured (the ear's real output) from the newest MEASURED
+ * MEASURED tokens — the genuinely reference-SPECIFIC signal. These DSP-measured
+ * facts now LEAD the render prompt at both call sites (beats.ts dnaTags and
+ * chat-tools.ts dnaTags), not just ranking — the earlier audit-PARTIAL gap is
+ * closed. Reads recipe.measured (the ear's real output) from the newest MEASURED
  * reference and emits terse, true tokens the music model can act on.
  */
 export async function learnedMeasuredTags(workspaceId: string, genre?: string | null, pinnedReferenceId?: string | null): Promise<string[]> {

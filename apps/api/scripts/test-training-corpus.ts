@@ -17,6 +17,12 @@ import {
   trainingEligibility,
   buildTrainingManifest,
 } from '../../../packages/shared/src/training-corpus';
+import {
+  resolveTrainingConsent,
+  hashTrainingLicense,
+  TRAINING_LICENSE_VERSION,
+  TRAINING_LICENSE_CLAUSE,
+} from '../../../packages/shared/src/training-consent';
 
 // ── origin derivation ────────────────────────────────────────────────────────
 assert.equal(deriveTrainingOrigin({ id: 'a', engine: 'own_engine' }), 'own-master', 'own engine → own-master');
@@ -77,3 +83,41 @@ assert.equal(manifest.counts.byOrigin['third-party-render'], 2, 'both third-part
 
 console.log('training-corpus gate: masters/licensed/live/consented-user TRAIN; MiniMax/Suno/unknown/unconsented REFUSED with reasons — nothing silently dropped.');
 console.log(JSON.stringify(manifest.counts, null, 2));
+
+// ── TRAINING-LICENSE CONSENT (ToS-on-signup, versioned + hashed) ─────────────
+const HASH = hashTrainingLicense();
+assert.equal(HASH, hashTrainingLicense(TRAINING_LICENSE_CLAUSE), 'hash is stable for the current clause');
+
+// no record → not granted (fail-closed)
+assert.equal(resolveTrainingConsent(null).granted, false, 'no acceptance → not granted');
+
+// current-version acceptance → granted + current
+const now = new Date().toISOString();
+const good = resolveTrainingConsent({ version: TRAINING_LICENSE_VERSION, acceptedAt: now, textHash: HASH }, { expectedHash: HASH });
+assert.equal(good.granted, true, 'current signed ToS → granted');
+assert.equal(good.current, true, 'flagged as current license');
+
+// revoked → denied even if it was once accepted
+assert.equal(resolveTrainingConsent({ version: TRAINING_LICENSE_VERSION, acceptedAt: now, revokedAt: now }).granted, false, 'withdrawn grant → denied');
+
+// older version → still honored but flagged not-current (prompt re-accept)
+const older = resolveTrainingConsent({ version: 'tl-2026-01-01', acceptedAt: now }, { currentVersion: TRAINING_LICENSE_VERSION });
+assert.equal(older.granted, true, 'older accepted license still grants');
+assert.equal(older.current, false, 'older license flagged for re-acceptance');
+
+// tampered/mismatched clause hash → denied (accepted text differs from ours)
+assert.equal(
+  resolveTrainingConsent({ version: TRAINING_LICENSE_VERSION, acceptedAt: now, textHash: 'deadbeef' }, { expectedHash: HASH }).granted,
+  false,
+  'clause-hash mismatch → denied'
+);
+
+// end-to-end: a consented user-original asset trains, because consent resolves true
+const consentTrue = resolveTrainingConsent({ version: TRAINING_LICENSE_VERSION, acceptedAt: now, textHash: HASH }, { expectedHash: HASH }).granted;
+assert.equal(
+  trainingEligibility({ id: 'e2e', materialSource: 'upload', rightsBasis: 'user-attested', consentGranted: consentTrue }).eligible,
+  true,
+  'ToS-accepted user-original flows through to trainable'
+);
+
+console.log('training-license consent: fail-closed, versioned, hashed, revocable — ToS acceptance resolves user-original to trainable.');
