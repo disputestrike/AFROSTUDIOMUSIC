@@ -1,5 +1,6 @@
 // Load .env first — Railway sets env vars directly, so this is a no-op there.
 import "dotenv/config";
+import { dspAvailable } from "./lib/dsp";
 
 import { Queue, Worker } from "bullmq";
 import IORedis from "ioredis";
@@ -581,6 +582,23 @@ const workerInstance = String(
   .slice(0, 80);
 const workerHeartbeatKey = `worker:heartbeat:${workerInstance}`;
 const workerStartedAt = new Date().toISOString();
+// THE EAR STATUS (audit 2026-07-17): the whole quality/learning loop silently
+// no-ops if librosa/numpy are missing on the worker host — "the ear needs to
+// listen", but nothing surfaced whether it CAN. Probe once at boot; the
+// heartbeat carries it so /health/ready can show the ear is (or isn't) awake.
+let earOk: boolean | null = null;
+void dspAvailable()
+  .then(ok => {
+    earOk = ok;
+    log[ok ? "info" : "warn"](
+      ok
+        ? "the ear is listening (DSP stack available)"
+        : "THE EAR IS DEAF — librosa/numpy unavailable; quality measurement + learning silently no-op"
+    );
+  })
+  .catch(() => {
+    earOk = false;
+  });
 async function writeWorkerHeartbeat(): Promise<void> {
   const value = JSON.stringify({
     at: new Date().toISOString(),
@@ -590,6 +608,7 @@ async function writeWorkerHeartbeat(): Promise<void> {
     // heartbeat IS its health surface, so the build sha rides here and the
     // API's /health/ready reports it (sha only; no secrets, no config).
     sha: process.env.RAILWAY_GIT_COMMIT_SHA ?? null,
+    earOk,
   });
   await prisma.systemSetting.upsert({
     where: { key: workerHeartbeatKey },

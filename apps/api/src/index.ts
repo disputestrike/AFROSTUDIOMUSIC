@@ -354,6 +354,7 @@ async function bootstrap() {
     let redis = false;
     let worker = false;
     let workerSha: string | null = null;
+    let earOk: boolean | null = null;
     let pendingOutbox = 0;
     let oldestPendingSeconds: number | null = null;
     try {
@@ -388,7 +389,11 @@ async function bootstrap() {
       );
       for (const row of heartbeats as Array<{ value: string }>) {
         try {
-          const beat = JSON.parse(row.value) as { at?: string; sha?: string };
+          const beat = JSON.parse(row.value) as {
+            at?: string;
+            sha?: string;
+            earOk?: boolean | null;
+          };
           const at = new Date(beat.at ?? 0).getTime();
           if (Number.isFinite(at) && checkedAt.getTime() - at < 45_000) {
             worker = true;
@@ -397,6 +402,10 @@ async function bootstrap() {
             // health surface, and it now carries the sha). Rows arrive
             // newest-first, so the first live row wins.
             workerSha = typeof beat.sha === "string" ? beat.sha : null;
+            // THE EAR STATUS (audit 2026-07-17): surface whether the worker's
+            // DSP quality/learning ear is actually listening — false/null here
+            // means measurement + learning are silently no-op.
+            earOk = typeof beat.earOk === "boolean" ? beat.earOk : null;
             break;
           }
         } catch {
@@ -448,6 +457,7 @@ async function bootstrap() {
         redis,
         worker,
         workerSha,
+        earOk,
         pendingOutbox,
         oldestPendingSeconds,
       },
