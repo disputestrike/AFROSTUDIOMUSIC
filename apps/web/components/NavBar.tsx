@@ -3,7 +3,7 @@
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { useEffect, useState } from 'react';
-import { CreditCard, Eye, LogOut, Menu, Settings as SettingsIcon, Undo2, User, X } from 'lucide-react';
+import { ChevronDown, CreditCard, Eye, LogOut, Menu, Settings as SettingsIcon, Undo2, User, X } from 'lucide-react';
 import { useApi } from '@/lib/api';
 import { navItemsFor } from '@/lib/nav-manifest';
 import { useOperatorView } from '@/components/OperatorGate';
@@ -19,6 +19,7 @@ export function NavBar() {
   const path = usePathname();
   const [open, setOpen] = useState(false);
   const [accountOpen, setAccountOpen] = useState(false);
+  const [moreOpen, setMoreOpen] = useState(false);
   const [signingOut, setSigningOut] = useState(false);
   const view = useOperatorView();
 
@@ -29,6 +30,7 @@ export function NavBar() {
   useEffect(() => {
     setOpen(false);
     setAccountOpen(false);
+    setMoreOpen(false);
   }, [path]);
 
   async function signOut() {
@@ -144,6 +146,47 @@ export function NavBar() {
     </div>
   );
 
+  // Keep the desktop row from overflowing the header (owner 2026-07-18): the
+  // common destinations stay inline; the rest fold into a "More" dropdown. Only
+  // splits when there are genuinely too many (the 6-item consumer nav is untouched).
+  const PRIMARY_NAV = 9;
+  const tooMany = links.length > PRIMARY_NAV + 1;
+  const primaryLinks = tooMany ? links.slice(0, PRIMARY_NAV) : links;
+  const overflowLinks = tooMany ? links.slice(PRIMARY_NAV) : [];
+  const overflowActive = overflowLinks.some((l) => isActive(l.href));
+
+  const moreMenu = overflowLinks.length > 0 && (
+    <div className="relative shrink-0">
+      <button
+        type="button"
+        onClick={() => setMoreOpen((o) => !o)}
+        aria-expanded={moreOpen}
+        className={`${linkClass('#never-active')} inline-flex items-center gap-1 ${overflowActive ? 'text-white' : ''}`}
+      >
+        More <ChevronDown className="h-3.5 w-3.5" />
+      </button>
+      {moreOpen && (
+        <>
+          <button type="button" aria-hidden tabIndex={-1} onClick={() => setMoreOpen(false)} className="fixed inset-0 z-40 cursor-default" />
+          <div className="absolute right-0 top-10 z-50 w-52 rounded-2xl border border-white/10 bg-ink/95 p-1.5 shadow-xl backdrop-blur">
+            {overflowLinks.map((l) => (
+              <Link
+                key={l.href}
+                href={l.href}
+                onClick={() => setMoreOpen(false)}
+                className={`block rounded-xl px-3 py-2 text-sm ${
+                  isActive(l.href) ? 'bg-white/10 text-white' : 'text-slate-300 hover:bg-white/5 hover:text-slate-100'
+                }`}
+              >
+                {l.label}
+              </Link>
+            ))}
+          </div>
+        </>
+      )}
+    </div>
+  );
+
   return (
     <header className="sticky top-0 z-40 glass-strong border-b border-white/5">
       <div className="mx-auto flex max-w-7xl items-center justify-between gap-2 px-4 py-3 sm:px-6">
@@ -160,13 +203,16 @@ export function NavBar() {
           </span>
         </Link>
 
-        {/* Desktop nav — full horizontal row only where it fits (xl+). */}
+        {/* Desktop nav — full horizontal row only where it fits (xl+). Extras
+            past PRIMARY_NAV fold into a "More" dropdown so the row never
+            overflows the header. */}
         <nav className="hidden items-center gap-0.5 font-grotesk text-sm xl:flex">
-          {links.map((l) => (
+          {primaryLinks.map((l) => (
             <Link key={l.href} href={l.href} className={linkClass(l.href)}>
               {l.label}
             </Link>
           ))}
+          {moreMenu}
           {viewingBadge && <span className="ml-2">{viewingBadge}</span>}
           {view.signedIn === false && (
             <Link href="/signin" className="ml-1 shrink-0 rounded-full border border-afrobrand-500/40 bg-afrobrand-500/10 px-3 py-1 text-xs text-afrobrand-300 hover:bg-afrobrand-500/20">

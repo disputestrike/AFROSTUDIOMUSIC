@@ -989,7 +989,9 @@ export default function CreatePage() {
     <div className="min-w-0">
       {/* THE THREE DOORS — big, obvious, remembered on this device. Each creator
           walks into their own room and never sees the other rooms' complexity. */}
-      <div className="mb-6 grid gap-2 sm:grid-cols-3">
+      {/* All FOUR doors on one line (owner 2026-07-18): 2-up on mobile, 4-up
+          from sm so "Make a music video" no longer drops to its own row. */}
+      <div className="mb-6 grid grid-cols-2 gap-2 sm:grid-cols-4">
         {DOORS.map((d) => (
           <button
             key={d.id}
