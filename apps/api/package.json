@@ -36,7 +36,8 @@
     "test:lyric-quality-floor": "tsx scripts/test-lyric-quality-floor.ts",
     "test:chat-mic": "tsx scripts/test-chat-mic.ts",
     "test:training-corpus": "tsx scripts/test-training-corpus.ts",
-    "test:training-capture": "tsx scripts/test-training-capture.ts"
+    "test:training-capture": "tsx scripts/test-training-capture.ts",
+    "test:music-training": "tsx scripts/test-music-training.ts"
   },
   "dependencies": {
     "@afrohit/ai": "workspace:*",
