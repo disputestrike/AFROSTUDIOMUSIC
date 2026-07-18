@@ -76,15 +76,28 @@ export default async function lyrics(app: FastifyInstance) {
         cleanVersion: input.cleanVersion,
         languageMix: input.languageMix as never,
         languages: reqLangs,
-        soundDna: fuseSoundDna({
-          ...(await laneContext(workspaceId, project.genre, hook.songId)),
-          freshness: await freshnessBrief(workspaceId),
-          palette: await lexiconPalette({ workspaceId, languages: reqLangs.length ? reqLangs : project.artist.languages, mood: lmood, rotate: Date.now() % 97 }),
-          dna: laneDnaBrief(project.genre),
-          learnedRef: await learnedReferenceBrief(workspaceId, project.genre),
-          learnedCraft: await learnedLyricCraftBrief(workspaceId, project.genre),
-          hitCraft: prompts.hitCraftBrief('lyric', lmood),
-        }, 6000),
+        // SPEED (audit 2026-07-17): these context lookups are independent —
+        // run them concurrently instead of one-after-another before the
+        // writer starts.
+        soundDna: await (async () => {
+          const [lane, freshness, palette, learnedRef, learnedCraft] =
+            await Promise.all([
+              laneContext(workspaceId, project.genre, hook.songId),
+              freshnessBrief(workspaceId),
+              lexiconPalette({ workspaceId, languages: reqLangs.length ? reqLangs : project.artist.languages, mood: lmood, rotate: Date.now() % 97 }),
+              learnedReferenceBrief(workspaceId, project.genre),
+              learnedLyricCraftBrief(workspaceId, project.genre),
+            ]);
+          return fuseSoundDna({
+            ...lane,
+            freshness,
+            palette,
+            dna: laneDnaBrief(project.genre),
+            learnedRef,
+            learnedCraft,
+            hitCraft: prompts.hitCraftBrief('lyric', lmood),
+          }, 6000);
+        })(),
       });
       // RETRY UNTIL NON-EMPTY — a long lyric returned as JSON comes back empty
       // ~1 in 3; regenerate up to 3x instead of failing.

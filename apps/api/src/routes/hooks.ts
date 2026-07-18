@@ -88,54 +88,57 @@ export default async function hooks(app: FastifyInstance) {
         execute: async () => {
           try {
             const brief = input.brief ?? project.briefs[0] ?? undefined;
-            // Taste feedback loop — recent approvals/rejections steer generation.
-            const tasteMemory = await memoryContext({
-              workspaceId,
-              artistId: project.artistId,
-              query: JSON.stringify({
-                genre: project.genre,
-                languages: project.artist.languages,
-                brief,
-              }),
-            });
-            // Live trends so hooks reflect what's popping right now — and the digest
-            // is shelved in the data lake (one snapshot/genre/day) so it compounds.
-            const trendData = await researchTrends({
-              genre: project.genre,
-            }).catch(() => null);
-            const trends = trendData?.digest;
-            await snapshotTrend(workspaceId, project.genre, trendData).catch(
-              () => {}
-            );
-            // Genre Sound DNA + the artist's LEARNED references + STUDIED lyric craft
-            // + HIT-CRAFT + the WORD BANK — the full data lake, each layer capped so
-            // ALL of it reaches the writer (not just the first two).
             const mood = (brief as { mood?: string } | undefined)?.mood;
-            const soundDna = fuseSoundDna({
-              // Pre-song recall: measured lessons from THIS lane's own winners/losers.
-              extra: await presongIntelligence(
+            // SPEED (audit 2026-07-17): these lookups have NO data dependency
+            // on each other — they used to run one-after-another (~25s of
+            // serial round-trips before the writer even started). Fire them
+            // ALL at once; latency drops to the slowest single call.
+            const [
+              tasteMemory,
+              trendData,
+              presong,
+              freshness,
+              palette,
+              learnedRef,
+              learnedCraft,
+            ] = await Promise.all([
+              // Taste feedback loop — recent approvals/rejections steer generation.
+              memoryContext({
                 workspaceId,
-                project.genre,
-                mood
-              ),
-              freshness: await freshnessBrief(workspaceId),
-              // Languages steer the palette — without them the word bank served its
-              // default slice regardless of what the artist writes in.
-              palette: await lexiconPalette({
+                artistId: project.artistId,
+                query: JSON.stringify({
+                  genre: project.genre,
+                  languages: project.artist.languages,
+                  brief,
+                }),
+              }),
+              // Live trends so hooks reflect what's popping right now.
+              researchTrends({ genre: project.genre }).catch(() => null),
+              // Pre-song recall: measured lessons from THIS lane's winners/losers.
+              presongIntelligence(workspaceId, project.genre, mood),
+              freshnessBrief(workspaceId),
+              lexiconPalette({
                 workspaceId,
                 languages: project.artist.languages,
                 mood,
                 rotate: input.count,
               }),
+              learnedReferenceBrief(workspaceId, project.genre),
+              learnedLyricCraftBrief(workspaceId, project.genre),
+            ]);
+            const trends = trendData?.digest;
+            // The digest is shelved in the data lake (one snapshot/genre/day)
+            // so it compounds — fire-and-forget, never blocks the writer.
+            void snapshotTrend(workspaceId, project.genre, trendData).catch(
+              () => {}
+            );
+            const soundDna = fuseSoundDna({
+              extra: presong,
+              freshness,
+              palette,
               dna: laneDnaBrief(project.genre),
-              learnedRef: await learnedReferenceBrief(
-                workspaceId,
-                project.genre
-              ),
-              learnedCraft: await learnedLyricCraftBrief(
-                workspaceId,
-                project.genre
-              ),
+              learnedRef,
+              learnedCraft,
               hitCraft: prompts.hitCraftBrief("hook", mood),
             });
 

@@ -176,6 +176,15 @@ export default async function songs(app: FastifyInstance) {
     // plays it directly; scene-clip coverage counts through the SAME
     // perShotRenders law the assembly gate counts by.
     const songIds = rows.map((s: CatalogRow) => s.id);
+    // SPEED (audit 2026-07-17): cover art depends only on the songs, not on
+    // any of the video work below — start it NOW so it runs concurrently with
+    // the whole video concept→render→presign chain instead of after it.
+    const projectIds = [...new Set(rows.map((s: CatalogRow) => s.projectId))];
+    const coversPromise = prisma.imageAsset.findMany({
+      where: { projectId: { in: projectIds }, kind: 'cover' },
+      orderBy: { createdAt: 'desc' },
+      select: { projectId: true, url: true },
+    });
     const videoConcepts = songIds.length
       ? await prisma.videoConcept.findMany({
           where: { songId: { in: songIds } },
@@ -222,12 +231,7 @@ export default async function songs(app: FastifyInstance) {
       }),
     );
 
-    const projectIds = [...new Set(rows.map((s: CatalogRow) => s.projectId))];
-    const covers = await prisma.imageAsset.findMany({
-      where: { projectId: { in: projectIds }, kind: 'cover' },
-      orderBy: { createdAt: 'desc' },
-      select: { projectId: true, url: true },
-    });
+    const covers = await coversPromise;
     const coverByProject = new Map<string, string>();
     for (const c of covers) if (c.projectId && !coverByProject.has(c.projectId)) coverByProject.set(c.projectId, c.url);
 
