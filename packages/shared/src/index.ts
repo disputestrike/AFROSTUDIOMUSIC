@@ -20,6 +20,7 @@ export * from "./engine-class";
 export * from "./reference-origin";
 export * from "./license-certificate";
 export * from "./lora-dataset";
+export * from "./training-corpus";
 export * from "./blueprint";
 export * from "./genre-signatures";
 export * from "./material-roles";

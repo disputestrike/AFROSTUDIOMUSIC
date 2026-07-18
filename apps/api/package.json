@@ -34,7 +34,8 @@
     "test:video-treatment-async": "tsx scripts/test-video-treatment-async.ts",
     "test:brain-reliability": "tsx scripts/test-brain-reliability.ts",
     "test:lyric-quality-floor": "tsx scripts/test-lyric-quality-floor.ts",
-    "test:chat-mic": "tsx scripts/test-chat-mic.ts"
+    "test:chat-mic": "tsx scripts/test-chat-mic.ts",
+    "test:training-corpus": "tsx scripts/test-training-corpus.ts"
   },
   "dependencies": {
     "@afrohit/ai": "workspace:*",
