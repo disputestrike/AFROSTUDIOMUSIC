@@ -274,7 +274,10 @@ export default async function taste(app: FastifyInstance) {
         const refileStatus = rec.refile?.status;
         const detected =
           refileStatus === 'proposed' && rec.refile?.proposedLane ? rec.refile.proposedLane
-          : refileStatus === 'approved' || refileStatus === 'rejected' ? null
+          // approved/rejected = the user's ear spoke; auto-applied = the studio
+          // already MOVED the row into its detected lane — all decided, so the
+          // recipe's stale detected-genre label is silenced (no false mismatch).
+          : refileStatus === 'approved' || refileStatus === 'rejected' || refileStatus === 'auto-applied' ? null
           : rec.genre && r.genre && norm(rec.genre) !== norm(r.genre) ? rec.genre
           : null;
         return {

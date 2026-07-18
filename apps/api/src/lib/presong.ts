@@ -17,6 +17,38 @@ import { prisma } from '@afrohit/db';
 
 const norm = (g?: string | null) => (g ?? '').toLowerCase().trim().replace(/[\s/-]+/g, '_');
 
+// Written by the nightly report card (worker compound.ts REPORT_CARD_GAPS_KEY).
+const REPORT_CARD_GAPS_KEY = 'reportcard:gaps:v1';
+
+// Turn the nightly report card's measured lane gaps into a generation steer.
+// This is the studio-wide half of the learn->feed loop: presongIntelligence
+// only speaks when a WORKSPACE has >=3 of its own scored songs, so a brand-new
+// account learns nothing from its own (empty) catalog. The house report card
+// closes that — the identity dimensions the ear keeps scoring weak across the
+// whole studio in this lane become an explicit "prioritize fixing these"
+// instruction on the very first take. Best-effort; never blocks a render.
+export async function houseGapBrief(genre?: string | null): Promise<string> {
+  try {
+    if (!genre) return '';
+    const row = await prisma.systemSetting.findUnique({ where: { key: REPORT_CARD_GAPS_KEY } });
+    if (!row?.value) return '';
+    const map = JSON.parse(String(row.value)) as Record<
+      string,
+      { avg?: number; takes?: number; gaps?: string[]; at?: string }
+    >;
+    // Report card keys by raw project.genre; match by normalized genre so
+    // "Afrobeats"/"afrobeats"/"afro-beats" all resolve to the same lane.
+    const want = norm(genre);
+    const hit = Object.entries(map).find(([k]) => norm(k) === want)?.[1];
+    const gaps = (hit?.gaps ?? []).filter(Boolean).slice(0, 3);
+    if (!gaps.length) return '';
+    const readable = gaps.map((g) => g.replace(/_/g, ' ')).join(', ');
+    return `STUDIO REPORT CARD — recent ${genre.replace(/_/g, ' ')} takes across the house keep scoring weak on: ${readable}. Make these unmistakably right in this record.`;
+  } catch {
+    return '';
+  }
+}
+
 // Shape of the `select` on prisma.song.findMany below (shim types @afrohit/db as any).
 type ScoredSong = {
   title: string;
@@ -40,11 +72,14 @@ export async function presongIntelligence(workspaceId: string, genre?: string | 
         project: { select: { genre: true, bpm: true } },
       },
     });
+    // Studio-wide report-card steer — delivered even to a brand-new workspace
+    // that has no scored catalog of its own to learn from yet.
+    const houseLine = await houseGapBrief(genre);
     const lane = songs.filter((s: ScoredSong) => norm(s.project?.genre) === norm(genre));
-    if (lane.length < 3) return ''; // too little history — say nothing rather than guess
+    if (lane.length < 3) return houseLine; // too little OWN history — fall back to the house's learned gaps
     const winners = lane.filter((s: ScoredSong) => (s.laneScore ?? 0) >= 80 || (s.hitScore ?? 0) >= 70).slice(0, 5);
     const losers = lane.filter((s: ScoredSong) => s.laneScore != null && s.laneScore < 40).slice(0, 4);
-    if (!winners.length && !losers.length) return '';
+    if (!winners.length && !losers.length) return houseLine;
 
     const parts: string[] = [`PRESONG INTELLIGENCE — measured lessons from YOUR own ${genre.replace(/_/g, ' ')} catalog (${lane.length} scored songs), not theory:`];
     if (winners.length) {
@@ -62,7 +97,8 @@ export async function presongIntelligence(workspaceId: string, genre?: string | 
       const common = [...gapKeys.entries()].sort((a, b) => b[1] - a[1]).slice(0, 3).map(([k, n]) => `${k} (${n}×)`);
       if (common.length) parts.push(`AVOID (what sank past takes here): ${common.join(', ')}.`);
     }
-    const brief = parts.join('\n').slice(0, 850);
+    if (houseLine) parts.push(houseLine);
+    const brief = parts.join('\n').slice(0, 900);
     // The receipt — recall is real only if it's recorded and inspectable.
     await prisma.analyticsEvent.create({
       data: { workspaceId, name: 'presong.recall', properties: { genre, mood, winners: winners.length, losers: losers.length, chars: brief.length } as never },

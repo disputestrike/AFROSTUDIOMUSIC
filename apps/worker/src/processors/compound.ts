@@ -56,6 +56,12 @@ import {
 import { downloadToBuffer } from "../lib/storage";
 import { buildMasterReport } from "./master";
 
+// The nightly report card measures recurring identity gaps per lane and writes
+// the worst here; the GENERATION path (presong.ts houseGapBrief) reads it and
+// steers the next take in that lane to fix them. This is the learn->feed close:
+// what the ear keeps hearing wrong becomes an instruction on the next write.
+export const REPORT_CARD_GAPS_KEY = "reportcard:gaps:v1";
+
 // 'zap:' rows are METADATA-learned lanes (no audio behind the sourceUrl) — the
 // measure-backfill was retrying them forever and wasting its whole batch.
 // 'facts:' rows get their deep pass at creation and their audio is purged after
@@ -221,6 +227,7 @@ export async function processRefileReferences(opts?: {
         | "approved"
         | "rejected"
         | "confirmed"
+        | "auto-applied"
         | "unverifiable";
       checkedAt: string;
       proposedLane?: string;
@@ -228,6 +235,8 @@ export async function processRefileReferences(opts?: {
       detectedScore?: number;
       filedScore?: number | null;
       reason?: string;
+      movedFrom?: string | null;
+      movedTo?: string;
     };
     const candidates = rows
       .filter(
@@ -271,7 +280,21 @@ export async function processRefileReferences(opts?: {
 
     let proposed = 0,
       confirmed = 0,
+      autoApplied = 0,
       unverifiable = 0;
+    // How sure the detector must be before the studio moves a reference on its
+    // own — deliberately far tighter than the propose band (60/35). At >=80 fit
+    // in another lane AND <=20 fit in the filed lane, "misfiled" isn't a
+    // judgment call, it's a measurement, so waiting on a human ear is just lost
+    // learning. The mid-confidence band still parks a proposal for /admin.
+    const AUTO_APPLY_DETECTED = Math.max(
+      60,
+      Number(process.env.REFILE_AUTO_APPLY_DETECTED ?? 80) || 80
+    );
+    const AUTO_APPLY_FILED = Math.max(
+      0,
+      Number(process.env.REFILE_AUTO_APPLY_FILED ?? 20) || 20
+    );
     for (const r of candidates) {
       const rec = (r.recipe ?? {}) as Record<string, unknown> & {
         measured?: MeasuredAnalysis & { engineOk?: boolean };
@@ -311,19 +334,50 @@ export async function processRefileReferences(opts?: {
           /* lane unscorable for this read — skip */
         }
       }
-      // The doc's margin rule: clear detection AND clear misfit → propose.
+      const misfiled = best && best.lane !== (r.genre ?? "");
+      // TIER 1 — unambiguous misfile: MOVE it, don't wait for a human ear.
       if (
-        best &&
-        best.lane !== (r.genre ?? "") &&
-        best.score >= 60 &&
-        (filedScore ?? 0) <= 35
+        misfiled &&
+        best!.score >= AUTO_APPLY_DETECTED &&
+        (filedScore ?? 100) <= AUTO_APPLY_FILED
       ) {
+        // Move the reference into the lane it actually belongs to, then stamp
+        // the audit trail on the same row so the move is fully inspectable.
+        const nowIso = new Date().toISOString();
+        await prisma.soundReference
+          .update({
+            where: { id: r.id },
+            data: {
+              genre: best!.lane,
+              recipe: {
+                ...rec,
+                refile: {
+                  status: "auto-applied",
+                  checkedAt: nowIso,
+                  proposedLane: best!.lane,
+                  filedLane: r.genre,
+                  detectedScore: best!.score,
+                  filedScore,
+                  movedFrom: r.genre,
+                  movedTo: best!.lane,
+                } satisfies Refile,
+              } as never,
+            },
+          })
+          .catch(() => undefined);
+        console.log(
+          `[refile] AUTO-MOVED ${r.id}: ${r.genre ?? "(unfiled)"} → ${best!.lane} (detected ${best!.score}, filed ${filedScore ?? "—"})`
+        );
+        autoApplied++;
+      }
+      // TIER 2 — the doc's margin rule: clear detection AND clear misfit → propose.
+      else if (misfiled && best!.score >= 60 && (filedScore ?? 0) <= 35) {
         await stamp({
           status: "proposed",
           checkedAt: new Date().toISOString(),
-          proposedLane: best.lane,
+          proposedLane: best!.lane,
           filedLane: r.genre,
-          detectedScore: best.score,
+          detectedScore: best!.score,
           filedScore,
         });
         proposed++;
@@ -339,7 +393,7 @@ export async function processRefileReferences(opts?: {
       }
     }
     console.log(
-      `[refile] ledger: scanned=${candidates.length} proposed=${proposed} confirmed=${confirmed} unverifiable=${unverifiable} (approve on /admin — nothing moves without your ear)`
+      `[refile] ledger: scanned=${candidates.length} auto-moved=${autoApplied} proposed=${proposed} confirmed=${confirmed} unverifiable=${unverifiable} (auto-moved = unambiguous misfiles corrected on their own; proposed = mid-confidence, still awaits your ear on /admin)`
     );
   } catch (err) {
     console.warn("[refile] failed (non-fatal):", (err as Error)?.message);
@@ -1494,6 +1548,11 @@ export async function ensureSignatureKits(): Promise<void> {
  *  worst dimensions named. No human ear required to FIND the gaps. */
 export async function processReportCard(): Promise<void> {
   try {
+    const nowIso = new Date().toISOString();
+    const reportCardGaps: Record<
+      string,
+      { avg: number; takes: number; gaps: string[]; at: string }
+    > = {};
     const beats = await prisma.beatAsset.findMany({
       orderBy: { createdAt: "desc" },
       take: 60,
@@ -1537,14 +1596,35 @@ export async function processReportCard(): Promise<void> {
         ).dimensions ?? [])
           if (d.identity && d.score < 60)
             worst.set(d.key, (worst.get(d.key) ?? 0) + 1);
-      const gaps = [...worst.entries()]
+      const topGaps = [...worst.entries()]
         .sort((a2, b2) => b2[1] - a2[1])
-        .slice(0, 3)
-        .map(([k, n]) => `${k}(x${n})`)
-        .join(", ");
+        .slice(0, 3);
+      const gaps = topGaps.map(([k, n]) => `${k}(x${n})`).join(", ");
       console.log(
         `[report-card] ${g}: avg ${avg}/100 over ${rows.length} takes${gaps ? ` — recurring identity gaps: ${gaps}` : " — no recurring identity gaps"}`
       );
+      // FEED, DON'T JUST REPORT (audit 2026-07-17): the measured recurring
+      // gaps are written to a SystemSetting the GENERATION path reads, so the
+      // NEXT take in a weak lane is steered to fix exactly what keeps failing —
+      // no human ear, and it helps brand-new workspaces that have no catalog
+      // of their own yet. Only lanes with a real recurring gap are written.
+      if (topGaps.length) {
+        reportCardGaps[g] = {
+          avg,
+          takes: rows.length,
+          gaps: topGaps.map(([k]) => k),
+          at: nowIso,
+        };
+      }
+    }
+    if (Object.keys(reportCardGaps).length) {
+      await prisma.systemSetting
+        .upsert({
+          where: { key: REPORT_CARD_GAPS_KEY },
+          create: { key: REPORT_CARD_GAPS_KEY, value: JSON.stringify(reportCardGaps) },
+          update: { value: JSON.stringify(reportCardGaps) },
+        })
+        .catch(() => undefined);
     }
     if (!byGenre.size) console.log("[report-card] no scored takes yet");
   } catch (err) {

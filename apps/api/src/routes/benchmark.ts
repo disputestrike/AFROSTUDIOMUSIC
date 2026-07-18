@@ -14,6 +14,72 @@ import {
 import { requireAuth, requireRole } from "../middleware/auth";
 import { requireAdmin } from "./admin";
 import { fingerprintUploadedAudio, presignAssetRef } from "../lib/storage";
+import { recordFeedback } from "../services/artist-memory";
+
+/**
+ * BENCHMARK -> TASTE (audit 2026-07-17): the ear-vs-machine bench is the
+ * highest-quality signal the studio owns — a human, listening blind, judged our
+ * record against a real competitor (or rated it head-on). Until now that verdict
+ * died in a table and shaped nothing. This feeds it into the SAME taste graph a
+ * hit-read feeds (recordFeedback -> memoryContext -> generation): a validated win
+ * teaches the artist's hook forward; a validated loss teaches what to avoid. So
+ * the next record in that artist's lane is measurably shaped by what a human
+ * preferred here. Best-effort — a taste-feed failure must never sink the verdict.
+ */
+async function feedBenchmarkTaste(opts: {
+  workspaceId: string;
+  songId: string;
+  kind: "approved" | "rejected";
+  reason: string;
+}): Promise<void> {
+  try {
+    const song = await prisma.song.findFirst({
+      where: { id: opts.songId, workspaceId: opts.workspaceId },
+      select: {
+        id: true,
+        project: { select: { artistId: true } },
+        // Best hook first: an approved hook, then the highest-scored, then the
+        // original — the same "primary hook" a hit-read teaches from.
+        hooks: {
+          orderBy: [
+            { approved: "desc" },
+            { score: "desc" },
+            { createdAt: "asc" },
+          ],
+          take: 1,
+          select: { id: true, text: true },
+        },
+      },
+    });
+    const hook = song?.hooks?.[0];
+    if (!song?.project?.artistId || !hook?.text?.trim()) return;
+    await recordFeedback({
+      workspaceId: opts.workspaceId,
+      artistId: song.project.artistId,
+      kind: opts.kind,
+      content: hook.text,
+      sourceKind: "hook",
+      sourceId: hook.id,
+    });
+    // The receipt — a learning feed is real only when it's recorded and
+    // inspectable (session A's verdict provably influences session B).
+    await prisma.analyticsEvent
+      .create({
+        data: {
+          workspaceId: opts.workspaceId,
+          name: "benchmark.taste_fed",
+          properties: {
+            songId: song.id,
+            kind: opts.kind,
+            reason: opts.reason,
+          } as never,
+        },
+      })
+      .catch(() => undefined);
+  } catch {
+    /* taste feed is best-effort — the bench verdict still records */
+  }
+}
 
 /**
  * LISTENING BENCHMARK — the ear-vs-machine ground truth loop (Feature 4).
@@ -235,6 +301,27 @@ export default async function benchmark(app: FastifyInstance) {
     const row = await prisma.benchmarkRating.create({
       data: { workspaceId, ...b },
     });
+    // Feed the ear's verdict into the taste graph: a top rating on OUR OWN
+    // render endorses its writing; a bottom rating rejects it. Only afrohit-
+    // sourced, song-linked ratings qualify (a reference/competitor rating isn't
+    // a verdict on our record); 3–4 is neutral, taught nothing.
+    if (b.source === "afrohit" && b.songId) {
+      if (b.humanRating >= 5) {
+        void feedBenchmarkTaste({
+          workspaceId,
+          songId: b.songId,
+          kind: "approved",
+          reason: `rate:${b.humanRating}`,
+        });
+      } else if (b.humanRating <= 2) {
+        void feedBenchmarkTaste({
+          workspaceId,
+          songId: b.songId,
+          kind: "rejected",
+          reason: `rate:${b.humanRating}`,
+        });
+      }
+    }
     reply.code(201);
     return { id: row.id };
   });
@@ -792,6 +879,7 @@ export default async function benchmark(app: FastifyInstance) {
           id: true,
           seed: true,
           competitor: true,
+          songId: true,
           song: { select: { title: true } },
         },
       });
@@ -851,6 +939,29 @@ export default async function benchmark(app: FastifyInstance) {
             .send({ error: "benchmark_judgment_already_recorded" });
         }
         throw error;
+      }
+      // Feed the blind verdict into the taste graph — the strongest signal we
+      // have (an independent ear, sources hidden, chose between us and a real
+      // competitor). Gate on the SONGWRITING sub-score so the hook only teaches
+      // when this judgment actually rated the writing: beat the competitor with
+      // strong writing -> approve; lose with weak writing -> reject. The
+      // competitor comparison IS external grounding, so this can't feedback-loop.
+      if (pair.songId) {
+        if (winner === "afrohit" && afrohitScores.songwriting >= 4) {
+          void feedBenchmarkTaste({
+            workspaceId,
+            songId: pair.songId,
+            kind: "approved",
+            reason: `beat_${pair.competitor}:songwriting_${afrohitScores.songwriting}`,
+          });
+        } else if (winner === "competitor" && afrohitScores.songwriting <= 2) {
+          void feedBenchmarkTaste({
+            workspaceId,
+            songId: pair.songId,
+            kind: "rejected",
+            reason: `lost_${pair.competitor}:songwriting_${afrohitScores.songwriting}`,
+          });
+        }
       }
       reply.code(201);
       return {
