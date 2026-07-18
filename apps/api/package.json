@@ -37,7 +37,8 @@
     "test:chat-mic": "tsx scripts/test-chat-mic.ts",
     "test:training-corpus": "tsx scripts/test-training-corpus.ts",
     "test:training-capture": "tsx scripts/test-training-capture.ts",
-    "test:music-training": "tsx scripts/test-music-training.ts"
+    "test:music-training": "tsx scripts/test-music-training.ts",
+    "test:seed-plan": "tsx scripts/test-seed-plan.ts"
   },
   "dependencies": {
     "@afrohit/ai": "workspace:*",

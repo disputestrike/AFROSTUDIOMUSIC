@@ -22,6 +22,7 @@ export * from "./license-certificate";
 export * from "./lora-dataset";
 export * from "./training-corpus";
 export * from "./training-consent";
+export * from "./seed-plan";
 export * from "./blueprint";
 export * from "./genre-signatures";
 export * from "./material-roles";

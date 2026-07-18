@@ -35,9 +35,16 @@ export function resolveEngineForWorkspace(
     sunoAvailable: boolean;
     elevenAvailable?: boolean;
     replicateAvailable?: boolean;
+    /** OWN MODEL FIRST (owner directive): route customer renders to our own
+     *  engine by default. Flag-gated (OWN_ENGINE_FIRST=1) and default OFF until
+     *  the engine is seeded + measured to hold quality — the owned synth is
+     *  always available (code), so no availability gate is needed. An explicit
+     *  engine request still wins over the default. */
+    ownEngineFirst?: boolean;
   }
 ): { engine: string; wallSubstituted: boolean; unavailableReason?: string } {
   const replicateAvailable = opts.replicateAvailable ?? false;
+  const ownEngineFirst = opts.ownEngineFirst ?? process.env.OWN_ENGINE_FIRST === '1';
   // THE PROVEN ENGINE LEADS. The Jul-13 rewrite hardcoded eleven above
   // minimax while the deploy was frozen, so the preference shipped untested —
   // first live contact (2026-07-16) was a plan-locked 402 on an account whose
@@ -46,11 +53,16 @@ export function resolveEngineForWorkspace(
   // file's own doctrine ("quality rankings belong to the measured bake-off,
   // not hardcoded vendor claims"): minimax holds the standard route until a
   // bake-off measures otherwise; eleven remains an explicit pick.
-  const bestResellable = replicateAvailable
-    ? 'minimax'
-    : opts.elevenAvailable
-      ? 'eleven'
-      : 'unavailable';
+  // OWN MODEL FIRST when the flag is on — our own engine is the default customer
+  // render path (still resellable + rights-clean by construction). Falls through
+  // to the rented engines only when own-first is off.
+  const bestResellable = ownEngineFirst
+    ? 'own_engine'
+    : replicateAvailable
+      ? 'minimax'
+      : opts.elevenAvailable
+        ? 'eleven'
+        : 'unavailable';
   const normalizedRequested = requested === 'replicate' ? 'minimax' : requested;
   const wanted = normalizedRequested && normalizedRequested !== 'auto'
     ? normalizedRequested
