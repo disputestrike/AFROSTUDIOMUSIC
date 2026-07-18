@@ -177,16 +177,12 @@ assert.match(
   /finalText = finalText \|\| summarizeLanded\(\);/,
   "[6] even the closing summary falls back deterministically if the brain is down"
 );
-// [7] studioChat: breaker-aware + one retry on a transient OpenAI blip.
-assert.match(
-  chatClaude,
-  /if \(anthropicUsable\(\) && process\.env\.STUB_AI !== '1'\)/,
-  "[7] studioChat skips Claude while the auth breaker is open"
-);
+// [7] studioChat OpenAI fallback: one retry on a transient blip, fail fast on
+// a permanent error. (The chat's PRIMARY brain is now Cerebras — see Batch D.)
 assert.match(
   chatClaude,
   /if \(\/insufficient_quota\|billing\|invalid_api_key\|401\|403\/i\.test\(msg\)\) throw e;/,
-  "[7] studioChat fails fast on a permanent error (no pointless retry)"
+  "[7] the OpenAI fallback fails fast on a permanent error (no pointless retry)"
 );
 assert.match(
   chatClaude,
@@ -194,6 +190,45 @@ assert.match(
   "[7] a transient blip gets one short-backoff retry before dying"
 );
 
+// ── BATCH D — Cerebras powers the chat (owner cost law) ──────────────────────
+const text = read("../../packages/ai/src/providers/text.ts");
+assert.match(
+  text,
+  /export async function chatWithToolsCerebras\(opts: \{/,
+  "[chat] Cerebras tool-calling exists (OpenAI-compatible gpt-oss-120b)"
+);
+assert.match(
+  text,
+  /baseURL: 'https:\/\/api\.cerebras\.ai\/v1'/,
+  "[chat] points the OpenAI SDK at the Cerebras endpoint"
+);
+assert.match(
+  text,
+  /export async function cerebrasChatProbe\(\)/,
+  "[chat] a live probe proves the chat brain works (real tool-call round-trip)"
+);
+// studioChat: Cerebras first, OpenAI fallback, Claude OFF the chat path.
+const cerebrasAt = chatClaude.indexOf("chatWithToolsCerebras(opts)");
+const openaiFallbackAt = chatClaude.indexOf("return await chatWithTools(opts)");
+assert.ok(
+  cerebrasAt >= 0 && openaiFallbackAt > cerebrasAt,
+  "[chat] studioChat runs Cerebras FIRST, then the OpenAI fallback"
+);
+assert.match(
+  chatClaude,
+  /process\.env\.CHAT_CEREBRAS !== '0' && cerebrasEnabled\(\)/,
+  "[chat] Cerebras leads the chat, with a CHAT_CEREBRAS=0 escape hatch"
+);
+assert.ok(
+  !/await chatWithToolsClaude\(opts\)/.test(chatClaude),
+  "[chat] Claude is NO LONGER on the chat hot path (Anthropic pricing)"
+);
+assert.match(
+  debug,
+  /chatBrain: process\.env\.CHAT_CEREBRAS === '0'/,
+  "[chat] /debug/ai reports which brain the chat actually ran on"
+);
+
 console.log(
-  "brain reliability (Batch A+B+C): failures visible, breaker self-heals, bulk-brain lyrics held, and one hiccup no longer discards a whole run"
+  "brain reliability (Batch A+B+C+D): failures visible, breaker self-heals, bulk-brain lyrics held, no run-discarding, and the CHAT now hauls on Cerebras (OpenAI fallback, Claude off the path)"
 );

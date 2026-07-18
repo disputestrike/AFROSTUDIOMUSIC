@@ -7,9 +7,10 @@
  * OpenAI chatWithTools so the route is a drop-in swap. Falls back to OpenAI in
  * the caller when no Anthropic key is set.
  */
-import { anthropicKey, anthropicEnabled, anthropicUsable, ANTHROPIC_MODEL, ANTHROPIC_FALLBACK_MODEL } from './anthropic-client';
+import { anthropicKey, anthropicEnabled, ANTHROPIC_MODEL, ANTHROPIC_FALLBACK_MODEL } from './anthropic-client';
+import { cerebrasEnabled } from './cerebras-client';
 import { recordLlmUsage } from './llm-usage';
-import { chatWithTools, type ChatMessage, type ChatTurn } from './providers/text';
+import { chatWithTools, chatWithToolsCerebras, type ChatMessage, type ChatTurn } from './providers/text';
 
 export { anthropicEnabled as claudeChatAvailable };
 
@@ -32,23 +33,30 @@ let lastStudioChatClaudeError: string | null = null;
 export const getLastStudioChatClaudeError = (): string | null => lastStudioChatClaudeError;
 
 export async function studioChat(opts: ChatOpts): Promise<ChatTurn> {
-  // anthropicUsable (not anthropicEnabled): once the auth breaker is open from a
-  // rejected key, skip Claude here too instead of eating a 401 on every turn.
-  if (anthropicUsable() && process.env.STUB_AI !== '1') {
+  if (process.env.STUB_AI === '1') return chatWithTools(opts); // deterministic test path
+
+  // OWNER COST LAW (2026-07-18, restated: "Cerebras does the hauling throughout
+  // the app — that should cover the chat"). The studio chat is MECHANICAL work
+  // (deciding which labs to run, driving autopilot), so it runs on Cerebras
+  // (bulk, cheap), with OpenAI as the fallback. Claude is intentionally OFF the
+  // chat path — Anthropic pricing is why we run on the fallback. The old
+  // Claude-first chat is why every turn was expensive AND fragile when the paid
+  // brains hiccuped. CHAT_CEREBRAS=0 forces OpenAI directly (a lever with no
+  // redeploy) if Cerebras tool-calling ever misbehaves.
+  if (process.env.CHAT_CEREBRAS !== '0' && cerebrasEnabled()) {
     try {
-      const turn = await chatWithToolsClaude(opts);
+      const turn = await chatWithToolsCerebras(opts);
       lastStudioChatClaudeError = null;
+      recordLlmUsage({ tier: 'bulk', task: 'studio-chat', brain: 'cerebras', ms: 0, estCostUsd: null });
       return turn;
     } catch (e) {
-      // Claude overloaded / transient → fall back so the chat never dies — but
-      // RECORD the reason; a swallowed billing 400 looked like "chat is weak".
-      lastStudioChatClaudeError = `${new Date().toISOString()} ${(e as Error).message.slice(0, 300)}`;
+      // Cerebras hiccup → fall to OpenAI so the chat NEVER dies; record why.
+      lastStudioChatClaudeError = `${new Date().toISOString()} cerebras-chat: ${(e as Error).message.slice(0, 300)}`;
     }
   }
-  // OpenAI is the sole working brain in the bad-Claude-key setup, so a single
-  // transient 429/network blip here dead-airs the whole chat turn ("hiccup").
-  // Retry ONCE after a short backoff — but fail fast on a permanent error
-  // (quota/billing/invalid key), where a retry only wastes the user's time.
+  // OpenAI fallback. A single transient 429/network blip must not dead-air the
+  // whole chat turn — retry ONCE after a short backoff; fail fast on a permanent
+  // error (quota/billing/invalid key), where a retry only wastes the user's time.
   try {
     return await chatWithTools(opts);
   } catch (e) {
