@@ -17,7 +17,7 @@ import type { FastifyInstance } from 'fastify';
 import type { FastifyReply, FastifyRequest } from 'fastify';
 import { prisma } from '@afrohit/db';
 import { chatMessageInputSchema, humanizeChatError, scrubVendorNames } from '@afrohit/shared';
-import { prompts, studioChat } from '@afrohit/ai';
+import { prompts, studioChat, transcribeAudio } from '@afrohit/ai';
 import { requireAuth } from '../middleware/auth';
 import { workspaceThrottle } from '../lib/workspace-throttle';
 import { runChatTool } from '../services/chat-tools';
@@ -184,6 +184,52 @@ async function projectStateForChat(projectId: string) {
 }
 
 export default async function chat(app: FastifyInstance) {
+  /**
+   * VOICE INPUT (mic) — server-side transcription so it works on EVERY browser,
+   * not just Chrome's Web Speech API (Firefox has none, so the mic used to
+   * vanish there). The client records with MediaRecorder and posts the clip as
+   * base64; we transcribe with OpenAI (the brain's provider) and hand back text
+   * the user can edit before sending. Owner: "we can use OpenAI for the mic."
+   */
+  app.post(
+    '/transcribe',
+    {
+      // A short voice command as base64 is ~a few hundred KB; give real headroom
+      // without allowing a huge upload.
+      bodyLimit: 12 * 1024 * 1024,
+      schema: {
+        body: {
+          type: 'object',
+          required: ['audio'],
+          properties: {
+            audio: { type: 'string', minLength: 16, maxLength: 16_000_000 },
+            mime: { type: 'string' },
+          },
+        },
+      },
+    },
+    async (req, reply) => {
+      requireAuth(req);
+      const { audio, mime } = req.body as { audio: string; mime?: string };
+      // Accept a raw base64 string or a data: URL.
+      const b64 = audio.includes(',') ? audio.slice(audio.indexOf(',') + 1) : audio;
+      let bytes: Uint8Array;
+      try {
+        bytes = new Uint8Array(Buffer.from(b64, 'base64'));
+      } catch {
+        return reply.code(400).send({ error: 'invalid_audio' });
+      }
+      if (!bytes.byteLength) return reply.code(400).send({ error: 'empty_audio' });
+      const ext = /ogg/i.test(mime ?? '') ? 'ogg' : /mp4|m4a|aac/i.test(mime ?? '') ? 'm4a' : /wav/i.test(mime ?? '') ? 'wav' : 'webm';
+      const result = await transcribeAudio({ bytes, filename: `voice.${ext}` }).catch(() => null);
+      if (!result?.text) {
+        // Honest: the brain's transcription is unavailable/failed — say so plainly.
+        return reply.code(503).send({ error: 'transcription_unavailable', message: 'Could not hear that one — type it, or try again.' });
+      }
+      return { text: result.text };
+    }
+  );
+
   /** List threads for the current workspace. */
   app.get('/threads', async (req) => {
     const { workspaceId, userId } = requireAuth(req);

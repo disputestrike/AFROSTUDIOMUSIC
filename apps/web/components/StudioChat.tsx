@@ -104,6 +104,9 @@ export default function StudioChat({ projectId }: { projectId?: string }) {
   const [stage, setStage] = useState<string | null>(null);
   const [elapsedS, setElapsedS] = useState(0);
   const [micAvailable, setMicAvailable] = useState(false); // set after mount → no SSR mismatch
+  const [transcribing, setTranscribing] = useState(false); // MediaRecorder → server whisper
+  const mediaRecRef = useRef<MediaRecorder | null>(null);
+  const chunksRef = useRef<Blob[]>([]);
   const [uploading, setUploading] = useState(false);
   const [resumeFailed, setResumeFailed] = useState<string | null>(null);
   const bottomRef = useRef<HTMLDivElement | null>(null);
@@ -143,7 +146,14 @@ export default function StudioChat({ projectId }: { projectId?: string }) {
   }
   useEffect(() => {
     void loadThreads();
-    setMicAvailable(!!getSpeechRecognition());
+    // The mic works EVERYWHERE now: the browser Web Speech API when present
+    // (Chrome/Edge), else MediaRecorder → server transcription (Firefox/Safari).
+    setMicAvailable(
+      !!getSpeechRecognition() ||
+        (typeof navigator !== 'undefined' &&
+          !!navigator.mediaDevices?.getUserMedia &&
+          typeof MediaRecorder !== 'undefined')
+    );
     // Persistent chat: resume the last session on return so leaving and coming
     // back never restarts the conversation — the context stays safe.
     const saved = typeof window !== 'undefined' ? localStorage.getItem(ACTIVE_THREAD_KEY) : null;
@@ -320,25 +330,67 @@ export default function StudioChat({ projectId }: { projectId?: string }) {
   }
 
   function toggleMic() {
+    // Stop whichever recorder is live.
     if (listening) {
       recRef.current?.stop();
+      mediaRecRef.current?.stop();
       return;
     }
     const rec = getSpeechRecognition();
-    if (!rec) return;
-    rec.lang = 'en-NG';
-    rec.interimResults = true;
-    rec.continuous = false;
-    rec.onresult = (e: unknown) => {
-      const ev = e as { results: ArrayLike<ArrayLike<{ transcript: string }>> };
-      let text = '';
-      for (let i = 0; i < ev.results.length; i++) text += ev.results[i]![0]!.transcript;
-      setDraft(text);
-    };
-    rec.onend = () => setListening(false);
-    recRef.current = rec;
-    setListening(true);
-    rec.start();
+    if (rec) {
+      // Chrome/Edge: live browser transcription (fast, no upload).
+      rec.lang = 'en-NG';
+      rec.interimResults = true;
+      rec.continuous = false;
+      rec.onresult = (e: unknown) => {
+        const ev = e as { results: ArrayLike<ArrayLike<{ transcript: string }>> };
+        let text = '';
+        for (let i = 0; i < ev.results.length; i++) text += ev.results[i]![0]!.transcript;
+        setDraft(text);
+      };
+      rec.onend = () => setListening(false);
+      recRef.current = rec;
+      setListening(true);
+      rec.start();
+      return;
+    }
+    // Firefox/Safari (no Web Speech API): record and transcribe on the server.
+    void recordAndTranscribe();
+  }
+
+  async function recordAndTranscribe() {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const rec = new MediaRecorder(stream);
+      chunksRef.current = [];
+      rec.ondataavailable = (e) => { if (e.data.size) chunksRef.current.push(e.data); };
+      rec.onstop = async () => {
+        stream.getTracks().forEach((t) => t.stop());
+        setListening(false);
+        const blob = new Blob(chunksRef.current, { type: rec.mimeType || 'audio/webm' });
+        if (!blob.size) return;
+        setTranscribing(true);
+        try {
+          const dataUrl = await new Promise<string>((resolve, reject) => {
+            const r = new FileReader();
+            r.onloadend = () => resolve(String(r.result));
+            r.onerror = reject;
+            r.readAsDataURL(blob);
+          });
+          const { text } = await api.post<{ text: string }>('/chat/transcribe', { audio: dataUrl, mime: blob.type });
+          if (text) setDraft((d) => (d ? d.trim() + ' ' : '') + text);
+        } catch {
+          /* honest: the user can still type — never blocks the chat */
+        } finally {
+          setTranscribing(false);
+        }
+      };
+      mediaRecRef.current = rec;
+      setListening(true);
+      rec.start();
+    } catch {
+      setListening(false); // mic permission denied / unavailable
+    }
   }
 
   return (
@@ -475,13 +527,14 @@ export default function StudioChat({ projectId }: { projectId?: string }) {
               {micAvailable && (
                 <button
                   onClick={toggleMic}
-                  title="Speak to the studio"
+                  disabled={transcribing}
+                  title={transcribing ? 'Transcribing…' : listening ? 'Stop' : 'Speak to the studio'}
                   className={cn(
-                    'flex h-12 w-12 items-center justify-center rounded-2xl border',
+                    'flex h-12 w-12 items-center justify-center rounded-2xl border disabled:opacity-60',
                     listening ? 'animate-pulse border-afrobrand-500 bg-afrobrand-500/20 text-afrobrand-300' : 'border-slate-800 text-slate-400 hover:border-slate-600'
                   )}
                 >
-                  <Mic className="h-4 w-4" />
+                  {transcribing ? <Loader2 className="h-4 w-4 animate-spin" /> : <Mic className="h-4 w-4" />}
                 </button>
               )}
               <textarea
@@ -493,7 +546,7 @@ export default function StudioChat({ projectId }: { projectId?: string }) {
                     void sendText(draft);
                   }
                 }}
-                placeholder={listening ? 'Listening…' : 'What are we making today?'}
+                placeholder={transcribing ? 'Transcribing…' : listening ? 'Listening…' : 'What are we making today?'}
                 rows={2}
                 className="flex-1 resize-none rounded-2xl border border-slate-800 bg-slate-900 px-4 py-3 text-sm outline-none placeholder:text-slate-500 focus:border-afrobrand-500"
               />
