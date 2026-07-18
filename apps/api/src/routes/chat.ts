@@ -550,13 +550,43 @@ export default async function chat(app: FastifyInstance) {
         // exactly one song/cover/storyboard — not one per round.
         const guard = makeGenGuard();
         let finalText = '';
+        // RESILIENCE (diagnosis 2026-07-18): a single failed round or tool used
+        // to throw out of the whole loop and DISCARD every completed step — the
+        // owner pressed "Continue", one brain hiccup hit, and all prior work
+        // vanished behind "the studio brain had a hiccup". Track what actually
+        // landed so a mid-run failure can end with a DETERMINISTIC summary
+        // (never another model call — that would throw again when the brain is
+        // down) and the saved progress a re-press resumes from.
+        const landed: Array<{ name: string; output: unknown }> = [];
+        const summarizeLanded = (): string => {
+          const done = landed.filter(
+            (s) =>
+              s.output &&
+              typeof s.output === 'object' &&
+              !(s.output as { error?: unknown }).error &&
+              !(s.output as { skipped?: unknown }).skipped
+          );
+          return done.length
+            ? `The studio brain went quiet mid-run, but your progress is saved (${done.length} step${done.length === 1 ? '' : 's'} done). Press Continue to pick up from here.`
+            : 'The studio brain went quiet before anything landed — try again in a moment.';
+        };
         for (let round = 1; round <= maxRounds; round++) {
           send({ type: 'stage', stage: autopilot ? `producing (step ${round})` : 'thinking' });
-          const turn = await modelTurnWithTimeout(studioChat({
-            tools: prompts.STUDIO_CHAT_TOOLS as never,
-            messages: convo,
-            temperature: 0.5,
-          }));
+          let turn;
+          try {
+            turn = await modelTurnWithTimeout(studioChat({
+              tools: prompts.STUDIO_CHAT_TOOLS as never,
+              messages: convo,
+              temperature: 0.5,
+            }));
+          } catch (turnErr) {
+            // Round 1 with nothing landed IS a real failure — surface it. A later
+            // round means work is saved; end cleanly on a deterministic summary
+            // instead of nuking the whole run.
+            if (round === 1 && !landed.length) throw turnErr;
+            finalText = summarizeLanded();
+            break;
+          }
 
           if (!turn.toolCalls?.length) {
             finalText = turn.text ?? '';
@@ -567,9 +597,18 @@ export default async function chat(app: FastifyInstance) {
           for (const [callIndex, call] of turn.toolCalls.entries()) {
             send({ type: 'tool_start', name: call.name });
             const gate = guard(call.name);
-            const result = gate.allowed
-              ? await runChatTool({ workspaceId, userId, projectId, app, operationKey: `${requestOperationKey}:${round}:${callIndex}`, name: call.name, args: call.arguments })
-              : { skipped: true, reason: gate.reason };
+            // A single tool throwing must NOT abort the whole autopilot — record
+            // the error as this step's result and feed it back so the model can
+            // adapt or move on. The step's own refund/rollback already ran inside
+            // the tool; here we just keep the loop alive.
+            let result: unknown;
+            try {
+              result = gate.allowed
+                ? await runChatTool({ workspaceId, userId, projectId, app, operationKey: `${requestOperationKey}:${round}:${callIndex}`, name: call.name, args: call.arguments })
+                : { skipped: true, reason: gate.reason };
+            } catch (toolErr) {
+              result = { error: (toolErr as Error)?.message?.slice(0, 200) ?? 'tool failed' };
+            }
             send({ type: 'tool_result', name: call.name, output: result });
             await prisma.chatMessage.create({
               data: {
@@ -583,6 +622,7 @@ export default async function chat(app: FastifyInstance) {
             });
             roundResults.push({ name: call.name, output: result });
           }
+          landed.push(...roundResults); // accumulate across rounds for the resume summary
 
           // Feed results back as text (valid OpenAI format — no orphan tool roles).
           convo.push({ role: 'assistant', content: turn.text || '(working)' });
@@ -597,8 +637,15 @@ export default async function chat(app: FastifyInstance) {
 
           if (!autopilot || round === maxRounds) {
             send({ type: 'stage', stage: 'summarizing' });
-            const fin = await modelTurnWithTimeout(studioChat({ tools: prompts.STUDIO_CHAT_TOOLS as never, messages: convo, temperature: 0.5 }));
-            finalText = fin.text ?? finalText;
+            // The closing summary is the LAST place a brain hiccup could still
+            // nuke a fully-completed run. If it throws, fall back to the
+            // deterministic summary instead of losing everything that landed.
+            try {
+              const fin = await modelTurnWithTimeout(studioChat({ tools: prompts.STUDIO_CHAT_TOOLS as never, messages: convo, temperature: 0.5 }));
+              finalText = fin.text ?? finalText;
+            } catch {
+              finalText = finalText || summarizeLanded();
+            }
             break;
           }
         }

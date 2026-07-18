@@ -147,6 +147,53 @@ assert.match(
   "[4] a held take is refunded and surfaced honestly, not shipped as a song"
 );
 
+// ── BATCH C — dead-end resilience: one hiccup can't discard the whole run ────
+const chat = read("src/routes/chat.ts");
+const chatClaude = read("../../packages/ai/src/chat-claude.ts");
+// [6] Autopilot: a failed round summarizes DETERMINISTICALLY (not another model
+// call) and keeps the landed steps instead of nuking the run.
+assert.match(
+  chat,
+  /const summarizeLanded = \(\): string =>/,
+  "[6] a deterministic summarizer exists (no model call on the failure path)"
+);
+assert.match(
+  chat,
+  /if \(round === 1 && !landed\.length\) throw turnErr;\s*\r?\n?\s*finalText = summarizeLanded\(\);/,
+  "[6] a mid-run brain failure ends on the saved-progress summary, not a discard"
+);
+assert.match(
+  chat,
+  /landed\.push\(\.\.\.roundResults\); \/\/ accumulate across rounds/,
+  "[6] completed steps accumulate across rounds for the resume summary"
+);
+assert.match(
+  chat,
+  /result = \{ error: \(toolErr as Error\)\?\.message/,
+  "[6] a single tool throw becomes that step's result — the loop survives it"
+);
+assert.match(
+  chat,
+  /finalText = finalText \|\| summarizeLanded\(\);/,
+  "[6] even the closing summary falls back deterministically if the brain is down"
+);
+// [7] studioChat: breaker-aware + one retry on a transient OpenAI blip.
+assert.match(
+  chatClaude,
+  /if \(anthropicUsable\(\) && process\.env\.STUB_AI !== '1'\)/,
+  "[7] studioChat skips Claude while the auth breaker is open"
+);
+assert.match(
+  chatClaude,
+  /if \(\/insufficient_quota\|billing\|invalid_api_key\|401\|403\/i\.test\(msg\)\) throw e;/,
+  "[7] studioChat fails fast on a permanent error (no pointless retry)"
+);
+assert.match(
+  chatClaude,
+  /await new Promise\(\(r\) => setTimeout\(r, 1000\)\);\s*\r?\n?\s*return chatWithTools\(opts\);/,
+  "[7] a transient blip gets one short-backoff retry before dying"
+);
+
 console.log(
-  "brain reliability (Batch A+B): failures visible, breaker self-heals, and a bulk-brain lyric is HELD (refunded) instead of shipped as a nonsense song"
+  "brain reliability (Batch A+B+C): failures visible, breaker self-heals, bulk-brain lyrics held, and one hiccup no longer discards a whole run"
 );

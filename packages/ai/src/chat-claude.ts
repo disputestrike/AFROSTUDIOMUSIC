@@ -7,7 +7,7 @@
  * OpenAI chatWithTools so the route is a drop-in swap. Falls back to OpenAI in
  * the caller when no Anthropic key is set.
  */
-import { anthropicKey, anthropicEnabled, ANTHROPIC_MODEL, ANTHROPIC_FALLBACK_MODEL } from './anthropic-client';
+import { anthropicKey, anthropicEnabled, anthropicUsable, ANTHROPIC_MODEL, ANTHROPIC_FALLBACK_MODEL } from './anthropic-client';
 import { recordLlmUsage } from './llm-usage';
 import { chatWithTools, type ChatMessage, type ChatTurn } from './providers/text';
 
@@ -32,7 +32,9 @@ let lastStudioChatClaudeError: string | null = null;
 export const getLastStudioChatClaudeError = (): string | null => lastStudioChatClaudeError;
 
 export async function studioChat(opts: ChatOpts): Promise<ChatTurn> {
-  if (anthropicEnabled() && process.env.STUB_AI !== '1') {
+  // anthropicUsable (not anthropicEnabled): once the auth breaker is open from a
+  // rejected key, skip Claude here too instead of eating a 401 on every turn.
+  if (anthropicUsable() && process.env.STUB_AI !== '1') {
     try {
       const turn = await chatWithToolsClaude(opts);
       lastStudioChatClaudeError = null;
@@ -43,7 +45,18 @@ export async function studioChat(opts: ChatOpts): Promise<ChatTurn> {
       lastStudioChatClaudeError = `${new Date().toISOString()} ${(e as Error).message.slice(0, 300)}`;
     }
   }
-  return chatWithTools(opts);
+  // OpenAI is the sole working brain in the bad-Claude-key setup, so a single
+  // transient 429/network blip here dead-airs the whole chat turn ("hiccup").
+  // Retry ONCE after a short backoff — but fail fast on a permanent error
+  // (quota/billing/invalid key), where a retry only wastes the user's time.
+  try {
+    return await chatWithTools(opts);
+  } catch (e) {
+    const msg = (e as Error).message ?? '';
+    if (/insufficient_quota|billing|invalid_api_key|401|403/i.test(msg)) throw e;
+    await new Promise((r) => setTimeout(r, 1000));
+    return chatWithTools(opts);
+  }
 }
 
 type Block =
