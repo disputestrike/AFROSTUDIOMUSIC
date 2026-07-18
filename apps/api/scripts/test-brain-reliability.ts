@@ -134,8 +134,8 @@ assert.match(
 );
 assert.equal(
   (chatTools.match(/onBrain: markBrain/g) ?? []).length,
-  3,
-  "[4] draft, polish AND qa-fix rewrite all report their brain"
+  4,
+  "[4] draft, polish, language-retry AND qa-fix rewrite all report their brain"
 );
 // The gate must refund + hold, and must sit BEFORE the DEMO persist.
 const gateAt = chatTools.indexOf("if (lyricWroteBulk) {");
@@ -177,50 +177,52 @@ assert.match(
   /finalText = finalText \|\| summarizeLanded\(\);/,
   "[6] even the closing summary falls back deterministically if the brain is down"
 );
-// [7] studioChat OpenAI fallback: one retry on a transient blip, fail fast on
-// a permanent error. (The chat's PRIMARY brain is now Cerebras — see Batch D.)
+// [7] studioChat OpenAI rung: retry ONCE only on a transient blip; a permanent
+// error (quota/billing/invalid key) skips the retry and goes to the lifeboat.
 assert.match(
   chatClaude,
-  /if \(\/insufficient_quota\|billing\|invalid_api_key\|401\|403\/i\.test\(msg\)\) throw e;/,
-  "[7] the OpenAI fallback fails fast on a permanent error (no pointless retry)"
+  /if \(!\/insufficient_quota\|billing\|invalid_api_key\|401\|403\/i\.test\(msg1\)\) \{/,
+  "[7] the OpenAI rung retries only on a transient error (permanent -> lifeboat)"
 );
 assert.match(
   chatClaude,
-  /await new Promise\(\(r\) => setTimeout\(r, 1000\)\);\s*\r?\n?\s*return chatWithTools\(opts\);/,
-  "[7] a transient blip gets one short-backoff retry before dying"
+  /await new Promise\(\(r\) => setTimeout\(r, 800\)\);\s*\r?\n?\s*return await chatWithTools\(opts\);/,
+  "[7] a transient blip gets one short-backoff retry before the lifeboat"
 );
 
-// ── BATCH D — the chat connects to THE BRAIN (Claude -> OpenAI), the approved
-// whole-app design. Cerebras is mechanical hauling ONLY, never the chat's
-// reasoning (a bulk model there produced stale-prompt / wrong-intent chats).
+// ── BATCH D — the chat FAILOVER ladder ALWAYS lands (owner: "failover should
+// always work"). Claude (bad key by design) -> OpenAI (working brain) ->
+// Cerebras LAST-RESORT lifeboat, the SAME design the song engine uses so the
+// chat can never dead-air on "the studio brain had a hiccup".
 const text = read("../../packages/ai/src/providers/text.ts");
-// The chat runs the brain: Claude first, then the OpenAI fallback.
+// Rung order in studioChat: Claude, then OpenAI, then the Cerebras lifeboat.
 const brainAt = chatClaude.indexOf("chatWithToolsClaude(opts)");
-const openaiFallbackAt = chatClaude.indexOf("return await chatWithTools(opts)");
+const openaiAt = chatClaude.indexOf("return await chatWithTools(opts)");
+const lifeboatAt = chatClaude.indexOf("chatWithToolsCerebras(opts)");
 assert.ok(
-  brainAt >= 0 && openaiFallbackAt > brainAt,
-  "[chat] studioChat runs the BRAIN (Claude) first, then the OpenAI fallback"
+  brainAt >= 0 && openaiAt > brainAt && lifeboatAt > openaiAt,
+  "[chat] ladder is Claude -> OpenAI -> Cerebras lifeboat, in that order"
 );
 assert.match(
   chatClaude,
   /if \(anthropicUsable\(\)\) \{/,
-  "[chat] Claude is tried (skipped only while its auth breaker is cooling down)"
+  "[chat] Claude is rung 1 (skipped only while its auth breaker is cooling down)"
 );
-// Cerebras must NOT be on the chat path anymore (reverted).
+// The Cerebras lifeboat is LAST-RESORT: it only runs after OpenAI has failed,
+// inside the OpenAI catch (never as the chat's primary brain).
+const openaiCatchAt = chatClaude.indexOf("} catch (e1) {");
 assert.ok(
-  !/chatWithToolsCerebras/.test(chatClaude),
-  "[chat] Cerebras is OFF the chat path (it is hauling only)"
-);
-assert.ok(
-  !/chatWithToolsCerebras|cerebrasChatProbe/.test(text),
-  "[chat] the Cerebras-chat code is fully removed from providers/text"
+  openaiCatchAt >= 0 && lifeboatAt > openaiCatchAt,
+  "[chat] the Cerebras lifeboat fires only after OpenAI fails (not primary)"
 );
 assert.match(
-  debug,
-  /chatBrain: anthropic\.ok \? 'claude' : openai\.ok \? 'openai/,
-  "[chat] /debug/ai reports the real chat brain (claude, or openai when claude is down by design)"
+  text,
+  /export async function chatWithToolsCerebras/,
+  "[chat] the Cerebras lifeboat call exists (OpenAI-compatible gpt-oss-120b)"
 );
+// Every failing rung is recorded so the REAL reason is visible on /debug/ai.
+assert.match(chatClaude, /openai: \$\{msg1/, "[chat] the OpenAI failure reason is recorded (not masked)");
 
 console.log(
-  "brain reliability (Batch A+B+C+D): failures visible, breaker self-heals, bulk-brain lyrics held, no run-discarding, and the CHAT connects to the BRAIN (Claude -> OpenAI; Cerebras is hauling only)"
+  "brain reliability (Batch A+B+C+D): failures visible, breaker self-heals, bulk-brain lyrics held, no run-discarding, and the CHAT failover ALWAYS lands (Claude -> OpenAI -> Cerebras lifeboat)"
 );

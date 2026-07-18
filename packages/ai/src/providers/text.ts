@@ -7,7 +7,9 @@
  * escape hatch used by the integration test suite — exercises the whole
  * pipeline without burning OpenAI credits or needing a real key.
  */
+import OpenAI from 'openai';
 import { getOpenAI, MODELS } from '../openai-client';
+import { cerebrasKeys, CEREBRAS_MODEL } from '../cerebras-client';
 
 // Read at call time, not module-load time — STUB_AI may be set by the caller
 // before invoking but after importing.
@@ -166,6 +168,64 @@ export async function chatWithTools(opts: {
     };
   }
   return { text: choice.content ?? '' };
+}
+
+// Cerebras is OpenAI-API-compatible; one client per key (baseURL override).
+const _cerebrasChatClients = new Map<string, OpenAI>();
+function cerebrasChatClient(key: string): OpenAI {
+  let c = _cerebrasChatClients.get(key);
+  if (!c) {
+    c = new OpenAI({ apiKey: key, baseURL: 'https://api.cerebras.ai/v1' });
+    _cerebrasChatClients.set(key, c);
+  }
+  return c;
+}
+
+/**
+ * CEREBRAS tool-calling chat — the LAST-RESORT lifeboat for studioChat, so the
+ * chat can never dead-air when both paid brains (Claude, OpenAI) are down. Same
+ * design as generateJson's Cerebras lifeboat: a working (bulk-brain) answer
+ * beats a dead studio. gpt-oss-120b speaks OpenAI-compatible function calling;
+ * key rotation mirrors cerebrasJson (a 429/bad key rotates; a 400 stops).
+ */
+export async function chatWithToolsCerebras(opts: {
+  messages: ChatMessage[];
+  tools: ReadonlyArray<{ type: 'function'; name: string; description: string; parameters: Record<string, unknown> }>;
+  temperature?: number;
+  maxTokens?: number;
+}): Promise<ChatTurn> {
+  const keys = cerebrasKeys();
+  if (!keys.length) throw new Error('CEREBRAS_API_KEY missing');
+  const model = CEREBRAS_MODEL();
+  let lastErr: unknown;
+  for (let i = 0; i < keys.length; i++) {
+    try {
+      const res = await cerebrasChatClient(keys[i]!).chat.completions.create({
+        model,
+        temperature: opts.temperature ?? 0.5,
+        max_tokens: opts.maxTokens ?? 2_000,
+        tools: opts.tools.map((t) => ({
+          type: 'function' as const,
+          function: { name: t.name, description: t.description, parameters: t.parameters },
+        })),
+        messages: opts.messages,
+      } as never);
+      const choice = res.choices[0]!.message;
+      if (choice.tool_calls && choice.tool_calls.length > 0) {
+        return {
+          text: choice.content ?? undefined,
+          toolCalls: choice.tool_calls
+            .filter((tc): tc is typeof tc & { function: { name: string; arguments: string } } => tc.type === 'function')
+            .map((tc) => ({ id: tc.id, name: tc.function.name, arguments: JSON.parse(tc.function.arguments || '{}') })),
+        };
+      }
+      return { text: choice.content ?? '' };
+    } catch (err) {
+      lastErr = err;
+      if ((err as { status?: number }).status === 400) throw err;
+    }
+  }
+  throw lastErr instanceof Error ? lastErr : new Error('cerebras chat: all keys failed');
 }
 
 // ===========================================================================

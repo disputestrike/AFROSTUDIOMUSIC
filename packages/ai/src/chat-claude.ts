@@ -8,8 +8,9 @@
  * the caller when no Anthropic key is set.
  */
 import { anthropicKey, anthropicEnabled, anthropicUsable, ANTHROPIC_MODEL, ANTHROPIC_FALLBACK_MODEL } from './anthropic-client';
+import { cerebrasEnabled } from './cerebras-client';
 import { recordLlmUsage } from './llm-usage';
-import { chatWithTools, type ChatMessage, type ChatTurn } from './providers/text';
+import { chatWithTools, chatWithToolsCerebras, type ChatMessage, type ChatTurn } from './providers/text';
 
 export { anthropicEnabled as claudeChatAvailable };
 
@@ -34,34 +35,54 @@ export const getLastStudioChatClaudeError = (): string | null => lastStudioChatC
 export async function studioChat(opts: ChatOpts): Promise<ChatTurn> {
   if (process.env.STUB_AI === '1') return chatWithTools(opts); // deterministic test path
 
-  // THE BRAIN — approved design for the WHOLE app (owner 2026-07-18): the chat
-  // connects to the BRAIN, which is Claude FIRST -> OpenAI fallback. The Claude
-  // key is intentionally invalid, so this reliably falls to OpenAI (the working
-  // brain) — that is by design, not a bug. Cerebras is for MECHANICAL HAULING
-  // only, never the chat's reasoning: a bulk model here understood intent poorly
-  // (stale-prompt / wrong-subject chats). anthropicUsable() skips Claude while a
-  // rejected key is in its short auth cooldown, so we don't eat a 401 every turn.
+  // THE BRAIN LADDER — the owner's design, made to ACTUALLY always fail over
+  // (2026-07-18): Claude FIRST (the key is intentionally invalid, so it fails)
+  // -> OpenAI (the working brain) -> Cerebras LAST-RESORT lifeboat. The chat was
+  // dying on "the studio brain had a hiccup" because it had NO lifeboat: when
+  // Claude's bad key failed and OpenAI hiccuped, there was nothing left. The
+  // song engine (generateJson) never dies because it ends on Cerebras — the chat
+  // now does the same, so the failover ALWAYS lands somewhere. Every failing rung
+  // is recorded (getLastStudioChatClaudeError → /debug/ai) so the real reason
+  // OpenAI hiccuped is visible, not hidden behind the generic humanized error.
+
+  // Rung 1 — Claude (skipped while the auth breaker is cooling from a prior 401).
   if (anthropicUsable()) {
     try {
       const turn = await chatWithToolsClaude(opts);
       lastStudioChatClaudeError = null;
       return turn;
     } catch (e) {
-      // Claude failed (bad key / overload) → fall to OpenAI; record why so
-      // /debug/ai shows it instead of the chat looking silently "weak".
-      lastStudioChatClaudeError = `${new Date().toISOString()} ${(e as Error).message.slice(0, 300)}`;
+      lastStudioChatClaudeError = `${new Date().toISOString()} claude: ${(e as Error).message.slice(0, 240)}`;
     }
   }
-  // OpenAI — the working brain in this setup. A single transient 429/network
-  // blip must not dead-air the turn: retry ONCE after a short backoff; fail fast
-  // on a permanent error (quota/billing/invalid key), where a retry wastes time.
+
+  // Rung 2 — OpenAI, the working failover. One retry on a transient blip.
   try {
     return await chatWithTools(opts);
-  } catch (e) {
-    const msg = (e as Error).message ?? '';
-    if (/insufficient_quota|billing|invalid_api_key|401|403/i.test(msg)) throw e;
-    await new Promise((r) => setTimeout(r, 1000));
-    return chatWithTools(opts);
+  } catch (e1) {
+    const msg1 = (e1 as Error).message ?? '';
+    lastStudioChatClaudeError = `${new Date().toISOString()} openai: ${msg1.slice(0, 240)}`;
+    if (!/insufficient_quota|billing|invalid_api_key|401|403/i.test(msg1)) {
+      try {
+        await new Promise((r) => setTimeout(r, 800));
+        return await chatWithTools(opts);
+      } catch (e2) {
+        lastStudioChatClaudeError = `${new Date().toISOString()} openai-retry: ${(e2 as Error).message.slice(0, 200)}`;
+      }
+    }
+    // Rung 3 — CEREBRAS lifeboat: both paid brains are down, but a working chat
+    // beats a dead one (same law as the song engine). Only fires when Claude AND
+    // OpenAI have already failed — it is NOT the chat's primary brain.
+    if (cerebrasEnabled()) {
+      try {
+        const turn = await chatWithToolsCerebras(opts);
+        recordLlmUsage({ tier: 'bulk', task: 'studio-chat-lifeboat', brain: 'cerebras', ms: 0, estCostUsd: null });
+        return turn;
+      } catch (e3) {
+        lastStudioChatClaudeError = `${new Date().toISOString()} cerebras-lifeboat: ${(e3 as Error).message.slice(0, 200)}`;
+      }
+    }
+    throw e1; // everything failed — surface the OpenAI error, not a masked one
   }
 }
 
