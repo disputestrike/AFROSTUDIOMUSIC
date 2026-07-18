@@ -22,6 +22,7 @@ import { GENRES, isFirstPartyWorkspace, resolveEngineForWorkspace } from '@afroh
 import { createQueuedProviderJob, scopedRequestKey } from '../lib/queued-job';
 import { operationErrorBody, runIdempotentOperation } from '../lib/idempotent-operation';
 import { assertOwnedKey, assertWorkspaceAsset, publicUrlFor } from '../lib/storage';
+import { buildWorkspaceTrainingManifest } from '../lib/training-capture';
 
 export async function hasAdminAccess(req: FastifyRequest): Promise<boolean> {
   const { userId, workspaceId } = requireAuth(req);
@@ -57,6 +58,28 @@ const grantSchema = z.object({
 
 export default async function admin(app: FastifyInstance) {
   app.get('/status', async (req) => ({ admin: await hasAdminAccess(req) }));
+
+  // "SEE THE MUSIC" — the REAL catalog (material loops, instrumentals, vocals)
+  // as a rights-gated training manifest: what may train our own model and what
+  // is refused, with reasons. Read-only. user-original counts as trainable only
+  // when training-license consent is applied (ToS-on-signup; default fail-closed
+  // via TRAINING_CONSENT_DEFAULT=1, or ?consent=1 to preview).
+  app.get('/training/manifest', async (req, reply) => {
+    await requireAdmin(req);
+    const q = (req.query ?? {}) as { workspaceId?: string; consent?: string };
+    const consentApplied = process.env.TRAINING_CONSENT_DEFAULT === '1' || q.consent === '1';
+    const manifest = await buildWorkspaceTrainingManifest({
+      workspaceId: q.workspaceId,
+      resolveConsent: () => consentApplied,
+    });
+    return reply.send({
+      scannedWorkspace: manifest.scannedWorkspace,
+      consentApplied,
+      trainableNow: manifest.eligible.length,
+      counts: manifest.counts,
+      rejectedSample: manifest.rejected.slice(0, 25),
+    });
+  });
 
   // One-tap compounding: run the lake jobs NOW instead of waiting for tonight.
   const runSchema = z.object({ task: z.enum(['nightly-compound', 'measure-backfill', 'learn-backfill', 'listen-back', 'refile-references', 'mine-lexicon', 'lexicon-research', 'wiktionary-harvest', 'wiktionary-burst', 'lexicon-gloss', 'lexicon-verify', 'recert-sweep']) });

@@ -37,6 +37,15 @@ assert.equal(deriveTrainingOrigin({ id: 'a', materialSource: 'live-session' }), 
 assert.equal(deriveTrainingOrigin({ id: 'a', materialSource: 'upload', rightsBasis: 'user-attested' }), 'user-original', 'user upload + attested → user-original');
 assert.equal(deriveTrainingOrigin({ id: 'a' }), 'unknown', 'no provenance → unknown (fail-closed)');
 
+// ── real-catalog rights vocabulary (MaterialAsset / BeatAsset / VocalRender) ──
+assert.equal(deriveTrainingOrigin({ id: 'a', rightsBasis: 'code-generated' }), 'own-master', 'code-generated material → own');
+assert.equal(deriveTrainingOrigin({ id: 'a', rightsBasis: 'self-generated' }), 'own-master', 'self-generated → own');
+assert.equal(deriveTrainingOrigin({ id: 'a', rightsBasis: 'provider-generated' }), 'third-party-render', 'provider-generated → third-party');
+assert.equal(deriveTrainingOrigin({ id: 'a', performanceSource: 'artist_upload' }), 'user-original', 'artist_upload vocal → user-original');
+assert.equal(deriveTrainingOrigin({ id: 'a', performanceSource: 'artist_import' }), 'user-original', 'artist_import vocal → user-original');
+assert.equal(deriveTrainingOrigin({ id: 'a', performanceSource: 'voice_conversion' }), 'own-master', 'our RVC conversion → own');
+assert.equal(deriveTrainingOrigin({ id: 'a', performanceSource: 'stem_separation' }), 'unknown', 'stem-sep off an unknown mix → fail closed');
+
 // ── THE DISPOSITIVE RULE: a MiniMax render is theirs even with clean lyric rights
 assert.equal(
   deriveTrainingOrigin({ id: 'x', engine: 'minimax', rightsBasis: 'user-attested', materialSource: 'upload' }),

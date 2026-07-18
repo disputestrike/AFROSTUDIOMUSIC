@@ -56,6 +56,8 @@ export interface AssetProvenance {
   materialSource?: string | null;
   /** Recorded rights basis ('user-attested' | 'licensed' | 'code-generated' | 'provider-generated' | 'self-generated' | 'unknown'). */
   rightsBasis?: string | null;
+  /** VocalRender.performanceSource ('artist_upload' | 'artist_import' | 'voice_conversion' | 'score_synth' | 'stem_separation' | ...). */
+  performanceSource?: string | null;
   /** Did the uploader grant a training-license? (ToS/consent — operator-set, never inferred.) */
   consentGranted?: boolean | null;
 }
@@ -73,12 +75,20 @@ export function deriveTrainingOrigin(a: AssetProvenance): TrainingOrigin {
   const engine = (a.engine ?? '').trim().toLowerCase();
   const src = (a.materialSource ?? '').trim().toLowerCase();
   const rights = (a.rightsBasis ?? '').trim().toLowerCase();
+  const perf = (a.performanceSource ?? '').trim().toLowerCase();
 
-  // 1. A third-party ENGINE stamp is dispositive — the audio is theirs.
+  // 1. A third-party ENGINE stamp is dispositive — the audio is theirs. A
+  //    'provider-generated' material rights-basis means a third-party generator
+  //    produced it, same rule.
   if (THIRD_PARTY_ENGINES.has(engine)) return 'third-party-render';
+  if (rights === 'provider-generated') return 'third-party-render';
 
-  // 2. Own/synthesized engine output — we own the audio.
+  // 2. Own / synthesized origin — we own the audio. Includes our own render
+  //    engine, forged synth loops, code/self-generated material, and our OWN
+  //    voice model's conversion of a consented voice (own-model output).
   if (OWN_ENGINES.has(engine) || src === 'forged') return 'own-master';
+  if (rights === 'code-generated' || rights === 'self-generated') return 'own-master';
+  if (perf === 'voice_conversion' || perf === 'score_synth') return 'own-master';
 
   // 3. Licensed catalog — commercial license on file.
   if (rights === 'licensed') return 'licensed-catalog';
@@ -86,16 +96,18 @@ export function deriveTrainingOrigin(a: AssetProvenance): TrainingOrigin {
   // 4. Live session recording.
   if (src === 'live-session' || src === 'live') return 'live-session';
 
-  // 5. User-uploaded ORIGINAL work (their stem / master / recording). Trainable
-  //    only with consent — the gate below enforces that; here we only classify.
+  // 5. User-uploaded ORIGINAL work (their stem / master / recording / voice).
+  //    Trainable ONLY with consent — the gate below enforces that; here we only
+  //    classify. A vocal the artist uploaded/imported is their original work.
+  if (perf === 'artist_upload' || perf === 'artist_import') return 'user-original';
   if (
     (src === 'artist_stem' || src === 'upload' || src === 'user') &&
-    (rights === 'user-attested' || rights === 'self-generated')
+    rights === 'user-attested'
   ) {
     return 'user-original';
   }
 
-  // 6. Anything else: provenance not established → fail closed.
+  // 6. Anything else (incl. stem_separation off an unknown mix): fail closed.
   return 'unknown';
 }
 
