@@ -30,7 +30,8 @@
     "test:chat-error-humanizer": "tsx scripts/test-chat-error-humanizer.ts",
     "test:catalog-types": "tsx scripts/test-catalog-types.ts",
     "test:security-hardening": "tsx scripts/test-security-hardening.ts",
-    "test:learning-loops": "tsx scripts/test-learning-loops.ts"
+    "test:learning-loops": "tsx scripts/test-learning-loops.ts",
+    "test:video-treatment-async": "tsx scripts/test-video-treatment-async.ts"
   },
   "dependencies": {
     "@afrohit/ai": "workspace:*",

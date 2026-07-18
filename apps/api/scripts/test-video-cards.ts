@@ -113,7 +113,14 @@ console.log("video cards: presence law, presigned cuts, card player, no-hidden-r
     2, // both render payload sites (the import carries no paren)
     "both render payloads carry continuity + fronting-lead decoration"
   );
-  assert.match(videosB, /meta: \{ performers[,}]/, "the roster rides the concept for the sheet generator (Package C also folds in criticReport)");
+  // The full-song treatment (and the concept it writes) moved to the worker so
+  // its multi-minute LLM chain can't 502 at the edge — the roster + criticReport
+  // ride the concept THERE now.
+  const treatmentB = readFileSync(
+    join(process.cwd(), "../worker/src/processors/video-treatment.ts"),
+    "utf8"
+  );
+  assert.match(treatmentB, /meta: \{ performers[,}]/, "the roster rides the concept for the sheet generator (Package C also folds in criticReport)");
   const sheetsAt = workerB.indexOf("async function ensureCharacterSheets");
   const claimAt = workerB.indexOf("characterSheetsClaim", sheetsAt);
   const generateAt = workerB.indexOf("adapter.generate(", sheetsAt);

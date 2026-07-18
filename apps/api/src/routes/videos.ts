@@ -2,24 +2,19 @@ import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { prisma } from "@afrohit/db";
 import {
-  assumedThreeActSections,
   checkGenerativeContent,
   decorateTreatmentShotsForRender,
   generateStoryboardInputSchema,
-  missingDuetLeads,
   normalizeStoryboardShots,
-  normalizeVideoTreatment,
   performersFromVoice,
   perShotRenders,
   planVideoAssembly,
   renderAllVideoInputSchema,
   renderVideoInputSchema,
   storyboardShots,
-  treatmentSectionsFromBoundaries,
   videoAssemblyStatus,
   videoRenderAllUsage,
   videoRenderUsage,
-  type TreatmentSection,
 } from "@afrohit/shared";
 import { prompts, generateJson } from "@afrohit/ai";
 import { requireAuth } from "../middleware/auth";
@@ -142,6 +137,37 @@ export default async function videos(app: FastifyInstance) {
         : null;
       if (input.songId && !song) {
         return reply.code(404).send({ error: "song_not_found" });
+      }
+
+      // FULL-SONG TREATMENT RUNS OFF THE REQUEST PATH (audit 2026-07-17). Its
+      // LLM chain (main pass 120s + optional critic 60s + optional repair 120s)
+      // routinely outran Railway/Cloudflare's ~100s edge timeout, so "Make the
+      // whole video" 502'd at the proxy while the work kept running. The fast,
+      // pre-spend checks above (content gate, project + song existence) already
+      // ran, so a bad request still fails instantly; the heavy compute now goes
+      // to the `video` queue and the client polls /jobs/:id. mode:'short' stays
+      // synchronous below (a single fast ~1.5k-token call, well under any edge
+      // limit). Text only — no video-render credit, so nothing to charge/refund.
+      if (input.mode !== "short") {
+        const treatmentJob = await createQueuedProviderJob({
+          app,
+          queue: app.queues.video,
+          jobName: "video-treatment",
+          workspaceId,
+          projectId: project.id,
+          kind: "video-treatment",
+          provider: "internal",
+          inputJson: { projectId: project.id, songId: song?.id ?? null, input },
+          payload: jobId => ({
+            jobId,
+            workspaceId,
+            projectId: project.id,
+            songId: song?.id ?? null,
+            input,
+          }),
+        });
+        reply.code(202);
+        return { jobId: treatmentJob.jobId, status: "queued" };
       }
 
       // WHO IS SINGING. The director was never told the vocalist, so a
@@ -284,234 +310,6 @@ export default async function videos(app: FastifyInstance) {
         return { concept };
       }
 
-      // ---- mode:'full_song' — the creative-director treatment ----
-      // THE SONG'S MEASURED STRUCTURE IS THE SPINE. The current audio's
-      // arrangement (measured section boundaries + duration, inherited across
-      // versions by playableArrangement) decides the sequences; the model only
-      // fills them with craft. No measurement = an honest 3-act arc over the
-      // known length, marked structureSource:'assumed' — never a fake claim.
-      let sections: TreatmentSection[] = [];
-      let structureSource: "measured" | "assumed" = "assumed";
-      let songDurationS: number | null = null;
-      if (song) {
-        const history = playableAssetHistory(song);
-        const current = currentPlayableAsset(song);
-        const arrangement = current
-          ? playableArrangement(history, current)
-          : null;
-        if (arrangement) {
-          songDurationS = arrangement.durationS;
-          if (arrangement.boundaries.length) {
-            sections = treatmentSectionsFromBoundaries(
-              arrangement.durationS,
-              arrangement.boundaries
-            );
-            structureSource = "measured";
-          }
-        }
-      }
-      const targetDurationS = songDurationS ?? input.durationS ?? 180;
-      if (!sections.length) {
-        sections = assumedThreeActSections(targetDurationS);
-        structureSource = "assumed";
-      }
-
-      // CLAUDE IS THE BRAIN for creative-director work — generateJson routes
-      // Claude-first with the OpenAI/Cerebras failure ladder. A full treatment
-      // is long-form: give it token room and a longer timeout. Text only —
-      // this never spends a video-render credit.
-      // VOCAL-SYNC input: map the arranger-declared section voicing onto the
-      // MEASURED sections by label, in order — who SINGS a passage decides
-      // who is ON SCREEN in it. Imperfect mapping degrades honestly (no
-      // vocal field, the law simply has less to bind).
-      const voicingPool = [...sectionVoicing];
-      const sectionsForBrain = sections.map(section => {
-        const matchIndex = voicingPool.findIndex(
-          entry =>
-            entry.section.trim().toLowerCase() ===
-            section.label.trim().toLowerCase()
-        );
-        if (matchIndex < 0) return section;
-        const [match] = voicingPool.splice(matchIndex, 1);
-        const voices = new Set(match!.voices.map(voice => voice.toLowerCase()));
-        const vocal =
-          voices.size > 1
-            ? "both"
-            : voices.has("female")
-              ? "female"
-              : voices.has("male")
-                ? "male"
-                : "ensemble";
-        return { ...section, vocal };
-      });
-
-      const result = await generateJson<Record<string, unknown>>({
-        task: "video-treatment",
-        // The researched SCENE GRAMMAR rides with the director's laws —
-        // named choreography, section shot-language, BPM cut math, variety.
-        system: prompts.VIDEO_TREATMENT_SYSTEM + "\n\n" + prompts.SCENE_GRAMMAR,
-        user: JSON.stringify({
-          artist: {
-            stageName: project.artist.stageName,
-            lane: project.artist.laneSummary,
-          },
-          brief: project.briefs[0] ?? {},
-          song: songPayload,
-          structure: {
-            source: structureSource,
-            durationS: targetDurationS,
-            sections: sectionsForBrain,
-          },
-          format: input.format,
-          teaser: { allowedDurations: [15, 30], format: "vertical" },
-          extraPrompt: input.prompt,
-          // THE ARTIST'S VISION — their own idea for this video, and how
-          // faithfully the director must serve it (strict = translate,
-          // enhance = elevate but keep it recognizably theirs).
-          ...(input.vision?.trim()
-            ? {
-                artistVision: {
-                  text: input.vision.trim(),
-                  mode: input.visionMode,
-                },
-              }
-            : {}),
-        }),
-        temperature: 0.7,
-        maxTokens: 6_000,
-        timeoutMs: 120_000,
-      });
-
-      const treatment = normalizeVideoTreatment(result, {
-        durationS: targetDurationS,
-        sections,
-        structureSource,
-      });
-      if (!treatment) {
-        return reply.code(502).send({ error: "invalid_storyboard_output" });
-      }
-      // DUET GATE (owner incident: "there was a female singer as well, but we
-      // never saw her"): a duet plan that forgot a lead is REJECTED here —
-      // before it can ever spend a render credit. Code mirrors the prompt law.
-      const missingLeads = missingDuetLeads(performers, treatment);
-      if (missingLeads.length) {
-        return reply.code(502).send({
-          error: "invalid_storyboard_output",
-          note: `performer law failed — missing lead(s): ${missingLeads.join(", ")}. Regenerate the plan.`,
-        });
-      }
-
-      // PACKAGE C — THE DIRECTOR'S ROOM. A second brain reviews the plan
-      // against a fixed rubric BEFORE render money exists to spend. The
-      // ANTI-ASSUMPTION TRIPWIRE: a review that cannot quote the lyrics it
-      // grounded in (or says "I assume") is discarded. One MINIMAL repair
-      // round max; the repair changes ONLY what the critic named and must
-      // re-pass the same normalize + duet gates. Best-effort by law: critic
-      // trouble never blocks the artist — the original plan stands.
-      let finalTreatment = treatment;
-      let finalResult: Record<string, unknown> = result;
-      let criticReport: Record<string, unknown> | null = null;
-      try {
-        const lyricsText = songPayload?.lyrics ?? "";
-        if (lyricsText) {
-          const review = await generateJson<{
-            lyricsRead?: string;
-            scores?: Record<string, number>;
-            verdict?: string;
-            fixes?: string[];
-          }>({
-            task: "video-treatment-critic",
-            system: prompts.TREATMENT_CRITIC_SYSTEM,
-            user: JSON.stringify({
-              lyrics: lyricsText,
-              performers,
-              treatment: finalResult,
-            }),
-            temperature: 0.2,
-            maxTokens: 1_200,
-            timeoutMs: 60_000,
-          });
-          const quoted = (review.lyricsRead ?? "").trim();
-          const grounded =
-            quoted.length > 10 &&
-            !/i assume/i.test(quoted) &&
-            quoted
-              .split(/\n|\|/)
-              .some(line => line.trim() && lyricsText.includes(line.trim().slice(0, 24)));
-          if (grounded) {
-            criticReport = {
-              lyricsRead: quoted.slice(0, 500),
-              scores: review.scores ?? {},
-              verdict: review.verdict === "revise" ? "revise" : "pass",
-              fixes: (review.fixes ?? []).slice(0, 8),
-            };
-            if (
-              criticReport.verdict === "revise" &&
-              (criticReport.fixes as string[]).length
-            ) {
-              const repaired = await generateJson<Record<string, unknown>>({
-                task: "video-treatment-repair",
-                system: prompts.TREATMENT_REPAIR_SYSTEM,
-                user: JSON.stringify({
-                  original: finalResult,
-                  fixes: criticReport.fixes,
-                }),
-                temperature: 0.3,
-                maxTokens: 6_000,
-                timeoutMs: 120_000,
-              });
-              const repairedTreatment = normalizeVideoTreatment(repaired, {
-                durationS: targetDurationS,
-                sections,
-                structureSource,
-              });
-              if (
-                repairedTreatment &&
-                !missingDuetLeads(performers, repairedTreatment).length
-              ) {
-                finalTreatment = repairedTreatment;
-                finalResult = repaired;
-                criticReport.repaired = true;
-              } else {
-                criticReport.repairFailed = true; // honest: original stands
-              }
-            }
-          }
-        }
-      } catch (criticError) {
-        req.log.warn(
-          { err: criticError },
-          "treatment critic skipped — the original plan stands"
-        );
-      }
-      const title =
-        typeof finalResult.title === "string" && (finalResult.title as string).trim()
-          ? (finalResult.title as string).trim().slice(0, 200)
-          : finalTreatment.concept.slice(0, 200);
-      const concept = await prisma.videoConcept.create({
-        data: {
-          projectId: project.id,
-          // Bound to the song, so the recommendation can be found beside its
-          // lyrics instead of floating at project level where a multi-song
-          // project makes it ambiguous which record it describes.
-          songId: song?.id ?? null,
-          title,
-          // The richer object lives in the same storyboard Json column; its
-          // .shots array is the flat compatibility view every legacy reader
-          // (per-shot billing, worker payload, lyric-panel list) extracts via
-          // storyboardShots().
-          storyboard: finalTreatment as never,
-          durationS: finalTreatment.durationS,
-          format: input.format,
-          // PACKAGE B: the roster rides the concept so the render worker can
-          // build one character sheet per lead ("same faces all video").
-          // PACKAGE C: the critic's grounded verdict rides beside it.
-          meta: { performers, ...(criticReport ? { criticReport } : {}) } as never,
-        },
-      });
-
-      reply.code(201);
-      return { concept };
     }
   );
 

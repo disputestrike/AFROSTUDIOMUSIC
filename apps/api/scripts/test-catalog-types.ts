@@ -116,10 +116,21 @@ console.log("catalog types: every creation has a home, typed chips filter, recre
   assert.match(prompts, /their vision IS the treatment/);
   assert.match(prompts, /THEIR\s+idea, made bigger/);
   assert.match(prompts, /PERFORMER LAW, CAST LAW and the hard constraints still\s+bind/, "a vision can never break the cast or safety laws");
+  // The full-song treatment payload moved to the worker (off the request path);
+  // the short-mode payload stays on the route. BOTH still carry the vision.
+  const treatmentWorker = readFileSync(
+    join(process.cwd(), "../worker/src/processors/video-treatment.ts"),
+    "utf8"
+  );
   assert.equal(
     (videosRoute.match(/artistVision: \{/g) ?? []).length,
-    2,
-    "BOTH treatment and short-mode payloads carry the vision"
+    1,
+    "the short-mode payload still carries the vision on the request path"
+  );
+  assert.equal(
+    (treatmentWorker.match(/artistVision: \{/g) ?? []).length,
+    1,
+    "the full-song treatment worker carries the vision too"
   );
   assert.match(grid, /vision: visionText\.trim\(\), visionMode/, "the modal sends the pasted vision");
   console.log("artist vision law: schema, both brains, both payloads, and the UI hold");

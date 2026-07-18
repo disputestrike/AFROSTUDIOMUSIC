@@ -53,6 +53,7 @@ import { processImage } from "./processors/image";
 import { processLikenessTrain } from "./processors/likeness-train";
 import { processVideo } from "./processors/video";
 import { processAssembleVideo } from "./processors/assemble-video";
+import { processVideoTreatment } from "./processors/video-treatment";
 import { processMix } from "./processors/mix";
 import { processMaster } from "./processors/master";
 import { processExport } from "./processors/export";
@@ -464,6 +465,11 @@ const workers = [
     // job name — everything else stays the provider shot render.
     if (job.name === "assemble-video")
       await processAssembleVideo(job.data as never);
+    // The full-song creative-director treatment (text only, no render spend) —
+    // moved off the request path so its multi-minute LLM chain can't 502 at the
+    // proxy. The route returns 202 + jobId; the client polls /jobs/:id.
+    else if (job.name === "video-treatment")
+      await processVideoTreatment(job.data as never);
     else await processVideo(job.data as never);
   }),
   makeWorker("mix", async (job: { data: never }) => {

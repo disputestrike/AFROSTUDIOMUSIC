@@ -1041,16 +1041,68 @@ export default function CatalogGrid({ initial }: { initial: SongRow[] }) {
   const [visionText, setVisionText] = useState("");
   const [visionMode, setVisionMode] = useState<"strict" | "enhance">("enhance");
 
+  // The full-song treatment now runs on the WORKER QUEUE — its LLM chain can
+  // take minutes and used to 502 at the proxy. The POST returns 202 + a jobId;
+  // poll it to terminal so callers can re-fetch the concept exactly as before.
+  // mode:'short' still returns the concept inline (no job) → resolve instantly.
+  // A domain rejection (unusable plan / duet gate) is a SUCCEEDED job whose
+  // output says `rejected` — surfaced as a normal message, never a hard error.
+  async function settleStoryboard(resp: {
+    jobId?: string;
+    concept?: unknown;
+  }): Promise<{ ok: boolean; note?: string }> {
+    if (!resp?.jobId) return { ok: true };
+    const jobId = resp.jobId;
+    const deadline = Date.now() + 5 * 60_000;
+    while (Date.now() < deadline) {
+      await new Promise(r => setTimeout(r, 4_000));
+      let job: {
+        status: string;
+        outputJson?: { conceptId?: string; rejected?: boolean; note?: string } | null;
+        errorJson?: { message?: string } | null;
+      };
+      try {
+        job = await api.get(`/jobs/${jobId}`);
+      } catch {
+        continue; // a network blip mid-poll — keep waiting, don't fail the plan
+      }
+      if (job.status === "SUCCEEDED") {
+        if (job.outputJson?.rejected) {
+          return {
+            ok: false,
+            note: job.outputJson.note || "The plan came back unusable — try again.",
+          };
+        }
+        return { ok: true };
+      }
+      if (job.status === "FAILED" || job.status === "CANCELED") {
+        return {
+          ok: false,
+          note: job.errorJson?.message || "Couldn't write the video plan — try again.",
+        };
+      }
+    }
+    return {
+      ok: false,
+      note: "The video plan is taking longer than usual — check back in a moment.",
+    };
+  }
+
   async function makeVideoPlan(s: SongRow) {
     setMakingVideo(true);
     try {
-      await api.post(`/videos/storyboards`, {
-        projectId: s.projectId,
-        songId: s.id,
-        ...(visionText.trim()
-          ? { vision: visionText.trim(), visionMode }
-          : {}),
-      });
+      const resp = await api.post<{ jobId?: string; concept?: unknown }>(
+        `/videos/storyboards`,
+        {
+          projectId: s.projectId,
+          songId: s.id,
+          ...(visionText.trim()
+            ? { vision: visionText.trim(), visionMode }
+            : {}),
+        }
+      );
+      const settled = await settleStoryboard(resp);
+      if (!settled.ok) flash(settled.note || "Could not write the video plan");
       // POST creates a NEW concept row and GET returns the newest — a rewrite
       // therefore replaces what the modal shows without deleting anything.
       await loadVideoConcept(s.id);
@@ -1256,11 +1308,21 @@ export default function CatalogGrid({ initial }: { initial: SongRow[] }) {
         .then(r => r.concept)
         .catch(() => null);
       if (!concept || visionText.trim()) {
-        await api.post(`/videos/storyboards`, {
-          projectId: s.projectId,
-          songId: s.id,
-          ...(visionText.trim() ? { vision: visionText.trim(), visionMode } : {}),
-        });
+        const resp = await api.post<{ jobId?: string; concept?: unknown }>(
+          `/videos/storyboards`,
+          {
+            projectId: s.projectId,
+            songId: s.id,
+            ...(visionText.trim() ? { vision: visionText.trim(), visionMode } : {}),
+          }
+        );
+        // The treatment runs on the queue now — wait for it before rendering,
+        // so the one press doesn't fire scene renders against a stale/absent plan.
+        const settled = await settleStoryboard(resp);
+        if (!settled.ok) {
+          flash(settled.note || "Couldn't write the video plan — try again.");
+          return;
+        }
         concept = await api
           .get<{ concept: VideoConceptRow | null }>(`/songs/${s.id}/video-concept`)
           .then(r => r.concept)
