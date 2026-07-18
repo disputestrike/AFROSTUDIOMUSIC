@@ -1052,6 +1052,10 @@ async function generateLyrics(
           }),
         temperature: 0.7,
         maxTokens: 5_000,
+        // This stage REWRITES the whole lyric — it must feed the provenance gate
+        // too, or a bulk-brain rewrite here slips past the "never ship a
+        // bulk-brain lyric" hold (audit 2026-07-18).
+        onBrain: markBrain,
       }).catch(() => null);
       if (retry?.body) {
         output = retry;
@@ -1153,15 +1157,24 @@ async function generateLyrics(
     // stuffing) instead of just erroring. The last attempt either clears the gate
     // or fails honestly.
     let curLangMix = output.languageMix as Record<string, number> | undefined;
-    for (let fix = 0; !qa.ok && fix < 2; fix++) {
+    // QUALITY FLOOR IS LOAD-BEARING (audit 2026-07-18): the old loop only fired
+    // on a hard REJECT (blocks). A lyric that dodged the contamination regexes
+    // but is WEAK — band 'C' = >=3 quality warnings (scenery-leaning, over-long,
+    // ad-lib-stuffed, template, English-heavy) — passed straight to DEMO. That
+    // is the owner's "old habits / bland / makes no sense". Now a band-C take is
+    // rewritten from the emotion too. No new refund: after the passes it still
+    // ships (improved) unless it was a genuine REJECT (handled below).
+    for (let fix = 0; (!qa.ok || qa.band === "C") && fix < 2; fix++) {
+      const weakOnly = qa.ok && qa.band === "C"; // passed the floor, but mediocre
       const rewrite = await generateJson<LyricOut>({
         tier: "judgment",
         task: "lyric-qa-fix",
         system: prompts.LYRIC_SYSTEM,
         user: JSON.stringify({
-          REWRITE_REASON:
-            "Your previous lyric was REJECTED by the A&R gate. Rewrite it obeying THE RECORD LAW and fixing EVERY failure below. Keep the hook cell and the language; make it leaner and less descriptive.",
-          QA_FAILURES_MUST_FIX: qa.blocks,
+          REWRITE_REASON: weakOnly
+            ? "Your previous lyric PASSED the gate but is WEAK — too many quality warnings (scenery-leaning / over-long / ad-lib-stuffed / generic). Rewrite from the EMOTION: a sharper, more singable hook and stronger feeling; cut description and filler. Keep the hook cell and the language."
+            : "Your previous lyric was REJECTED by the A&R gate. Rewrite it obeying THE RECORD LAW and fixing EVERY failure below. Keep the hook cell and the language; make it leaner and less descriptive.",
+          QA_FAILURES_MUST_FIX: qa.blocks.length ? qa.blocks : qa.warnings,
           AVOID:
             "Do NOT open on a location. Do NOT put a place/food/transport noun in most lines. Do NOT write a confession bridge or an explaining outro. The hook must survive with the setting words removed.",
           hook: hook.text,

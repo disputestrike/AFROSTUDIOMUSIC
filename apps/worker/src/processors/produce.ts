@@ -216,8 +216,19 @@ export async function processProduce(p: ProducePayload): Promise<void> {
 
     // Persist. CANDIDATE => a renderable DEMO; anything else => quarantined shell.
     const sung = (state.sungWords?.sections.flatMap((s) => s.lines).join('\n')) || body;
+    // GATE THE TEXT WE ACTUALLY SAVE (audit 2026-07-18): QA ran on `body`, but
+    // the vocal-producer restructured it into `sung` — a DIFFERENT string that
+    // was persisted UNGATED. If that restructure fails the gate, ship the
+    // already-gated `body` instead. We do NOT quarantine on a sung-only failure:
+    // a legitimate sung form intentionally clips function words, so the safe
+    // move is to prefer the gated lyric, never to trash a paid record.
+    let persistBody = sung;
+    if (sung !== body) {
+      const sungQa = lyricQaCheck({ title, body: sung, hookCell: cell, languageMix: langMix, catalogue });
+      if (!sungQa.ok) persistBody = body;
+    }
     if (decision === 'CANDIDATE_FOR_HUMAN_AR') {
-      const lyric = await prisma.lyricDraft.create({ data: { projectId: p.projectId, songId: p.songId, title, body: sung, approved: false } });
+      const lyric = await prisma.lyricDraft.create({ data: { projectId: p.projectId, songId: p.songId, title, body: persistBody, approved: false } });
       await prisma.song.update({ where: { id: p.songId }, data: { title, lyricId: lyric.id, status: 'DEMO', proofPack: state as never } });
     } else {
       await prisma.song.update({ where: { id: p.songId }, data: { title: title || 'Revise', quarantined: true, quarantineReason: `pipeline: ${decision}`, proofPack: state as never } });
