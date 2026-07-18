@@ -1,5 +1,6 @@
 import type { FastifyInstance } from 'fastify';
-import { anthropicPing, openaiPing, tavilyKey, braveKey, tavilyPing, researchTrends, prompts, claudeRaw, getLastStudioChatClaudeError, cerebrasHealth } from '@afrohit/ai';
+import { prisma } from '@afrohit/db';
+import { anthropicPing, openaiPing, tavilyKey, braveKey, tavilyPing, researchTrends, prompts, claudeRaw, getLastStudioChatClaudeError, cerebrasHealth, anthropicAuthCooldownMs } from '@afrohit/ai';
 import { isFirstPartyWorkspace, recommendEngine } from '@afrohit/shared';
 import { laneDnaBrief } from '../lib/lane-pipeline';
 import { requireAuth } from '../middleware/auth';
@@ -27,8 +28,55 @@ export default async function debug(app: FastifyInstance) {
     // (lyrics, hooks, A&R, reference analysis, Zap craft-learning) fails or goes
     // hollow. Surface it loudly so a credit top-up is the obvious fix, not a bug hunt.
     const brainOk = anthropic.ok || openai.ok;
+
+    // JUDGMENT-BRAIN HEALTH (diagnosis 2026-07-18): the live pings above say
+    // "can I reach a brain RIGHT NOW"; this says "what actually happened to the
+    // JUDGMENT calls (lyrics/hooks/A&R) over the last 24h" — the number that
+    // explains "songs make no sense" (Cerebras wrote them) and "brain hiccup"
+    // (every brain failed). Turns a mystery into "OpenAI: 92% fail (quota)".
+    const judgmentHealth = await (async () => {
+      try {
+        const since = new Date(Date.now() - 24 * 60 * 60 * 1000);
+        const rows = await prisma.analyticsEvent.findMany({
+          where: { name: 'llm.call', createdAt: { gte: since } },
+          orderBy: { createdAt: 'desc' },
+          take: 2000,
+          select: { properties: true },
+        });
+        type Call = { tier?: string; brain?: string; degraded?: string };
+        const judged = rows
+          .map((r: { properties: unknown }) => (r.properties ?? {}) as Call)
+          .filter((c: Call) => c.tier === 'judgment');
+        const byBrain: Record<string, { calls: number; fails: number; lastDegraded: string | null }> = {};
+        for (const c of judged) {
+          const b = c.brain || 'unknown';
+          const e = (byBrain[b] ??= { calls: 0, fails: 0, lastDegraded: null });
+          e.calls++;
+          if (c.degraded) { e.fails++; if (!e.lastDegraded) e.lastDegraded = c.degraded.slice(0, 160); }
+        }
+        const brains = Object.fromEntries(
+          Object.entries(byBrain).map(([b, s]) => [b, { ...s, failRate: s.calls ? +(s.fails / s.calls).toFixed(2) : 0 }])
+        );
+        // Plain-language verdict for the operator.
+        const cerebrasCalls = byBrain.cerebras?.calls ?? 0;
+        const openai = byBrain.openai;
+        const openaiFailRate = openai && openai.calls ? openai.fails / openai.calls : 0;
+        let verdict = 'judgment brains healthy';
+        if (!judged.length) verdict = 'no judgment calls in 24h (nothing to assess)';
+        else if (cerebrasCalls > 0) verdict = `DEGRADED — the BULK brain wrote ${cerebrasCalls} judgment take(s) (this is the "songs make no sense" cause). Fix the paid brains: ${openai?.lastDegraded ?? byBrain.claude?.lastDegraded ?? 'see brains below'}`;
+        else if (openaiFailRate >= 0.5) verdict = `OpenAI failing ${Math.round(openaiFailRate * 100)}% of judgment calls (${openai?.lastDegraded ?? 'unknown'}) — top up OpenAI billing or restore a working Claude key`;
+        return { window: '24h', judgmentCalls: judged.length, brains, verdict };
+      } catch (e) {
+        return { error: (e as Error).message.slice(0, 120) };
+      }
+    })();
+
     return {
       brainOk,
+      // Is the Claude key in an auth cooldown (bad/rejected key) — ms remaining,
+      // 0 = live. Non-zero means the studio is running OpenAI-only right now.
+      claudeAuthCooldownMs: anthropicAuthCooldownMs(),
+      judgmentHealth,
       brainStatus: brainOk
         ? `OK via ${anthropic.ok ? 'Claude' : 'OpenAI'}`
         : 'DOWN — both Claude and OpenAI unreachable (usually exhausted credits). Top up Anthropic and/or OpenAI; lyrics/hooks/A&R/analysis/Zap-learn will fail until then.',

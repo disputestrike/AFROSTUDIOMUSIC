@@ -17,8 +17,10 @@ function expect(cond: boolean, msg: string) { if (!cond) { console.error('FAIL:'
 
 const gen = read('packages/ai/src/generate.ts');
 // The two Claude-calling conditions must both be guarded by !forcedBulk.
-expect(/wantClaude && anthropicEnabled\(\) && !forcedBulk/.test(gen), 'generate.ts: main Claude path guarded by !forcedBulk');
-expect(/anthropicEnabled\(\) && !forcedBulk && \/quota/.test(gen), 'generate.ts: OpenAI-quota Claude retry guarded by !forcedBulk');
+// (anthropicUsable = anthropicEnabled + auth-breaker-live; strictly tighter,
+// and still ANDed with !forcedBulk, so the night law holds.)
+expect(/wantClaude && anthropicUsable\(\) && !forcedBulk/.test(gen), 'generate.ts: main Claude path guarded by !forcedBulk');
+expect(/anthropicUsable\(\) && !forcedBulk && \/quota/.test(gen), 'generate.ts: OpenAI-quota Claude retry guarded by !forcedBulk');
 // forcedBulk must be derived from the brain context (the night wrapper).
 expect(/forcedBulk = brainContext\(\)\?\.forceTier === 'bulk'/.test(gen), 'generate.ts: forcedBulk comes from forceTier');
 // There must be NO unguarded callClaude() reachable in a bulk run: every

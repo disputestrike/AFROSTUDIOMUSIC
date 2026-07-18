@@ -9,7 +9,7 @@
  * Claude has no JSON mode, so we append a strict JSON-only instruction and let
  * claudeJson strip fences / extract the object.
  */
-import { claudeJson, anthropicEnabled } from './anthropic-client';
+import { claudeJson, anthropicEnabled, anthropicUsable } from './anthropic-client';
 import { responsesJson, lastOpenAiUsage } from './providers/text';
 import { cerebrasJson, cerebrasEnabled, lastCerebrasUsage } from './cerebras-client';
 import { recordLlmUsage } from './llm-usage';
@@ -143,7 +143,7 @@ export async function generateJson<T>(opts: GenerateOptions): Promise<T> {
   // a Cerebras hiccup or a >28k-char prompt fell through to callClaude() here and
   // silently billed Anthropic overnight with zero songs made. In a bulk run we
   // now top out at the OpenAI draft / Cerebras last-resort below; Claude is off.
-  if (wantClaude && anthropicEnabled() && !forcedBulk) {
+  if (wantClaude && anthropicUsable() && !forcedBulk) {
     const t0 = Date.now();
     try {
       const data = await callClaude();
@@ -174,9 +174,11 @@ export async function generateJson<T>(opts: GenerateOptions): Promise<T> {
     }
   }
 
+  // Hoisted so the catch can time the OpenAI failure (was block-scoped in the
+  // try, out of reach of the telemetry the catch now records).
+  const t0 = Date.now();
   try {
     lastBrain = 'openai';
-    const t0 = Date.now();
     // EXPLICIT brain:'openai' (the Writer A/B bench) = the flagship GPT.
     // OWNER DIRECTIVE (2026-07-13): the BRAIN's fallback must match the brain's
     // quality — when a JUDGMENT call (lyrics/hooks/singing retry) falls here
@@ -193,11 +195,17 @@ export async function generateJson<T>(opts: GenerateOptions): Promise<T> {
     recordLlmUsage({ tier: opts.tier ?? 'judgment', task: opts.task ?? 'unlabeled', brain: 'openai', ms: Date.now() - t0, estCostUsd: lastOpenAiUsage?.estCostUsd ?? null });
     return data;
   } catch (e) {
+    // RECORD THE OPENAI FAILURE (diagnosis 2026-07-18): this catch is the exact
+    // blind spot during the current outage — OpenAI 429/insufficient_quota was
+    // swallowed with no telemetry, so /admin/economics + /debug/ai showed a
+    // mystery "hiccup" instead of "OpenAI: out of quota". Now it's a first-class
+    // row BEFORE the ladder continues.
+    recordLlmUsage({ tier: opts.tier ?? 'judgment', task: opts.task ?? 'unlabeled', brain: 'openai', ms: Date.now() - t0, estCostUsd: null, degraded: (e as Error).message.slice(0, 160) });
     // OpenAI billing can be exhausted (429 insufficient_quota). Rather than
     // surface a confusing quota error, give Claude a real second attempt —
     // it's the only working brain in that state. NIGHT LAW: never in a bulk run
     // (Claude stays off overnight even when OpenAI is out of quota).
-    if (anthropicEnabled() && !forcedBulk && /quota|insufficient|429|rate limit/i.test((e as Error).message)) {
+    if (anthropicUsable() && !forcedBulk && /quota|insufficient|429|rate limit/i.test((e as Error).message)) {
       await new Promise((r) => setTimeout(r, 1200));
       try {
         const data = await callClaude();
@@ -214,6 +222,10 @@ export async function generateJson<T>(opts: GenerateOptions): Promise<T> {
           recordLlmUsage({ tier: opts.tier ?? 'judgment', task: opts.task ?? 'unlabeled', brain: 'cerebras', ms: 0, estCostUsd: lastCerebrasUsage?.estCostUsd ?? null, degraded: 'both paid brains unavailable' });
           return data;
         }
+        // TERMINAL FAILURE — every brain is dead and there is no lifeboat. This
+        // is the "the studio brain had a hiccup" the owner sees; record it so it
+        // is a first-class row on the health dashboards, not an invisible throw.
+        recordLlmUsage({ tier: opts.tier ?? 'judgment', task: opts.task ?? 'unlabeled', brain: 'cerebras', ms: 0, estCostUsd: null, degraded: `all brains down (${(e2 as Error).message.slice(0, 120)})` });
         throw e2;
       }
     }
@@ -225,6 +237,9 @@ export async function generateJson<T>(opts: GenerateOptions): Promise<T> {
       recordLlmUsage({ tier: opts.tier ?? 'judgment', task: opts.task ?? 'unlabeled', brain: 'cerebras', ms: 0, estCostUsd: lastCerebrasUsage?.estCostUsd ?? null, degraded: 'paid brains unavailable' });
       return data;
     }
+    // TERMINAL FAILURE (no Cerebras lifeboat: unconfigured or prompt > 28k) —
+    // same visibility: the hard "hiccup" is now a recorded event.
+    recordLlmUsage({ tier: opts.tier ?? 'judgment', task: opts.task ?? 'unlabeled', brain: 'openai', ms: 0, estCostUsd: null, degraded: `all brains down, no lifeboat (${(e as Error).message.slice(0, 110)})` });
     throw e;
   }
 }

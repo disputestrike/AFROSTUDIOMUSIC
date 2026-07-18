@@ -17,6 +17,38 @@ export function anthropicEnabled(): boolean {
 }
 
 /**
+ * AUTH CIRCUIT-BREAKER (diagnosis 2026-07-18). anthropicEnabled() is true for
+ * ANY present key — including a deliberately-bad one. That made every judgment
+ * call try Claude, eat a guaranteed 401, log a false "Claude degraded" line, and
+ * only THEN ladder to OpenAI. When a real 401/403 comes back we open a short
+ * cooldown so the hot path skips Claude entirely and goes straight to the OpenAI
+ * flagship — killing the per-call latency and the misleading telemetry. It
+ * self-heals: the cooldown expires (one probe retries), and any success clears
+ * it immediately, so a fixed key comes back on its own. Auth ONLY — 429/529/
+ * timeouts are transient and must NOT open it (Claude stays primary when it's
+ * merely overloaded).
+ */
+let anthropicAuthDeadUntil = 0;
+const AUTH_COOLDOWN_MS = 5 * 60_000;
+
+/** True when Claude auth is not in an open cooldown (i.e. worth attempting). */
+export function anthropicAuthLive(): boolean {
+  return Date.now() >= anthropicAuthDeadUntil;
+}
+
+/** A key is present AND its auth is not currently circuit-open. The hot-path
+ *  gate: generate.ts uses this (not anthropicEnabled) to decide whether to
+ *  actually attempt Claude. */
+export function anthropicUsable(): boolean {
+  return anthropicEnabled() && anthropicAuthLive();
+}
+
+/** Milliseconds until the auth cooldown lifts (0 when live) — for /debug/ai. */
+export function anthropicAuthCooldownMs(): number {
+  return Math.max(0, anthropicAuthDeadUntil - Date.now());
+}
+
+/**
  * THE BRAIN — SONNET 5 by owner directive (2026-07-10). The Fable 5 default
  * burned a $20 top-up in under two songs (Mythos-class per-token pricing: the
  * Jul-09/10 console bars were the whole balance each day, vs Sonnet's $6-16
@@ -46,7 +78,7 @@ export async function anthropicPing(): Promise<{ ok: boolean; model: string; err
   try {
     // Roomy cap: Fable 5's adaptive thinking counts against max_tokens — at 20
     // the ping "fails" on a healthy account and the dashboard cries wolf.
-    await claudeJson<{ ok: boolean }>({ system: 'Reply with JSON {"ok":true} only.', user: 'ping', maxTokens: 500 });
+    await claudeJson<{ ok: boolean }>({ system: 'Reply with JSON {"ok":true} only.', user: 'ping', maxTokens: 500, _probe: true });
     return { ok: true, model };
   } catch (e) {
     return { ok: false, model, error: (e as Error).message.slice(0, 300) };
@@ -177,9 +209,17 @@ export async function claudeJson<T>(opts: {
   timeoutMs?: number;
   /** internal: set on the one automatic retry after a max_tokens truncation. */
   _grew?: boolean;
+  /** internal: a health probe (/debug/ai) — bypasses the auth breaker so the
+   *  diagnostic always sees the REAL key status, never "circuit-open". */
+  _probe?: boolean;
 }): Promise<T> {
   const key = anthropicKey();
   if (!key) throw new Error('ANTHROPIC_API_KEY missing');
+  // Auth breaker: a recent 401/403 opened a cooldown — skip the guaranteed-dead
+  // call so the caller ladders to OpenAI immediately (probe calls bypass this).
+  if (!opts._probe && !anthropicAuthLive()) {
+    throw new Error('anthropic auth circuit-open: key was rejected recently — skipping until cooldown lifts');
+  }
   const timeoutMs = opts.timeoutMs ?? 90_000;
 
   // Retry on transient overload/timeout — Claude 529s under load. With OpenAI
@@ -216,7 +256,17 @@ export async function claudeJson<T>(opts: {
         if (attempt < maxAttempts - 1) { await new Promise((r) => setTimeout(r, 1500 * (attempt + 1) ** 2)); continue; } // 1.5s, 6s
         throw new Error(`anthropic ${res.status}: ${(await res.text()).slice(0, 200)}`);
       }
-      if (!res.ok) throw new Error(`anthropic ${res.status}: ${(await res.text()).slice(0, 300)}`);
+      if (!res.ok) {
+        // A rejected KEY (401) or forbidden (403) is not transient — open the
+        // auth breaker so the next judgment calls skip Claude until it lifts.
+        if (res.status === 401 || res.status === 403) {
+          anthropicAuthDeadUntil = Date.now() + AUTH_COOLDOWN_MS;
+        }
+        throw new Error(`anthropic ${res.status}: ${(await res.text()).slice(0, 300)}`);
+      }
+      // A real success means auth is healthy — clear any open cooldown at once so
+      // a fixed key resumes immediately rather than waiting out the timer.
+      if (anthropicAuthDeadUntil) anthropicAuthDeadUntil = 0;
       const data = (await res.json()) as { content?: Array<{ type: string; text?: string }>; stop_reason?: string };
       // Fable-5 classifier refusal: HTTP 200 + stop_reason "refusal", no usable
       // body. Retry ONCE on the documented fallback (Opus 4.8) instead of
