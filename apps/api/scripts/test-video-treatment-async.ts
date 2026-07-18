@@ -47,8 +47,13 @@ assert.match(
 );
 assert.match(
   route,
-  /reply\.code\(202\);\s*\r?\n\s*return \{ jobId: treatmentJob\.jobId, status: "queued" \};/,
-  "route: full_song returns 202 + jobId, not an inline concept"
+  /reply\.code\(202\);/,
+  "route: full_song responds 202 (queued), not an inline 201 concept"
+);
+assert.match(
+  route,
+  /jobId: treatmentJob\.jobId,\s*\r?\n?\s*status: "queued"/,
+  "route: the 202 body carries the jobId the client polls"
 );
 // The pre-spend fast checks still fail instantly (before the queue).
 const gateAt = route.indexOf('error: "content_not_allowed"');
@@ -138,6 +143,30 @@ assert.ok(
   "web: the one-press flow waits for the plan BEFORE rendering scenes"
 );
 
+// ── REVIEW FIXES (adversarial pass, 2026-07-17) ──────────────────────────────
+// 1. The client poll ceiling must clear the worker's real worst case (main 120s
+//    + critic 60s + repair 120s + queue latency + provider failover) or the
+//    one-press flow abandons a render the server actually completes.
+assert.match(
+  grid,
+  /const deadline = Date\.now\(\) \+ 12 \* 60_000;/,
+  "fix1: the storyboard poll ceiling is 12 min, above the worker's worst case"
+);
+// 2. The treatment enqueue threads the client's idempotency-key (like the render
+//    routes), so a POST retried during a redeploy dedupes instead of minting a
+//    second treatment job + duplicate concept.
+assert.match(
+  route,
+  /const idempotencyKey = scopedRequestKey\(\s*\r?\n?\s*req\.headers as Record<string, unknown>,\s*\r?\n?\s*`video-treatment:/,
+  "fix2: the treatment enqueue scopes an idempotency key per song"
+);
+const enqAt = route.indexOf('jobName: "video-treatment"');
+const keyPassAt = route.indexOf("idempotencyKey,", enqAt);
+assert.ok(
+  enqAt >= 0 && keyPassAt > enqAt,
+  "fix2: the idempotency key is actually passed into createQueuedProviderJob"
+);
+
 console.log(
-  "async storyboard: route 202-enqueues, worker owns the compute, and both UI callers poll before using the plan"
+  "async storyboard: route 202-enqueues (idempotent), worker owns the compute, UI polls with a worst-case-safe ceiling before using the plan"
 );

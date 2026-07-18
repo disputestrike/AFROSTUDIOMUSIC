@@ -1050,10 +1050,16 @@ export default function CatalogGrid({ initial }: { initial: SongRow[] }) {
   async function settleStoryboard(resp: {
     jobId?: string;
     concept?: unknown;
-  }): Promise<{ ok: boolean; note?: string }> {
+  }): Promise<{ ok: boolean; note?: string; timedOut?: boolean }> {
     if (!resp?.jobId) return { ok: true };
     const jobId = resp.jobId;
-    const deadline = Date.now() + 5 * 60_000;
+    // Ceiling, not the expected wait — the loop exits the instant the job goes
+    // terminal (usually well under 2 min). It must clear the worker's genuine
+    // worst case, or the one-press flow abandons a render the server actually
+    // completes: main 120s + critic 60s + repair 120s of LLM alone, PLUS queue
+    // pickup latency on the shared `video` lane, PLUS the Claude→OpenAI failover
+    // ladder when a provider is degraded. 5 min was under that; 12 gives headroom.
+    const deadline = Date.now() + 12 * 60_000;
     while (Date.now() < deadline) {
       await new Promise(r => setTimeout(r, 4_000));
       let job: {
@@ -1082,9 +1088,13 @@ export default function CatalogGrid({ initial }: { initial: SongRow[] }) {
         };
       }
     }
+    // Past the ceiling: the plan is STILL being written server-side and will
+    // land — pressing again in a moment picks up the finished plan (the concept
+    // exists by then, so the storyboard step is skipped straight to rendering).
     return {
       ok: false,
-      note: "The video plan is taking longer than usual — check back in a moment.",
+      timedOut: true,
+      note: "Still writing this plan — give it a moment, then press again and it'll pick up where it left off.",
     };
   }
 

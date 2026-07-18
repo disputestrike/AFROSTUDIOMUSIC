@@ -149,6 +149,16 @@ export default async function videos(app: FastifyInstance) {
       // synchronous below (a single fast ~1.5k-token call, well under any edge
       // limit). Text only — no video-render credit, so nothing to charge/refund.
       if (input.mode !== "short") {
+        // IDEMPOTENT ENQUEUE (review 2026-07-17): the web client retries a POST
+        // whose response was lost (the Railway redeploy window) with the SAME
+        // idempotency-key. Thread it — exactly as the render routes do — so a
+        // retried "Make video" dedupes to the one running job instead of
+        // enqueuing a SECOND treatment run and minting a duplicate concept.
+        // Scoped per song so different songs never collide on the same key.
+        const idempotencyKey = scopedRequestKey(
+          req.headers as Record<string, unknown>,
+          `video-treatment:${song?.id ?? project.id}`
+        );
         const treatmentJob = await createQueuedProviderJob({
           app,
           queue: app.queues.video,
@@ -158,6 +168,7 @@ export default async function videos(app: FastifyInstance) {
           kind: "video-treatment",
           provider: "internal",
           inputJson: { projectId: project.id, songId: song?.id ?? null, input },
+          idempotencyKey,
           payload: jobId => ({
             jobId,
             workspaceId,
@@ -167,7 +178,11 @@ export default async function videos(app: FastifyInstance) {
           }),
         });
         reply.code(202);
-        return { jobId: treatmentJob.jobId, status: "queued" };
+        return {
+          jobId: treatmentJob.jobId,
+          status: "queued",
+          replayed: treatmentJob.replayed,
+        };
       }
 
       // WHO IS SINGING. The director was never told the vocalist, so a
