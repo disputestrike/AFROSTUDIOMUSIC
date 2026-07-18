@@ -24,9 +24,6 @@ export * from './lexicon-expansion';
 export * from './lexicon-sa';
 export * from './lexicon-parity';
 export * from './chat-claude';
-// The chat brain lives in providers/text (Cerebras tool-calling) — surface the
-// live probe so /debug/ai can prove the chat runs on Cerebras.
-export { cerebrasChatProbe } from './providers/text';
 export * from './voice-sing';
 // Multi-agent producer studio (owner spec 2026-07-12) — specialist agents.
 export * from './agents/music-producer';

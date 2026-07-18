@@ -1,6 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import { prisma } from '@afrohit/db';
-import { anthropicPing, openaiPing, tavilyKey, braveKey, tavilyPing, researchTrends, prompts, claudeRaw, getLastStudioChatClaudeError, cerebrasHealth, cerebrasChatProbe, anthropicAuthCooldownMs } from '@afrohit/ai';
+import { anthropicPing, openaiPing, tavilyKey, braveKey, tavilyPing, researchTrends, prompts, claudeRaw, getLastStudioChatClaudeError, cerebrasHealth, anthropicAuthCooldownMs } from '@afrohit/ai';
 import { isFirstPartyWorkspace, recommendEngine } from '@afrohit/shared';
 import { laneDnaBrief } from '../lib/lane-pipeline';
 import { requireAuth } from '../middleware/auth';
@@ -17,13 +17,12 @@ export default async function debug(app: FastifyInstance) {
   app.get('/ai', async (req) => {
     await requireAdmin(req); // §1.11 THE WALL: vendor names + key status are INTERNAL
     const { workspaceId } = requireAuth(req);
-    const [anthropic, openai, tavily, trend, cerebras, cerebrasChat] = await Promise.all([
+    const [anthropic, openai, tavily, trend, cerebras] = await Promise.all([
       anthropicPing(),
       openaiPing(),
       tavilyPing(),
       researchTrends({ genre: 'afrobeats' }),
       cerebrasHealth(), // owner: verify ALL keys work + the right model
-      cerebrasChatProbe(), // owner: PROVE the chat runs on Cerebras (real tool-call)
     ]);
     // The brain is DOWN when neither text model can be reached — every LLM feature
     // (lyrics, hooks, A&R, reference analysis, Zap craft-learning) fails or goes
@@ -87,11 +86,10 @@ export default async function debug(app: FastifyInstance) {
       // means a key is dead/rate-limited — the leak-safe ladder covers it, but fix
       // the key so bulk work never has to fall back.
       cerebras,
-      // THE CHAT BRAIN: the studio chat now runs on Cerebras (owner cost law).
-      // toolCalled:true proves gpt-oss-120b returned a real tool call; ok:false
-      // means the chat is falling through to the OpenAI fallback every turn.
-      cerebrasChat,
-      chatBrain: process.env.CHAT_CEREBRAS === '0' ? 'openai (CHAT_CEREBRAS=0)' : cerebrasChat.toolCalled ? 'cerebras' : 'openai (cerebras chat unavailable)',
+      // THE CHAT BRAIN: the studio chat connects to the BRAIN — Claude first,
+      // OpenAI fallback (Cerebras is hauling only, never the chat). claudeAuth
+      // in cooldown => it's running on OpenAI right now, by design.
+      chatBrain: anthropic.ok ? 'claude' : openai.ok ? 'openai (claude down — by design on the bad key)' : 'DOWN',
       // Why the last chat turn fell off Claude (null = it didn't) — a swallowed
       // billing 400 here used to read as "the chat is weak".
       lastChatClaudeError: getLastStudioChatClaudeError(),

@@ -7,10 +7,9 @@
  * OpenAI chatWithTools so the route is a drop-in swap. Falls back to OpenAI in
  * the caller when no Anthropic key is set.
  */
-import { anthropicKey, anthropicEnabled, ANTHROPIC_MODEL, ANTHROPIC_FALLBACK_MODEL } from './anthropic-client';
-import { cerebrasEnabled } from './cerebras-client';
+import { anthropicKey, anthropicEnabled, anthropicUsable, ANTHROPIC_MODEL, ANTHROPIC_FALLBACK_MODEL } from './anthropic-client';
 import { recordLlmUsage } from './llm-usage';
-import { chatWithTools, chatWithToolsCerebras, type ChatMessage, type ChatTurn } from './providers/text';
+import { chatWithTools, type ChatMessage, type ChatTurn } from './providers/text';
 
 export { anthropicEnabled as claudeChatAvailable };
 
@@ -35,28 +34,27 @@ export const getLastStudioChatClaudeError = (): string | null => lastStudioChatC
 export async function studioChat(opts: ChatOpts): Promise<ChatTurn> {
   if (process.env.STUB_AI === '1') return chatWithTools(opts); // deterministic test path
 
-  // OWNER COST LAW (2026-07-18, restated: "Cerebras does the hauling throughout
-  // the app — that should cover the chat"). The studio chat is MECHANICAL work
-  // (deciding which labs to run, driving autopilot), so it runs on Cerebras
-  // (bulk, cheap), with OpenAI as the fallback. Claude is intentionally OFF the
-  // chat path — Anthropic pricing is why we run on the fallback. The old
-  // Claude-first chat is why every turn was expensive AND fragile when the paid
-  // brains hiccuped. CHAT_CEREBRAS=0 forces OpenAI directly (a lever with no
-  // redeploy) if Cerebras tool-calling ever misbehaves.
-  if (process.env.CHAT_CEREBRAS !== '0' && cerebrasEnabled()) {
+  // THE BRAIN — approved design for the WHOLE app (owner 2026-07-18): the chat
+  // connects to the BRAIN, which is Claude FIRST -> OpenAI fallback. The Claude
+  // key is intentionally invalid, so this reliably falls to OpenAI (the working
+  // brain) — that is by design, not a bug. Cerebras is for MECHANICAL HAULING
+  // only, never the chat's reasoning: a bulk model here understood intent poorly
+  // (stale-prompt / wrong-subject chats). anthropicUsable() skips Claude while a
+  // rejected key is in its short auth cooldown, so we don't eat a 401 every turn.
+  if (anthropicUsable()) {
     try {
-      const turn = await chatWithToolsCerebras(opts);
+      const turn = await chatWithToolsClaude(opts);
       lastStudioChatClaudeError = null;
-      recordLlmUsage({ tier: 'bulk', task: 'studio-chat', brain: 'cerebras', ms: 0, estCostUsd: null });
       return turn;
     } catch (e) {
-      // Cerebras hiccup → fall to OpenAI so the chat NEVER dies; record why.
-      lastStudioChatClaudeError = `${new Date().toISOString()} cerebras-chat: ${(e as Error).message.slice(0, 300)}`;
+      // Claude failed (bad key / overload) → fall to OpenAI; record why so
+      // /debug/ai shows it instead of the chat looking silently "weak".
+      lastStudioChatClaudeError = `${new Date().toISOString()} ${(e as Error).message.slice(0, 300)}`;
     }
   }
-  // OpenAI fallback. A single transient 429/network blip must not dead-air the
-  // whole chat turn — retry ONCE after a short backoff; fail fast on a permanent
-  // error (quota/billing/invalid key), where a retry only wastes the user's time.
+  // OpenAI — the working brain in this setup. A single transient 429/network
+  // blip must not dead-air the turn: retry ONCE after a short backoff; fail fast
+  // on a permanent error (quota/billing/invalid key), where a retry wastes time.
   try {
     return await chatWithTools(opts);
   } catch (e) {

@@ -190,45 +190,37 @@ assert.match(
   "[7] a transient blip gets one short-backoff retry before dying"
 );
 
-// ── BATCH D — Cerebras powers the chat (owner cost law) ──────────────────────
+// ── BATCH D — the chat connects to THE BRAIN (Claude -> OpenAI), the approved
+// whole-app design. Cerebras is mechanical hauling ONLY, never the chat's
+// reasoning (a bulk model there produced stale-prompt / wrong-intent chats).
 const text = read("../../packages/ai/src/providers/text.ts");
-assert.match(
-  text,
-  /export async function chatWithToolsCerebras\(opts: \{/,
-  "[chat] Cerebras tool-calling exists (OpenAI-compatible gpt-oss-120b)"
-);
-assert.match(
-  text,
-  /baseURL: 'https:\/\/api\.cerebras\.ai\/v1'/,
-  "[chat] points the OpenAI SDK at the Cerebras endpoint"
-);
-assert.match(
-  text,
-  /export async function cerebrasChatProbe\(\)/,
-  "[chat] a live probe proves the chat brain works (real tool-call round-trip)"
-);
-// studioChat: Cerebras first, OpenAI fallback, Claude OFF the chat path.
-const cerebrasAt = chatClaude.indexOf("chatWithToolsCerebras(opts)");
+// The chat runs the brain: Claude first, then the OpenAI fallback.
+const brainAt = chatClaude.indexOf("chatWithToolsClaude(opts)");
 const openaiFallbackAt = chatClaude.indexOf("return await chatWithTools(opts)");
 assert.ok(
-  cerebrasAt >= 0 && openaiFallbackAt > cerebrasAt,
-  "[chat] studioChat runs Cerebras FIRST, then the OpenAI fallback"
+  brainAt >= 0 && openaiFallbackAt > brainAt,
+  "[chat] studioChat runs the BRAIN (Claude) first, then the OpenAI fallback"
 );
 assert.match(
   chatClaude,
-  /process\.env\.CHAT_CEREBRAS !== '0' && cerebrasEnabled\(\)/,
-  "[chat] Cerebras leads the chat, with a CHAT_CEREBRAS=0 escape hatch"
+  /if \(anthropicUsable\(\)\) \{/,
+  "[chat] Claude is tried (skipped only while its auth breaker is cooling down)"
+);
+// Cerebras must NOT be on the chat path anymore (reverted).
+assert.ok(
+  !/chatWithToolsCerebras/.test(chatClaude),
+  "[chat] Cerebras is OFF the chat path (it is hauling only)"
 );
 assert.ok(
-  !/await chatWithToolsClaude\(opts\)/.test(chatClaude),
-  "[chat] Claude is NO LONGER on the chat hot path (Anthropic pricing)"
+  !/chatWithToolsCerebras|cerebrasChatProbe/.test(text),
+  "[chat] the Cerebras-chat code is fully removed from providers/text"
 );
 assert.match(
   debug,
-  /chatBrain: process\.env\.CHAT_CEREBRAS === '0'/,
-  "[chat] /debug/ai reports which brain the chat actually ran on"
+  /chatBrain: anthropic\.ok \? 'claude' : openai\.ok \? 'openai/,
+  "[chat] /debug/ai reports the real chat brain (claude, or openai when claude is down by design)"
 );
 
 console.log(
-  "brain reliability (Batch A+B+C+D): failures visible, breaker self-heals, bulk-brain lyrics held, no run-discarding, and the CHAT now hauls on Cerebras (OpenAI fallback, Claude off the path)"
+  "brain reliability (Batch A+B+C+D): failures visible, breaker self-heals, bulk-brain lyrics held, no run-discarding, and the CHAT connects to the BRAIN (Claude -> OpenAI; Cerebras is hauling only)"
 );
