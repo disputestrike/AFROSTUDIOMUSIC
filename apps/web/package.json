@@ -9,7 +9,8 @@
     "lint": "eslint . --max-warnings 0",
     "typecheck": "tsc --noEmit",
     "test:create-payment-cleanup": "node scripts/test-create-payment-cleanup.mjs",
-    "test:nav-manifest": "node scripts/test-nav-manifest.mjs"
+    "test:nav-manifest": "node scripts/test-nav-manifest.mjs",
+    "test:onboarding-ux": "node scripts/test-onboarding-ux.mjs"
   },
   "dependencies": {
     "@afrohit/shared": "workspace:*",
