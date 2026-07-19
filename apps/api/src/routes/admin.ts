@@ -26,6 +26,13 @@ import { createQueuedProviderJob, scopedRequestKey } from '../lib/queued-job';
 import { operationErrorBody, runIdempotentOperation } from '../lib/idempotent-operation';
 import { assertOwnedKey, assertWorkspaceAsset, publicUrlFor } from '../lib/storage';
 import { buildWorkspaceTrainingManifest } from '../lib/training-capture';
+import {
+  ECONOMICS_RECONCILIATION_SETTING_KEY,
+  loadEconomicsReadinessReport,
+  redactEconomicsReadinessReport,
+  resolveEconomicsWindow,
+  type EconomicsReconciliationRegistry,
+} from '../lib/economics-readiness';
 
 export async function hasAdminAccess(req: FastifyRequest): Promise<boolean> {
   const { userId, workspaceId } = requireAuth(req);
@@ -57,6 +64,74 @@ export async function requireAdmin(req: FastifyRequest): Promise<void> {
 const grantSchema = z.object({
   deltaCents: z.number().int(), // positive = grant, negative = clawback (1/100-cent units)
   reason: z.string().min(3).max(200),
+});
+
+const economicsDateSchema = z.string().regex(/^\d{4}-\d{2}-\d{2}$/).refine(value => {
+  const parsed = new Date(value + 'T00:00:00.000Z');
+  return !Number.isNaN(parsed.getTime()) && parsed.toISOString().slice(0, 10) === value;
+}, 'invalid calendar date');
+const economicsInvoiceLineSchema = z.object({
+  providerJobId: z.string().min(1).max(200),
+  provider: z.string().min(1).max(100),
+  invoiceId: z.string().min(1).max(300),
+  lineItemId: z.string().min(1).max(300).optional(),
+  actualCostUsd: z.number().finite().nonnegative().max(10_000_000),
+  retryCostUsd: z.number().finite().nonnegative().max(10_000_000),
+  retryAttempts: z.number().int().nonnegative().max(10_000),
+  currency: z.literal('USD'),
+  reconciledAt: z.string().datetime(),
+}).strict().refine(line => line.retryCostUsd <= line.actualCostUsd, {
+  message: 'retryCostUsd must be included within actualCostUsd',
+  path: ['retryCostUsd'],
+});
+const economicsAllocatedCostSchema = z.object({
+  periodStart: economicsDateSchema,
+  periodEnd: economicsDateSchema,
+  currency: z.literal('USD'),
+  coverageComplete: z.boolean(),
+  storageUsd: z.number().finite().nonnegative().max(10_000_000),
+  egressUsd: z.number().finite().nonnegative().max(10_000_000),
+  supportUsd: z.number().finite().nonnegative().max(10_000_000),
+  paymentFeesUsd: z.number().finite().nonnegative().max(10_000_000),
+  otherUsd: z.number().finite().nonnegative().max(10_000_000),
+  otherLabel: z.string().min(1).max(300).optional(),
+  evidenceRef: z.string().min(1).max(500),
+}).strict().superRefine((allocation, ctx) => {
+  if (allocation.periodStart > allocation.periodEnd) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'periodStart must not follow periodEnd', path: ['periodEnd'] });
+  }
+  if (allocation.otherUsd > 0 && !allocation.otherLabel) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'otherLabel is required when otherUsd is non-zero', path: ['otherLabel'] });
+  }
+});
+const economicsReconciliationSchema = z.object({
+  schemaVersion: z.literal(1),
+  invoiceLines: z.array(economicsInvoiceLineSchema).max(10_000),
+  allocatedCosts: z.array(economicsAllocatedCostSchema).max(500),
+}).strict().superRefine((registry, ctx) => {
+  const jobIds = new Set<string>();
+  for (const [index, line] of registry.invoiceLines.entries()) {
+    if (jobIds.has(line.providerJobId)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'providerJobId must appear only once',
+        path: ['invoiceLines', index, 'providerJobId'],
+      });
+    }
+    jobIds.add(line.providerJobId);
+  }
+  const periods = new Set<string>();
+  for (const [index, allocation] of registry.allocatedCosts.entries()) {
+    const period = allocation.periodStart + ':' + allocation.periodEnd;
+    if (periods.has(period)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'an allocated-cost period must appear only once',
+        path: ['allocatedCosts', index, 'periodStart'],
+      });
+    }
+    periods.add(period);
+  }
 });
 
 export default async function admin(app: FastifyInstance) {
@@ -507,6 +582,112 @@ export default async function admin(app: FastifyInstance) {
   // itself; every move is approved here (§1.5 — the user's ear outranks).
   // AUTONOMY — what the money-spending overnight jobs are, their on/off state,
   // and what they cost in the last N days, so the operator can decide + toggle.
+  /**
+   * Investor-diligence economics evidence. This is deliberately separate from
+   * the operational /economics estimate above: ProviderJob.cost never becomes
+   * an "actual" until every cost-bearing job has a matched invoice line and
+   * the requested period has complete allocated-cost coverage.
+   */
+  app.get<{ Querystring: { days?: string; from?: string; to?: string } }>(
+    '/economics/readiness',
+    async (req, reply) => {
+      await requireAdmin(req);
+      const window = resolveEconomicsWindow(req.query);
+      const report = await loadEconomicsReadinessReport(window);
+      reply.header('cache-control', 'no-store');
+      return reply.send(report);
+    }
+  );
+
+  /** Shareable JSON export: aggregate economics stays visible, while tenant,
+   * provider-job, invoice, and evidence-reference identifiers are removed. */
+  app.get<{ Querystring: { days?: string; from?: string; to?: string } }>(
+    '/economics/readiness/export',
+    async (req, reply) => {
+      await requireAdmin(req);
+      const window = resolveEconomicsWindow(req.query);
+      const report = await loadEconomicsReadinessReport(window);
+      const filename = `afrostudio-economics-${window.from}-to-${window.to}.json`;
+      reply.header('cache-control', 'no-store');
+      reply.header('content-disposition', `attachment; filename="${filename}"`);
+      reply.type('application/json; charset=utf-8');
+      return reply.send(redactEconomicsReadinessReport(report));
+    }
+  );
+
+  /**
+   * Persist invoice reconciliation and fully-loaded allocated costs without a
+   * schema migration. Replacing the versioned registry is intentional: the
+   * operator submits a complete evidence snapshot, so omission cannot silently
+   * inherit stale invoice or overhead claims from a prior upload.
+   */
+  app.put<{ Body: z.infer<typeof economicsReconciliationSchema> }>(
+    '/economics/reconciliation',
+    { schema: { body: economicsReconciliationSchema } },
+    async (req, reply) => {
+      await requireAdmin(req);
+      const { userId } = requireAuth(req);
+      const body = economicsReconciliationSchema.parse(req.body);
+      const ids = body.invoiceLines.map(line => line.providerJobId);
+      const jobs = ids.length
+        ? await prisma.providerJob.findMany({
+            where: { id: { in: ids } },
+            select: { id: true, provider: true },
+          })
+        : [];
+      const jobsById = new Map(jobs.map(job => [job.id, job]));
+      const unknownJobIds = ids.filter(id => !jobsById.has(id));
+      const providerMismatches = body.invoiceLines
+        .filter(line => {
+          const job = jobsById.get(line.providerJobId);
+          return !!job && job.provider !== line.provider;
+        })
+        .map(line => ({
+          providerJobId: line.providerJobId,
+          suppliedProvider: line.provider,
+          persistedProvider: jobsById.get(line.providerJobId)?.provider,
+        }));
+      if (unknownJobIds.length > 0 || providerMismatches.length > 0) {
+        return reply.code(400).send({
+          error: 'invalid_economics_reconciliation',
+          unknownProviderJobIds: unknownJobIds,
+          providerMismatches,
+        });
+      }
+
+      const registry: EconomicsReconciliationRegistry = {
+        schemaVersion: 1,
+        invoiceLines: body.invoiceLines,
+        allocatedCosts: body.allocatedCosts,
+        recordedAt: new Date().toISOString(),
+        recordedByUserId: userId,
+      };
+      await prisma.systemSetting.upsert({
+        where: { key: ECONOMICS_RECONCILIATION_SETTING_KEY },
+        create: {
+          key: ECONOMICS_RECONCILIATION_SETTING_KEY,
+          value: JSON.stringify(registry),
+        },
+        update: { value: JSON.stringify(registry) },
+      });
+      req.log.info(
+        {
+          adminUserId: userId,
+          invoiceLines: registry.invoiceLines.length,
+          allocatedCostPeriods: registry.allocatedCosts.length,
+        },
+        'economics reconciliation registry replaced'
+      );
+      return reply.send({
+        ok: true,
+        schemaVersion: registry.schemaVersion,
+        invoiceLines: registry.invoiceLines.length,
+        allocatedCostPeriods: registry.allocatedCosts.length,
+        recordedAt: registry.recordedAt,
+      });
+    }
+  );
+
   app.get<{ Querystring: { days?: string } }>('/autonomy', async (req) => {
     await requireAdmin(req);
     const days = Math.max(1, Math.min(30, Number(req.query.days ?? 2)));

@@ -44,7 +44,8 @@
     "test:own-engine-bedfloor": "tsx scripts/test-own-engine-bedfloor.ts",
     "test:create-from-lyrics": "tsx scripts/test-create-from-lyrics.ts",
     "test:afroone-render": "tsx scripts/test-afroone-render-contract.ts",
-    "test:producer-kits": "tsx scripts/test-producer-kits.ts"
+    "test:producer-kits": "tsx scripts/test-producer-kits.ts",
+    "test:economics-readiness": "tsx scripts/test-economics-readiness.ts"
   },
   "dependencies": {
     "@afrohit/ai": "workspace:*",
