@@ -121,11 +121,10 @@ export default async function admin(app: FastifyInstance) {
   });
 
   /** WITHDRAW the grant for FUTURE training (fail-closed from the next run). */
-  app.delete('/training/consent', { schema: { body: consentSchema } }, async (req, reply) => {
+  app.delete<{ Params: { workspaceId: string } }>('/training/consent/:workspaceId', async (req, reply) => {
     await requireAdmin(req);
-    const { workspaceId } = consentSchema.parse(req.body);
     const updated = await prisma.trainingConsent.updateMany({
-      where: { workspaceId, revokedAt: null },
+      where: { workspaceId: req.params.workspaceId, revokedAt: null },
       data: { revokedAt: new Date() },
     });
     return reply.send({ ok: true, revoked: updated.count });

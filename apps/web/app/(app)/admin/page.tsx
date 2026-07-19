@@ -1,7 +1,7 @@
 'use client';
 import { OperatorGate } from '@/components/OperatorGate';
 
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { useApi } from '@/lib/api';
 import { formatUsd } from '@/lib/utils';
 
@@ -173,6 +173,7 @@ function AdminPageInner() {
       </div>
 
       <AutonomyCard />
+      <TrainingConsentCard />
       <LakeJobs />
 
       <WriterAb />
@@ -257,6 +258,91 @@ const LAKE_TASKS = [
  * it out: "you'll just be telling stuff that is not there"). One click per job;
  * OFF = that job spends nothing until you flip it back.
  */
+/**
+ * THE CONSENT DOOR (2026-07-19) — one tap. Grants (or withdraws) the versioned,
+ * hashed training-license for THIS workspace so its user-original catalog
+ * (masters, uploads, imported vocals) counts as training fuel in the nightly
+ * flywheel. Shows the recorded verdict + what becomes trainable, honestly.
+ */
+function TrainingConsentCard() {
+  const api = useApi();
+  const [wsId, setWsId] = useState<string | null>(null);
+  const [status, setStatus] = useState<{
+    granted: boolean; current?: boolean; version?: string; reason?: string;
+    trainableNow?: number; total?: number;
+  } | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState('');
+
+  const load = useCallback(async () => {
+    try {
+      const me = await api.get<{ workspaceId?: string }>('/auth/me');
+      const id = me.workspaceId ?? null;
+      setWsId(id);
+      if (!id) return;
+      const m = await api.get<{ consent?: { granted?: boolean; current?: boolean; version?: string; reason?: string }; trainableNow?: number; counts?: { total?: number } }>(`/admin/training/manifest?workspaceId=${id}`);
+      setStatus({
+        granted: !!m.consent?.granted,
+        current: m.consent?.current,
+        version: m.consent?.version,
+        reason: m.consent?.reason,
+        trainableNow: m.trainableNow,
+        total: m.counts?.total,
+      });
+    } catch (e) { setErr((e as Error).message.slice(0, 140)); }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  useEffect(() => { void load(); }, [load]);
+
+  async function grant() {
+    if (!wsId) return;
+    setBusy(true); setErr('');
+    try { await api.post('/admin/training/consent', { workspaceId: wsId }); await load(); }
+    catch (e) { setErr((e as Error).message.slice(0, 140)); }
+    setBusy(false);
+  }
+  async function revoke() {
+    if (!wsId) return;
+    setBusy(true); setErr('');
+    try { await api.del(`/admin/training/consent/${wsId}`); await load(); }
+    catch (e) { setErr((e as Error).message.slice(0, 140)); }
+    setBusy(false);
+  }
+
+  const granted = status?.granted && status?.current;
+  return (
+    <section className="mt-10 rounded-2xl border border-slate-800 bg-slate-900/40 p-5">
+      <h2 className="font-display text-2xl">Training license <span className="text-sm font-normal text-slate-500">— the consent door: lets YOUR catalog train YOUR model. Recorded, versioned, revocable.</span></h2>
+      {status && (
+        <div className="mt-3 flex flex-wrap items-center gap-3 text-sm">
+          <span className={`rounded-full px-3 py-1 text-xs font-medium ${granted ? 'bg-emerald-500/15 text-emerald-300' : 'bg-amber-500/15 text-amber-300'}`}>
+            {granted ? `GRANTED (${status.version})` : status.granted ? `granted under older terms (${status.version}) — re-grant` : 'NOT GRANTED'}
+          </span>
+          {typeof status.trainableNow === 'number' && (
+            <span className="text-slate-400">trainable now: <span className="text-slate-200">{status.trainableNow}</span>{typeof status.total === 'number' ? ` of ${status.total} assets` : ''}</span>
+          )}
+          {!granted && status.reason && <span className="text-xs text-slate-500">{status.reason}</span>}
+        </div>
+      )}
+      <div className="mt-4 flex gap-3">
+        {!granted ? (
+          <button onClick={() => void grant()} disabled={busy || !wsId}
+            className="rounded-full bg-brand-gradient px-5 py-2.5 text-sm font-medium text-ink shadow-glow disabled:opacity-50">
+            {busy ? 'Granting…' : 'Grant training license for this studio'}
+          </button>
+        ) : (
+          <button onClick={() => void revoke()} disabled={busy}
+            className="rounded-full border border-slate-700 px-5 py-2.5 text-sm text-slate-300 disabled:opacity-50">
+            {busy ? 'Withdrawing…' : 'Withdraw (future training only)'}
+          </button>
+        )}
+      </div>
+      {err && <div className="mt-3 rounded-lg border border-red-500/40 bg-red-500/10 p-3 text-xs text-red-300">{err}</div>}
+      <p className="mt-3 text-[11px] text-slate-500">Granting records the exact license text (hashed) under your admin identity. The nightly flywheel then counts this workspace&apos;s own uploads, masters and vocals as training fuel. Third-party engine renders are never fuel, grant or no grant.</p>
+    </section>
+  );
+}
+
 interface AutonomyJobRow { job: string; enabled: boolean; schedule: string; what: string; valueSignal: string }
 function AutonomyCard() {
   const api = useApi();
