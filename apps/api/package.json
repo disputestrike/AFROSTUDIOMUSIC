@@ -39,7 +39,8 @@
     "test:training-capture": "tsx scripts/test-training-capture.ts",
     "test:music-training": "tsx scripts/test-music-training.ts",
     "test:seed-plan": "tsx scripts/test-seed-plan.ts",
-    "test:own-engine-bedfloor": "tsx scripts/test-own-engine-bedfloor.ts"
+    "test:own-engine-bedfloor": "tsx scripts/test-own-engine-bedfloor.ts",
+    "test:create-from-lyrics": "tsx scripts/test-create-from-lyrics.ts"
   },
   "dependencies": {
     "@afrohit/ai": "workspace:*",

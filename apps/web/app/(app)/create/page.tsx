@@ -582,7 +582,9 @@ export default function CreatePage() {
       // used to clobber the DETECTED tempo with the genre-signature default.
       if (GENRES.some((g) => g.value === d.suggestedGenre)) setGenres([d.suggestedGenre]);
       bpmTouched.current = true;
-      setBpm(d.suggestedBpm);
+      // Clamp the detected tempo into the render's valid range so a fast/slow
+      // read can never 400 the generate call (the from-lyrics bug, 2026-07-19).
+      setBpm(Math.min(220, Math.max(40, Math.round(d.suggestedBpm) || 112)));
       if (MOODS.includes(d.mood)) setMood(d.mood);
       // The chips must SHOW what will be sung — the detected languages land on
       // the page (and lock against the genres-effect), so a user re-toggle after

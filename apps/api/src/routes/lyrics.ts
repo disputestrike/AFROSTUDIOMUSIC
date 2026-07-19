@@ -638,7 +638,7 @@ export default async function lyrics(app: FastifyInstance) {
    * Song so production (beats/generate withVocals) sings EXACTLY these words.
    * Artist-authored = authentic → approved, same doctrine as uploads.
    */
-  const attachSchema = z.object({ title: z.string().min(1).max(120), body: z.string().min(20).max(6000) });
+  const attachSchema = z.object({ title: z.string().min(1).max(120), body: z.string().min(20).max(12000) });
   app.post<{ Params: { projectId: string } }>(
     '/attach',
     { schema: { body: attachSchema } },

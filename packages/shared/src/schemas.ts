@@ -249,7 +249,11 @@ export const generateBeatInputSchema = z.object({
   // First-class mood + the just-listened reference to rebuild (see dropBatchSchema).
   mood: z.string().max(40).optional(),
   pinnedReferenceId: z.string().cuid().optional(),
-  bpm: z.number().int().min(60).max(180),
+  // BPM range MUST match createProjectSchema (40..220). It was 60..180, so a
+  // deconstructed tempo outside that gap created the project then 400'd the
+  // render — "can't create a song from my own lyrics" (2026-07-19). Clamp on
+  // the far edges instead of rejecting so the render never dead-ends on tempo.
+  bpm: z.coerce.number().int().min(40).max(220).catch(112),
   keySignature: z.string().optional(),
   /** Omit for a sensible default: full-length (genre standard) for vocal songs,
    *  60s for instrumental sketches. The old default(60) made every caller that
@@ -265,7 +269,7 @@ export const generateBeatInputSchema = z.object({
   // Full song WITH AI vocals: set withVocals + provide lyrics (or let the API
   // pull the latest lyric for the song). Routes to the vocals model.
   withVocals: z.boolean().default(false),
-  lyrics: z.string().max(6000).optional(),
+  lyrics: z.string().max(12000).optional(),
   // Arrange the vocal to sound alive — ad-libs, doubled/harmonized hook,
   // call-and-response — before generation. On by default for vocal songs.
   richVocals: z.boolean().default(true),
