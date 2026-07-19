@@ -202,6 +202,52 @@ export async function chargeWorkspaceCredits(
   client: PrismaClient,
   opts: WorkspaceChargeOptions
 ): Promise<WorkspaceChargeResult> {
+  // FREE OPERATION (OWN ENGINE IS FREE — owner 2026-07-19). multiplier 0 is a
+  // deliberate "charge nothing": the 1..10000 units validation predates the
+  // free-engine order and hard-crashed EVERY own-engine create everywhere
+  // (beats.ts REST + chat/drop), surfacing to paying users as the blank
+  // "operation_failed" (live incident 2026-07-19, owner's own drop). A free op
+  // debits nothing and consumes NO caps (all cap/spend sums filter delta < 0),
+  // but still writes a $0 ledger receipt so the render keeps a real chargeId —
+  // refunding a $0 charge is already a graceful no-op (delta<0 lookup misses).
+  if (opts.multiplier === 0) {
+    return client.$transaction(async tx => {
+      if (opts.idempotencyKey) {
+        const existing = await tx.creditLedger.findFirst({
+          where: { workspaceId: opts.workspaceId, idempotencyKey: opts.idempotencyKey },
+          select: { id: true },
+        });
+        if (existing) {
+          return {
+            ok: true as const,
+            balance: Number.MAX_SAFE_INTEGER,
+            chargeId: existing.id,
+            key: opts.key,
+            replayed: true,
+          };
+        }
+      }
+      const ledger = await tx.creditLedger.create({
+        data: {
+          workspaceId: opts.workspaceId,
+          delta: 0,
+          reason: `${opts.key}_free${opts.reasonSuffix ? `_${opts.reasonSuffix}` : ""}`,
+          creditKey: opts.key,
+          units: 0,
+          planUnits: 0,
+          refTable: opts.refTable,
+          refId: opts.refId,
+          idempotencyKey: opts.idempotencyKey,
+        },
+      });
+      return {
+        ok: true as const,
+        balance: Number.MAX_SAFE_INTEGER,
+        chargeId: ledger.id,
+        key: opts.key,
+      };
+    });
+  }
   const units = positiveUnits(opts.multiplier);
   const planUnits = positiveUnits(
     opts.planUnits,
