@@ -22,24 +22,24 @@ export default async function drop(app: FastifyInstance) {
     { schema: { body: dropBatchSchema } },
     async (req, reply) => {
       const { workspaceId, userId } = requireAuth(req);
-      const input = dropBatchSchema.parse(req.body);
+      let input = dropBatchSchema.parse(req.body);
       const project = await prisma.project.findFirstOrThrow({
         where: { id: req.params.projectId, workspaceId },
       });
 
-      // OWN-ENGINE PRE-FLIGHT — every check here is PURE and runs before the
-      // job (and its hooks/lyrics LLM spend) exists. The old shape let an
-      // own-engine drop write a whole song and only then discover the render
-      // could never start (a paid dead end). Instrument asks the own engine
-      // cannot prove are the one remaining hard reject; say so NOW.
-      if (input.songEngine === 'own') {
+      // OWN-ENGINE PRE-FLIGHT — pure, before any LLM spend. OWNER DOCTRINE
+      // (2026-07-19, live 422 on "steel pan"): Our Engine is the DEFAULT — it
+      // never dead-ends a create over an instrument it cannot prove. The
+      // unprovable instruments are STRIPPED from the ask and the create
+      // proceeds; the disclosure rides the response + the job record so the
+      // artist knows exactly what was left out (honesty, not a wall).
+      let droppedInstruments: string[] = [];
+      if (input.songEngine === 'own' && input.instruments?.length) {
         const roleRequest = requestedMaterialRoleContract(input.instruments);
         if (roleRequest.unsupportedInstruments.length) {
-          return reply.code(422).send({
-            error: 'unsupported_exact_instruments',
-            message: 'Our Engine cannot prove an exact material role for every requested instrument. Remove them or pick another engine.',
-            unsupportedInstruments: roleRequest.unsupportedInstruments,
-          });
+          const unsupported = new Set(roleRequest.unsupportedInstruments.map((name) => name.toLowerCase()));
+          droppedInstruments = roleRequest.unsupportedInstruments;
+          input = { ...input, instruments: input.instruments.filter((name) => !unsupported.has(name.toLowerCase())) };
         }
       }
 
@@ -70,13 +70,25 @@ export default async function drop(app: FastifyInstance) {
         projectId: project.id,
         kind: 'drop',
         provider: 'internal',
-        inputJson: { ...input, ...(idem ? { _idem: idem } : {}) },
+        inputJson: {
+          ...input,
+          ...(idem ? { _idem: idem } : {}),
+          ...(droppedInstruments.length ? { _droppedInstruments: droppedInstruments } : {}),
+        },
         idempotencyKey: idem,
         payload: (jobId) => ({ jobId, workspaceId, userId, projectId: project.id, input }),
       });
 
       reply.code(202);
-      return { jobId: dropJob.jobId, status: 'queued', theme: input.theme, replayed: dropJob.replayed };
+      return {
+        jobId: dropJob.jobId,
+        status: 'queued',
+        theme: input.theme,
+        replayed: dropJob.replayed,
+        ...(droppedInstruments.length
+          ? { instrumentNote: `Our Engine has no proven material for: ${droppedInstruments.join(', ')} — rendering without ${droppedInstruments.length === 1 ? 'it' : 'them'}. Upload or forge that material and it joins future renders.` }
+          : {}),
+      };
     }
   );
 }

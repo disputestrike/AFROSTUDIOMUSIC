@@ -254,7 +254,7 @@ export default async function beats(app: FastifyInstance) {
         }
       }
 
-      const roleRequest = requestedMaterialRoleContract(input.instruments);
+      let roleRequest = requestedMaterialRoleContract(input.instruments);
       const ownRouting = resolveOwnEngineRouting(input, trainingUsage.total);
       if (ownRouting.mode === 'reject') {
         return reply.code(422).send({
@@ -270,12 +270,16 @@ export default async function beats(app: FastifyInstance) {
         ? await ownShelfRoles(workspaceId, genre)
         : null;
       const useOwnEngine = ownRouting.mode === 'own' || !!autoOwnRoles;
+      // OWNER DOCTRINE (2026-07-19, live 422 on "steel pan"): an EXPLICIT
+      // own-engine ask never dead-ends over an unprovable instrument — strip it,
+      // render the rest, disclose. (Auto still routes to a provider instead —
+      // that path can honor the instrument.)
+      let droppedInstruments: string[] = [];
       if (useOwnEngine && roleRequest.unsupportedInstruments.length) {
-        return reply.code(422).send({
-          error: 'unsupported_exact_instruments',
-          message: 'Our Engine cannot prove an exact material role for every requested instrument.',
-          unsupportedInstruments: roleRequest.unsupportedInstruments,
-        });
+        const unsupported = new Set(roleRequest.unsupportedInstruments.map((name) => name.toLowerCase()));
+        droppedInstruments = roleRequest.unsupportedInstruments;
+        input.instruments = (input.instruments ?? []).filter((name) => !unsupported.has(name.toLowerCase()));
+        roleRequest = requestedMaterialRoleContract(input.instruments);
       }
       if (!useOwnEngine) {
         const route = validateMusicRoute(input.songEngine, await musicRouteCapabilities(workspaceId), input.withVocals);
@@ -357,6 +361,9 @@ export default async function beats(app: FastifyInstance) {
           jobId: ownJob.jobId, status: 'queued', replayed: ownJob.replayed, engine: 'afrohit-own-v1',
           ...(roleRequest.requestedRoles.length ? { requestedRoles: roleRequest.requestedRoles } : {}),
           ...(autoOwnRoles ? { materialSource: `own-shelf (${autoOwnRoles} roles)` } : {}),
+          ...(droppedInstruments.length
+            ? { instrumentNote: `Our Engine has no proven material for: ${droppedInstruments.join(', ')} — rendering without ${droppedInstruments.length === 1 ? 'it' : 'them'}. Upload or forge that material and it joins future renders.` }
+            : {}),
           note: autoOwnRoles
             ? `Your ${genre.replace(/_/g, ' ')} shelf is stocked — own-shelf (${autoOwnRoles} roles) — so this beat is assembled from YOUR OWN material instead of renting a provider. Poll the job.`
             : 'Building the beat from your own + synthesized material (owned engine). Poll the job.',
