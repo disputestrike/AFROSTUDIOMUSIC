@@ -41,6 +41,25 @@ export function beatToProvenance(row: {
     ? (meta.melodyLayer as Record<string, unknown>)
     : null;
   const layerEngine = typeof layer?.engine === 'string' && layer.engine.trim() ? layer.engine : null;
+  // THE OWNERSHIP VOUCH (audit 2026-07-19): an uploaded/imported instrumental
+  // carries the artist's "user-attested" rights vouch in meta — it used to sit
+  // UNREAD, so owner uploads classified 'unknown' and were refused. With no
+  // third-party melody topping, an attested import/upload now classifies as
+  // USER-ORIGINAL (consent-gated — the door, not a bypass).
+  const provider = (row.provider ?? '').trim().toLowerCase();
+  const sourceMeta = meta?.sourceMeta && typeof meta.sourceMeta === 'object'
+    ? (meta.sourceMeta as Record<string, unknown>)
+    : null;
+  const attested =
+    meta?.rightsBasis === 'user-attested' || sourceMeta?.rightsBasis === 'user-attested';
+  if (!layerEngine && attested && (provider === 'import' || provider === 'upload')) {
+    return {
+      id: `beat:${row.id}`,
+      materialSource: 'upload',
+      rightsBasis: 'user-attested',
+      consentGranted: row.consentGranted,
+    };
+  }
   return { id: `beat:${row.id}`, engine: layerEngine ?? row.provider, consentGranted: row.consentGranted };
 }
 

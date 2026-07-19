@@ -6,6 +6,8 @@ import { isInternalMode, requireAuth } from '../middleware/auth';
 import { isFirstPartyBilling } from '../middleware/credits';
 import { captchaRequired, verifyCaptcha } from '../lib/captcha';
 import { hasAdminAccess } from './admin';
+import { TRAINING_LICENSE_CLAUSE, TRAINING_LICENSE_VERSION } from '@afrohit/shared';
+import { hashTrainingLicense } from '../lib/training-license';
 import {
   adminGrantCookie,
   assertSessionConfiguration,
@@ -135,6 +137,19 @@ export default async function auth(app: FastifyInstance) {
       });
       const workspace = await tx.workspace.create({ data: { name: `${stage}'s Studio`, slug } });
       await tx.workspaceMember.create({ data: { workspaceId: workspace.id, userId: user.id, role: 'OWNER' } });
+      // ToS-ON-SIGNUP (owner decision, training-consent.ts header — the audit
+      // found it documented but never implemented): signing up records the
+      // versioned + hashed training-license acceptance. Revocable any time
+      // (DELETE /admin/training/consent); the resolver fails closed on revoke.
+      await tx.trainingConsent.create({
+        data: {
+          workspaceId: workspace.id,
+          grantedByUserId: user.id,
+          consentText: TRAINING_LICENSE_CLAUSE,
+          consentVersion: TRAINING_LICENSE_VERSION,
+          consentTextHash: hashTrainingLicense(),
+        },
+      });
       // Artist.name is REQUIRED — omitting it made every public signup 500 at
       // runtime while the `as never` cast hid the compile error (live incident,
       // 2026-07-16: signup had never once succeeded in production). No cast:

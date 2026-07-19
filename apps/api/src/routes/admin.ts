@@ -18,7 +18,8 @@ const { allAutonomyFlags, setAutonomyEnabled } = db as unknown as {
 };
 import { isInternalMode, requireAuth } from '../middleware/auth';
 import { validAdminGrant } from '../lib/session';
-import { GENRES, isFirstPartyWorkspace, resolveEngineForWorkspace } from '@afrohit/shared';
+import { GENRES, isFirstPartyWorkspace, resolveEngineForWorkspace, TRAINING_LICENSE_CLAUSE, TRAINING_LICENSE_VERSION } from '@afrohit/shared';
+import { hashTrainingLicense, resolveWorkspaceTrainingConsent } from '../lib/training-license';
 import { createQueuedProviderJob, scopedRequestKey } from '../lib/queued-job';
 import { operationErrorBody, runIdempotentOperation } from '../lib/idempotent-operation';
 import { assertOwnedKey, assertWorkspaceAsset, publicUrlFor } from '../lib/storage';
@@ -67,7 +68,14 @@ export default async function admin(app: FastifyInstance) {
   app.get('/training/manifest', async (req, reply) => {
     await requireAdmin(req);
     const q = (req.query ?? {}) as { workspaceId?: string; consent?: string };
-    const consentApplied = process.env.TRAINING_CONSENT_DEFAULT === '1' || q.consent === '1';
+    // REAL CONSENT (the door, 2026-07-19): a recorded, versioned, hashed grant
+    // per workspace — resolved fail-closed. ?consent=1 remains a PREVIEW-ONLY
+    // override, clearly labeled; the env-flag stand-in is gone.
+    const recorded = q.workspaceId
+      ? await resolveWorkspaceTrainingConsent(q.workspaceId)
+      : { granted: false, current: false, reason: 'per-workspace consent — pass workspaceId' };
+    const preview = q.consent === '1';
+    const consentApplied = preview || (recorded.granted && recorded.current);
     const manifest = await buildWorkspaceTrainingManifest({
       workspaceId: q.workspaceId,
       resolveConsent: () => consentApplied,
@@ -75,10 +83,52 @@ export default async function admin(app: FastifyInstance) {
     return reply.send({
       scannedWorkspace: manifest.scannedWorkspace,
       consentApplied,
+      consent: { ...recorded, ...(preview ? { previewOverride: true } : {}) },
       trainableNow: manifest.eligible.length,
       counts: manifest.counts,
       rejectedSample: manifest.rejected.slice(0, 25),
     });
+  });
+
+  /**
+   * GRANT the training license for a workspace (the consent door). Records the
+   * versioned + hashed acceptance — the exact clause text, tamper-evident.
+   * This is how the OWNER's own studio (which never passes through /signup)
+   * unlocks its user-original catalog for the flywheel. Auditable, revocable.
+   */
+  const consentSchema = z.object({ workspaceId: z.string().min(1) });
+  app.post('/training/consent', { schema: { body: consentSchema } }, async (req, reply) => {
+    await requireAdmin(req);
+    const { userId } = requireAuth(req);
+    const { workspaceId } = consentSchema.parse(req.body);
+    await prisma.workspace.findUniqueOrThrow({ where: { id: workspaceId }, select: { id: true } });
+    const existing = await prisma.trainingConsent.findFirst({
+      where: { workspaceId, revokedAt: null, consentVersion: TRAINING_LICENSE_VERSION },
+      select: { id: true },
+    });
+    if (existing) return reply.send({ ok: true, alreadyGranted: true, consentId: existing.id });
+    const row = await prisma.trainingConsent.create({
+      data: {
+        workspaceId,
+        grantedByUserId: userId,
+        consentText: TRAINING_LICENSE_CLAUSE,
+        consentVersion: TRAINING_LICENSE_VERSION,
+        consentTextHash: hashTrainingLicense(),
+      },
+    });
+    reply.code(201);
+    return { ok: true, consentId: row.id, version: TRAINING_LICENSE_VERSION };
+  });
+
+  /** WITHDRAW the grant for FUTURE training (fail-closed from the next run). */
+  app.delete('/training/consent', { schema: { body: consentSchema } }, async (req, reply) => {
+    await requireAdmin(req);
+    const { workspaceId } = consentSchema.parse(req.body);
+    const updated = await prisma.trainingConsent.updateMany({
+      where: { workspaceId, revokedAt: null },
+      data: { revokedAt: new Date() },
+    });
+    return reply.send({ ok: true, revoked: updated.count });
   });
 
   // One-tap compounding: run the lake jobs NOW instead of waiting for tonight.

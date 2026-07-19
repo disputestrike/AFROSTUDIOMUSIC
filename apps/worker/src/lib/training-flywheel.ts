@@ -18,8 +18,11 @@
  */
 import { prisma } from "@afrohit/db";
 import JSZip from "jszip";
+import { createHash } from "node:crypto";
 import {
   manifestFromCatalog,
+  resolveTrainingConsent,
+  TRAINING_LICENSE_CLAUSE,
   type TrainingManifest,
 } from "@afrohit/shared";
 import {
@@ -44,38 +47,90 @@ interface FlywheelResult {
   trainingId?: string;
 }
 
+/** Workspaces holding a VALID recorded training-license grant — resolved
+ *  through the same pure fail-closed resolver as the API, hash-verified
+ *  against the current clause (the consent DOOR, 2026-07-19). */
+async function consentedWorkspaceIds(): Promise<Set<string>> {
+  const expectedHash = createHash("sha256")
+    .update(TRAINING_LICENSE_CLAUSE, "utf8")
+    .digest("hex");
+  const rows = await prisma.trainingConsent.findMany({
+    where: { revokedAt: null },
+    select: { workspaceId: true, consentVersion: true, signedAt: true, consentTextHash: true, revokedAt: true },
+    orderBy: { signedAt: "desc" },
+    take: 10000,
+  });
+  const granted = new Set<string>();
+  for (const row of rows) {
+    if (granted.has(row.workspaceId)) continue;
+    const verdict = resolveTrainingConsent(
+      { version: row.consentVersion, acceptedAt: row.signedAt, textHash: row.consentTextHash, revokedAt: row.revokedAt },
+      { expectedHash }
+    );
+    if (verdict.granted && verdict.current) granted.add(row.workspaceId);
+  }
+  return granted;
+}
+
+/** Merge two manifests (consented + unconsented splits) into one. */
+function mergeManifests(a: TrainingManifest, b: TrainingManifest): TrainingManifest {
+  const byOrigin: Record<string, number> = { ...a.counts.byOrigin };
+  for (const [k, v] of Object.entries(b.counts.byOrigin)) byOrigin[k] = (byOrigin[k] ?? 0) + v;
+  return {
+    eligible: [...a.eligible, ...b.eligible],
+    rejected: [...a.rejected, ...b.rejected],
+    counts: { total: a.counts.total + b.counts.total, byOrigin: byOrigin as TrainingManifest["counts"]["byOrigin"] },
+  } as TrainingManifest;
+}
+
 /** Live catalog read (worker-side twin of the API's admin manifest read —
- *  the CLASSIFICATION is the shared pure law, only the query is local). */
+ *  the CLASSIFICATION is the shared pure law, only the query is local).
+ *  PER-WORKSPACE CONSENT (the audit's root defect fixed): rows from workspaces
+ *  with a valid recorded grant are classified consentGranted=true, so their
+ *  user-original catalog (the owner's masters, artists' consented uploads)
+ *  finally reaches the trainer. Everyone else stays fail-closed. */
 async function liveManifest(): Promise<{
   manifest: TrainingManifest;
   urlById: Map<string, string>;
 }> {
   const take = 5000;
-  const [materials, beats, vocals] = await Promise.all([
+  const [materials, beats, vocals, granted] = await Promise.all([
     prisma.materialAsset.findMany({
       where: { readiness: "ready", qualityState: { notIn: ["failed", "duplicate"] } },
-      select: { id: true, source: true, rightsBasis: true, url: true },
+      select: { id: true, source: true, rightsBasis: true, url: true, workspaceId: true },
       take,
     }),
     prisma.beatAsset.findMany({
       where: { approved: true },
-      select: { id: true, provider: true, meta: true, url: true },
+      select: { id: true, provider: true, meta: true, url: true, project: { select: { workspaceId: true } } },
       take,
     }),
     prisma.vocalRender.findMany({
       where: { approved: true },
-      select: { id: true, performanceSource: true, url: true },
+      select: { id: true, performanceSource: true, url: true, project: { select: { workspaceId: true } } },
       take,
     }),
+    consentedWorkspaceIds(),
   ]);
-  // Consent stays FALSE here: the nightly flywheel trains on the house-clean
-  // set only. Consented user-original joins via the admin manifest flow where
-  // the consent resolver is wired (fails closed by design).
-  const manifest = manifestFromCatalog({ materials, beats, vocals }, false);
+  const isGranted = (ws?: string | null) => !!ws && granted.has(ws);
+  const split = <T>(rows: T[], ws: (r: T) => string | null | undefined) => ({
+    yes: rows.filter(r => isGranted(ws(r))),
+    no: rows.filter(r => !isGranted(ws(r))),
+  });
+  const m = split(materials, r => r.workspaceId);
+  const b = split(beats, r => r.project?.workspaceId);
+  const v = split(vocals, r => r.project?.workspaceId);
+  const manifest = mergeManifests(
+    manifestFromCatalog({ materials: m.yes, beats: b.yes, vocals: v.yes }, true),
+    manifestFromCatalog({ materials: m.no, beats: b.no, vocals: v.no }, false)
+  );
   const urlById = new Map<string, string>();
-  for (const m of materials) urlById.set(`material:${m.id}`, m.url);
-  for (const b of beats) urlById.set(`beat:${b.id}`, b.url);
-  for (const v of vocals) urlById.set(`vocal:${v.id}`, v.url);
+  for (const row of materials) urlById.set(`material:${row.id}`, row.url);
+  for (const row of beats) urlById.set(`beat:${row.id}`, row.url);
+  for (const row of vocals) urlById.set(`vocal:${row.id}`, row.url);
+  console.log(
+    `[flywheel] consent door: ${granted.size} workspace(s) granted — eligible ${manifest.eligible.length} of ${manifest.counts.total}`
+  );
   return { manifest, urlById };
 }
 

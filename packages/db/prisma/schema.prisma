@@ -205,6 +205,25 @@ model VoiceConsent {
   @@index([signerUserId])
 }
 
+// TRAINING-LICENSE CONSENT (the consent door, 2026-07-19) — the versioned,
+// hashed, revocable grant that lets a workspace's USER-ORIGINAL uploads count
+// as training fuel. Mirrors VoiceConsent's shape; resolved by the pure
+// resolveTrainingConsent() in @afrohit/shared (fail-closed: no record, revoked,
+// or clause-hash mismatch all deny). Captured at signup (ToS-on-signup) and
+// grantable/revocable via the admin training endpoints.
+model TrainingConsent {
+  id              String    @id @default(cuid())
+  workspaceId     String
+  grantedByUserId String?
+  consentText     String    @db.Text
+  consentVersion  String
+  consentTextHash String?
+  signedAt        DateTime  @default(now()) @db.Timestamptz(6)
+  revokedAt       DateTime?
+
+  @@index([workspaceId, revokedAt])
+}
+
 model VoiceProfile {
   id               String             @id @default(cuid())
   workspaceId      String

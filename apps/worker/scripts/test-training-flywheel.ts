@@ -6,7 +6,7 @@
  */
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { manifestFromCatalog, beatToProvenance } from '@afrohit/shared';
+import { manifestFromCatalog, beatToProvenance, resolveTrainingConsent, TRAINING_LICENSE_VERSION } from '@afrohit/shared';
 import { musicTrainerEnabled, musicTrainerConfig, evaluateAndPromote, minCorpusSize } from '@afrohit/ai';
 
 function assert(cond: boolean, msg: string) {
@@ -47,6 +47,33 @@ assert(manifest.eligible.length === 2, `only own-clean assets are fuel (${manife
 assert(manifest.rejected.some(r => r.id === 'beat:b2'), 'musicgen-topped own bed refused (most-restrictive origin)');
 assert(beatToProvenance({ id: 'x', provider: 'afrohit-own', meta: { melodyLayer: { engine: 'musicgen' } } }).engine === 'musicgen', 'melody topping downgrades engine');
 
+// --- THE CONSENT DOOR (audit root defect, fixed 2026-07-19) ------------------
+// A granted workspace's user-original catalog becomes fuel; ungranted stays out.
+const ownerCatalog = {
+  materials: [{ id: 'm-owner', source: 'artist_stem', rightsBasis: 'user-attested' }],
+  beats: [
+    // uploaded instrumental with the ownership vouch in meta (used to be 'unknown')
+    { id: 'b-import', provider: 'import', meta: { sourceMeta: { rightsBasis: 'user-attested' } } },
+  ],
+  vocals: [{ id: 'v-take', performanceSource: 'artist_import' }],
+};
+const doorClosed = manifestFromCatalog(ownerCatalog, false);
+assert(doorClosed.eligible.length === 0, 'door closed: owner catalog rejected (fail-closed)');
+const doorOpen = manifestFromCatalog(ownerCatalog, true);
+assert(doorOpen.eligible.length === 3, `door open: owner masters+import+take all train (${doorOpen.eligible.length}/3)`);
+assert(doorOpen.eligible.some(e => e.id === 'beat:b-import'), 'attested uploaded instrumental classifies user-original (vouch now READ)');
+// The vouch never overrides a third-party topping (most-restrictive still wins).
+const smuggled = manifestFromCatalog({
+  materials: [], vocals: [],
+  beats: [{ id: 'b-smuggle', provider: 'import', meta: { sourceMeta: { rightsBasis: 'user-attested' }, melodyLayer: { engine: 'musicgen' } } }],
+}, true);
+assert(smuggled.eligible.length === 0, 'vouch cannot launder a musicgen-topped bed');
+// The recorded-grant resolver: fail-closed on revoke/missing, honors current version.
+assert(resolveTrainingConsent(null).granted === false, 'no record -> no grant');
+assert(resolveTrainingConsent({ version: TRAINING_LICENSE_VERSION, acceptedAt: new Date(), revokedAt: new Date() }).granted === false, 'revoked -> no grant');
+const ok = resolveTrainingConsent({ version: TRAINING_LICENSE_VERSION, acceptedAt: new Date() });
+assert(ok.granted === true && ok.current === true, 'valid current grant resolves');
+
 // --- PROMOTE GATE (a new model wins on measurement, never vibes) -------------
 assert(evaluateAndPromote({ candidateScore: 80, incumbentScore: 70 }).promote === true, 'better candidate promotes');
 assert(evaluateAndPromote({ candidateScore: 70, incumbentScore: 70 }).promote === false, 'tie holds the incumbent');
@@ -60,6 +87,7 @@ const flywheel = readFileSync(join(root, 'apps/worker/src/lib/training-flywheel.
 assert(flywheel.includes('musicTrainerEnabled()') && flywheel.includes('kickoffMusicTraining'), 'flywheel gates then kicks off');
 assert(flywheel.includes("kind: \"music-training\""), 'every kickoff/refusal files an auditable receipt');
 assert(flywheel.includes('manifestFromCatalog'), 'flywheel classifies with the SHARED rights law');
+assert(flywheel.includes('consentedWorkspaceIds') && flywheel.includes('resolveTrainingConsent'), 'flywheel resolves PER-WORKSPACE recorded grants (the consent door)');
 
 // cleanup env
 delete process.env.MUSIC_TRAINER_ENABLED;
