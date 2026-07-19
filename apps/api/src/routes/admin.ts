@@ -377,6 +377,10 @@ export default async function admin(app: FastifyInstance) {
       },
       brainTiers: {
         judgment: { brain: 'anthropic', configured: !!(process.env.ANTHROPIC_API_KEY || process.env.CLAUDE_API_KEY) },
+        // The judgment ladder's safety net (generate.ts: Claude -> OpenAI) —
+        // it was WIRED but invisible on this console (owner: "I don't see any
+        // OpenAI"). Now reported: configured = the fallback is armed.
+        fallback: { brain: 'openai', configured: !!process.env.OPENAI_API_KEY },
         bulk: { brain: 'cerebras', configured: !!(process.env.CEREBRAS_API_KEY || process.env.CEREBRAS_API_KEYS), model: process.env.CEREBRAS_MODEL ?? 'gpt-oss-120b' },
         last24h: Object.fromEntries(llmByBrain),
       },
