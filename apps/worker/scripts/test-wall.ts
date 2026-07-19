@@ -37,6 +37,7 @@ const customer = resolveEngineForWorkspace("suno", {
   firstParty: false,
   sunoAvailable: true,
   replicateAvailable: true,
+  falAvailable: false, // legacy ladder pinned explicitly (env-independent test)
 });
 check(
   "customer + suno forced → resellable engine",
@@ -46,6 +47,30 @@ check(
   "customer + suno forced → substitution logged flag",
   customer.wallSubstituted === true
 );
+
+// OWNER ORDER 2026-07-19: fal connected → the open ACE-Step is the default
+// singer, and the suno wall substitutes to it (still resellable, cheaper).
+const falDefault = resolveEngineForWorkspace(undefined, {
+  firstParty: false,
+  sunoAvailable: false,
+  replicateAvailable: true,
+  falAvailable: true,
+});
+check("fal connected → ace_step is the default singer", falDefault.engine === "ace_step");
+const falWall = resolveEngineForWorkspace("suno", {
+  firstParty: false,
+  sunoAvailable: true,
+  replicateAvailable: true,
+  falAvailable: true,
+});
+check("customer + suno + fal → wall-substituted to ace_step", falWall.engine === "ace_step" && falWall.wallSubstituted === true);
+const falOnly = resolveEngineForWorkspace("ace_step", {
+  firstParty: false,
+  sunoAvailable: false,
+  replicateAvailable: false,
+  falAvailable: true,
+});
+check("ace_step is dual-route: fal alone satisfies it", falOnly.engine === "ace_step");
 
 // W-2: first-party keeps the bridge
 const fp = resolveEngineForWorkspace("suno", {

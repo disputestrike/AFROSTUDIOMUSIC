@@ -41,9 +41,13 @@ export function resolveEngineForWorkspace(
      *  always available (code), so no availability gate is needed. An explicit
      *  engine request still wins over the default. */
     ownEngineFirst?: boolean;
+    /** fal.ai connected (FAL_KEY) — makes the open ACE-Step the default singer
+     *  (owner order 2026-07-19, superseding the fal removal of 2026-07-11). */
+    falAvailable?: boolean;
   }
 ): { engine: string; wallSubstituted: boolean; unavailableReason?: string } {
   const replicateAvailable = opts.replicateAvailable ?? false;
+  const falAvailable = opts.falAvailable ?? !!process.env.FAL_KEY;
   const ownEngineFirst = opts.ownEngineFirst ?? process.env.OWN_ENGINE_FIRST === '1';
   // THE PROVEN ENGINE LEADS. The Jul-13 rewrite hardcoded eleven above
   // minimax while the deploy was frozen, so the preference shipped untested —
@@ -56,13 +60,21 @@ export function resolveEngineForWorkspace(
   // OWN MODEL FIRST when the flag is on — our own engine is the default customer
   // render path (still resellable + rights-clean by construction). Falls through
   // to the rented engines only when own-first is off.
+  // OWNER ORDER 2026-07-19 (supersedes the 2026-07-11 fal removal AND the
+  // "minimax holds the standard route" note above for accounts with fal
+  // connected): the open ACE-Step on the owner's fal account (~$0.036/song,
+  // MIT weights) is the default singer. SONG_ENGINE / an explicit request
+  // still wins; the quality bake-off vs minimax remains owed and one env
+  // (SONG_ENGINE=minimax) rolls back instantly.
   const bestResellable = ownEngineFirst
     ? 'own_engine'
-    : replicateAvailable
-      ? 'minimax'
-      : opts.elevenAvailable
-        ? 'eleven'
-        : 'unavailable';
+    : falAvailable
+      ? 'ace_step'
+      : replicateAvailable
+        ? 'minimax'
+        : opts.elevenAvailable
+          ? 'eleven'
+          : 'unavailable';
   const normalizedRequested = requested === 'replicate' ? 'minimax' : requested;
   const wanted = normalizedRequested && normalizedRequested !== 'auto'
     ? normalizedRequested
@@ -80,7 +92,11 @@ export function resolveEngineForWorkspace(
   if (wanted === 'eleven' && !opts.elevenAvailable) {
     return { engine: 'unavailable', wallSubstituted: false, unavailableReason: 'the selected standard engine is not connected' };
   }
-  if (['minimax', 'ace_step', 'minimax_ref', 'replicate'].includes(wanted) && !replicateAvailable) {
+  // ace_step is dual-route (fal OR replicate) — either connection satisfies it.
+  if (wanted === 'ace_step' && !replicateAvailable && !falAvailable) {
+    return { engine: 'unavailable', wallSubstituted: false, unavailableReason: 'the selected standard engine is not connected' };
+  }
+  if (['minimax', 'minimax_ref', 'replicate'].includes(wanted) && !replicateAvailable) {
     return { engine: 'unavailable', wallSubstituted: false, unavailableReason: 'the selected standard engine is not connected' };
   }
   return { engine: wanted, wallSubstituted: false };
