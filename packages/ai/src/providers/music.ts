@@ -689,6 +689,12 @@ class AceStepSongAdapter implements MusicProviderAdapter {
   async generate(
     input: MusicGenerationInput
   ): Promise<ProviderJobResult<MusicGenerationOutput>> {
+    // FAL ROUTE FIRST (owner 2026-07-19: "ALREADY HAVE FAL — CHECK"): fal.ai
+    // serves the same open ACE-Step at ~$0.036/3-min song vs ~$0.10 on
+    // Replicate, on the owner's EXISTING fal credits. Verified API (fal-ai/
+    // ace-step): inputs {tags, lyrics, duration}, queue pattern, output
+    // data.audio.url. Falls back to the Replicate route when FAL_KEY is unset.
+    if (process.env.FAL_KEY) return this.generateViaFal(input);
     const token = this.apiKey || replicateToken();
     if (!token) return { status: 'failed', error: 'REPLICATE_API_TOKEN missing' };
     const auth = { authorization: `Bearer ${token}` };
@@ -727,6 +733,7 @@ class AceStepSongAdapter implements MusicProviderAdapter {
   }
 
   async poll(externalId: string): Promise<ProviderJobResult<MusicGenerationOutput>> {
+    if (externalId.startsWith('fal:')) return this.pollFal(externalId.slice(4));
     const token = this.apiKey || replicateToken();
     if (!token) return { status: 'failed', error: 'REPLICATE_API_TOKEN missing' };
     const res = await fetch(`https://api.replicate.com/v1/predictions/${externalId}`, {
@@ -734,6 +741,61 @@ class AceStepSongAdapter implements MusicProviderAdapter {
     });
     if (!res.ok) return { status: 'failed', error: `ace_step poll ${res.status}` };
     return this.toResult((await res.json()) as ReplicatePrediction);
+  }
+
+  /** fal.ai queue route — same open ACE-Step weights, the owner's fal credits. */
+  private async generateViaFal(
+    input: MusicGenerationInput
+  ): Promise<ProviderJobResult<MusicGenerationOutput>> {
+    const duration = Math.min(Math.max(Math.round(input.durationS ?? 120), 30), 240);
+    const tags = composeStyleTags(input, {
+      fallbackLiteral: 'catchy, melodic vocals, punchy drums, warm bass, radio-ready',
+    }).join(', ');
+    const res = await fetch('https://queue.fal.run/fal-ai/ace-step', {
+      method: 'POST',
+      headers: { authorization: `Key ${process.env.FAL_KEY}`, 'content-type': 'application/json' },
+      body: JSON.stringify({
+        tags,
+        // Same lyric hygiene as every singer: strip stage directions, keep
+        // singable ad-libs. '[inst]' is fal-ACE's instrumental switch.
+        lyrics: input.withVocals && input.lyrics ? cleanLyricsForMinimax(input.lyrics) : '[inst]',
+        duration,
+      }),
+    });
+    if (!res.ok) {
+      return { status: 'failed', error: `ace_step(fal) ${res.status}: ${(await res.text()).slice(0, 200)}` };
+    }
+    const data = (await res.json()) as { request_id?: string };
+    if (!data.request_id) return { status: 'failed', error: 'ace_step(fal): no request_id' };
+    return { externalId: `fal:${data.request_id}`, status: 'running', pollAfterMs: 5_000 };
+  }
+
+  private async pollFal(requestId: string): Promise<ProviderJobResult<MusicGenerationOutput>> {
+    const auth = { authorization: `Key ${process.env.FAL_KEY}` };
+    const statusRes = await fetch(
+      `https://queue.fal.run/fal-ai/ace-step/requests/${requestId}/status`,
+      { headers: auth }
+    );
+    if (!statusRes.ok) return { status: 'failed', error: `ace_step(fal) status ${statusRes.status}` };
+    const status = (await statusRes.json()) as { status?: string; error?: string };
+    if (status.status === 'IN_QUEUE' || status.status === 'IN_PROGRESS') {
+      return { externalId: `fal:${requestId}`, status: 'running', pollAfterMs: 5_000 };
+    }
+    if (status.status !== 'COMPLETED') {
+      return { externalId: `fal:${requestId}`, status: 'failed', error: status.error ?? `ace_step(fal) ${status.status ?? 'unknown'}` };
+    }
+    const res = await fetch(`https://queue.fal.run/fal-ai/ace-step/requests/${requestId}`, { headers: auth });
+    if (!res.ok) return { status: 'failed', error: `ace_step(fal) result ${res.status}` };
+    const body = (await res.json()) as { audio?: { url?: string } };
+    const url = body.audio?.url;
+    if (!url) return { externalId: `fal:${requestId}`, status: 'failed', error: 'ace_step(fal): completed without audio url' };
+    return {
+      externalId: `fal:${requestId}`,
+      status: 'succeeded',
+      output: { mainAudioUrl: url, format: 'wav', durationS: 0 },
+      // ~$0.0002/audio-second on fal — a 3-min song ≈ $0.036 (vs $0.10 Replicate).
+      estimatedCostUsd: 0.04,
+    };
   }
 
   private toResult(
