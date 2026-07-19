@@ -68,6 +68,10 @@ export interface OwnEnginePayload {
   songId?: string | null;
   genre: string;
   bpm?: number;
+  /** Full-song target length (s). Callers pass the lane's genreSignature
+   *  durationS; absent → the lane default. The audit's "own renders are
+   *  short" fix: length is now a CONTRACT, not an accident of a 64-bar table. */
+  durationS?: number;
   melody?: boolean;
   melodyPrompt?: string;
   blueprint?: SongBlueprint | null;
@@ -671,6 +675,14 @@ export async function processOwnEngine(p: OwnEnginePayload): Promise<void> {
     //       > deterministic template (the fail-open floor — never worse than before).
     // The plan is refereed in code (roles must exist, bars/energy clamped) and
     // the assembler executes it EXACTLY. Kill switch: OWN_ENGINE_PRODUCER_BRAIN=0.
+    // LENGTH IS A CONTRACT (audit 2026-07-19: the 64-bar template rendered
+    // ~148s vs 185-200s lane targets, and nothing ever passed a duration).
+    const laneDurationS =
+      p.durationS ?? genreSignature(p.genre).durationS ?? 180;
+    const targetBars = Math.max(
+      24,
+      Math.min(160, Math.round((laneDurationS * bpm) / 240))
+    );
     let plannedSections: Array<{ name: string; bars: number; roles: string[] }> | null = null;
     let productionPlanMeta: Record<string, unknown> | null = null;
     if (
@@ -686,6 +698,7 @@ export async function processOwnEngine(p: OwnEnginePayload): Promise<void> {
         theme: p.melodyPrompt ?? null,
         bpmHint: bpm,
         keyHint: homeKey,
+        targetBars,
         shelf: [...shelfCounts.entries()].map(([role, count]) => ({ role, count })),
         requestedRoles,
         lastOutcomes,
@@ -710,12 +723,28 @@ export async function processOwnEngine(p: OwnEnginePayload): Promise<void> {
         notes.push("producer brain: no usable plan this run — deterministic template");
       }
     }
-    const sections =
+    let sections =
       plannedSections ??
       sectionsFrom(
         p.blueprint,
         picks.map(x => x.role)
       );
+    // Template/fallback sections scale to the lane's length contract too — a
+    // measured blueprint keeps its own bars (ground truth), everything else
+    // meets the target. (The plan is already budget-clamped by the referee.)
+    if (!p.blueprint?.sections?.length) {
+      const total = sections.reduce((a, s) => a + s.bars, 0);
+      if (total > 0 && Math.abs(total - targetBars) / targetBars > 0.15) {
+        const scale = targetBars / total;
+        sections = sections.map(s => ({
+          ...s,
+          bars: Math.min(32, Math.max(2, Math.round(s.bars * scale))),
+        }));
+        notes.push(
+          `length contract: ${sections.reduce((a, s) => a + s.bars, 0)} bars ≈ ${Math.round((sections.reduce((a, s) => a + s.bars, 0) * 240) / bpm)}s (lane target ${laneDurationS}s)`
+        );
+      }
+    }
     const child = await prisma.providerJob.create({
       data: {
         workspaceId: p.workspaceId,

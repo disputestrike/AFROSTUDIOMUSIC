@@ -60,6 +60,9 @@ export async function planProduction(opts: {
   theme?: string | null;
   bpmHint?: number;
   keyHint?: string;
+  /** Full-song bar budget (lane durationS * bpm / 240) — the audit's "own
+   *  renders are short" fix: the brain plans to the lane's REAL length. */
+  targetBars?: number;
   shelf: ShelfRole[];
   requestedRoles?: readonly string[];
   lastOutcomes?: RenderOutcome[];
@@ -77,6 +80,9 @@ export async function planProduction(opts: {
           theme: opts.theme ?? undefined,
           bpmHint: opts.bpmHint,
           keyHint: opts.keyHint,
+          ...(opts.targetBars
+            ? { TOTAL_BAR_BUDGET: `${opts.targetBars} bars (±20%) — this is the lane's FULL-SONG length; plan the whole record, not a sketch` }
+            : {}),
           SHELF_ROLES: opts.shelf,
           REQUESTED_ROLES: opts.requestedRoles?.length ? opts.requestedRoles : undefined,
           LAST_OUTCOMES: opts.lastOutcomes?.length ? opts.lastOutcomes : undefined,
@@ -87,8 +93,9 @@ export async function planProduction(opts: {
       })
     );
     // The REFEREE is the deterministic half of the hybrid: unknown roles drop,
-    // bars/energy clamp, hopeless plans return null → template fallback.
-    return refereeProductionPlan(raw, opts.shelf.map(s => s.role));
+    // bars/energy clamp (duration-aware when a budget rides), hopeless plans
+    // return null → template fallback.
+    return refereeProductionPlan(raw, opts.shelf.map(s => s.role), { targetBars: opts.targetBars });
   } catch {
     return null; // fail-open: the deterministic template renders the record
   }

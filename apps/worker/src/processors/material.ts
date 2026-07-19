@@ -746,6 +746,13 @@ export async function processAssembleBeat(p: AssemblePayload) {
       .filter(s => s.layerIdx.length > 0 && s.bars >= 2);
     // OWNER LAW: when a bucket comes up empty the fallback is ALWAYS the full
     // stack (`all`) — a thin one-loop section is never acceptable.
+    // LENGTH CONTRACT (2026-07-19): the emergency template below is 40 bars —
+    // when the caller's planned sections carried a real length, scale the
+    // fallback to match it so a plan failure never shrinks the record.
+    const plannedTotalBars = (p.sections ?? []).reduce(
+      (a, s) => a + (Number(s.bars) || 0),
+      0
+    );
     const sections: AssemblySection[] =
       planned.length >= 3
         ? planned
@@ -783,6 +790,15 @@ export async function processAssembleBeat(p: AssemblePayload) {
                 : all,
             },
           ];
+    if (planned.length < 3 && plannedTotalBars >= 24) {
+      const fallbackTotal = sections.reduce((a, s) => a + s.bars, 0);
+      const scale = plannedTotalBars / fallbackTotal;
+      if (scale > 1.15) {
+        for (const s of sections) {
+          s.bars = Math.min(32, Math.max(2, Math.round(s.bars * scale)));
+        }
+      }
+    }
     // TACTICAL CORRECTION (owner law: a clipped take gets FIXED, not abandoned):
     // render → QC; if the ONLY failure is clipping, trim every layer's gain and
     // re-render — deterministic ffmpeg, no brain, no credit. Two attempts

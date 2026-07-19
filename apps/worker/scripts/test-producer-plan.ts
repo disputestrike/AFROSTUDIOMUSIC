@@ -68,6 +68,29 @@ assert(
   'no rhythm/low-end anchor anywhere -> template fallback (a pad wash is not a record; kalimba counts as rhythm in the taxonomy)'
 );
 
+// LENGTH CONTRACT (audit 2026-07-19: own renders were ~148s vs 185-200s lane
+// targets): with a bar budget the referee scales the plan INTO the ±25% window.
+const shortPlan = refereeProductionPlan({
+  sections: [
+    { name: 'a', bars: 8, energy: 0.4, roles: ['drums', 'bass'] },
+    { name: 'b', bars: 16, energy: 0.9, roles: ['drums', 'chords'] },
+    { name: 'c', bars: 8, energy: 0.6, roles: ['shaker', 'chords'] },
+    { name: 'd', bars: 8, energy: 1, roles: ['drums', 'bass', 'chords'] },
+  ],
+}, SHELF, { targetBars: 80 }); // 185s @ 104bpm ≈ 80 bars
+assert(!!shortPlan, 'short plan with a budget survives');
+const scaledTotal = shortPlan!.sections.reduce((a, s) => a + s.bars, 0);
+assert(scaledTotal >= 60 && scaledTotal <= 100, `40-bar plan scales toward the 80-bar budget (got ${scaledTotal})`);
+// Without a budget the old static window still applies.
+const noBudget = refereeProductionPlan({
+  sections: [
+    { name: 'a', bars: 8, energy: 0.4, roles: ['drums', 'bass'] },
+    { name: 'b', bars: 16, energy: 0.9, roles: ['drums', 'chords'] },
+    { name: 'c', bars: 8, energy: 1, roles: ['drums', 'bass', 'chords'] },
+  ],
+}, SHELF);
+assert(!!noBudget && noBudget!.sections.reduce((a, s) => a + s.bars, 0) === 32, 'no budget -> plan bars untouched (static window)');
+
 // Bad key/bpm are dropped, not fatal.
 const badMeta = refereeProductionPlan({
   sections: [

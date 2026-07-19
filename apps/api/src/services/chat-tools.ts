@@ -1363,6 +1363,9 @@ async function createBeatJob(
     const ownCharge = await ctx.app.chargeCredits({
       workspaceId: ctx.workspaceId,
       key: "beat_idea_short_30s",
+      // OWN ENGINE IS FREE (owner 2026-07-19) — parity with beats.ts: this
+      // chat/drop path was still billing while the Create page was free.
+      multiplier: process.env.OWN_ENGINE_FREE === "0" ? 1 : 0,
       refTable: "Project",
       refId: ctx.projectId,
       idempotencyKey,
@@ -1415,6 +1418,8 @@ async function createBeatJob(
         songId: ownSong?.id,
         genre: a.genre,
         bpm: ownBpm,
+        // LENGTH CONTRACT: the lane's full-song target (a.durationS wins if set).
+        durationS: a.durationS ?? genreSignature(a.genre).durationS,
         melodyPrompt: genreSignature(a.genre).melodyPrompt,
         ...(roleRequest.provenance.instruments.length
           ? {

@@ -69,7 +69,13 @@ function roleJob(role: string): string | undefined {
  */
 export function refereeProductionPlan(
   raw: unknown,
-  availableRoles: readonly string[]
+  availableRoles: readonly string[],
+  opts?: {
+    /** Full-song bar budget (lane durationS * bpm / 240). The total-length
+     *  clamp becomes duration-aware: ±25% of the budget instead of the static
+     *  24-96 window — the audit's "own renders are short" fix. */
+    targetBars?: number;
+  }
 ): ProductionPlan | null {
   if (!raw || typeof raw !== 'object') return null;
   const plan = raw as Record<string, unknown>;
@@ -114,12 +120,28 @@ export function refereeProductionPlan(
   );
   if (!anchored) return null;
 
-  // Total-length clamp: scale bars proportionally rather than rejecting.
+  // Total-length clamp — DURATION-AWARE when a bar budget is supplied (the
+  // audit's "short renders" root fix: 64-bar template ≈148s vs 185-200s lane
+  // targets). Window = ±25% of the budget; without a budget the static limits
+  // apply as before. Scaling is proportional both ways so the FORM survives.
+  const budget = Number.isFinite(opts?.targetBars) && (opts!.targetBars as number) > 0
+    ? Math.round(opts!.targetBars as number)
+    : null;
+  const maxTotal = budget
+    ? Math.min(200, Math.max(PRODUCTION_PLAN_LIMITS.minTotalBars, Math.round(budget * 1.25)))
+    : PRODUCTION_PLAN_LIMITS.maxTotalBars;
+  const minTotal = budget
+    ? Math.max(PRODUCTION_PLAN_LIMITS.minTotalBars, Math.round(budget * 0.75))
+    : PRODUCTION_PLAN_LIMITS.minTotalBars;
   const total = sections.reduce((a, s) => a + s.bars, 0);
-  if (total > PRODUCTION_PLAN_LIMITS.maxTotalBars) {
-    const scale = PRODUCTION_PLAN_LIMITS.maxTotalBars / total;
+  if (total > maxTotal || (total < minTotal && budget)) {
+    // Scale toward the budget (or the static max) proportionally — min 2 bars.
+    const goal = budget ?? maxTotal;
+    const scale = goal / total;
     for (const s of sections) {
-      s.bars = Math.max(PRODUCTION_PLAN_LIMITS.minBars, Math.round(s.bars * scale));
+      // Scale-up is capped at 32 bars/section so a stretched verse never
+      // becomes a 80s loop; extra length spreads across sections instead.
+      s.bars = Math.min(32, Math.max(PRODUCTION_PLAN_LIMITS.minBars, Math.round(s.bars * scale)));
     }
   } else if (total < PRODUCTION_PLAN_LIMITS.minTotalBars) {
     // Too short to be a record — stretch the biggest section up.

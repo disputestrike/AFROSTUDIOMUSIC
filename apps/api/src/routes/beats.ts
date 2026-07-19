@@ -60,7 +60,7 @@ export function unsupportedOwnEngineControls(
     input.pinnedReferenceId ? 'pinnedReferenceId' : null,
     trainingReferenceCount > 0 ? 'trainingReferences' : null,
     input.withStems ? 'withStems' : null,
-    input.durationS !== undefined ? 'durationS' : null,
+    // durationS is now HONORED by the own engine (length contract, 2026-07-19).
     input.vibePrompt?.trim() ? 'vibePrompt' : null,
     (input.candidates ?? 1) > 1 ? 'candidates' : null,
   ].filter((control): control is string => control !== null);
@@ -347,6 +347,8 @@ export default async function beats(app: FastifyInstance) {
             songId: effectiveSongId,
             genre,
             bpm: ownBpm,
+            // LENGTH CONTRACT: user ask wins, else the lane's full-song target.
+            durationS: input.durationS ?? genreSignature(genre).durationS,
             melodyPrompt: genreSignature(genre).melodyPrompt,
             ...(roleRequest.provenance.instruments.length
               ? {
