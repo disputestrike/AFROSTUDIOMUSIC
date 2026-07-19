@@ -16,6 +16,20 @@ assert.equal(materialToProvenance({ id: 'm1', source: 'forged', rightsBasis: 'co
 assert.equal(beatToProvenance({ id: 'b1', provider: 'minimax' }).engine, 'minimax');
 assert.equal(vocalToProvenance({ id: 'v1', performanceSource: 'artist_upload' }).performanceSource, 'artist_upload');
 
+// RIGHTS LINE (owner incident 2026-07-19): an "afrohit-own" bed that carries a
+// THIRD-PARTY melody topping (meta.melodyLayer.engine, e.g. musicgen mixed in)
+// must classify by the MOST RESTRICTIVE origin — third-party, never trainable.
+assert.equal(
+  beatToProvenance({ id: 'b2', provider: 'afrohit-own', meta: { melodyLayer: { engine: 'musicgen' } } }).engine,
+  'musicgen',
+  'musicgen melody topping downgrades an own bed to third-party'
+);
+assert.equal(
+  beatToProvenance({ id: 'b3', provider: 'afrohit-own', meta: { assembly: 'log' } }).engine,
+  'afrohit-own',
+  'a pure own bed (no melody topping) stays own'
+);
+
 // a realistic catalog snapshot — mixed origins, consent OFF first
 const catalog = {
   materials: [

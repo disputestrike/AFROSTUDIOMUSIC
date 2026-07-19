@@ -717,12 +717,28 @@ export async function processOwnEngine(p: OwnEnginePayload): Promise<void> {
         workspace?.musicProvider === "replicate"
           ? openSecret(workspace.musicApiKey)
           : undefined;
-      const mel = await melodyLayer(
-        out.url,
-        p.melodyPrompt ?? genreSignature(p.genre).melodyPrompt,
-        totalS,
-        workspaceReplicateKey
-      );
+      // COST GUARD (owner incident 2026-07-19: "WHY AM I BEING CHARGED — I HAVE
+      // MY OWN ENGINE"): the melody topping is a PAID MusicGen call on Replicate
+      // (~$0.07-0.08/render). With own-engine renders FREE to users, the house
+      // token turned every free render into an operator bill — the same silent
+      // money leak as the Cerebras/Claude ladder. The paid topping now runs ONLY
+      // when (a) the WORKSPACE brought its own Replicate key (their bill), or
+      // (b) the operator explicitly opts in: OWN_ENGINE_MELODY_MUSICGEN=1.
+      // Default: pure own material/synth — actually OUR engine, and cleanly
+      // trainable (no third-party audio in the bed).
+      const melodyAllowed =
+        !!workspaceReplicateKey || process.env.OWN_ENGINE_MELODY_MUSICGEN === "1";
+      const mel = melodyAllowed
+        ? await melodyLayer(
+            out.url,
+            p.melodyPrompt ?? genreSignature(p.genre).melodyPrompt,
+            totalS,
+            workspaceReplicateKey
+          )
+        : {
+            url: null,
+            note: "melody topping off (paid third-party call) — pure own material/synth; workspace key or OWN_ENGINE_MELODY_MUSICGEN=1 enables it",
+          };
       notes.push(mel.note);
       if (mel.url) {
         let certifiedUrl: string | null = null;

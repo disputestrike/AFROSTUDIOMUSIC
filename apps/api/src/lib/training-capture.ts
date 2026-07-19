@@ -29,13 +29,25 @@ export function materialToProvenance(row: {
   return { id: `material:${row.id}`, materialSource: row.source, rightsBasis: row.rightsBasis, consentGranted: row.consentGranted };
 }
 
-/** BeatAsset (instrumental / full mix) → provenance. `provider` IS the engine. */
+/** BeatAsset (instrumental / full mix) → provenance. `provider` IS the engine —
+ *  EXCEPT when the bed carries a third-party melody topping (meta.melodyLayer,
+ *  e.g. MusicGen mixed into an "afrohit-own" render): the MOST RESTRICTIVE
+ *  origin wins, so a musicgen-layered bed classifies as a third-party render
+ *  and can NEVER train our model (rights doctrine — their ToS, our line). */
 export function beatToProvenance(row: {
   id: string;
   provider?: string | null;
   consentGranted?: boolean;
+  meta?: unknown;
 }): AssetProvenance {
-  return { id: `beat:${row.id}`, engine: row.provider, consentGranted: row.consentGranted };
+  const meta = row.meta && typeof row.meta === 'object' && !Array.isArray(row.meta)
+    ? (row.meta as Record<string, unknown>)
+    : null;
+  const layer = meta?.melodyLayer && typeof meta.melodyLayer === 'object'
+    ? (meta.melodyLayer as Record<string, unknown>)
+    : null;
+  const layerEngine = typeof layer?.engine === 'string' && layer.engine.trim() ? layer.engine : null;
+  return { id: `beat:${row.id}`, engine: layerEngine ?? row.provider, consentGranted: row.consentGranted };
 }
 
 /** VocalRender → provenance. performanceSource carries the origin. */
@@ -49,7 +61,7 @@ export function vocalToProvenance(row: {
 
 export interface CaptureInput {
   materials: Array<{ id: string; source?: string | null; rightsBasis?: string | null }>;
-  beats: Array<{ id: string; provider?: string | null }>;
+  beats: Array<{ id: string; provider?: string | null; meta?: unknown }>;
   vocals: Array<{ id: string; performanceSource?: string | null }>;
 }
 
@@ -92,7 +104,9 @@ export async function buildWorkspaceTrainingManifest(opts: {
       where: opts.workspaceId
         ? { project: { workspaceId: opts.workspaceId }, approved: true }
         : { approved: true },
-      select: { id: true, provider: true },
+      // meta rides along so a third-party melody topping (meta.melodyLayer)
+      // downgrades the bed to third-party-render in the manifest.
+      select: { id: true, provider: true, meta: true },
       take,
     }),
     prisma.vocalRender.findMany({
