@@ -376,6 +376,7 @@ async function runOfflineTests(): Promise<void> {
     ["AfroOne controlled directions", "test-afroone-directions.ts"],
     ["Producer Evidence Pack", "test-producer-evidence.ts"],
     ["Release lineage integrity", "test-release-lineage-integrity.mjs"],
+    ["Legacy release lineage audit", "test-legacy-release-lineage-audit.ts"],
     ["Derived audio lineage", "test-derived-audio-lineage.ts"],
   ];
   for (const [name, file] of TS) {
