@@ -647,7 +647,24 @@ async function runDropPipelineInner(app: FastifyInstance, ctx: DropCtx, input: D
           const ap = (await runChatTool({ ...ctx, operationKey: `drop:${dropJobId}:take:${i}:approve`, name: 'approve_hook', args: { hookId: best.id } })) as {
             songId?: string;
           };
-          await runChatTool({ ...ctx, operationKey: `drop:${dropJobId}:take:${i}:lyrics`, name: 'generate_lyrics', args: { hookId: best.id, cleanVersion: true, languages: input.languages, ...sel } });
+          const lyricRes = (await runChatTool({ ...ctx, operationKey: `drop:${dropJobId}:take:${i}:lyrics`, name: 'generate_lyrics', args: { hookId: best.id, cleanVersion: true, languages: input.languages, ...sel } })) as {
+            error?: string; reason?: string; rejected?: boolean; decision?: string;
+          };
+          // HONEST CAUSE BUBBLING (live incident 2026-07-19: the writer step
+          // died on insufficient_credits/daily_cap, but the drop reported the
+          // DOWNSTREAM symptom "no_lyrics — write the lyrics first" — a
+          // misleading error for a paying user). A failed/rejected lyric step
+          // names ITSELF as this take's cause.
+          if (lyricRes?.error) {
+            throw new Error(
+              lyricRes.error === 'insufficient_credits'
+                ? `out of credits at the lyric step (${lyricRes.reason ?? 'balance'}) — top up or wait for the daily reset, then create again`
+                : `lyric step failed: ${lyricRes.error}`
+            );
+          }
+          if (lyricRes?.rejected) {
+            throw new Error(`the writer rejected this concept (${lyricRes.decision ?? 'REJECT_AND_RESTART'}) — try a different theme`);
+          }
           app.log.info({ dropJobId }, `[drop] take ${i + 1}: lyrics written (draft+polish) @${secs()}s`);
           const beat = (await runChatTool({
             ...ctx,
