@@ -366,11 +366,15 @@ export default async function admin(app: FastifyInstance) {
         bridgeAvailable: sunoAvailable && firstParty,
       },
       renderRouting: {
-        locked: 'replicate (owner-approved configuration; fal removed entirely 2026-07-11 — any cheaper route re-enters only via a measured bake-off)',
+        locked: process.env.FAL_KEY
+          ? 'owner-approved: fal re-entered 2026-07-19 (owner order — ACE-Step default singer via the owner\'s fal account); SONG_ENGINE env overrides; quality bake-off vs minimax still owed'
+          : 'replicate (owner-approved configuration; fal re-enters when FAL_KEY is set — owner order 2026-07-19)',
         adapters: {
-          minimax: 'minimax/music-2.6 via Replicate',
-          ace_step: 'lucataco/ace-step via Replicate',
-          musicgen: 'MusicGen via Replicate',
+          ace_step: process.env.FAL_KEY
+            ? 'open ACE-Step via fal.ai (~$0.036/song, owner credits) — DEFAULT singer; Replicate fallback'
+            : 'lucataco/ace-step via Replicate (~$0.10); becomes the fal default when FAL_KEY is set',
+          minimax: 'minimax/music-2.6 via Replicate (~$0.12)',
+          musicgen: 'MusicGen via Replicate (melody topping — opt-in only)',
           eleven: 'Eleven Music v2 when the approved route is enabled',
           suno: 'bridge/gateway when SUNO_API_KEY set (first-party only)',
         },

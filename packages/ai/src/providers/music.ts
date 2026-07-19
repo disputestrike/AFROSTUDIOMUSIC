@@ -1008,6 +1008,12 @@ export function defaultSongEngine(): string {
     const configured = process.env.SONG_ENGINE.toLowerCase();
     return configured === 'replicate' ? 'minimax' : configured;
   }
+  // OWNER ORDER (2026-07-19, superseding the 2026-07-11 fal removal): with the
+  // owner's fal account connected, the open ACE-Step (fal route, ~$0.036/song,
+  // MIT weights) is the DEFAULT singer — 3x cheaper than minimax and the
+  // strategic open-engine path. SONG_ENGINE env above stays the override lever
+  // (SONG_ENGINE=minimax flips back instantly if the bake-off disappoints).
+  if (process.env.FAL_KEY) return 'ace_step';
   if (sunoKey()) return 'suno';
   if (elevenKey()) return 'eleven';
   if (replicateToken()) return 'minimax';
