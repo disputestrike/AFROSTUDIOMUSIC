@@ -137,19 +137,6 @@ export default async function auth(app: FastifyInstance) {
       });
       const workspace = await tx.workspace.create({ data: { name: `${stage}'s Studio`, slug } });
       await tx.workspaceMember.create({ data: { workspaceId: workspace.id, userId: user.id, role: 'OWNER' } });
-      // ToS-ON-SIGNUP (owner decision, training-consent.ts header — the audit
-      // found it documented but never implemented): signing up records the
-      // versioned + hashed training-license acceptance. Revocable any time
-      // (DELETE /admin/training/consent); the resolver fails closed on revoke.
-      await tx.trainingConsent.create({
-        data: {
-          workspaceId: workspace.id,
-          grantedByUserId: user.id,
-          consentText: TRAINING_LICENSE_CLAUSE,
-          consentVersion: TRAINING_LICENSE_VERSION,
-          consentTextHash: hashTrainingLicense(),
-        },
-      });
       // Artist.name is REQUIRED — omitting it made every public signup 500 at
       // runtime while the `as never` cast hid the compile error (live incident,
       // 2026-07-16: signup had never once succeeded in production). No cast:
@@ -159,6 +146,24 @@ export default async function auth(app: FastifyInstance) {
       });
       return { user, workspace };
     });
+
+    // ToS-ON-SIGNUP (owner decision): record the versioned + hashed training-
+    // license acceptance. OUTSIDE the signup transaction and NON-FATAL — the
+    // live incident (2026-07-19): this create sat inside the tx while the
+    // TrainingConsent migration hadn't landed, so EVERY signup 500'd. An
+    // account must never fail over a consent receipt; a missed receipt is
+    // grantable later via Admin → Training license.
+    await prisma.trainingConsent
+      .create({
+        data: {
+          workspaceId: result.workspace.id,
+          grantedByUserId: result.user.id,
+          consentText: TRAINING_LICENSE_CLAUSE,
+          consentVersion: TRAINING_LICENSE_VERSION,
+          consentTextHash: hashTrainingLicense(),
+        },
+      })
+      .catch((err) => req.log.warn({ err }, 'signup: training-consent receipt failed (account still created)'));
 
     const token = signSession({ sub: result.user.id, workspaceId: result.workspace.id, role: 'OWNER' });
     reply.header('set-cookie', sessionCookie(token)).code(201);
