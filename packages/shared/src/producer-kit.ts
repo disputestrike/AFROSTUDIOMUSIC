@@ -5,7 +5,6 @@ import {
   COARSE_MATERIAL_ROLES,
   familyOf,
   isMaterialRole,
-  type MaterialRole,
 } from "./material-roles";
 import { getGenreKit } from "./genre-kits";
 import { ownedAudioRightsConfirmationSchema } from "./schemas";

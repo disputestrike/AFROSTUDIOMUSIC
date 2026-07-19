@@ -325,6 +325,7 @@ async function main(): Promise<void> {
   assert.match(worker, /assetKind: 'isolated_vocal'/);
   assert.match(worker, /performanceKind: 'sung_vocal'/);
   assert.match(worker, /alignmentRequired: true/);
+  assert.match(worker, /afroone_singing_lyric_alignment_unverified/);
   assert.match(worker, /cost: totalCost\.totalUsd\.toFixed\(6\)/);
   assert.match(worker, /mixdown/);
   assert.match(worker, /instrumentalBeatId/);
@@ -334,6 +335,7 @@ async function main(): Promise<void> {
   assert.match(dispatcher, /job\.name === "afroone-sing"/);
   assert.match(ownEngine, /processAfroOneSinging/);
   assert.match(ownEngine, /genuine vocal generated/);
+  assert.match(ownEngine, /singingOutput\.approved !== true/);
 
   console.log('AfroOne genuine singing contracts: PASS');
 }

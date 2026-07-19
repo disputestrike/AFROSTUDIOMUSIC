@@ -794,11 +794,6 @@ async function runDropPipelineInner(app: FastifyInstance, ctx: DropCtx, input: D
     theme: input.theme,
     requested: input.count,
     produced: playableOutputs.length,
-    // Honest top-level disclosure when the sung ask rendered as the own
-    // engine's instrumental bed (per-take notes carry the same message).
-    ...(false
-      ? { engineNote: 'Our Engine renders the INSTRUMENTAL bed from your own material — the written lyrics are attached to each song; add the vocal by upload or re-sing.' }
-      : {}),
     drop: drops,
     childJobs: directChildren.map((child) => ({ jobId: child.id, status: 'SUCCEEDED' as const })),
     playableOutputs,

@@ -379,6 +379,9 @@ export async function processAfroOneSinging(
       bytes: isolatedBytes,
       replicateApiKey,
     });
+    if (!alignment) {
+      throw new Error('afroone_singing_lyric_alignment_unverified');
+    }
     if (alignment && !alignment.pass) {
       throw new Error(
         `afroone_singing_lyric_alignment_failed:${alignment.failures.join(',')}`
@@ -400,8 +403,7 @@ export async function processAfroOneSinging(
       performanceSource: voice ? 'voice_conversion' : rendered.performanceSource,
       cost: totalCost,
     });
-    const approved =
-      inspection.qualityState === 'passed' && alignment?.pass === true;
+    const approved = inspection.qualityState === 'passed' && alignment.pass;
     let finishedMix: CertifiedAudio | null = null;
     if (instrumental) {
       const instrumentalBytes = await downloadToBuffer(instrumental.url, {

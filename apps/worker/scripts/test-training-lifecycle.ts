@@ -74,6 +74,30 @@ async function main() {
     "utf8"
   );
   assert.match(source, /continueTrainingLifecycle/, "nightly pass continues durable jobs");
+  assert.match(source, /ensureTrainingWorkspace/);
+  assert.match(source, /deleteObjectByUrl\(datasetZipUrl\)/);
+  assert.match(source, /resolveAssetForProvider\(datasetZipUrl\)/);
+  assert.match(source, /MUSIC_TRAINER_MAX_RETRIES/);
+  assert.match(source, /retryFailedTrainingJob/);
+  assert.match(source, /phase: "training_started",[\s\S]*retryCount/);
+  assert.match(source, /durableRetryCount/);
+  assert.match(source, /trainingId: refreshed\?\.externalId/);
+  assert.match(source, /errorJson: Prisma\.DbNull/);
+  assert.doesNotMatch(
+    source.slice(
+      source.indexOf("async function kickoffQueuedJob"),
+      source.indexOf("async function retryFailedTrainingJob")
+    ),
+    /rememberLastDataset/,
+    "kickoff does not mark a dataset completed before provider success"
+  );
+  assert.match(source, /const policy = \{ allowThirdPartyRenders: false \}/);
+  assert.doesNotMatch(source, /allowThirdPartyRenders:\s*await/);
+  assert.doesNotMatch(
+    source,
+    /\[materials, beats, vocals, granted\]\s*=\s*await Promise\.all/,
+    "production corpus reads do not fan out DB connections"
+  );
   assert.match(source, /pollMusicTraining/, "running Replicate jobs are polled");
   assert.match(source, /candidate_ready/, "successful provider output files a candidate receipt");
   assert.match(source, /dataset:\$\{datasetHash\}/, "dataset hash is the idempotency key");

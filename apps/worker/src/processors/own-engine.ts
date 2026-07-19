@@ -1331,10 +1331,19 @@ export async function processOwnEngine(p: OwnEnginePayload): Promise<void> {
           `own-engine singing failed${message ? `: ${message}` : ""}`
         );
       }
+      const singingOutput = (completedSinging.outputJson ?? {}) as Record<
+        string,
+        unknown
+      >;
+      if (singingOutput.approved !== true) {
+        throw new Error(
+          "own-engine singing failed: vocal or finished mix did not pass approval gates"
+        );
+      }
       singing = {
         jobId: singingJob.id,
         costUsd: completedSinging.cost?.toString() ?? null,
-        ...((completedSinging.outputJson ?? {}) as Record<string, unknown>),
+        ...singingOutput,
       };
       notes.push("singing: genuine vocal generated, verified, and mixed over the owned bed");
     }

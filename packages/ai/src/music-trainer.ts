@@ -58,7 +58,7 @@ export interface MusicTrainerConfig {
  *  epochs, batch_size. The owner's arming flag (MUSIC_TRAINER_ENABLED=1)
  *  remains the ONLY spend gate — a verified default is not an armed default. */
 const DEFAULT_TRAINER_MODEL = 'sakemin/musicgen-fine-tuner';
-const DEFAULT_TRAINER_VERSION = 'b1ec6490e57013463006e928abc7acd8d623fe3e8321d3092e1231bf006898b1';
+const DEFAULT_TRAINER_VERSION = 'bc57274e2930af17c1d692516a4e6bd67618af425db3b2107c28c2100f031934';
 
 /** Operator-configurable trainer; falls back to the live-verified default so
  *  the operator errand is ONE flag (MUSIC_TRAINER_ENABLED=1). Env overrides
@@ -66,14 +66,33 @@ const DEFAULT_TRAINER_VERSION = 'b1ec6490e57013463006e928abc7acd8d623fe3e8321d30
 export function musicTrainerConfig(): MusicTrainerConfig | null {
   const model = process.env.MUSIC_TRAINER_MODEL?.trim() || DEFAULT_TRAINER_MODEL;
   const version = process.env.MUSIC_TRAINER_VERSION?.trim() || DEFAULT_TRAINER_VERSION;
-  const usingDefault = model === DEFAULT_TRAINER_MODEL && !process.env.MUSIC_TRAINER_VERSION?.trim();
-  let extraInput: Record<string, unknown> = {};
+  const usingDefault =
+    model === DEFAULT_TRAINER_MODEL && version === DEFAULT_TRAINER_VERSION;
+  let extraInput: Record<string, unknown> = usingDefault
+    ? {
+        // Cheapest memory-safe baseline for the verified MusicGen trainer.
+        // Operators may override any value through MUSIC_TRAINER_EXTRA_INPUT.
+        model_version: 'small',
+        // The trainer runs eight-way data parallelism and requires a multiple
+        // of eight; 8 is the smallest valid, lowest-memory batch.
+        batch_size: 8,
+        epochs: 1,
+        updates_per_epoch: 25,
+        auto_labeling: true,
+        // The corpus gate selects owned instrumentals/materials. Avoid loading
+        // Demucs inside the trainer when no vocal stripping is required.
+        drop_vocals: false,
+      }
+    : {};
   const raw = process.env.MUSIC_TRAINER_EXTRA_INPUT?.trim();
   if (raw) {
     try {
       const parsed = JSON.parse(raw) as unknown;
       if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
-        extraInput = parsed as Record<string, unknown>;
+        extraInput = {
+          ...extraInput,
+          ...(parsed as Record<string, unknown>),
+        };
       }
     } catch {
       throw Object.assign(new Error('MUSIC_TRAINER_EXTRA_INPUT is not valid JSON'), { statusCode: 500 });

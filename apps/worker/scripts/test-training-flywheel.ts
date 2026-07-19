@@ -17,6 +17,7 @@ function assert(cond: boolean, msg: string) {
 delete process.env.MUSIC_TRAINER_ENABLED;
 delete process.env.MUSIC_TRAINER_MODEL;
 delete process.env.MUSIC_TRAINER_VERSION;
+delete process.env.MUSIC_TRAINER_EXTRA_INPUT;
 assert(musicTrainerEnabled() === false, 'unarmed: trainer disabled by default (the ONLY spend gate)');
 // The default trainer is LIVE-VERIFIED (sakemin/musicgen-fine-tuner, checked on
 // replicate.com 2026-07-19) — so the operator errand is ONE flag. A verified
@@ -24,6 +25,14 @@ assert(musicTrainerEnabled() === false, 'unarmed: trainer disabled by default (t
 const dflt = musicTrainerConfig();
 assert(dflt?.model === 'sakemin/musicgen-fine-tuner', 'default trainer is the live-verified fine-tuner');
 assert(dflt?.kind === 'training' && dflt?.datasetKey === 'dataset_path', 'default is destination-based with the verified dataset_path input');
+assert(
+  dflt?.extraInput.model_version === 'small' &&
+    dflt?.extraInput.batch_size === 8 &&
+    dflt?.extraInput.epochs === 1 &&
+    dflt?.extraInput.updates_per_epoch === 25 &&
+    dflt?.extraInput.drop_vocals === false,
+  'default trainer uses the cheapest memory-safe MusicGen settings'
+);
 process.env.MUSIC_TRAINER_ENABLED = '1';
 process.env.MUSIC_TRAINER_MODEL = 'owner/music-model';
 process.env.MUSIC_TRAINER_VERSION = 'abc123';

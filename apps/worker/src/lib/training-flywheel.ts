@@ -7,7 +7,7 @@
  * bound score receipt, and every active pointer keeps one-click rollback state.
  */
 import { createHash } from "node:crypto";
-import { isOutsideRenderLearningEnabled, prisma } from "@afrohit/db";
+import { isOutsideRenderLearningEnabled, Prisma, prisma } from "@afrohit/db";
 import JSZip from "jszip";
 import {
   beatIngredientIds,
@@ -33,7 +33,12 @@ import {
   type MusicTrainerConfig,
 } from "@afrohit/ai";
 import { kickoffMusicTraining } from "@afrohit/ai";
-import { downloadToBuffer, uploadBytes } from "./storage";
+import {
+  deleteObjectByUrl,
+  downloadToBuffer,
+  resolveAssetForProvider,
+  uploadBytes,
+} from "./storage";
 
 const TRAINING_WORKSPACE_ID = "training";
 export const ACTIVE_MUSIC_MODEL_SETTING_KEY = "music.training.activeModel.v1";
@@ -44,6 +49,10 @@ export const MUSIC_TRAINING_EVALUATION_PREFIX = "music.training.evaluation.v1.";
 const MAX_DATASET_ASSETS = Math.max(
   1,
   Number.parseInt(process.env.MUSIC_TRAINER_MAX_ASSETS ?? "200", 10) || 200
+);
+const MAX_TRAINING_RETRIES = Math.max(
+  0,
+  Number.parseInt(process.env.MUSIC_TRAINER_MAX_RETRIES ?? "1", 10) || 0
 );
 
 type JsonRecord = Record<string, unknown>;
@@ -81,6 +90,19 @@ export interface MusicTrainingEvaluationReceipt {
   evaluator: string;
   measuredAt: string;
   minGain?: number;
+}
+
+async function ensureTrainingWorkspace(): Promise<void> {
+  await prisma.workspace.upsert({
+    where: { id: TRAINING_WORKSPACE_ID },
+    create: {
+      id: TRAINING_WORKSPACE_ID,
+      name: "AfroOne Training",
+      slug: "afroone-training-system",
+    },
+    update: {},
+    select: { id: true },
+  });
 }
 
 function record(value: unknown): JsonRecord {
@@ -293,8 +315,10 @@ async function liveManifest(): Promise<{
   sources: Map<string, Omit<TrainingSource, "id" | "origin">>;
 }> {
   const take = 5_000;
-  const [materials, beats, vocals, granted] = await Promise.all([
-    prisma.materialAsset.findMany({
+  // Keep this scan sequential. The flywheel runs off-peak and reliability is
+  // more important than opening four simultaneous production DB connections,
+  // especially through managed Postgres public proxies.
+  const materials = await prisma.materialAsset.findMany({
       where: { readiness: "ready", qualityState: { notIn: ["failed", "duplicate"] } },
       select: {
         id: true,
@@ -306,8 +330,8 @@ async function liveManifest(): Promise<{
         createdAt: true,
       },
       take,
-    }),
-    prisma.beatAsset.findMany({
+    });
+  const beats = await prisma.beatAsset.findMany({
       where: { approved: true },
       select: {
         id: true,
@@ -319,8 +343,8 @@ async function liveManifest(): Promise<{
         project: { select: { workspaceId: true } },
       },
       take,
-    }),
-    prisma.vocalRender.findMany({
+    });
+  const vocals = await prisma.vocalRender.findMany({
       where: { approved: true },
       select: {
         id: true,
@@ -331,9 +355,8 @@ async function liveManifest(): Promise<{
         project: { select: { workspaceId: true } },
       },
       take,
-    }),
-    consentedWorkspaceIds(),
-  ]);
+    });
+  const granted = await consentedWorkspaceIds();
 
   const ingredientIds = [...new Set(beats.flatMap(row => beatIngredientIds(row.meta)))];
   const rightsById = new Map<string, string | null>();
@@ -360,10 +383,16 @@ async function liveManifest(): Promise<{
   const beatSplit = split(enrichedBeats, row => row.project?.workspaceId);
   const vocalSplit = split(vocals, row => row.project?.workspaceId);
 
-  const policy = { allowThirdPartyRenders: await isOutsideRenderLearningEnabled() };
-  if (policy.allowThirdPartyRenders) {
-    console.warn("[flywheel] outside-render learning is ON; provenance remains labeled and trainer re-validation still applies");
+  const outsideRenderLearning = await isOutsideRenderLearningEnabled();
+  if (outsideRenderLearning) {
+    console.log(
+      "[flywheel] outside-render learning is ON for reference analysis; third-party render bytes remain excluded from model training"
+    );
   }
+  // Provider output can teach metadata and evaluation, never model weights.
+  // The final trainer gate already enforces this; keeping the manifest equally
+  // strict prevents an operator setting from creating a contradictory corpus.
+  const policy = { allowThirdPartyRenders: false };
   const manifest = mergeManifests(
     manifestFromCatalog(
       { materials: materialSplit.yes, beats: beatSplit.yes, vocals: vocalSplit.yes },
@@ -447,8 +476,35 @@ async function rememberLastDataset(input: {
   });
 }
 
+async function durableRetryCount(
+  job: TrainingJobRow,
+  output: JsonRecord
+): Promise<number> {
+  if (Number.isFinite(Number(output.retryCount))) {
+    return Math.max(0, Math.trunc(Number(output.retryCount)));
+  }
+  // Compatibility for a job retried by the first production rollout before
+  // retryCount was copied into every phase: the old completion marker retains
+  // the first provider ID, so a different current ID proves one retry occurred.
+  const remembered = await prisma.systemSetting.findUnique({
+    where: { key: LAST_MUSIC_DATASET_SETTING_KEY },
+    select: { value: true },
+  });
+  const last = jsonRecord(remembered?.value);
+  return last.providerJobId === job.id &&
+    typeof last.trainingId === "string" &&
+    typeof job.externalId === "string" &&
+    last.trainingId !== job.externalId
+    ? 1
+    : 0;
+}
+
 async function kickoffQueuedJob(job: TrainingJobRow): Promise<{ pending: boolean; reason: string }> {
   const input = record(job.inputJson);
+  const priorOutput = record(job.outputJson);
+  const retryCount = Number.isFinite(Number(priorOutput.retryCount))
+    ? Math.max(0, Math.trunc(Number(priorOutput.retryCount)))
+    : 0;
   const manifest = storedTrainingManifest(input.trainingAssets);
   const datasetZipUrl = typeof input.datasetZipUrl === "string" ? input.datasetZipUrl : null;
   if (!manifest || !datasetZipUrl) {
@@ -473,6 +529,7 @@ async function kickoffQueuedJob(job: TrainingJobRow): Promise<{ pending: boolean
       startedAt: claimTime,
       outputJson: {
         phase: "kickoff_claimed",
+        retryCount,
         claimedAt: claimTime.toISOString(),
       } as never,
     },
@@ -482,7 +539,11 @@ async function kickoffQueuedJob(job: TrainingJobRow): Promise<{ pending: boolean
   }
 
   try {
-    const result = await kickoffMusicTraining({ manifest, datasetZipUrl });
+    const providerDatasetUrl = await resolveAssetForProvider(datasetZipUrl);
+    const result = await kickoffMusicTraining({
+      manifest,
+      datasetZipUrl: providerDatasetUrl,
+    });
     if (!result.started || !result.trainingId) {
       await prisma.providerJob.update({
         where: { id: job.id },
@@ -508,19 +569,12 @@ async function kickoffQueuedJob(job: TrainingJobRow): Promise<{ pending: boolean
           trainerKind: result.kind,
           destination: result.destination,
           datasetHash: input.datasetHash,
+          retryCount,
           startedAt: claimTime.toISOString(),
         } as never,
         errorJson: undefined,
       },
     });
-    if (typeof input.catalogHash === "string" && typeof input.datasetHash === "string") {
-      await rememberLastDataset({
-        catalogHash: input.catalogHash,
-        datasetHash: input.datasetHash,
-        providerJobId: job.id,
-        trainingId: result.trainingId,
-      });
-    }
     console.log(`[flywheel] training started: ${result.trainingId}`);
     return { pending: true, reason: "training started" };
   } catch (error) {
@@ -535,6 +589,54 @@ async function kickoffQueuedJob(job: TrainingJobRow): Promise<{ pending: boolean
     });
     return { pending: false, reason: message };
   }
+}
+
+async function retryFailedTrainingJob(job: TrainingJobRow): Promise<{
+  pending: boolean;
+  reason: string;
+  trainingId?: string;
+}> {
+  const output = record(job.outputJson);
+  const retryCount = Number.isFinite(Number(output.retryCount))
+    ? Math.max(0, Math.trunc(Number(output.retryCount)))
+    : 0;
+  if (retryCount >= MAX_TRAINING_RETRIES) {
+    return {
+      pending: false,
+      reason: `training retry limit reached (${retryCount}/${MAX_TRAINING_RETRIES})`,
+    };
+  }
+  const queued = await prisma.providerJob.update({
+    where: { id: job.id },
+    data: {
+      status: "QUEUED",
+      externalId: null,
+      startedAt: null,
+      finishedAt: null,
+      errorJson: Prisma.DbNull,
+      outputJson: {
+        phase: "retry_queued",
+        retryCount: retryCount + 1,
+        queuedAt: new Date().toISOString(),
+      } as never,
+    },
+    select: {
+      id: true,
+      status: true,
+      externalId: true,
+      inputJson: true,
+      outputJson: true,
+    },
+  });
+  const result = await kickoffQueuedJob(queued as TrainingJobRow);
+  const refreshed = await prisma.providerJob.findUnique({
+    where: { id: queued.id },
+    select: { externalId: true },
+  });
+  return {
+    ...result,
+    trainingId: refreshed?.externalId ?? undefined,
+  };
 }
 
 async function evaluateCandidateJob(job: TrainingJobRow): Promise<{
@@ -669,6 +771,7 @@ async function pollRunningJob(job: TrainingJobRow): Promise<{
   candidateModelRef?: string;
 }> {
   const output = record(job.outputJson);
+  const retryCount = await durableRetryCount(job, output);
   const input = record(job.inputJson);
   const trainingId = job.externalId || (
     typeof output.trainingId === "string" ? output.trainingId : null
@@ -696,6 +799,7 @@ async function pollRunningJob(job: TrainingJobRow): Promise<{
           outputJson: {
             ...output,
             phase: "training_running",
+            retryCount,
             providerStatus: state.status,
             lastPolledAt: new Date().toISOString(),
             metrics: state.metrics,
@@ -714,6 +818,7 @@ async function pollRunningJob(job: TrainingJobRow): Promise<{
           outputJson: {
             ...output,
             phase: state.status,
+            retryCount,
             providerStatus: state.status,
             metrics: state.metrics,
           } as never,
@@ -736,6 +841,7 @@ async function pollRunningJob(job: TrainingJobRow): Promise<{
           outputJson: {
             ...output,
             phase: "artifact_missing",
+            retryCount,
             providerStatus: state.status,
             providerOutput: state.output,
           } as never,
@@ -747,6 +853,7 @@ async function pollRunningJob(job: TrainingJobRow): Promise<{
     const candidateOutput = {
       ...output,
       phase: "candidate_ready",
+      retryCount,
       providerStatus: state.status,
       candidateModelRef,
       datasetHash: input.datasetHash,
@@ -755,6 +862,17 @@ async function pollRunningJob(job: TrainingJobRow): Promise<{
       metrics: state.metrics,
       completedAt: new Date().toISOString(),
     };
+    if (
+      typeof input.catalogHash === "string" &&
+      typeof input.datasetHash === "string"
+    ) {
+      await rememberLastDataset({
+        catalogHash: input.catalogHash,
+        datasetHash: input.datasetHash,
+        providerJobId: job.id,
+        trainingId,
+      });
+    }
     await prisma.providerJob.update({
       where: { id: job.id },
       data: {
@@ -773,6 +891,7 @@ async function pollRunningJob(job: TrainingJobRow): Promise<{
         outputJson: {
           ...output,
           phase: "training_poll_retry",
+          retryCount,
           lastPollError: message,
           lastPolledAt: new Date().toISOString(),
         } as never,
@@ -867,6 +986,7 @@ export async function runTrainingFlywheel(): Promise<FlywheelResult> {
     console.log("[flywheel] skipped new kickoff: trainer unconfigured");
     return { ran: false, reason: "trainer unconfigured" };
   }
+  await ensureTrainingWorkspace();
 
   const { manifest, sources } = await liveManifest();
   const selected: TrainingSource[] = manifest.eligible
@@ -895,13 +1015,38 @@ export async function runTrainingFlywheel(): Promise<FlywheelResult> {
   });
   const last = jsonRecord(lastDataset?.value);
   if (last.catalogHash === catalogHash) {
-    console.log(`[flywheel] dataset unchanged (${catalogHash.slice(0, 12)}); no retraining`);
-    return {
-      ran: false,
-      reason: "dataset unchanged",
-      eligible: manifest.eligible.length,
-      datasetHash: typeof last.datasetHash === "string" ? last.datasetHash : undefined,
-    };
+    const lastJob = typeof last.providerJobId === "string"
+      ? await prisma.providerJob.findUnique({
+          where: { id: last.providerJobId },
+          select: {
+            id: true,
+            status: true,
+            externalId: true,
+            inputJson: true,
+            outputJson: true,
+          },
+        })
+      : null;
+    if (lastJob?.status === "FAILED" || lastJob?.status === "CANCELED") {
+      const retried = await retryFailedTrainingJob(lastJob as TrainingJobRow);
+      return {
+        ran: retried.pending,
+        reason: retried.reason,
+        eligible: manifest.eligible.length,
+        trainingId: retried.trainingId,
+        datasetHash:
+          typeof last.datasetHash === "string" ? last.datasetHash : undefined,
+      };
+    }
+    if (lastJob) {
+      console.log(`[flywheel] dataset unchanged (${catalogHash.slice(0, 12)}); no retraining`);
+      return {
+        ran: false,
+        reason: "dataset unchanged",
+        eligible: manifest.eligible.length,
+        datasetHash: typeof last.datasetHash === "string" ? last.datasetHash : undefined,
+      };
+    }
   }
 
   const zip = new JSZip();
@@ -942,9 +1087,26 @@ export async function runTrainingFlywheel(): Promise<FlywheelResult> {
       kind: "music-training",
       idempotencyKey,
     },
-    select: { id: true, externalId: true },
+    select: {
+      id: true,
+      status: true,
+      externalId: true,
+      inputJson: true,
+      outputJson: true,
+    },
   });
   if (duplicate) {
+    if (duplicate.status === "FAILED" || duplicate.status === "CANCELED") {
+      const retried = await retryFailedTrainingJob(duplicate as TrainingJobRow);
+      return {
+        ran: retried.pending,
+        reason: retried.reason,
+        eligible: manifest.eligible.length,
+        zipped: zippedAssets.length,
+        datasetHash,
+        trainingId: retried.trainingId,
+      };
+    }
     console.log(`[flywheel] dataset hash already has receipt ${duplicate.id}; no retraining`);
     return {
       ran: false,
@@ -968,46 +1130,51 @@ export async function runTrainingFlywheel(): Promise<FlywheelResult> {
     contentType: "application/zip",
     ext: "zip",
   });
-  const receipt = await prisma.providerJob.upsert({
-    where: {
-      workspaceId_kind_idempotencyKey: {
+  const receipt = await prisma.providerJob
+    .upsert({
+      where: {
+        workspaceId_kind_idempotencyKey: {
+          workspaceId: TRAINING_WORKSPACE_ID,
+          kind: "music-training",
+          idempotencyKey,
+        },
+      },
+      create: {
         workspaceId: TRAINING_WORKSPACE_ID,
         kind: "music-training",
+        provider: "replicate",
+        status: "QUEUED",
         idempotencyKey,
+        inputJson: {
+          datasetZipUrl,
+          datasetHash,
+          catalogHash,
+          eligible: manifest.eligible.length,
+          zipped: zippedAssets.length,
+          trainingAssets,
+          byOrigin: trainingManifest.counts.byOrigin,
+          trainerModel: config?.model,
+          trainerVersion: config?.version,
+          trainerKind: config?.kind,
+        } as never,
+        outputJson: {
+          phase: "kickoff_queued",
+          queuedAt: new Date().toISOString(),
+        } as never,
       },
-    },
-    create: {
-      workspaceId: TRAINING_WORKSPACE_ID,
-      kind: "music-training",
-      provider: "replicate",
-      status: "QUEUED",
-      idempotencyKey,
-      inputJson: {
-        datasetZipUrl,
-        datasetHash,
-        catalogHash,
-        eligible: manifest.eligible.length,
-        zipped: zippedAssets.length,
-        trainingAssets,
-        byOrigin: trainingManifest.counts.byOrigin,
-        trainerModel: config?.model,
-        trainerVersion: config?.version,
-        trainerKind: config?.kind,
-      } as never,
-      outputJson: {
-        phase: "kickoff_queued",
-        queuedAt: new Date().toISOString(),
-      } as never,
-    },
-    update: {},
-    select: {
-      id: true,
-      status: true,
-      externalId: true,
-      inputJson: true,
-      outputJson: true,
-    },
-  });
+      update: {},
+      select: {
+        id: true,
+        status: true,
+        externalId: true,
+        inputJson: true,
+        outputJson: true,
+      },
+    })
+    .catch(async error => {
+      await deleteObjectByUrl(datasetZipUrl).catch(() => undefined);
+      throw error;
+    });
   if (receipt.status !== "QUEUED") {
     return {
       ran: false,

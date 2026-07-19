@@ -10,6 +10,7 @@
     "typecheck": "tsc --noEmit",
     "test": "tsx scripts/test-all.ts",
     "test:live": "tsx scripts/test-all.ts -- --live",
+    "training:run-now": "tsx scripts/run-training-now.ts",
     "test:release-lineage-integrity": "tsx scripts/test-release-lineage-integrity.mjs",
     "typecheck:shim": "tsc -p tsconfig.shim.json --noEmit"
   },
