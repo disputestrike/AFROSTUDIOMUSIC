@@ -83,11 +83,13 @@ export async function runIdempotentOperation<T>(opts: {
   }
 
   if (opts.chargeLedgerId) {
+    // delta <= 0: $0 FREE receipts (own-engine, owner order 2026-07-19) bind
+    // operations exactly like debits do — exists, in-workspace, not reversed.
     const activeCharge = await prisma.creditLedger.findFirst({
       where: {
         id: opts.chargeLedgerId,
         workspaceId: opts.workspaceId,
-        delta: { lt: 0 },
+        delta: { lte: 0 },
         reversal: null,
       },
       select: { id: true },

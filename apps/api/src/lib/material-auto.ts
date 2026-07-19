@@ -302,11 +302,12 @@ async function queueAutoMaterialBundle(
   };
   try {
     created = await prisma.$transaction(async tx => {
+      // delta <= 0: a $0 FREE receipt is a valid binding (own-engine free law).
       const ledger = await tx.creditLedger.findFirst({
         where: {
           id: charge.chargeId,
           workspaceId,
-          delta: { lt: 0 },
+          delta: { lte: 0 },
           reversal: null,
         },
         select: { id: true },

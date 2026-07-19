@@ -39,8 +39,11 @@ export async function createQueuedProviderJob<T>(opts: {
   try {
     created = await prisma.$transaction(async (tx: Tx) => {
       if (opts.charge) {
+        // delta <= 0: a $0 FREE receipt (own-engine renders, owner order
+        // 2026-07-19) is a legitimate charge binding — the guard's job is
+        // "row exists, in-workspace, not reversed", not "money moved".
         const charge = await tx.creditLedger.findFirst({
-          where: { id: opts.charge.chargeId, workspaceId: opts.workspaceId, delta: { lt: 0 }, reversal: null },
+          where: { id: opts.charge.chargeId, workspaceId: opts.workspaceId, delta: { lte: 0 }, reversal: null },
           select: { id: true },
         });
         if (!charge) throw new Error('job charge is missing or outside workspace');
