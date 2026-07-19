@@ -52,10 +52,14 @@ import { musicRouteCapabilities, validateMusicRoute } from './music-capabilities
 // PRODUCTION POLISH is the cap), so at 90 almost nothing green-lights until there's
 // Suno-level audio — which is the honest signal. Tunable via WILL_IT_BLOW_TARGET.
 export const BLOW_TARGET = Number(process.env.WILL_IT_BLOW_TARGET ?? 90);
-// COST LAW (2026-07-10): with the bar at 90, virtually every song used to burn
-// ALL rewrite passes (each = a big judgment-brain rewrite + re-score). Default
-// is ONE pass — raise WILL_IT_BLOW_MAX_PASSES deliberately, with a budget.
-const MAX_REWRITES = Math.max(0, Math.min(Number(process.env.WILL_IT_BLOW_MAX_PASSES ?? 1), 6));
+// THE CLIMB (owner order 2026-07-19: "push our engine so it gets to that 90
+// wall — that's how we compete"). Default is now THREE rewrite passes: each is
+// a judgment-brain rewrite + re-score, and the loop EXITS EARLY the moment the
+// bar clears, so well-written songs spend one pass, not three. The old 1-pass
+// default (cost law 2026-07-10) predates the trained writer/hook prompts — with
+// training in place the passes convert to score, they aren't burned. Operator
+// dial: WILL_IT_BLOW_MAX_PASSES (0 = score-only, max 6).
+const MAX_REWRITES = Math.max(0, Math.min(Number(process.env.WILL_IT_BLOW_MAX_PASSES ?? 3), 6));
 
 /** The bar: the BETTER of hit vs viral clears TARGET (a strong viral moment counts). */
 const bestOf = (h?: number | null, v?: number | null) => Math.max(h ?? 0, v ?? 0);
