@@ -331,6 +331,7 @@ async function runOfflineTests(): Promise<void> {
     ["Genre identity (afro≠reggaeton)", "test-genre-identity.ts"],
     ["Engine adapters (no silent stub)", "test-engine-adapters.ts"],
     ["Production runtime safety", "test-runtime-safety.ts"],
+    ["Feature runtime readiness", "test-config-readiness.ts"],
     ["Video provider contracts", "test-video-providers.ts"],
     ["Video engine tiers (class wall + payloads)", "test-video-engine-tiers.ts"],
     ["Likeness laws (consent/photos/status)", "test-likeness-laws.ts"],
@@ -361,6 +362,7 @@ async function runOfflineTests(): Promise<void> {
     ["Hit concept gate (emotion, not scenery)", "test-concept-gate.ts"],
     ["Producer Brain (plan referee + wiring)", "test-producer-plan.ts"],
     ["Training flywheel (P3: gates+rights+wiring)", "test-training-flywheel.ts"],
+    ["Training lifecycle (poll/dedupe/promote/rollback)", "test-training-lifecycle.ts"],
     ["Genre canon (the 4/12 -> 11/12 flip)", "test-genre-canon.ts"],
     ["Aggregate harness timeout/progress", "test-harness-timeout.ts"],
     ["Security boundaries", "test-security-boundaries.ts"],
@@ -370,7 +372,11 @@ async function runOfflineTests(): Promise<void> {
     ["Mix source lineage", "test-mix-lineage.ts"],
     ["Generated full-song lineage", "test-generated-full-song-lineage.ts"],
     ["Voice singing lineage", "test-voice-sing-lineage.ts"],
+    ["AfroOne genuine singing", "test-afroone-singing.ts"],
+    ["AfroOne controlled directions", "test-afroone-directions.ts"],
+    ["Producer Evidence Pack", "test-producer-evidence.ts"],
     ["Release lineage integrity", "test-release-lineage-integrity.mjs"],
+    ["Legacy release lineage audit", "test-legacy-release-lineage-audit.ts"],
     ["Derived audio lineage", "test-derived-audio-lineage.ts"],
   ];
   for (const [name, file] of TS) {

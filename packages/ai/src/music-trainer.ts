@@ -20,8 +20,12 @@
  * The dataset is assembled ONLY from own-master / licensed / live-session /
  * consented-user-original audio (training-corpus.ts). Trained weights are ours.
  */
+import { createHash } from 'node:crypto';
 import { replicateToken } from './providers/music';
 import type { TrainingManifest, TrainingOrigin } from '@afrohit/shared';
+
+const REPLICATE_API = 'https://api.replicate.com/v1';
+const REQUEST_TIMEOUT_MS = 30_000;
 
 /** Origins that may legitimately reach the trainer (the clean set + consented user). */
 const TRAINABLE_ORIGINS: ReadonlySet<TrainingOrigin> = new Set<TrainingOrigin>([
@@ -62,14 +66,33 @@ const DEFAULT_TRAINER_VERSION = 'b1ec6490e57013463006e928abc7acd8d623fe3e8321d30
 export function musicTrainerConfig(): MusicTrainerConfig | null {
   const model = process.env.MUSIC_TRAINER_MODEL?.trim() || DEFAULT_TRAINER_MODEL;
   const version = process.env.MUSIC_TRAINER_VERSION?.trim() || DEFAULT_TRAINER_VERSION;
-  const usingDefault = model === DEFAULT_TRAINER_MODEL && !process.env.MUSIC_TRAINER_VERSION?.trim();
-  let extraInput: Record<string, unknown> = {};
+  const usingDefault =
+    model === DEFAULT_TRAINER_MODEL && version === DEFAULT_TRAINER_VERSION;
+  let extraInput: Record<string, unknown> = usingDefault
+    ? {
+        // Cheapest memory-safe baseline for the verified MusicGen trainer.
+        // Operators may override any value through MUSIC_TRAINER_EXTRA_INPUT.
+        model_version: 'small',
+        // The trainer runs eight-way data parallelism and requires a multiple
+        // of eight; 8 is the smallest valid, lowest-memory batch.
+        batch_size: 8,
+        epochs: 1,
+        updates_per_epoch: 25,
+        auto_labeling: true,
+        // The corpus gate selects owned instrumentals/materials. Avoid loading
+        // Demucs inside the trainer when no vocal stripping is required.
+        drop_vocals: false,
+      }
+    : {};
   const raw = process.env.MUSIC_TRAINER_EXTRA_INPUT?.trim();
   if (raw) {
     try {
       const parsed = JSON.parse(raw) as unknown;
       if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
-        extraInput = parsed as Record<string, unknown>;
+        extraInput = {
+          ...extraInput,
+          ...(parsed as Record<string, unknown>),
+        };
       }
     } catch {
       throw Object.assign(new Error('MUSIC_TRAINER_EXTRA_INPUT is not valid JSON'), { statusCode: 500 });
@@ -130,6 +153,34 @@ export interface TrainerDataset {
   size: number;
 }
 
+export interface TrainerDatasetFingerprint {
+  id: string;
+  origin: TrainingOrigin;
+  /** Prefer the audio sha256. A stable storage URL is an acceptable fallback. */
+  contentFingerprint?: string | null;
+}
+
+/** Stable hash used by the worker's idempotency receipt. Input order never
+ * changes the result, while any asset, provenance, or content change does. */
+export function trainingDatasetHash(
+  assets: readonly TrainerDatasetFingerprint[]
+): string {
+  const normalized = assets
+    .map(asset => ({
+      id: asset.id.trim(),
+      origin: asset.origin,
+      contentFingerprint: asset.contentFingerprint?.trim() || null,
+    }))
+    .sort((a, b) =>
+      a.id.localeCompare(b.id) ||
+      a.origin.localeCompare(b.origin) ||
+      (a.contentFingerprint ?? '').localeCompare(b.contentFingerprint ?? '')
+    );
+  return createHash('sha256')
+    .update(JSON.stringify({ schema: 'afrohit-music-dataset-v1', assets: normalized }), 'utf8')
+    .digest('hex');
+}
+
 /** Minimum corpus before a fine-tune is worth spending on (operator-tunable). */
 export function minCorpusSize(): number {
   const n = Number.parseInt(process.env.MUSIC_TRAINER_MIN_CORPUS ?? '', 10);
@@ -162,6 +213,8 @@ export interface KickoffResult {
   trainingId?: string;
   model?: string;
   version?: string;
+  kind?: MusicTrainerConfig['kind'];
+  destination?: string;
   datasetSize?: number;
 }
 
@@ -216,7 +269,15 @@ export async function kickoffMusicTraining(opts: {
   }
   const data = (await res.json()) as { id?: string; status?: string };
   if (!data.id) return { started: false, reason: 'replicate response had no training id' };
-  return { started: true, trainingId: data.id, model: cfg.model, version: cfg.version, datasetSize: dataset.size };
+  return {
+    started: true,
+    trainingId: data.id,
+    model: cfg.model,
+    version: cfg.version,
+    kind: cfg.kind,
+    destination,
+    datasetSize: dataset.size,
+  };
 }
 
 /**
@@ -225,6 +286,235 @@ export async function kickoffMusicTraining(opts: {
  * regressions HOLD the incumbent. This is the receipt that keeps "our model got
  * better" honest.
  */
+export type MusicTrainingProviderStatus =
+  | 'starting'
+  | 'processing'
+  | 'succeeded'
+  | 'failed'
+  | 'canceled';
+
+export interface MusicTrainingProviderState {
+  id: string;
+  status: MusicTrainingProviderStatus;
+  output?: unknown;
+  error?: string | null;
+  metrics?: unknown;
+}
+
+function normalizeProviderStatus(status: unknown): MusicTrainingProviderStatus {
+  if (status === 'starting' || status === 'processing' || status === 'succeeded' || status === 'failed') {
+    return status;
+  }
+  if (status === 'canceled' || status === 'cancelled') return 'canceled';
+  throw new Error(`replicate training returned unsupported status '${String(status)}'`);
+}
+
+/** Poll one durable Replicate training/prediction id. The kind is stored in the
+ * kickoff receipt so changing environment variables cannot redirect an
+ * in-flight poll to the wrong endpoint. */
+export async function pollMusicTraining(opts: {
+  trainingId: string;
+  kind: MusicTrainerConfig['kind'];
+  apiKey?: string;
+}): Promise<MusicTrainingProviderState> {
+  const token = opts.apiKey || replicateToken();
+  if (!token) throw new Error('REPLICATE_API_TOKEN missing');
+  if (!/^[A-Za-z0-9_-]{6,128}$/.test(opts.trainingId)) {
+    throw new Error('music training id is invalid');
+  }
+  const collection = opts.kind === 'training' ? 'trainings' : 'predictions';
+  const res = await fetch(`${REPLICATE_API}/${collection}/${opts.trainingId}`, {
+    signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+    headers: { authorization: `Bearer ${token}` },
+  });
+  if (!res.ok) {
+    throw new Error(`replicate music training poll ${res.status}: ${(await res.text()).slice(0, 160)}`);
+  }
+  const data = (await res.json()) as {
+    id?: unknown;
+    status?: unknown;
+    output?: unknown;
+    error?: unknown;
+    metrics?: unknown;
+  };
+  if (typeof data.id !== 'string' || !data.id) {
+    throw new Error('replicate music training poll returned no id');
+  }
+  return {
+    id: data.id,
+    status: normalizeProviderStatus(data.status),
+    output: data.output,
+    error: typeof data.error === 'string' ? data.error : null,
+    metrics: data.metrics,
+  };
+}
+
+const MODEL_REF_RE = /^[a-z0-9][a-z0-9-]*\/[a-zA-Z0-9][a-zA-Z0-9._-]*:[A-Za-z0-9_-]{6,128}$/;
+const VERSION_RE = /^[A-Za-z0-9_-]{6,128}$/;
+
+/** Resolve the runnable artifact out of the different Replicate trainer output
+ * shapes. A bare version hash is accepted only when bound to the kickoff's
+ * durable destination. */
+export function musicCandidateModelRef(
+  output: unknown,
+  destination?: string | null
+): string | null {
+  const accept = (value: unknown): string | null => {
+    if (typeof value !== 'string') return null;
+    const text = value.trim();
+    if (MODEL_REF_RE.test(text) || /^https:\/\//i.test(text)) return text;
+    if (
+      destination &&
+      /^[a-z0-9][a-z0-9-]*\/[a-zA-Z0-9][a-zA-Z0-9._-]*$/.test(destination) &&
+      VERSION_RE.test(text)
+    ) {
+      return `${destination}:${text}`;
+    }
+    return null;
+  };
+  const direct = accept(output);
+  if (direct) return direct;
+  if (!output || typeof output !== 'object' || Array.isArray(output)) return null;
+  const record = output as Record<string, unknown>;
+  for (const key of ['version', 'model_version', 'trained_model', 'model', 'weights']) {
+    const found = accept(record[key]);
+    if (found) return found;
+  }
+  return null;
+}
+
+export interface MusicModelRouteEntry {
+  modelRef: string;
+  providerJobId: string;
+  trainingId: string;
+  datasetHash: string;
+  score: number;
+  evaluatedAt: string;
+  activatedAt: string;
+}
+
+export interface MusicModelRouteEvent {
+  type: 'promoted' | 'rolled_back';
+  from: string | null;
+  to: string;
+  at: string;
+  reason: string;
+}
+
+/** Versioned, reversible pointer persisted in SystemSetting by the worker. */
+export interface MusicModelRouteState {
+  schemaVersion: 1;
+  active: MusicModelRouteEntry | null;
+  previous: MusicModelRouteEntry | null;
+  events: MusicModelRouteEvent[];
+  updatedAt: string;
+}
+
+export function emptyMusicModelRoute(at = new Date(0).toISOString()): MusicModelRouteState {
+  return { schemaVersion: 1, active: null, previous: null, events: [], updatedAt: at };
+}
+
+function routeEntry(value: unknown): MusicModelRouteEntry | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const row = value as Record<string, unknown>;
+  if (
+    typeof row.modelRef !== 'string' || !row.modelRef.trim() ||
+    typeof row.providerJobId !== 'string' || !row.providerJobId ||
+    typeof row.trainingId !== 'string' || !row.trainingId ||
+    typeof row.datasetHash !== 'string' || !/^[a-f0-9]{64}$/.test(row.datasetHash) ||
+    typeof row.score !== 'number' || !Number.isFinite(row.score) ||
+    typeof row.evaluatedAt !== 'string' ||
+    typeof row.activatedAt !== 'string'
+  ) return null;
+  return {
+    modelRef: row.modelRef.trim(),
+    providerJobId: row.providerJobId,
+    trainingId: row.trainingId,
+    datasetHash: row.datasetHash,
+    score: row.score,
+    evaluatedAt: row.evaluatedAt,
+    activatedAt: row.activatedAt,
+  };
+}
+
+export function parseMusicModelRoute(raw: string | null | undefined): MusicModelRouteState {
+  if (!raw) return emptyMusicModelRoute();
+  try {
+    const value = JSON.parse(raw) as Record<string, unknown>;
+    if (value.schemaVersion !== 1) return emptyMusicModelRoute();
+    const events = Array.isArray(value.events)
+      ? value.events.filter((event): event is MusicModelRouteEvent => {
+          if (!event || typeof event !== 'object' || Array.isArray(event)) return false;
+          const row = event as Record<string, unknown>;
+          return (row.type === 'promoted' || row.type === 'rolled_back') &&
+            (row.from === null || typeof row.from === 'string') &&
+            typeof row.to === 'string' && typeof row.at === 'string' && typeof row.reason === 'string';
+        }).slice(-50)
+      : [];
+    return {
+      schemaVersion: 1,
+      active: routeEntry(value.active),
+      previous: routeEntry(value.previous),
+      events,
+      updatedAt: typeof value.updatedAt === 'string' ? value.updatedAt : new Date(0).toISOString(),
+    };
+  } catch {
+    return emptyMusicModelRoute();
+  }
+}
+
+export function promoteMusicModelRoute(input: {
+  current: MusicModelRouteState;
+  candidate: Omit<MusicModelRouteEntry, 'activatedAt'>;
+  reason: string;
+  at?: string;
+}): MusicModelRouteState {
+  const at = input.at ?? new Date().toISOString();
+  const active: MusicModelRouteEntry = { ...input.candidate, activatedAt: at };
+  return {
+    schemaVersion: 1,
+    active,
+    previous: input.current.active,
+    events: [...input.current.events, {
+      type: 'promoted' as const,
+      from: input.current.active?.modelRef ?? null,
+      to: active.modelRef,
+      at,
+      reason: input.reason,
+    }].slice(-50),
+    updatedAt: at,
+  };
+}
+
+export function rollbackMusicModelRoute(input: {
+  current: MusicModelRouteState;
+  reason: string;
+  at?: string;
+}): { rolledBack: boolean; route: MusicModelRouteState; reason: string } {
+  if (!input.current.previous) {
+    return { rolledBack: false, route: input.current, reason: 'no previous active music model to restore' };
+  }
+  const at = input.at ?? new Date().toISOString();
+  const restored = { ...input.current.previous, activatedAt: at };
+  return {
+    rolledBack: true,
+    reason: input.reason,
+    route: {
+      schemaVersion: 1,
+      active: restored,
+      previous: input.current.active,
+      events: [...input.current.events, {
+        type: 'rolled_back' as const,
+        from: input.current.active?.modelRef ?? null,
+        to: restored.modelRef,
+        at,
+        reason: input.reason,
+      }].slice(-50),
+      updatedAt: at,
+    },
+  };
+}
+
 export function evaluateAndPromote(input: {
   candidateScore: number | null | undefined;
   incumbentScore: number | null | undefined;

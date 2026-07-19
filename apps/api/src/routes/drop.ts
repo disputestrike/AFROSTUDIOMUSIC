@@ -559,7 +559,6 @@ async function runDropPipelineInner(app: FastifyInstance, ctx: DropCtx, input: D
   // bed to the song carrying the fresh lyrics and discloses "vocals by upload
   // or re-sing" in its note (captured into every take below). The lyrics are
   // still written on purpose — they are exactly what a later re-sing sings.
-  const ownEngineInstrumental = input.songEngine === 'own' && !!input.withVocals;
   // One shared brief for the whole drop. ADVISORY, NEVER LOAD-BEARING: when the
   // polish LLM fails (cap hit, bad JSON, provider down) the writers used to read
   // briefs[0] === undefined and the user's ENTIRE description — song-name anchor,
@@ -795,11 +794,6 @@ async function runDropPipelineInner(app: FastifyInstance, ctx: DropCtx, input: D
     theme: input.theme,
     requested: input.count,
     produced: playableOutputs.length,
-    // Honest top-level disclosure when the sung ask rendered as the own
-    // engine's instrumental bed (per-take notes carry the same message).
-    ...(ownEngineInstrumental
-      ? { engineNote: 'Our Engine renders the INSTRUMENTAL bed from your own material — the written lyrics are attached to each song; add the vocal by upload or re-sing.' }
-      : {}),
     drop: drops,
     childJobs: directChildren.map((child) => ({ jobId: child.id, status: 'SUCCEEDED' as const })),
     playableOutputs,

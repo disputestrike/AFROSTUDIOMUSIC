@@ -316,17 +316,15 @@ function TrainingConsentCard() {
         outsideLearning: !!m.outsideRenderLearning,
       });
     } catch (e) { setErr((e as Error).message.slice(0, 140)); }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
   useEffect(() => { void load(); }, [load]);
 
-  // OUTSIDE-RENDER LEARNING (owner switch): admits MiniMax/Suno-era renders as
-  // training fuel. Owner's call, owner's risk — the confirm states it plainly,
-  // and turning it OFF later stops new fuel but cannot un-train weights.
+  // Outside renders may inform labeled reference analysis, but their bytes are
+  // never admitted to the model-training corpus.
   async function flipOutsideLearning(enabled: boolean) {
     const warning = enabled
-      ? 'Turn ON learning from outside-engine renders?\n\nThis admits MiniMax/Suno-era songs as training fuel. Their terms forbid training a competing model on their output — flipping this ON is accepting that risk, and a model cannot UNLEARN later. Every flip is logged.'
-      : 'Turn OFF outside-render learning? New training runs go back to rights-clean fuel only (already-trained weights keep what they learned).';
+      ? 'Turn ON reference analysis for outside-engine renders?\n\nThe system may measure labeled references for evaluation, but outside-render audio bytes remain excluded from model training. Every flip is logged.'
+      : 'Turn OFF outside-render reference analysis? Rights-clean owned and consented material remains available to model training.';
     if (!confirm(warning)) return;
     setBusy(true); setErr('');
     try { await api.post('/admin/training/outside-learning', { enabled }); await load(); }
@@ -373,8 +371,8 @@ function TrainingConsentCard() {
           ))}
           <span className="text-slate-500">
             {status?.outsideLearning
-              ? '— OUTSIDE-RENDER LEARNING IS ON: MiniMax/Suno-era songs count as fuel (operator override, labeled in every manifest).'
-              : '— third-party renders (MiniMax/Suno-era songs) are not fuel while the switch below is OFF: their terms, your protection.'}
+              ? '— OUTSIDE-RENDER REFERENCE ANALYSIS IS ON: references stay labeled and their audio bytes remain excluded from model training.'
+              : '— outside-render reference analysis is off; their audio bytes remain excluded from model training.'}
           </span>
         </div>
       )}

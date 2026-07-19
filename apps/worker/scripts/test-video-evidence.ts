@@ -8,6 +8,11 @@ import {
   inspectVideoBytes,
   validateVideoProbe,
 } from "../src/lib/video-inspection";
+import {
+  assemblyEvidenceCompleteness,
+  sceneEvidenceCompleteness,
+  VIDEO_EVIDENCE_VERSION,
+} from "../src/lib/video-evidence";
 
 const valid = {
   width: 1080,
@@ -67,6 +72,107 @@ function generateFixture(path: string): Promise<void> {
 }
 
 async function main() {
+  const sceneMeta = {
+    evidenceVersion: VIDEO_EVIDENCE_VERSION,
+    providerJobId: "job_video_1",
+    renderedAt: "2026-07-19T12:00:00.000Z",
+    shotIndex: 0,
+    shotPrompt: "A Lagos stage performance",
+    contentHash: "a".repeat(64),
+    sizeBytes: 2048,
+    width: 1080,
+    height: 1920,
+    measuredDurationS: 8,
+    codec: "h264",
+    container: "mp4",
+    qualityState: "passed",
+    outputAspectRatio: "9:16",
+  };
+  const scene = {
+    id: "scene_1",
+    url: "s3://bucket/workspace/videos/scene.mp4",
+    durationS: 8,
+    provider: "hailuo",
+    meta: sceneMeta,
+  };
+  assert.equal(
+    sceneEvidenceCompleteness(scene, { requireVersion: true }).ok,
+    true
+  );
+  assert.equal(
+    sceneEvidenceCompleteness({
+      ...scene,
+      meta: { ...sceneMeta, contentHash: null },
+    }).ok,
+    false
+  );
+  assert.equal(
+    sceneEvidenceCompleteness({
+      ...scene,
+      meta: { ...sceneMeta, evidenceVersion: undefined, providerJobId: undefined },
+    }).ok,
+    true,
+    "complete legacy scene evidence remains usable"
+  );
+  assert.equal(
+    sceneEvidenceCompleteness(
+      {
+        ...scene,
+        meta: {
+          ...sceneMeta,
+          likeness: {
+            rightsBasis: "user-attested-likeness",
+            trainedModelRef: "owner/model:abc12345",
+            consentId: "consent_1",
+            keyframeRef: null,
+          },
+        },
+      },
+      { likenessRequired: true }
+    ).ok,
+    false,
+    "likeness scenes require their keyframe lineage"
+  );
+
+  const assembly = {
+    kind: "full",
+    evidenceVersion: VIDEO_EVIDENCE_VERSION,
+    providerJobId: "job_assembly_1",
+    durationS: 120,
+    contentHash: "b".repeat(64),
+    sizeBytes: 4096,
+    width: 1920,
+    height: 1080,
+    codec: "h264",
+    container: "mp4",
+    qualityState: "passed",
+    renderedAt: "2026-07-19T12:10:00.000Z",
+    shotsUsed: [0],
+    renderIdsUsed: ["scene_1"],
+    sourceSceneHashes: [
+      { renderId: "scene_1", contentHash: "a".repeat(64) },
+    ],
+    audioSource: { id: "master_1", type: "master", startS: 0 },
+  };
+  assert.equal(
+    assemblyEvidenceCompleteness({
+      url: "s3://bucket/workspace/videos/full.mp4",
+      durationS: 120,
+      provider: "assembler",
+      meta: { assembly },
+    }).ok,
+    true
+  );
+  assert.equal(
+    assemblyEvidenceCompleteness({
+      url: "s3://bucket/workspace/videos/full.mp4",
+      durationS: 120,
+      provider: "assembler",
+      meta: { assembly: { ...assembly, sourceSceneHashes: [] } },
+    }).ok,
+    false
+  );
+
   assert.deepEqual(
     validateVideoProbe(valid, { format: "vertical", expectedDurationS: 8 }),
     valid

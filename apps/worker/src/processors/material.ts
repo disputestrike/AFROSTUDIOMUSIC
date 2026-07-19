@@ -63,6 +63,7 @@ import {
   normalizeLoopLoudness,
 } from "../lib/material-inspection";
 import { assessLaneCompliance } from "../lib/lane-assess";
+import { persistNativeStemBuses } from "./stems";
 
 interface ForgePayload {
   jobId: string;
@@ -467,6 +468,7 @@ interface AssemblePayload {
   }>;
   /** Claude-authored arrangement (API-side, validated); absent → classic template. */
   sections?: Array<{ name: string; bars: number; roles: string[] }> | null;
+  withStems?: boolean;
 }
 
 type AssemblyPick = AssemblePayload["picks"][number] & {
@@ -1056,32 +1058,81 @@ export async function processAssembleBeat(p: AssemblePayload) {
       where: { id: created.id },
       select: { meta: true },
     });
-    await prisma.$transaction([
-      prisma.beatAsset.update({
-        where: { id: created.id },
-        data: {
-          approved: true,
-          meta: {
-            ...((assessed?.meta ?? {}) as Record<string, unknown>),
-            laneAssessment,
-          } as never,
-        },
-      }),
-      prisma.providerJob.update({
-        where: { id: p.jobId },
-        data: {
-          status: "SUCCEEDED",
-          finishedAt: new Date(),
-          outputJson: {
-            beatId: created.id,
-            url,
-            roles: usedPicks.map(pick => pick.role),
-            qc: qc.verdict,
-            laneAssessment,
-          } as never,
-        },
-      }),
-    ]);
+    await prisma.beatAsset.update({
+      where: { id: created.id },
+      data: {
+        approved: true,
+        meta: {
+          ...((assessed?.meta ?? {}) as Record<string, unknown>),
+          laneAssessment,
+        } as never,
+      },
+    });
+    const nativeStems = p.withStems
+      ? await persistNativeStemBuses({
+          workspaceId: p.workspaceId,
+          projectId: p.projectId,
+          beatId: created.id,
+          jobId: p.jobId,
+          engine: "afroone-material-bus-v1",
+          buses: await Promise.all(
+            [...new Set(bedPicks.map(pick => pick.role))]
+              .map(role => {
+                const sourceIndices = bedPicks
+                  .map((pick, index) => (pick.role === role ? index : -1))
+                  .filter(index => index >= 0);
+                const used = sections.some(section =>
+                  section.layerIdx.some(index => sourceIndices.includes(index))
+                );
+                if (!used) return null;
+                const roleLayers = sourceIndices.map(index => ({
+                  ...layers[index]!,
+                  gain: +(layers[index]!.gain * (tacticalTrim ?? 1)).toFixed(3),
+                }));
+                const indexMap = new Map(
+                  sourceIndices.map((sourceIndex, roleIndex) => [sourceIndex, roleIndex])
+                );
+                return {
+                  role,
+                  roleLayers,
+                  roleSections: sections.map(section => ({
+                    ...section,
+                    layerIdx: section.layerIdx
+                      .map(index => indexMap.get(index))
+                      .filter((index): index is number => index !== undefined),
+                  })),
+                };
+              })
+              .filter((item): item is NonNullable<typeof item> => item !== null)
+              .map(async item => ({
+                role: item.role,
+                format: "wav",
+                contentType: "audio/wav",
+                bytes: await assembleBeat({
+                  layers: item.roleLayers,
+                  sections: item.roleSections,
+                  targetBpm: p.bpm,
+                  preserveEmptySections: true,
+                }),
+              }))
+          ),
+        })
+      : [];
+    await prisma.providerJob.update({
+      where: { id: p.jobId },
+      data: {
+        status: "SUCCEEDED",
+        finishedAt: new Date(),
+        outputJson: {
+          beatId: created.id,
+          url,
+          roles: usedPicks.map(pick => pick.role),
+          qc: qc.verdict,
+          laneAssessment,
+          nativeStems,
+        } as never,
+      },
+    });
     createdBeatId = null;
     attemptedUrls.length = 0;
   } catch (err) {

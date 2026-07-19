@@ -1,5 +1,6 @@
 "use client";
-import { OperatorGate } from '@/components/OperatorGate';
+import { useOperatorView } from '@/components/OperatorGate';
+import { ProducerKitShelf } from '@/components/ProducerKitShelf';
 
 /**
  * MATERIALS — the studio's shelf of real, rights-classified musical material.
@@ -579,13 +580,27 @@ function MaterialsPageInner() {
   );
 }
 
-// TENANT SURFACE ISOLATION (Wave 8a): operator-only page. The gate is a
-// polite presentation wrapper for deep links; the API routes behind this page
-// are independently requireAdmin-gated server-side.
+// Producers see only their workspace-scoped personal shelf. The established
+// forge/assemble engine room stays visible to operators and its API remains
+// independently requireAdmin-gated server-side.
 export default function MaterialsPage() {
+  const view = useOperatorView();
   return (
-    <OperatorGate>
-      <MaterialsPageInner />
-    </OperatorGate>
+    <>
+      <ProducerKitShelf />
+      {view.loading && (
+        <div className="flex items-center justify-center border-t border-white/10 py-10 text-sm text-slate-500">
+          <Loader2 className="mr-2 h-4 w-4 animate-spin" /> Checking studio tools…
+        </div>
+      )}
+      {view.effectiveOperator && (
+        <section className="border-t border-white/10 bg-black/10">
+          <div className="mx-auto max-w-6xl px-6 pt-8">
+            <div className="text-xs font-medium uppercase text-slate-500">Operator engine room</div>
+          </div>
+          <MaterialsPageInner />
+        </section>
+      )}
+    </>
   );
 }

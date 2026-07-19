@@ -129,6 +129,118 @@ export function sanitizeDistributionChannels(
   return Object.keys(channels).length ? channels : undefined;
 }
 
+type Environment = Record<string, string | undefined>;
+
+export interface DistributionConfigurationStatus {
+  ready: boolean;
+  provider: string;
+  endpointConfigured: boolean;
+  endpointHost: string | null;
+  signingSecretConfigured: boolean;
+  signingSecretStrong: boolean;
+  inboundWebhookReady: boolean;
+  missing: string[];
+  issues: string[];
+}
+
+export function distributionConfigurationStatus(
+  env: Environment = process.env
+): DistributionConfigurationStatus {
+  const provider = (env.DISTRIBUTOR ?? "partner").trim().toLowerCase();
+  const endpoint = env.DISTRIBUTOR_WEBHOOK_URL?.trim() ?? "";
+  const secret = env.DISTRIBUTOR_WEBHOOK_SECRET ?? "";
+  const missing: string[] = [];
+  const issues: string[] = [];
+  let endpointHost: string | null = null;
+  if (!endpoint) {
+    missing.push("DISTRIBUTOR_WEBHOOK_URL");
+  } else {
+    try {
+      const parsed = new URL(endpoint);
+      endpointHost = parsed.host || null;
+      if (
+        parsed.protocol !== "https:" ||
+        parsed.username ||
+        parsed.password
+      ) {
+        issues.push("distributor endpoint must be credential-free HTTPS");
+      }
+    } catch {
+      issues.push("distributor endpoint is not a valid URL");
+    }
+  }
+  const signingSecretConfigured = Buffer.byteLength(secret) > 0;
+  const signingSecretStrong = Buffer.byteLength(secret) >= 32;
+  if (!signingSecretConfigured) missing.push("DISTRIBUTOR_WEBHOOK_SECRET");
+  else if (!signingSecretStrong)
+    issues.push("distributor signing secret must contain at least 32 bytes");
+  if (!/^[a-z0-9][a-z0-9_-]{0,39}$/.test(provider))
+    issues.push("DISTRIBUTOR contains an invalid provider label");
+  const ready = missing.length === 0 && issues.length === 0;
+  return {
+    ready,
+    provider,
+    endpointConfigured: Boolean(endpoint),
+    endpointHost,
+    signingSecretConfigured,
+    signingSecretStrong,
+    inboundWebhookReady: signingSecretStrong,
+    missing,
+    issues,
+  };
+}
+
+export function distributionLifecycleDiagnostics(
+  release: {
+    status: string;
+    distributor?: string | null;
+    externalId?: string | null;
+    distributionStatusAt?: Date | null;
+    submittedAt?: Date | null;
+    liveAt?: Date | null;
+  } | null,
+  configuration: DistributionConfigurationStatus,
+  now = new Date()
+) {
+  if (!release) {
+    return {
+      healthy: configuration.ready,
+      state: "not_created",
+      stale: false,
+      lastStatusAt: null,
+      issues: configuration.ready ? [] : ["distribution is not configured"],
+    };
+  }
+  const issues: string[] = [];
+  const partnerState = new Set(["submitted", "accepted", "live"]).has(
+    release.status
+  );
+  if (partnerState && !release.externalId)
+    issues.push("partner state is missing an external release ID");
+  if (partnerState && !release.distributor)
+    issues.push("partner state is missing the distributor label");
+  if (release.status === "live" && !release.liveAt)
+    issues.push("live state is missing its live timestamp");
+  const lastStatusAt =
+    release.distributionStatusAt ?? release.submittedAt ?? null;
+  const ageMs = lastStatusAt ? now.getTime() - lastStatusAt.getTime() : null;
+  const stale =
+    (release.status === "submitting" &&
+      (ageMs === null || ageMs > 10 * 60_000)) ||
+    ((release.status === "submitted" || release.status === "accepted") &&
+      (ageMs === null || ageMs > 7 * 24 * 60 * 60_000));
+  if (stale) issues.push(`distribution state ${release.status} is stale`);
+  if (!configuration.inboundWebhookReady && partnerState)
+    issues.push("partner status webhooks are not ready");
+  return {
+    healthy: configuration.ready && issues.length === 0,
+    state: release.status,
+    stale,
+    lastStatusAt,
+    issues,
+  };
+}
+
 export function distributionSubmissionPayload(
   release: DistributeRelease,
   provider: string
@@ -172,25 +284,25 @@ export function distributionSubmissionPayload(
 export async function distributeRelease(
   release: DistributeRelease
 ): Promise<DistributeResult> {
-  const provider = (process.env.DISTRIBUTOR ?? "partner").trim().toLowerCase();
+  const configuration = distributionConfigurationStatus();
+  const provider = configuration.provider;
   const endpoint = process.env.DISTRIBUTOR_WEBHOOK_URL?.trim();
   const secret = process.env.DISTRIBUTOR_WEBHOOK_SECRET ?? "";
 
-  if (!endpoint || !secret) {
+  if (!configuration.ready) {
+    const notConfigured = configuration.missing.length > 0;
     return {
-      status: "not_configured",
+      status: notConfigured ? "not_configured" : "failed",
       provider,
-      message:
-        "Connect an approved distributor endpoint and signing secret before submitting releases.",
+      message: notConfigured
+        ? `Distribution is missing: ${configuration.missing.join(", ")}.`
+        : configuration.issues.join("; ").slice(0, 300),
     };
   }
-  if (Buffer.byteLength(secret) < 32) {
-    return {
-      status: "failed",
-      provider,
-      message: "Distributor signing secret must contain at least 32 bytes.",
-    };
-  }
+
+  // Narrowing after the configuration gate; kept explicit for TypeScript and
+  // to prevent a future refactor from sending to an absent endpoint.
+  if (!endpoint || !secret) throw new Error("distribution configuration drift");
 
   let parsedEndpoint: URL;
   try {

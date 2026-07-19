@@ -18,6 +18,11 @@ import {
   type AssemblyTimelineClip,
 } from "../lib/ffmpeg";
 import { inspectVideoBytes } from "../lib/video-inspection";
+import {
+  assertAssemblyEvidenceComplete,
+  assertSceneEvidenceComplete,
+  VIDEO_EVIDENCE_VERSION,
+} from "../lib/video-evidence";
 
 /**
  * FULL MUSIC-VIDEO ASSEMBLY (Wave 9) — turn the already-rendered, already-
@@ -105,6 +110,32 @@ export async function processAssembleVideo(p: AssembleVideoPayload) {
       throw new Error("ffmpeg not found on worker host");
     }
     if (!p.clips.length) throw new Error("assembly payload has no clips");
+
+    const sourceRows = await prisma.videoRender.findMany({
+      where: { id: { in: [...new Set(p.clips.map(clip => clip.renderId))] } },
+      select: {
+        id: true,
+        url: true,
+        durationS: true,
+        provider: true,
+        meta: true,
+      },
+    });
+    const sourceById = new Map(sourceRows.map(row => [row.id, row]));
+    const sourceSceneHashes = p.clips.map(clip => {
+      const source = sourceById.get(clip.renderId);
+      if (!source) {
+        throw new Error(
+          `video_scene_evidence_incomplete: source render ${clip.renderId} is missing`
+        );
+      }
+      assertSceneEvidenceComplete(source);
+      const meta = source.meta as Record<string, unknown>;
+      return {
+        renderId: source.id,
+        contentHash: String(meta.contentHash),
+      };
+    });
 
     workDir = await mkdtemp(join(tmpdir(), "afrohit-assemble-"));
 
@@ -283,6 +314,8 @@ export async function processAssembleVideo(p: AssembleVideoPayload) {
     // the record the timeline reaches; nothing was looped or faked to close
     // the gap ("Video covers 2:10 of 3:25 — render more scenes to extend").
     const assembly = {
+      evidenceVersion: VIDEO_EVIDENCE_VERSION,
+      providerJobId: p.jobId,
       kind: p.kind,
       url,
       durationS: result.durationS,
@@ -291,6 +324,7 @@ export async function processAssembleVideo(p: AssembleVideoPayload) {
       songDurationS: p.audio.songDurationS,
       shotsUsed: p.clips.map(clip => clip.shotIndex),
       renderIdsUsed: p.clips.map(clip => clip.renderId),
+      sourceSceneHashes,
       sequenceCount: new Set(p.clips.map(clip => clip.sequenceIndex)).size,
       crossfades: result.crossfadeCount,
       // HONEST LOOP PROVENANCE — 1 means every frame is unique; >1 means the
@@ -307,6 +341,9 @@ export async function processAssembleVideo(p: AssembleVideoPayload) {
       fps: ASSEMBLY_FPS,
       contentHash: inspection.contentHash,
       sizeBytes: inspection.sizeBytes,
+      codec: inspection.codec,
+      container: inspection.container,
+      qualityState: inspection.qualityState,
       renderedAt: new Date().toISOString(),
       audioSource: {
         id: p.audio.sourceId,
@@ -315,6 +352,13 @@ export async function processAssembleVideo(p: AssembleVideoPayload) {
         songId: p.audio.songId,
       },
     };
+
+    assertAssemblyEvidenceComplete({
+      url,
+      durationS: result.durationS,
+      provider: "assembler",
+      meta: { assembly },
+    });
 
     const row = await prisma.videoRender.create({
       data: {

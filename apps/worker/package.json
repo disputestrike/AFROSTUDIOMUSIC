@@ -10,6 +10,9 @@
     "typecheck": "tsc --noEmit",
     "test": "tsx scripts/test-all.ts",
     "test:live": "tsx scripts/test-all.ts -- --live",
+    "training:run-now": "tsx scripts/run-training-now.ts",
+    "audit:legacy-release-lineage": "tsx scripts/audit-legacy-release-lineage.ts",
+    "test:legacy-release-lineage-audit": "tsx scripts/test-legacy-release-lineage-audit.ts",
     "test:release-lineage-integrity": "tsx scripts/test-release-lineage-integrity.mjs",
     "typecheck:shim": "tsc -p tsconfig.shim.json --noEmit"
   },

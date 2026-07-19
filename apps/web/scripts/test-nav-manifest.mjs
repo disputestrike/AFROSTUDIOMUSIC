@@ -53,6 +53,7 @@ try {
       ['/listen', 'Listen'],
       ['/studio', 'Chat'],
       ['/catalog', 'Catalog'],
+      ['/materials', 'My Sounds'],
       ['/albums', 'Albums'],
       ['/billing', 'Billing'],
       ['/settings', 'Settings'],
@@ -63,7 +64,7 @@ try {
   // The engine room stays with the operator: exactly these surfaces.
   assert.deepEqual(
     [...operatorHrefs].sort(),
-    ['/admin', '/benchmark', '/instrumentals', '/lake', '/lexicon', '/materials', '/projects', '/zap'].sort(),
+    ['/admin', '/benchmark', '/instrumentals', '/lake', '/lexicon', '/projects', '/zap'].sort(),
     'operator-only set must be exactly the engine room'
   );
 

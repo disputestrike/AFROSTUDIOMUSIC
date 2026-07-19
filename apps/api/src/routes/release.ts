@@ -11,7 +11,11 @@ import { laneReleaseGate, rightsInputSchema } from "@afrohit/shared";
 import { requireAuth, requireRole } from "../middleware/auth";
 import { presignAssetRef } from "../lib/storage";
 import { authenticRefCount, unseededForLane } from "../lib/lane-report";
-import { distributeRelease } from "../lib/distribution";
+import {
+  distributeRelease,
+  distributionConfigurationStatus,
+  distributionLifecycleDiagnostics,
+} from "../lib/distribution";
 import { BLOW_TARGET } from "../lib/will-it-blow";
 
 type ReleaseMode = "creative" | "hitmaker";
@@ -315,6 +319,7 @@ async function statusFor(options: {
         externalId: true,
         channels: true,
         submittedAt: true,
+        distributionStatusAt: true,
         liveAt: true,
         coverAssetId: true,
         audioAssetId: true,
@@ -322,6 +327,18 @@ async function statusFor(options: {
         exportId: true,
         artifactFingerprint: true,
         evidenceHash: true,
+        _count: { select: { events: true } },
+        events: {
+          orderBy: { occurredAt: "desc" },
+          take: 10,
+          select: {
+            eventId: true,
+            status: true,
+            applied: true,
+            occurredAt: true,
+            receivedAt: true,
+          },
+        },
         coverAsset: {
           select: {
             id: true,
@@ -394,6 +411,11 @@ async function statusFor(options: {
       artifactFingerprint: certification.artifactFingerprint,
       receiptId: certification.rightsReceipt.id,
     });
+  const distributionConfiguration = distributionConfigurationStatus();
+  const distributionLifecycle = distributionLifecycleDiagnostics(
+    latestRelease,
+    distributionConfiguration
+  );
 
   return {
     song: {
@@ -498,6 +520,22 @@ async function statusFor(options: {
           history: latestRelease.revisions.map(publicReleaseRevisionSnapshot),
         }
       : null,
+    distributionDiagnostics: {
+      configuration: {
+        ready: distributionConfiguration.ready,
+        provider: distributionConfiguration.provider,
+        endpointConfigured: distributionConfiguration.endpointConfigured,
+        signingSecretConfigured:
+          distributionConfiguration.signingSecretConfigured,
+        signingSecretStrong: distributionConfiguration.signingSecretStrong,
+        inboundWebhookReady: distributionConfiguration.inboundWebhookReady,
+        missing: distributionConfiguration.missing,
+        issues: distributionConfiguration.issues,
+      },
+      lifecycle: distributionLifecycle,
+      eventCount: latestRelease?._count.events ?? 0,
+      recentEvents: latestRelease?.events ?? [],
+    },
   };
 }
 
@@ -970,6 +1008,26 @@ export default async function release(app: FastifyInstance) {
       }
       if (observedHead.status === "submitting") {
         return reply.code(409).send({ error: "release_submission_in_progress" });
+      }
+
+      const distributionConfiguration = distributionConfigurationStatus();
+      if (!distributionConfiguration.ready) {
+        return reply.code(503).send({
+          error: "distribution_not_ready",
+          diagnostics: {
+            provider: distributionConfiguration.provider,
+            endpointConfigured:
+              distributionConfiguration.endpointConfigured,
+            signingSecretConfigured:
+              distributionConfiguration.signingSecretConfigured,
+            signingSecretStrong:
+              distributionConfiguration.signingSecretStrong,
+            inboundWebhookReady:
+              distributionConfiguration.inboundWebhookReady,
+            missing: distributionConfiguration.missing,
+            issues: distributionConfiguration.issues,
+          },
+        });
       }
 
       const observedCertification = await loadReleaseCertification(prisma, {

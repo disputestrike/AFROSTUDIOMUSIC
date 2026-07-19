@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { openSecret, prisma } from "@afrohit/db";
 import { materializeStemAudio, separateStemsRouted } from "../lib/demucs-local";
 import { markFailed, markRunning, markSucceeded } from "../lib/jobs";
@@ -39,12 +40,274 @@ interface StemsPayload {
    *  worker's own render path sets this flag on its own masters; external
    *  audio never carries it. */
   selfHarvest?: boolean;
+  /** Native AfroOne/material buses already rendered in isolation. Supplying
+   * these bypasses separation and persists the exact bus bytes directly. */
+  nativeBuses?: Array<{
+    role: string;
+    url: string;
+    format?: string;
+    contentType?: string;
+  }>;
+  nativeEngine?: string;
 }
 
 type CertifiedStem = Awaited<ReturnType<typeof materializeStemAudio>> & {
   certification: CertifiedAudio;
 };
 type StemUrlRow = { url: string };
+
+type StemSourceReceipt = {
+  kind: "beat" | "mix" | "master" | "external";
+  assetId: string | null;
+  contentHash: string;
+};
+
+export type StemLineageReceipt = {
+  schemaVersion: 1;
+  source: StemSourceReceipt;
+  derivation: {
+    kind: "separation" | "native_bus";
+    engine: string;
+    jobId: string | null;
+  };
+  role?: string;
+  createdAt: string;
+};
+
+export interface NativeStemBusInput {
+  role: string;
+  format?: string;
+  contentType?: string;
+  bytes?: Buffer;
+  url?: string;
+}
+
+export interface PersistNativeStemBusesInput {
+  workspaceId: string;
+  projectId: string;
+  beatId: string;
+  jobId?: string;
+  engine?: string;
+  buses: NativeStemBusInput[];
+}
+
+const CERTIFIED_HASH = /^[a-f0-9]{64}$/i;
+
+function hashBytes(bytes: Buffer): string {
+  return createHash("sha256").update(bytes).digest("hex");
+}
+
+function lineagedStemData(options: {
+  beatId: string;
+  role: string;
+  format: string;
+  origin: "separation" | "native";
+  certification: CertifiedAudio;
+  lineage: Omit<StemLineageReceipt, "role">;
+}) {
+  return {
+    beatId: options.beatId,
+    role: options.role,
+    url: options.certification.url,
+    format: options.format,
+    duration: options.certification.qc.durationS,
+    origin: options.origin,
+    qualityState: options.certification.qualityState,
+    contentHash: options.certification.contentHash,
+    verifiedAt: options.certification.verifiedAt,
+    lineage: { ...options.lineage, role: options.role } as never,
+  };
+}
+
+async function resolveStemSourceReceipt(options: {
+  workspaceId: string;
+  projectId: string;
+  songId?: string;
+  sourceUrl: string;
+  beat: {
+    id: string;
+    url: string;
+    contentHash?: string | null;
+  } | null;
+}): Promise<StemSourceReceipt> {
+  if (
+    options.beat?.url === options.sourceUrl &&
+    CERTIFIED_HASH.test(options.beat.contentHash ?? "")
+  ) {
+    return {
+      kind: "beat",
+      assetId: options.beat.id,
+      contentHash: options.beat.contentHash!.toLowerCase(),
+    };
+  }
+
+  if (options.songId) {
+    const [master, mix] = await Promise.all([
+      prisma.master.findFirst({
+        where: {
+          projectId: options.projectId,
+          songId: options.songId,
+          url: options.sourceUrl,
+          project: { workspaceId: options.workspaceId },
+        },
+        orderBy: { createdAt: "desc" },
+        select: { id: true, contentHash: true },
+      }),
+      prisma.mix.findFirst({
+        where: {
+          projectId: options.projectId,
+          songId: options.songId,
+          url: options.sourceUrl,
+          project: { workspaceId: options.workspaceId },
+        },
+        orderBy: { createdAt: "desc" },
+        select: { id: true, contentHash: true },
+      }),
+    ]);
+    if (master && CERTIFIED_HASH.test(master.contentHash ?? "")) {
+      return {
+        kind: "master",
+        assetId: master.id,
+        contentHash: master.contentHash!.toLowerCase(),
+      };
+    }
+    if (mix && CERTIFIED_HASH.test(mix.contentHash ?? "")) {
+      return {
+        kind: "mix",
+        assetId: mix.id,
+        contentHash: mix.contentHash!.toLowerCase(),
+      };
+    }
+  }
+
+  // Unknown owned/imported sources still get an exact byte identity. They are
+  // useful for remixing, but release export will not call them current unless
+  // that identity is also present in the certified release lineage.
+  const sourceBytes = await downloadToBuffer(options.sourceUrl);
+  return {
+    kind: "external",
+    assetId: null,
+    contentHash: hashBytes(sourceBytes),
+  };
+}
+
+/**
+ * Persist already-rendered AfroOne/material buses directly. This deliberately
+ * performs no separation: callers hand over each native bus, and this function
+ * certifies its exact bytes before atomically replacing the matching roles.
+ */
+export async function persistNativeStemBuses(
+  input: PersistNativeStemBusesInput
+): Promise<
+  Array<ReturnType<typeof audioCertificationReceipt> & { role: string }>
+> {
+  if (!input.buses.length)
+    throw new Error("native stem persistence needs at least one bus");
+  const roles = input.buses.map(bus => bus.role.trim()).filter(Boolean);
+  if (
+    roles.length !== input.buses.length ||
+    new Set(roles).size !== roles.length
+  ) {
+    throw new Error("native stem roles must be non-empty and unique");
+  }
+  const beat = await prisma.beatAsset.findFirstOrThrow({
+    where: {
+      id: input.beatId,
+      projectId: input.projectId,
+      project: { workspaceId: input.workspaceId },
+      contentHash: { not: null },
+      verifiedAt: { not: null },
+    },
+    select: { id: true, contentHash: true },
+  });
+  if (!CERTIFIED_HASH.test(beat.contentHash ?? "")) {
+    throw new Error("native stem source beat is not byte-certified");
+  }
+  const createdAt = new Date().toISOString();
+  const baseLineage: Omit<StemLineageReceipt, "role"> = {
+    schemaVersion: 1,
+    source: {
+      kind: "beat",
+      assetId: beat.id,
+      contentHash: beat.contentHash!.toLowerCase(),
+    },
+    derivation: {
+      kind: "native_bus",
+      engine: input.engine?.trim() || "afroone",
+      jobId: input.jobId?.trim() || null,
+    },
+    createdAt,
+  };
+  const certified: Array<{
+    role: string;
+    format: string;
+    audio: CertifiedAudio;
+  }> = [];
+  try {
+    for (const [index, bus] of input.buses.entries()) {
+      if (!bus.bytes && !bus.url) {
+        throw new Error(`native stem ${roles[index]} has no audio`);
+      }
+      const bytes = bus.bytes ?? (await downloadToBuffer(bus.url!));
+      const format = (bus.format?.trim().toLowerCase() || "wav").replace(
+        /^\./,
+        ""
+      );
+      const audio = await certifyAudioBytes({
+        workspaceId: input.workspaceId,
+        kind: "stems",
+        bytes,
+        contentType:
+          bus.contentType ?? (format === "wav" ? "audio/wav" : "audio/mpeg"),
+        ext: format,
+      });
+      certified.push({ role: roles[index]!, format, audio });
+    }
+  } catch (error) {
+    await Promise.allSettled(
+      certified.map(row => deleteObjectByUrl(row.audio.url))
+    );
+    throw error;
+  }
+
+  const oldStems = (await prisma.stem.findMany({
+    where: { beatId: beat.id, role: { in: roles } },
+    select: { url: true },
+  })) as StemUrlRow[];
+  try {
+    await prisma.$transaction([
+      prisma.stem.deleteMany({
+        where: { beatId: beat.id, role: { in: roles } },
+      }),
+      ...certified.map(row =>
+        prisma.stem.create({
+          data: lineagedStemData({
+            beatId: beat.id,
+            role: row.role,
+            format: row.format,
+            origin: "native",
+            certification: row.audio,
+            lineage: baseLineage,
+          }),
+        })
+      ),
+    ]);
+  } catch (error) {
+    await Promise.allSettled(
+      certified.map(row => deleteObjectByUrl(row.audio.url))
+    );
+    throw error;
+  }
+  await retireSupersededAudio(
+    input.workspaceId,
+    oldStems.map(row => row.url)
+  );
+  return certified.map(row => ({
+    role: row.role,
+    ...audioCertificationReceipt(row.audio),
+  }));
+}
+
 
 export function audioCertificationReceipt(audio: CertifiedAudio) {
   return {
@@ -87,6 +350,27 @@ async function retireSupersededAudio(
 export async function processStems(p: StemsPayload) {
   await markRunning(p.jobId);
   try {
+    if (p.nativeBuses?.length) {
+      if (!p.beatId) {
+        throw new Error("native stem persistence needs a beatId");
+      }
+      const certifications = await persistNativeStemBuses({
+        workspaceId: p.workspaceId,
+        projectId: p.projectId,
+        beatId: p.beatId,
+        jobId: p.jobId,
+        engine: p.nativeEngine,
+        buses: p.nativeBuses,
+      });
+      await markSucceeded(p.jobId, {
+        beatId: p.beatId,
+        source: "native",
+        stems: certifications.length,
+        roles: certifications.map(stem => stem.role),
+        certifications,
+      });
+      return;
+    }
     const ws = await prisma.workspace.findUnique({
       where: { id: p.workspaceId },
       select: { musicProvider: true, musicApiKey: true },
@@ -139,14 +423,13 @@ export async function processStems(p: StemsPayload) {
       throw new Error(
         "nothing to separate: no exact sourceUrl or selected beat audio"
       );
-    const sourceLineage = {
-      version: "stem-source-v1",
-      jobId: p.jobId,
+    const sourceReceipt = await resolveStemSourceReceipt({
+      workspaceId: p.workspaceId,
+      projectId: p.projectId,
+      songId: p.songId,
       sourceUrl: sepSource,
-      sourceBeatId: beat?.id ?? null,
-      requestedBeatId: p.beatId ?? null,
-      explicitSourceUrl: Boolean(p.sourceUrl),
-    };
+      beat,
+    });
     const result = await separateStemsRouted({
       audioUrl: sepSource,
       apiKey: replicateApiKey,
@@ -156,6 +439,17 @@ export async function processStems(p: StemsPayload) {
     });
     if (!result.stems.length)
       throw new Error("stem separation returned no audio");
+
+    const sourceLineage: Omit<StemLineageReceipt, "role"> = {
+      schemaVersion: 1,
+      source: sourceReceipt,
+      derivation: {
+        kind: "separation",
+        engine: result.engine ?? "unknown",
+        jobId: p.jobId,
+      },
+      createdAt: new Date().toISOString(),
+    };
 
     // Every persisted stem is byte-certified after container sniffing. A weak,
     // failed, or unmeasured output aborts the complete job before row replacement.
@@ -216,11 +510,14 @@ export async function processStems(p: StemsPayload) {
           ...ingested.map(stem =>
             prisma.stem.create({
               data: {
-                beatId: beat.id,
-                role: stem.role,
-                url: stem.url,
-                format: stem.format,
-                duration: stem.certification.qc.durationS,
+                ...lineagedStemData({
+                  beatId: beat.id,
+                  role: stem.role,
+                  format: stem.format,
+                  origin: "separation",
+                  certification: stem.certification,
+                  lineage: sourceLineage,
+                }),
               },
             })
           ),
@@ -480,6 +777,7 @@ type BeatRow = {
   keySignature: string | null;
   duration: number | null;
   provider: string;
+  contentHash: string | null;
   meta: unknown;
 };
 
@@ -528,14 +826,14 @@ async function processTrueInstrumental(
   const sourceUrl = p.sourceUrl?.trim() || candidates[0]?.url;
   if (!sourceUrl)
     throw new Error("instrumental/acapella source lineage is missing");
-  const sourceLineage = {
-    version: "stem-source-v1",
-    jobId: p.jobId,
+  const sourceReceipt = await resolveStemSourceReceipt({
+    workspaceId: p.workspaceId,
+    projectId: p.projectId,
+    songId: p.songId,
     sourceUrl,
-    sourceBeatId: beat.id,
-    requestedBeatId: p.beatId ?? null,
-    explicitSourceUrl: Boolean(p.sourceUrl),
-  };
+    beat,
+  });
+
 
   const sourceQc = await measureAudioQuality(sourceUrl).catch(() => null);
   const sourceLufs = sourceQc?.integratedLufs ?? null;
@@ -561,6 +859,17 @@ async function processTrueInstrumental(
       "stem separation must return both instrumental and acapella outputs"
     );
   }
+
+  const sourceLineage: Omit<StemLineageReceipt, "role"> = {
+    schemaVersion: 1,
+    source: sourceReceipt,
+    derivation: {
+      kind: "separation",
+      engine: result.engine ?? "unknown",
+      jobId: p.jobId,
+    },
+    createdAt: new Date().toISOString(),
+  };
 
   const newUrls: string[] = [];
   const renderCertifiedPair = async (rawUrl: string) => {
@@ -643,20 +952,26 @@ async function processTrueInstrumental(
       }),
       prisma.stem.create({
         data: {
-          beatId: beat.id,
-          role: "instrumental",
-          url: instrumental.wav.url,
-          format: "wav",
-          duration: instrumental.wav.qc.durationS,
+          ...lineagedStemData({
+            beatId: beat.id,
+            role: "instrumental",
+            format: "wav",
+            origin: "separation",
+            certification: instrumental.wav,
+            lineage: sourceLineage,
+          }),
         },
       }),
       prisma.stem.create({
         data: {
-          beatId: beat.id,
-          role: "vocals",
-          url: vocals.wav.url,
-          format: "wav",
-          duration: vocals.wav.qc.durationS,
+          ...lineagedStemData({
+            beatId: beat.id,
+            role: "vocals",
+            format: "wav",
+            origin: "separation",
+            certification: vocals.wav,
+            lineage: sourceLineage,
+          }),
         },
       }),
       prisma.song.update({

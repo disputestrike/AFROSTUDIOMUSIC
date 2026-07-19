@@ -3,8 +3,16 @@ import { prisma } from '@afrohit/db';
 import {
   generateBeatInputSchema,
   attachBeatUploadSchema,
+  AFROONE_RENDER_SPEC_VERSION,
+  AFROONE_ONTOLOGY_VERSION,
+  afroOneDirectionsForRequest,
+  deriveAfroOneSeed,
   genreSignature,
+  isAfroOneRenderSpecification,
   requestedMaterialRoleContract,
+  seedFrom,
+  type AfroOneDirection,
+  type MaterialRole,
 } from '@afrohit/shared';
 import { enrichLyricsForVocals } from '@afrohit/ai';
 import {
@@ -38,6 +46,8 @@ export interface OwnEngineRoutingInput {
   durationS?: number;
   vibePrompt?: string;
   candidates?: number;
+  renderSeed?: number;
+  directionProfiles?: readonly AfroOneDirection[];
 }
 
 export type OwnEngineRoutingDecision =
@@ -59,10 +69,8 @@ export function unsupportedOwnEngineControls(
     input.keySignature?.trim() ? 'keySignature' : null,
     input.pinnedReferenceId ? 'pinnedReferenceId' : null,
     trainingReferenceCount > 0 ? 'trainingReferences' : null,
-    input.withStems ? 'withStems' : null,
     // durationS is now HONORED by the own engine (length contract, 2026-07-19).
     input.vibePrompt?.trim() ? 'vibePrompt' : null,
-    (input.candidates ?? 1) > 1 ? 'candidates' : null,
   ].filter((control): control is string => control !== null);
 }
 
@@ -99,27 +107,164 @@ export default async function beats(app: FastifyInstance) {
     }
   );
 
+  app.post<{ Params: { projectId: string; beatId: string } }>(
+    '/:beatId/replay',
+    async (req, reply) => {
+      const { workspaceId } = requireAuth(req);
+      const source = await prisma.beatAsset.findFirst({
+        where: {
+          id: req.params.beatId,
+          projectId: req.params.projectId,
+          project: { workspaceId },
+        },
+        select: { id: true, songId: true, meta: true },
+      });
+      if (!source) return reply.code(404).send({ error: 'beat_not_found' });
+
+      const ownEngine = ((source.meta ?? {}) as {
+        melodyScore?: unknown;
+        ownEngine?: {
+          renderSpec?: unknown;
+          requestedRoles?: MaterialRole[];
+          requestedRoleProvenance?: unknown;
+          withVocals?: boolean;
+          voiceProfileId?: string | null;
+          language?: string | null;
+        };
+      }).ownEngine;
+      if (!isAfroOneRenderSpecification(ownEngine?.renderSpec)) {
+        return reply.code(409).send({
+          error: 'render_spec_unavailable',
+          message: 'This take predates deterministic AfroOne receipts and cannot be replayed exactly.',
+        });
+      }
+      const renderSpec = ownEngine.renderSpec;
+      const sourceMeta = (source.meta ?? {}) as { melodyScore?: unknown };
+      const replayLyrics = ownEngine.withVocals && source.songId
+        ? await prisma.lyricDraft.findUnique({
+            where: { songId: source.songId },
+            select: { body: true },
+          })
+        : null;
+      const materialReceipts = await prisma.materialUsage.findMany({
+        where: { workspaceId, beatId: source.id },
+        orderBy: { createdAt: 'asc' },
+        select: { materialId: true },
+      });
+      const lockedMaterialIds = [...new Set(materialReceipts.map(row => row.materialId))];
+      if (!lockedMaterialIds.length) {
+        return reply.code(409).send({
+          error: 'material_receipt_unavailable',
+          message: 'Exact replay requires the original material-usage receipt.',
+        });
+      }
+      const sourceReferences = await prisma.referenceUsage.findMany({
+        where: { workspaceId, beatId: source.id },
+        orderBy: { position: 'asc' },
+        select: { referenceId: true, pinned: true },
+      });
+      const replayTrainingUsage = sourceReferences.length
+        ? {
+            referenceIds: sourceReferences.map(row => row.referenceId),
+            pinnedReferenceId:
+              sourceReferences.find(row => row.pinned)?.referenceId ?? null,
+            genre: renderSpec.genre,
+          }
+        : undefined;
+
+      const idempotencyKey = scopedRequestKey(
+        req.headers as Record<string, unknown>,
+        `beat-replay:${source.id}`
+      );
+      const charge = await app.chargeCredits({
+        workspaceId,
+        key: 'beat_idea_short_30s',
+        multiplier: process.env.OWN_ENGINE_FREE === '0' ? 1 : 0,
+        refTable: 'BeatAsset',
+        refId: source.id,
+        idempotencyKey,
+      });
+      if (!charge.ok)
+        return reply.code(402).send({ error: 'insufficient_credits', ...charge });
+
+      const replay = await createQueuedProviderJob({
+        app,
+        queue: app.queues.music,
+        jobName: 'own-engine',
+        workspaceId,
+        projectId: req.params.projectId,
+        kind: 'music',
+        provider: 'afrohit-own',
+        inputJson: {
+          ownEngine: true,
+          songId: source.songId,
+          replayOfBeatId: source.id,
+          renderSpec,
+          lockedMaterialIds,
+          deterministicMode: true,
+          withVocals: ownEngine.withVocals === true,
+          voiceProfileId: ownEngine.voiceProfileId ?? null,
+          trainingUsage: replayTrainingUsage,
+        },
+        charge,
+        idempotencyKey,
+        payload: jobId => ({
+          jobId,
+          workspaceId,
+          projectId: req.params.projectId,
+          songId: source.songId,
+          genre: renderSpec.genre,
+          bpm: renderSpec.bpm,
+          durationS: renderSpec.durationS,
+          renderSeed: renderSpec.seed,
+          direction: renderSpec.direction,
+          renderSpec,
+          deterministicMode: true,
+          lockedMaterialIds,
+          withVocals: ownEngine.withVocals === true,
+          lyrics: replayLyrics?.body ?? undefined,
+          language: ownEngine.language ?? null,
+          voiceProfileId: ownEngine.voiceProfileId ?? null,
+          melodyScore: sourceMeta.melodyScore,
+          trainingUsage: replayTrainingUsage,
+          requestedRoles: ownEngine?.requestedRoles,
+          requestedRoleProvenance: ownEngine?.requestedRoleProvenance,
+        }),
+      });
+      reply.code(202);
+      return {
+        ...replay,
+        replayOfBeatId: source.id,
+        renderSpec,
+        lockedMaterialCount: lockedMaterialIds.length,
+      };
+    }
+  );
+
   app.post<{ Params: { projectId: string } }>(
     '/generate',
     { schema: { body: generateBeatInputSchema.omit({ projectId: true }) } },
     async (req, reply) => {
       const { workspaceId } = requireAuth(req);
       const input = generateBeatInputSchema.omit({ projectId: true }).parse(req.body);
-      // Fires BEFORE any lookup or spend, and the message now says the honest
-      // way through (the web client sends withVocals:false for 'own' since
-      // 2026-07-16; this guards direct API callers with a clear next step).
-      if (input.withVocals && input.songEngine === 'own') {
-        return reply.code(422).send({
-          error: 'own_vocal_pipeline_unavailable',
-          message: 'Our Engine currently produces instrumentals only. Send withVocals:false for the instrumental bed (add vocals by upload or re-sing), or choose a vocal-capable engine for a sung song.',
-        });
-      }
       const project = await prisma.project.findFirstOrThrow({
         where: { id: req.params.projectId, workspaceId },
         include: { artist: true },
       });
       if (input.songId) {
         await prisma.song.findFirstOrThrow({ where: { id: input.songId, projectId: project.id, workspaceId } });
+      }
+      if (input.voiceProfileId) {
+        await prisma.voiceProfile.findFirstOrThrow({
+          where: {
+            id: input.voiceProfileId,
+            workspaceId,
+            artistId: project.artistId,
+            status: 'READY',
+            consent: { revokedAt: null },
+          },
+          select: { id: true },
+        });
       }
       // EVERY CREATION HAS A CATALOG HOME (owner: "it's basically saved…
       // would that be my catalog? I can't see anything"): doors 2/3 used to
@@ -318,55 +463,146 @@ export default async function beats(app: FastifyInstance) {
       // the own engine cannot sing; that stays with the providers.
       if (useOwnEngine) {
         const ownBpm = input.bpm ?? genreSignature(genre).bpm;
-        const ownJob = await createQueuedProviderJob({
-          app,
-          queue: app.queues.music,
-          jobName: 'own-engine',
-          workspaceId,
-          projectId: project.id,
-          kind: 'music',
-          provider: 'afrohit-own',
-          inputJson: {
-            ownEngine: true,
+        const durationS = input.durationS ?? genreSignature(genre).durationS;
+        const directions = afroOneDirectionsForRequest(
+          input.directionProfiles,
+          input.candidates
+        );
+        const baseSeed = input.renderSeed ?? seedFrom(effectiveSongId, genre, ownBpm);
+        const deterministicMode =
+          input.renderSeed !== undefined ||
+          Boolean(input.directionProfiles?.length) ||
+          directions.length > 1;
+        const directionKeys = directions.map((direction, index) =>
+          index === 0
+            ? idempotencyKey
+            : idempotencyKey
+              ? `${idempotencyKey}:${direction}`
+              : undefined
+        );
+        const directionCharges = [charge];
+        for (let index = 1; index < directions.length; index += 1) {
+          const extraCharge = await app.chargeCredits({
+            workspaceId,
+            key: 'beat_idea_short_30s',
+            multiplier: process.env.OWN_ENGINE_FREE === '0' ? 1 : 0,
+            refTable: 'Project',
+            refId: project.id,
+            idempotencyKey: directionKeys[index],
+          });
+          if (!extraCharge.ok) {
+            await Promise.all(
+              directionCharges.map(existingCharge =>
+                app.refundCredits({
+                  workspaceId,
+                  key: existingCharge.key,
+                  refTable: 'Project',
+                  refId: project.id,
+                  chargeId: existingCharge.chargeId,
+                }).catch(() => undefined)
+              )
+            );
+            return reply.code(402).send({
+              error: 'insufficient_credits',
+              ...extraCharge,
+            });
+          }
+          directionCharges.push(extraCharge);
+        }
+        const ownJobs: Array<{
+          jobId: string;
+          replayed: boolean;
+          direction: AfroOneDirection;
+          seed: number;
+        }> = [];
+
+        for (let index = 0; index < directions.length; index += 1) {
+          const direction = directions[index]!;
+          const directionSeed = deriveAfroOneSeed(baseSeed, direction);
+          const directionKey = directionKeys[index];
+          const directionCharge = directionCharges[index]!;
+          const renderSpec = {
+            version: AFROONE_RENDER_SPEC_VERSION,
+            ontologyVersion: AFROONE_ONTOLOGY_VERSION,
+            seed: directionSeed,
+            direction,
             genre,
             bpm: ownBpm,
-            ...(autoOwnRoles ? { autoOwn: true } : {}),
-            ...(roleRequest.provenance.instruments.length
-              ? {
-                  requestedRoles: roleRequest.requestedRoles,
-                  requestedRoleProvenance: roleRequest.provenance,
-                }
-              : {}),
-          },
-          charge,
-          idempotencyKey,
-          payload: (jobId) => ({
-            jobId,
+            durationS,
+          } as const;
+          const ownJob = await createQueuedProviderJob({
+            app,
+            queue: app.queues.music,
+            jobName: 'own-engine',
             workspaceId,
             projectId: project.id,
-            songId: effectiveSongId,
-            genre,
-            bpm: ownBpm,
-            // LENGTH CONTRACT: user ask wins, else the lane's full-song target.
-            durationS: input.durationS ?? genreSignature(genre).durationS,
-            melodyPrompt: genreSignature(genre).melodyPrompt,
-            ...(roleRequest.provenance.instruments.length
-              ? {
-                  requestedRoles: roleRequest.requestedRoles,
-                  requestedRoleProvenance: roleRequest.provenance,
-                }
-              : {}),
-          }),
-        });
+            kind: 'music',
+            provider: 'afrohit-own',
+            inputJson: {
+              ownEngine: true,
+              songId: effectiveSongId,
+              genre,
+              bpm: ownBpm,
+              renderSpec,
+              batchSeed: baseSeed,
+              deterministicMode,
+              withVocals: input.withVocals,
+              withStems: input.withStems,
+              voiceProfileId: input.voiceProfileId ?? null,
+              trainingUsage,
+              ...(autoOwnRoles ? { autoOwn: true } : {}),
+              ...(roleRequest.provenance.instruments.length
+                ? {
+                    requestedRoles: roleRequest.requestedRoles,
+                    requestedRoleProvenance: roleRequest.provenance,
+                  }
+                : {}),
+            },
+            charge: directionCharge,
+            idempotencyKey: directionKey,
+            payload: (jobId) => ({
+              jobId,
+              workspaceId,
+              projectId: project.id,
+              songId: effectiveSongId,
+              genre,
+              bpm: ownBpm,
+              durationS,
+              melodyPrompt: genreSignature(genre).melodyPrompt,
+              renderSeed: directionSeed,
+              direction,
+              deterministicMode,
+              renderSpec,
+              withVocals: input.withVocals,
+              withStems: input.withStems,
+              lyrics,
+              language: langs[0] ?? null,
+              voiceProfileId: input.voiceProfileId ?? null,
+              trainingUsage,
+              ...(roleRequest.provenance.instruments.length
+                ? {
+                    requestedRoles: roleRequest.requestedRoles,
+                    requestedRoleProvenance: roleRequest.provenance,
+                  }
+                : {}),
+            }),
+          });
+          ownJobs.push({ ...ownJob, direction, seed: directionSeed });
+        }
+        const ownJob = ownJobs[0]!;
         reply.code(202);
         return {
           jobId: ownJob.jobId, status: 'queued', replayed: ownJob.replayed, engine: 'afrohit-own-v1',
+          renderSeed: baseSeed,
+          directions: ownJobs,
           ...(roleRequest.requestedRoles.length ? { requestedRoles: roleRequest.requestedRoles } : {}),
           ...(autoOwnRoles ? { materialSource: `own-shelf (${autoOwnRoles} roles)` } : {}),
           ...(droppedInstruments.length
             ? { instrumentNote: `Our Engine has no proven material for: ${droppedInstruments.join(', ')} — rendering without ${droppedInstruments.length === 1 ? 'it' : 'them'}. Upload or forge that material and it joins future renders.` }
             : {}),
-          note: autoOwnRoles
+          note: input.withVocals
+            ? 'Building the owned instrumental, composing its melody score, generating a genuine sung vocal, and verifying the finished mix. Poll the job.'
+            : autoOwnRoles
             ? `Your ${genre.replace(/_/g, ' ')} shelf is stocked — own-shelf (${autoOwnRoles} roles) — so this beat is assembled from YOUR OWN material instead of renting a provider. Poll the job.`
             : 'Building the beat from your own + synthesized material (owned engine). Poll the job.',
         };

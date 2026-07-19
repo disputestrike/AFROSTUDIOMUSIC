@@ -49,11 +49,6 @@ const CORPUS: Req[] = [
   { id: 'D12-gospel', userText: 'joyful African praise song, organ, call and response, celebratory', genreString: 'praise song', mood: 'joyful celebratory', truth: { canonicalGenre: 'praise', note: '"praise song" vs "praise"' } },
 ];
 
-function afroLike(g: string): boolean {
-  // mirrors composeStyleTags' isAfro (afroIdentity membership) loosely for reporting
-  return /afro|amapiano|highlife|gqom|kwaito|azonto|coupe|ndombolo|soukous|fuji|juju|apala|street_pop|bongo/i.test(g);
-}
-
 const results = CORPUS.map((r) => {
   const g = r.genreString;
   const sig = genreSignature(g);

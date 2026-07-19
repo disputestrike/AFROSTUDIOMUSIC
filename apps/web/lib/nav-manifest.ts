@@ -43,7 +43,7 @@ export const NAV_MANIFEST: readonly NavItem[] = [
   // through Catalog and the Studio flows (project DETAIL pages stay shared).
   { href: '/projects', label: 'Projects', audience: 'operator', primary: true },
   { href: '/catalog', label: 'Catalog', audience: 'all', primary: true },
-  { href: '/materials', label: 'Materials', audience: 'operator' },
+  { href: '/materials', label: 'My Sounds', audience: 'all' },
   { href: '/instrumentals', label: 'Instrumentals', audience: 'operator', primary: true },
   { href: '/lake', label: 'Data Lake', audience: 'operator' },
   { href: '/lexicon', label: 'Word Bank', audience: 'operator' },
