@@ -751,6 +751,15 @@ class AceStepSongAdapter implements MusicProviderAdapter {
     const tags = composeStyleTags(input, {
       fallbackLiteral: 'catchy, melodic vocals, punchy drums, warm bass, radio-ready',
     }).join(', ');
+    // LYRIC-FIDELITY TUNING (first live fal-default drop, 2026-07-19: the take
+    // failed the alignment gate on all five checks and the paying user got a
+    // refund instead of a song). fal's own schema defaults lyric_guidance_scale
+    // to 1.5 (range 0-10) and number_of_steps to 27 (range 3-60) — too weak to
+    // hold Pidgin/English lyrics. Raised defaults, env-tunable for the bake-off.
+    const clampEnv = (name: string, def: number, lo: number, hi: number) => {
+      const raw = Number(process.env[name]);
+      return Math.min(hi, Math.max(lo, Number.isFinite(raw) ? raw : def));
+    };
     const res = await fetch('https://queue.fal.run/fal-ai/ace-step', {
       method: 'POST',
       headers: { authorization: `Key ${process.env.FAL_KEY}`, 'content-type': 'application/json' },
@@ -760,6 +769,8 @@ class AceStepSongAdapter implements MusicProviderAdapter {
         // singable ad-libs. '[inst]' is fal-ACE's instrumental switch.
         lyrics: input.withVocals && input.lyrics ? cleanLyricsForMinimax(input.lyrics) : '[inst]',
         duration,
+        number_of_steps: clampEnv('ACE_STEP_STEPS', 40, 3, 60),
+        lyric_guidance_scale: clampEnv('ACE_STEP_LYRIC_GUIDANCE', 4, 0, 10),
       }),
     });
     if (!res.ok) {

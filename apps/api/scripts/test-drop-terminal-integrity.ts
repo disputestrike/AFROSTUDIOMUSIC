@@ -134,10 +134,19 @@ function dropSourceEarly(): string {
 }
 
 const dropSource = readFileSync(new URL('../src/routes/drop.ts', import.meta.url), 'utf8');
-const terminalAt = dropSource.lastIndexOf('const directChildren = await waitForDropChildren');
+// SING-IT-AGAIN LAW (2026-07-19): the await is now assignment-shaped (`let` +
+// try/catch) because an auto-routed take that fails ONLY lyric alignment is
+// re-sung once on the standard engine. Both assignment sites sit before the
+// quality gate — the terminal-before-gate invariant is unchanged.
+const terminalAt = dropSource.lastIndexOf('directChildren = await waitForDropChildren');
 const gateAt = dropSource.lastIndexOf('await willItBlowGate');
 const playableAt = dropSource.lastIndexOf('await loadDropPlayableOutputs');
 assert.ok(terminalAt > 0 && terminalAt < gateAt, 'drop must await render children before quality gate');
+// The re-sing fallback must keep its kill switch, honor explicit engine picks,
+// and only ever fire on the alignment-mismatch failure class.
+assert.match(dropSource, /DROP_ALIGN_FALLBACK/);
+assert.match(dropSource, /rendered vocals did not match the approved lyrics/);
+assert.match(dropSource, /const autoRouted = !input\.songEngine;/);
 assert.ok(gateAt < playableAt, 'drop must run quality gate before returning playable evidence');
 assert.match(dropSource, /kind: 'ar-read'/);
 

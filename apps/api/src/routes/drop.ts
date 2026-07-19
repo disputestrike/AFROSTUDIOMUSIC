@@ -729,7 +729,48 @@ async function runDropPipelineInner(app: FastifyInstance, ctx: DropCtx, input: D
     if (!item.songId) throw new Error(`drop child ${item.jobId} has no persisted song identity`);
     return { ...item, songId: item.songId };
   });
-  const directChildren = await waitForDropChildren(ctx, rendered.map((item) => item.jobId));
+  // SING-IT-AGAIN LAW (live 2026-07-19, first fal-default drop): the AUTO-routed
+  // singer failed the lyric-fidelity gate and the paying user got a dead end +
+  // refund instead of a song. When a take died ONLY on vocal/lyric alignment and
+  // the user did NOT explicitly pick an engine, re-sing that take ONCE on the
+  // proven standard engine — same song row, same approved lyrics, one retry,
+  // disclosed on the take note (class language only, never a vendor name).
+  // Explicit engine picks are honored: no silent substitution. The failed child
+  // has already been auto-refunded, so the net charge stays one render.
+  // Kill switch: DROP_ALIGN_FALLBACK=0.
+  const ALIGN_FAIL = /rendered vocals did not match the approved lyrics/i;
+  let directChildren: DropChildJob[];
+  try {
+    directChildren = await waitForDropChildren(ctx, rendered.map((item) => item.jobId));
+  } catch (err) {
+    const fallbackOn = process.env.DROP_ALIGN_FALLBACK !== '0';
+    const autoRouted = !input.songEngine;
+    if (!fallbackOn || !autoRouted || !input.withVocals || !ALIGN_FAIL.test((err as Error)?.message ?? '')) throw err;
+    const failed = await prisma.providerJob.findMany({
+      where: { id: { in: rendered.map((item) => item.jobId) }, workspaceId: ctx.workspaceId, status: 'FAILED' },
+      select: { id: true, errorJson: true },
+    });
+    const retriable = failed.filter((job) => ALIGN_FAIL.test(errorMessage(job.errorJson) ?? ''));
+    if (!retriable.length || retriable.length !== failed.length) throw err; // any non-alignment failure keeps the original outcome
+    app.log.warn(
+      { dropJobId, resing: retriable.map((job) => job.id) },
+      '[drop] auto singer missed the approved lyrics — re-singing once on the standard engine'
+    );
+    for (const dead of retriable) {
+      const take = rendered.find((item) => item.jobId === dead.id);
+      if (!take) throw err;
+      const redo = (await runChatTool({
+        ...ctx,
+        operationKey: `drop:${dropJobId}:resing:${dead.id}`,
+        name: 'create_beat_job',
+        args: { genre: input.genre, fusionGenres: input.fusionGenres, mood: input.mood, pinnedReferenceId: input.pinnedReferenceId, bpm: input.bpm, withVocals: input.withVocals, songEngine: 'minimax', influence: input.influence, languages: input.languages, voice: input.voice, vibePrompt: input.vibe, candidates: input.candidates, instruments: input.instruments, songId: take.songId },
+      })) as { jobId?: string; error?: string };
+      if (!redo?.jobId) throw err;
+      take.jobId = redo.jobId;
+      take.note = [take.note, 'the first singer missed the lyrics — re-sung on the standard engine'].filter(Boolean).join('; ');
+    }
+    directChildren = await waitForDropChildren(ctx, rendered.map((item) => item.jobId));
+  }
   app.log.info({ dropJobId, children: directChildren.length }, `[drop] render children terminal @${secs()}s`);
 
   // Every rendered song needs a persisted passing quality receipt. A corrective
