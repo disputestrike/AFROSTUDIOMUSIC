@@ -24,6 +24,7 @@ assert(musicTrainerEnabled() === false, 'unarmed: trainer disabled by default (t
 // default is not an armed default: ENABLED=1 still gates every naira.
 const dflt = musicTrainerConfig();
 assert(dflt?.model === 'sakemin/musicgen-fine-tuner', 'default trainer is the live-verified fine-tuner');
+assert(dflt?.version === 'b1ec6490e57013463006e928abc7acd8d623fe3e8321d3092e1231bf006898b1', 'default trainer pins the documented fine-tuning version');
 assert(dflt?.kind === 'training' && dflt?.datasetKey === 'dataset_path', 'default is destination-based with the verified dataset_path input');
 assert(
   dflt?.extraInput.model_version === 'small' &&

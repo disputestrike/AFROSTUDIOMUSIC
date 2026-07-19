@@ -58,7 +58,7 @@ export interface MusicTrainerConfig {
  *  epochs, batch_size. The owner's arming flag (MUSIC_TRAINER_ENABLED=1)
  *  remains the ONLY spend gate — a verified default is not an armed default. */
 const DEFAULT_TRAINER_MODEL = 'sakemin/musicgen-fine-tuner';
-const DEFAULT_TRAINER_VERSION = 'bc57274e2930af17c1d692516a4e6bd67618af425db3b2107c28c2100f031934';
+const DEFAULT_TRAINER_VERSION = 'b1ec6490e57013463006e928abc7acd8d623fe3e8321d3092e1231bf006898b1';
 
 /** Operator-configurable trainer; falls back to the live-verified default so
  *  the operator errand is ONE flag (MUSIC_TRAINER_ENABLED=1). Env overrides
