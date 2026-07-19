@@ -27,6 +27,7 @@ import {
   isMaterialRole,
   jobOf,
   materialCanAutoAssemble,
+  materialCoverage,
   materialGainFor,
   materialKeyScore,
   materialPanFor,
@@ -676,32 +677,15 @@ export async function processAssembleBeat(p: AssemblePayload) {
       throw new Error(
         "no bed material — forge drums/bass/chords for this genre first"
       );
-    const bedJobs = bedPicks.map(pick =>
-      isMaterialRole(pick.role)
-        ? jobOf(pick.role)
-        : (
-            {
-              drums: "rhythm",
-              percussion: "rhythm",
-              bass: "low_end",
-              log_drum: "low_end",
-              chords: "harmony",
-            } as Record<string, string>
-          )[pick.role]
-    );
-    const rhythmCount = bedJobs.filter(job => job === "rhythm").length;
-    const lowEndCount = bedJobs.filter(job => job === "low_end").length;
-    const tonalCount = bedJobs.filter(
-      job => job === "harmony" || job === "melody"
-    ).length;
-    if (
-      bedPicks.length < 5 ||
-      rhythmCount < 2 ||
-      lowEndCount < 1 ||
-      tonalCount < 1
-    ) {
+    // UNIFIED GATE (2026-07-19): use the SAME materialCoverage() as the parent
+    // own-engine gate (env-controlled OWN_ENGINE_MIN_BEDS, default 4) so the two
+    // can NEVER disagree. This child previously hardcoded `bedPicks.length < 5`,
+    // so a shelf that passed the parent at minBeds=4 was rejected HERE ->
+    // "grid assembly failed (see child job)". One source of truth now.
+    const cov = materialCoverage(picks);
+    if (!cov.ready) {
       throw new Error(
-        `material bed incomplete (beds=${bedPicks.length}, rhythm=${rhythmCount}, low-end=${lowEndCount}, tonal=${tonalCount})`
+        `material bed incomplete (beds=${cov.beds}, rhythm=${cov.rhythm}, low-end=${cov.lowEnd}, tonal=${cov.tonal})`
       );
     }
     // Pull every picked loop local.

@@ -607,11 +607,18 @@ export async function processOwnEngine(p: OwnEnginePayload): Promise<void> {
     } as never);
     const done = await prisma.providerJob.findUnique({
       where: { id: child.id },
-      select: { status: true, outputJson: true },
+      select: { status: true, outputJson: true, errorJson: true },
     });
     const out = (done?.outputJson ?? {}) as { beatId?: string; url?: string };
-    if (done?.status !== "SUCCEEDED" || !out.beatId || !out.url)
-      throw new Error("own-engine: grid assembly failed (see child job)");
+    if (done?.status !== "SUCCEEDED" || !out.beatId || !out.url) {
+      // Surface the CHILD's real reason (material bed incomplete / role purity /
+      // synth render fail…) instead of a blind "see child job", so the next
+      // failure names its own cause.
+      const childErr = (done?.errorJson as { message?: string } | null)?.message;
+      throw new Error(
+        `own-engine: grid assembly failed${childErr ? ` — ${childErr}` : " (see child job)"}`
+      );
+    }
     notes.push(
       `rhythm: assembled ${picks.map(x => x.role).join("+")} across ${sections.length} sections`
     );
