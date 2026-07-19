@@ -19,10 +19,10 @@ import {
 } from '../../../packages/shared/src/training-corpus';
 import {
   resolveTrainingConsent,
-  hashTrainingLicense,
   TRAINING_LICENSE_VERSION,
   TRAINING_LICENSE_CLAUSE,
 } from '../../../packages/shared/src/training-consent';
+import { hashTrainingLicense } from '../src/lib/training-license';
 
 // ── origin derivation ────────────────────────────────────────────────────────
 assert.equal(deriveTrainingOrigin({ id: 'a', engine: 'own_engine' }), 'own-master', 'own engine → own-master');

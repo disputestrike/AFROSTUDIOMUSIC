@@ -18,8 +18,13 @@
  * The clause TEXT below is the engineering default; the operator + counsel own
  * the final wording. Bump TRAINING_LICENSE_VERSION whenever the grant text
  * materially changes — a materially newer license requires fresh acceptance.
+ *
+ * BROWSER-SAFE: this module is re-exported from the shared barrel, which the
+ * Next.js web bundle imports — so it must NOT pull in any Node-only builtins
+ * (a `node:crypto` import here broke the web build). The SHA-256 hashing of the
+ * clause lives Node-side in apps/api/src/lib/training-license.ts; here we only
+ * COMPARE a supplied hash, which needs no crypto.
  */
-import { createHash } from 'node:crypto';
 
 /** Bump on any material change to the grant → forces re-acceptance. */
 export const TRAINING_LICENSE_VERSION = 'tl-2026-07-18';
@@ -37,11 +42,6 @@ export const TRAINING_LICENSE_CLAUSE = [
   'You may withdraw this grant for future training at any time; content already',
   'incorporated into a trained model cannot be retroactively removed from it.',
 ].join(' ');
-
-/** Stable hash of the exact clause the user accepted — tamper-evident receipt. */
-export function hashTrainingLicense(clause: string = TRAINING_LICENSE_CLAUSE): string {
-  return createHash('sha256').update(clause, 'utf8').digest('hex');
-}
 
 /** A recorded acceptance (what the DB row / ToS-acceptance event carries). */
 export interface TrainingConsentRecord {
