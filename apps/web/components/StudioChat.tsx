@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
+import { Component, useEffect, useRef, useState, type ReactNode } from 'react';
 import { useApi } from '@/lib/api';
 import { humanizeChatError, scrubVendorNames, type HumanChatError } from '@afrohit/shared';
 import { ArtifactCard } from './ArtifactCard';
@@ -408,7 +408,9 @@ export default function StudioChat({ projectId }: { projectId?: string }) {
           )}
           <div className="mx-auto max-w-3xl space-y-4">
             {messages.map((m) => (
-              <MessageBubble key={m.id} m={m} onAction={(p) => void sendText(p)} onRetry={retryLast} />
+              <BubbleBoundary key={m.id}>
+                <MessageBubble m={m} onAction={(p) => void sendText(p)} onRetry={retryLast} />
+              </BubbleBoundary>
             ))}
             {busy && (
               <div className="flex items-center gap-2 text-sm text-slate-400">
@@ -540,6 +542,28 @@ function ErrorCard({ error, onRetry }: { error: HumanChatError; onRetry?: () => 
       ) : null}
     </div>
   );
+}
+
+/**
+ * PER-MESSAGE ERROR BOUNDARY — one malformed message (a bad saved thread row, an
+ * unexpected tool payload) used to throw during render and take down the WHOLE
+ * chat page ("The chat hit a snag"). Now a single bad bubble degrades to a quiet
+ * placeholder and the rest of the conversation renders normally.
+ */
+class BubbleBoundary extends Component<{ children: ReactNode }, { failed: boolean }> {
+  state = { failed: false };
+  static getDerivedStateFromError() {
+    return { failed: true };
+  }
+  render() {
+    return this.state.failed ? (
+      <div className="mx-auto max-w-3xl px-3 py-2 text-xs italic text-slate-500">
+        (a message here couldn&rsquo;t display — your chat is safe)
+      </div>
+    ) : (
+      this.props.children
+    );
+  }
 }
 
 function MessageBubble({ m, onAction, onRetry }: { m: Message; onAction?: (prompt: string) => void; onRetry?: () => void }) {
