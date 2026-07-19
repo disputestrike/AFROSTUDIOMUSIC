@@ -44,11 +44,25 @@ export interface MusicTrainerConfig {
   extraInput: Record<string, unknown>;
 }
 
-/** Operator-configured trainer, or null when not set (we refuse rather than fake one). */
+/** DEFAULT TRAINER — LIVE-VERIFIED on replicate.com 2026-07-19 (same precedent
+ *  as voice-training.ts's pinned RVC trainer): sakemin/musicgen-fine-tuner —
+ *  fine-tunes MusicGen (melody/small/medium/stereo) from a dataset zip
+ *  (`dataset_path`, accepts .zip of .wav/.mp3/.flac), DESTINATION-based (the
+ *  trained model lands in OUR Replicate account — our weights), ~$0.085/run on
+ *  L40S, auto-labeling built in. Verified inputs: dataset_path,
+ *  one_same_description, auto_labeling, drop_vocals, model_version, lr,
+ *  epochs, batch_size. The owner's arming flag (MUSIC_TRAINER_ENABLED=1)
+ *  remains the ONLY spend gate — a verified default is not an armed default. */
+const DEFAULT_TRAINER_MODEL = 'sakemin/musicgen-fine-tuner';
+const DEFAULT_TRAINER_VERSION = 'b1ec6490e57013463006e928abc7acd8d623fe3e8321d3092e1231bf006898b1';
+
+/** Operator-configurable trainer; falls back to the live-verified default so
+ *  the operator errand is ONE flag (MUSIC_TRAINER_ENABLED=1). Env overrides
+ *  swap trainers without a deploy. */
 export function musicTrainerConfig(): MusicTrainerConfig | null {
-  const model = process.env.MUSIC_TRAINER_MODEL?.trim();
-  const version = process.env.MUSIC_TRAINER_VERSION?.trim();
-  if (!model || !version) return null; // honest: unconfigured trainer does not run
+  const model = process.env.MUSIC_TRAINER_MODEL?.trim() || DEFAULT_TRAINER_MODEL;
+  const version = process.env.MUSIC_TRAINER_VERSION?.trim() || DEFAULT_TRAINER_VERSION;
+  const usingDefault = model === DEFAULT_TRAINER_MODEL && !process.env.MUSIC_TRAINER_VERSION?.trim();
   let extraInput: Record<string, unknown> = {};
   const raw = process.env.MUSIC_TRAINER_EXTRA_INPUT?.trim();
   if (raw) {
@@ -64,11 +78,50 @@ export function musicTrainerConfig(): MusicTrainerConfig | null {
   return {
     model,
     version,
-    kind: process.env.MUSIC_TRAINER_KIND?.trim() === 'training' ? 'training' : 'prediction',
-    datasetKey: process.env.MUSIC_TRAINER_DATASET_KEY?.trim() || 'dataset_zip',
+    // The verified default is a DESTINATION-based trainer (weights land in our
+    // account); explicit env still overrides for prediction-style trainers.
+    kind: process.env.MUSIC_TRAINER_KIND?.trim()
+      ? (process.env.MUSIC_TRAINER_KIND.trim() === 'training' ? 'training' : 'prediction')
+      : usingDefault ? 'training' : 'prediction',
+    datasetKey: process.env.MUSIC_TRAINER_DATASET_KEY?.trim() || (usingDefault ? 'dataset_path' : 'dataset_zip'),
     destination: process.env.MUSIC_TRAINER_DESTINATION?.trim() || undefined,
     extraInput,
   };
+}
+
+/** Resolve (and if needed CREATE, private) the destination model in our
+ *  Replicate account — so the trained weights have a home without an operator
+ *  errand. Returns the "owner/name" path or null (with reason logged upstream). */
+export async function ensureTrainingDestination(token: string, explicit?: string): Promise<string | null> {
+  if (explicit) return explicit;
+  try {
+    const acct = await fetch('https://api.replicate.com/v1/account', {
+      headers: { authorization: `Bearer ${token}` },
+    });
+    if (!acct.ok) return null;
+    const { username } = (await acct.json()) as { username?: string };
+    if (!username) return null;
+    const name = process.env.MUSIC_TRAINER_DESTINATION_NAME?.trim() || 'afrohit-music';
+    const dest = `${username}/${name}`;
+    const existing = await fetch(`https://api.replicate.com/v1/models/${dest}`, {
+      headers: { authorization: `Bearer ${token}` },
+    });
+    if (existing.ok) return dest;
+    const created = await fetch('https://api.replicate.com/v1/models', {
+      method: 'POST',
+      headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+      body: JSON.stringify({
+        owner: username,
+        name,
+        visibility: 'private', // our weights, our corpus — never public by default
+        hardware: 'gpu-l40s',
+        description: 'AfroHit own music model — fine-tuned ONLY on the rights-clean corpus (own-master/licensed/live).',
+      }),
+    });
+    return created.ok ? dest : null;
+  } catch {
+    return null;
+  }
 }
 
 export interface TrainerDataset {
@@ -140,10 +193,18 @@ export async function kickoffMusicTraining(opts: {
     cfg.kind === 'training'
       ? `https://api.replicate.com/v1/models/${cfg.model}/versions/${cfg.version}/trainings`
       : 'https://api.replicate.com/v1/predictions';
-  if (cfg.kind === 'training' && !cfg.destination) {
-    return { started: false, reason: 'destination-based trainer needs MUSIC_TRAINER_DESTINATION' };
+  // Destination auto-resolve (owner: "we have a setup already — check first"):
+  // the account IS the setup. When no MUSIC_TRAINER_DESTINATION is set, the
+  // destination model is resolved from the token's own account and created
+  // (PRIVATE) if missing — the trained weights land in OUR account, no errand.
+  let destination = cfg.destination;
+  if (cfg.kind === 'training' && !destination) {
+    destination = (await ensureTrainingDestination(token)) ?? undefined;
+    if (!destination) {
+      return { started: false, reason: 'could not resolve/create the destination model in the Replicate account (set MUSIC_TRAINER_DESTINATION to override)' };
+    }
   }
-  const body = cfg.kind === 'training' ? { destination: cfg.destination, input } : { version: cfg.version, input };
+  const body = cfg.kind === 'training' ? { destination, input } : { version: cfg.version, input };
   const res = await fetch(url, {
     method: 'POST',
     headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },

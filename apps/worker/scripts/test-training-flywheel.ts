@@ -17,12 +17,17 @@ function assert(cond: boolean, msg: string) {
 delete process.env.MUSIC_TRAINER_ENABLED;
 delete process.env.MUSIC_TRAINER_MODEL;
 delete process.env.MUSIC_TRAINER_VERSION;
-assert(musicTrainerEnabled() === false, 'unarmed: trainer disabled by default');
-assert(musicTrainerConfig() === null, 'unconfigured: no fake trainer is ever invented');
+assert(musicTrainerEnabled() === false, 'unarmed: trainer disabled by default (the ONLY spend gate)');
+// The default trainer is LIVE-VERIFIED (sakemin/musicgen-fine-tuner, checked on
+// replicate.com 2026-07-19) — so the operator errand is ONE flag. A verified
+// default is not an armed default: ENABLED=1 still gates every naira.
+const dflt = musicTrainerConfig();
+assert(dflt?.model === 'sakemin/musicgen-fine-tuner', 'default trainer is the live-verified fine-tuner');
+assert(dflt?.kind === 'training' && dflt?.datasetKey === 'dataset_path', 'default is destination-based with the verified dataset_path input');
 process.env.MUSIC_TRAINER_ENABLED = '1';
 process.env.MUSIC_TRAINER_MODEL = 'owner/music-model';
 process.env.MUSIC_TRAINER_VERSION = 'abc123';
-assert(musicTrainerEnabled() === true && musicTrainerConfig()?.model === 'owner/music-model', 'armed: flag + model/version turn it on');
+assert(musicTrainerEnabled() === true && musicTrainerConfig()?.model === 'owner/music-model', 'explicit env overrides the default trainer');
 assert(minCorpusSize() >= 1, 'corpus minimum present');
 
 // --- RIGHTS LAW (shared pure code — one law, api + worker) -------------------
