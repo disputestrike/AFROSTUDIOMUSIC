@@ -204,10 +204,13 @@ function assertOwnEngineRoutingIsLossless(): void {
       { ...testCase.input, songEngine: "own" },
       testCase.trainingReferenceCount ?? 0,
     );
+    // Owner directive (2026-07-19): Our Engine is the default and must ALWAYS
+    // render when explicitly chosen — it IGNORES controls it can't honor yet
+    // (still reported in unsupportedControls) instead of rejecting the job.
     assert.equal(
       explicit.mode,
-      "reject",
-      `explicit Own Engine must fail closed for ${testCase.expected}`,
+      "own",
+      `explicit Our Engine must render (never reject) despite ${testCase.expected}`,
     );
     assert.ok(explicit.unsupportedControls.includes(testCase.expected));
   }

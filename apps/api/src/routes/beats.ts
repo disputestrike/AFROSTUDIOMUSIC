@@ -41,7 +41,9 @@ export interface OwnEngineRoutingInput {
 }
 
 export type OwnEngineRoutingDecision =
-  | { mode: 'own'; unsupportedControls: [] }
+  // 'own' now carries the controls it will IGNORE (owner directive: Our Engine
+  // always renders when explicitly chosen; it never rejects).
+  | { mode: 'own'; unsupportedControls: string[] }
   | { mode: 'auto-candidate'; unsupportedControls: [] }
   | { mode: 'provider'; unsupportedControls: string[] }
   | { mode: 'reject'; unsupportedControls: string[] };
@@ -70,9 +72,12 @@ export function resolveOwnEngineRouting(
 ): OwnEngineRoutingDecision {
   const unsupportedControls = unsupportedOwnEngineControls(input, trainingReferenceCount);
   if (input.songEngine === 'own') {
-    return unsupportedControls.length
-      ? { mode: 'reject', unsupportedControls }
-      : { mode: 'own', unsupportedControls: [] };
+    // Owner directive (2026-07-19): "Our Engine is the default and must work for
+    // anything." When it's EXPLICITLY chosen it must ALWAYS render — it simply
+    // ignores the controls it can't honor yet (mood/vibePrompt/trainingReferences;
+    // the own-engine worker never reads them) instead of rejecting the job. The
+    // ignored controls are still reported so the UI can note them, softly.
+    return { mode: 'own', unsupportedControls };
   }
   if (input.songEngine || input.withVocals || unsupportedControls.length) {
     return { mode: 'provider', unsupportedControls };
