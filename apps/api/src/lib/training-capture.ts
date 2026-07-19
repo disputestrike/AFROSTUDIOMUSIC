@@ -10,7 +10,7 @@
  * record exists the resolver fails closed, so user-original shows as
  * pending-consent rather than being silently treated as trainable.
  */
-import { prisma } from '@afrohit/db';
+import { isOutsideRenderLearningEnabled, prisma } from '@afrohit/db';
 import { beatIngredientIds, manifestFromCatalog, type TrainingManifest } from '@afrohit/shared';
 
 export {
@@ -78,6 +78,10 @@ export async function buildWorkspaceTrainingManifest(opts: {
       : row;
   });
 
-  const manifest = manifestFromCatalog({ materials, beats: enrichedBeats, vocals }, consentGranted);
+  // OUTSIDE-RENDER LEARNING: operator toggle (SystemSetting, fail-closed).
+  // When ON, third-party renders classify eligible but KEEP their
+  // 'third-party-render' origin label — provenance is never laundered.
+  const allowThirdPartyRenders = await isOutsideRenderLearningEnabled();
+  const manifest = manifestFromCatalog({ materials, beats: enrichedBeats, vocals }, consentGranted, { allowThirdPartyRenders });
   return { ...manifest, scannedWorkspace: opts.workspaceId ?? 'ALL' };
 }

@@ -82,6 +82,40 @@ export async function setAutonomyEnabled(
   });
   _flagCache.set(key, { on: enabled, at: Date.now() });
 }
+/**
+ * OUTSIDE-RENDER LEARNING (owner order 2026-07-19: "our engine has to learn —
+ * slacken the no-outside rule, I need to turn it on and off"). Admits
+ * third-party-engine renders (MiniMax/Suno/ACE-step/...) as training fuel when
+ * ON. Ships OFF; DB failure fails CLOSED (the protective default). Flipping it
+ * is the operator accepting the ToS risk — every flip is audit-logged by the
+ * admin route, and manifests keep the third-party-render provenance label so
+ * what trained the weights stays provable. A later OFF stops new fuel but
+ * cannot make a model unlearn.
+ */
+const OUTSIDE_LEARNING_KEY = "training.allowThirdParty.v1";
+export async function isOutsideRenderLearningEnabled(): Promise<boolean> {
+  const cached = _flagCache.get(OUTSIDE_LEARNING_KEY);
+  const now = Date.now();
+  if (cached && now - cached.at < 30_000) return cached.on;
+  let on = false;
+  try {
+    const row = await prisma.systemSetting.findUnique({ where: { key: OUTSIDE_LEARNING_KEY } });
+    on = row?.value === "on";
+  } catch {
+    on = false;
+  }
+  _flagCache.set(OUTSIDE_LEARNING_KEY, { on, at: now });
+  return on;
+}
+export async function setOutsideRenderLearning(enabled: boolean): Promise<void> {
+  await prisma.systemSetting.upsert({
+    where: { key: OUTSIDE_LEARNING_KEY },
+    create: { key: OUTSIDE_LEARNING_KEY, value: enabled ? "on" : "off" },
+    update: { value: enabled ? "on" : "off" },
+  });
+  _flagCache.set(OUTSIDE_LEARNING_KEY, { on: enabled, at: Date.now() });
+}
+
 export async function allAutonomyFlags(): Promise<
   Record<AutonomyJob, boolean>
 > {

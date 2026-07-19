@@ -1019,15 +1019,18 @@ export function defaultSongEngine(): string {
     const configured = process.env.SONG_ENGINE.toLowerCase();
     return configured === 'replicate' ? 'minimax' : configured;
   }
-  // OWNER ORDER (2026-07-19, superseding the 2026-07-11 fal removal): with the
-  // owner's fal account connected, the open ACE-Step (fal route, ~$0.036/song,
-  // MIT weights) is the DEFAULT singer — 3x cheaper than minimax and the
-  // strategic open-engine path. SONG_ENGINE env above stays the override lever
-  // (SONG_ENGINE=minimax flips back instantly if the bake-off disappoints).
-  if (process.env.FAL_KEY) return 'ace_step';
+  // BAKE-OFF VERDICT (owner's ear, 2026-07-19 evening — supersedes the same
+  // morning's ace_step-default order): the tuned ACE-Step take passed the
+  // LYRIC gate (64%) but the owner judged the production "terrible — no beats,
+  // no drums, scattered". Per this codebase's own doctrine the measured
+  // bake-off decides, and the owner's listen IS the bake-off: minimax holds
+  // the default singer again. ACE-Step stays fully wired (explicit Standard B
+  // pick + the fal route) for the next tuning round; SONG_ENGINE env remains
+  // the override lever either way.
+  if (replicateToken()) return 'minimax';
   if (sunoKey()) return 'suno';
   if (elevenKey()) return 'eleven';
-  if (replicateToken()) return 'minimax';
+  if (process.env.FAL_KEY) return 'ace_step';
   return 'unavailable';
 }
 

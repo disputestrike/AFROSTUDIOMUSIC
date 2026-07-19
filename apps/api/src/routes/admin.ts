@@ -12,12 +12,14 @@ import * as db from '@afrohit/db';
  *  exports, so the autonomy helpers are pulled through a typed view of the
  *  module. The union + signatures mirror packages/db/src/index.ts exactly. */
 type AutonomyJob = 'morning_drop' | 'zap_radar' | 'nightly_compound' | 'will_it_blow';
-const { allAutonomyFlags, setAutonomyEnabled } = db as unknown as {
+const { allAutonomyFlags, setAutonomyEnabled, isOutsideRenderLearningEnabled, setOutsideRenderLearning } = db as unknown as {
   allAutonomyFlags(): Promise<Record<AutonomyJob, boolean>>;
   setAutonomyEnabled(job: AutonomyJob, enabled: boolean): Promise<void>;
+  isOutsideRenderLearningEnabled(): Promise<boolean>;
+  setOutsideRenderLearning(enabled: boolean): Promise<void>;
 };
 import { isInternalMode, requireAuth } from '../middleware/auth';
-import { validAdminGrant } from '../lib/session';
+import { sessionCookie, signSession, validAdminGrant } from '../lib/session';
 import { GENRES, isFirstPartyWorkspace, resolveEngineForWorkspace, TRAINING_LICENSE_CLAUSE, TRAINING_LICENSE_VERSION } from '@afrohit/shared';
 import { hashTrainingLicense, resolveWorkspaceTrainingConsent } from '../lib/training-license';
 import { createQueuedProviderJob, scopedRequestKey } from '../lib/queued-job';
@@ -84,10 +86,30 @@ export default async function admin(app: FastifyInstance) {
       scannedWorkspace: manifest.scannedWorkspace,
       consentApplied,
       consent: { ...recorded, ...(preview ? { previewOverride: true } : {}) },
+      outsideRenderLearning: await isOutsideRenderLearningEnabled(),
       trainableNow: manifest.eligible.length,
       counts: manifest.counts,
       rejectedSample: manifest.rejected.slice(0, 25),
     });
+  });
+
+  /**
+   * OUTSIDE-RENDER LEARNING TOGGLE (owner order 2026-07-19: "our engine has to
+   * learn — slacken the no-outside rule, I need to turn it on and off"). ON
+   * admits third-party-engine renders as training fuel. The risk is the
+   * operator's and is stated on the switch: MiniMax/Suno ToS forbid training a
+   * competing model on their output, and a later OFF stops new fuel but cannot
+   * make trained weights unlearn. Ships OFF; every flip is audit-logged with
+   * the acting admin; manifests keep the third-party-render label either way.
+   */
+  const outsideLearningSchema = z.object({ enabled: z.boolean() });
+  app.post('/training/outside-learning', { schema: { body: outsideLearningSchema } }, async (req, reply) => {
+    await requireAdmin(req);
+    const { userId } = requireAuth(req);
+    const { enabled } = outsideLearningSchema.parse(req.body);
+    req.log.warn({ adminUserId: userId, enabled }, '[admin] OUTSIDE-RENDER LEARNING flipped');
+    await setOutsideRenderLearning(enabled);
+    return reply.send({ outsideRenderLearning: enabled });
   });
 
   /**
@@ -366,13 +388,11 @@ export default async function admin(app: FastifyInstance) {
         bridgeAvailable: sunoAvailable && firstParty,
       },
       renderRouting: {
-        locked: process.env.FAL_KEY
-          ? 'owner-approved: fal re-entered 2026-07-19 (owner order — ACE-Step default singer via the owner\'s fal account); SONG_ENGINE env overrides; quality bake-off vs minimax still owed'
-          : 'replicate (owner-approved configuration; fal re-enters when FAL_KEY is set — owner order 2026-07-19)',
+        locked: 'minimax holds the default singer (owner\'s ear, bake-off 2026-07-19: tuned ACE-Step passed the lyric gate but failed the listen — "no beats, no drums"); ACE-Step stays explicit-pickable (Standard B) on the fal route; SONG_ENGINE env overrides',
         adapters: {
           ace_step: process.env.FAL_KEY
-            ? 'open ACE-Step via fal.ai (~$0.036/song, owner credits) — DEFAULT singer; Replicate fallback'
-            : 'lucataco/ace-step via Replicate (~$0.10); becomes the fal default when FAL_KEY is set',
+            ? 'open ACE-Step via fal.ai (~$0.036/song, owner credits) — explicit pick / last-resort default; failed the owner listen 2026-07-19'
+            : 'lucataco/ace-step via Replicate (~$0.10); fal route engages when FAL_KEY is set',
           minimax: 'minimax/music-2.6 via Replicate (~$0.12)',
           musicgen: 'MusicGen via Replicate (melody topping — opt-in only)',
           eleven: 'Eleven Music v2 when the approved route is enabled',
@@ -656,6 +676,37 @@ export default async function admin(app: FastifyInstance) {
       data: { suspendedAt: null },
     });
     return { id: ws.id, suspendedAt: null };
+  });
+
+  // ENTER STUDIO (owner ask 2026-07-19: "give me access directly from the admin
+  // to any of these studios — one click, logged in"). Mints a SHORT (2h) session
+  // as the studio's owner member and swaps the caller's cookie for it — a
+  // support window, not a resident identity. Admin-gated and audit-logged with
+  // the acting admin's identity. Returning to the admin account = normal sign-in
+  // (the browser holds ONE session cookie; entering replaces it).
+  app.post<{ Params: { id: string } }>('/workspaces/:id/enter', async (req, reply) => {
+    await requireAdmin(req);
+    const { userId: adminUserId } = requireAuth(req);
+    const membership =
+      (await prisma.workspaceMember.findFirst({
+        where: { workspaceId: req.params.id, role: 'OWNER' },
+        orderBy: { createdAt: 'asc' },
+        select: { userId: true, role: true, user: { select: { email: true } }, workspace: { select: { id: true, name: true } } },
+      })) ??
+      (await prisma.workspaceMember.findFirst({
+        where: { workspaceId: req.params.id },
+        orderBy: { createdAt: 'asc' },
+        select: { userId: true, role: true, user: { select: { email: true } }, workspace: { select: { id: true, name: true } } },
+      }));
+    if (!membership) return reply.code(404).send({ error: 'workspace_has_no_members' });
+    const TTL = 2 * 60 * 60;
+    req.log.warn(
+      { adminUserId, workspaceId: membership.workspace.id, asUserId: membership.userId, asEmail: membership.user.email },
+      '[admin] ENTER STUDIO — support session minted'
+    );
+    const token = signSession({ sub: membership.userId, workspaceId: membership.workspace.id, role: membership.role }, TTL);
+    reply.header('set-cookie', sessionCookie(token, TTL));
+    return { ok: true, workspaceId: membership.workspace.id, workspaceName: membership.workspace.name, asEmail: membership.user.email };
   });
 
   /** Re-enqueue a failed job from its persisted inputJson. */

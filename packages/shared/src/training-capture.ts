@@ -11,6 +11,7 @@ import {
   buildTrainingManifest,
   type AssetProvenance,
   type TrainingManifest,
+  type TrainingPolicy,
 } from './training-corpus';
 
 /** MaterialAsset (instrument/beat loop) → provenance. */
@@ -119,11 +120,15 @@ export function beatIngredientIds(meta: unknown): string[] {
  * resolved training-license verdict for THIS workspace (applied to user-original
  * assets). Fully testable without a DB.
  */
-export function manifestFromCatalog(input: CaptureInput, consentGranted: boolean): TrainingManifest {
+export function manifestFromCatalog(
+  input: CaptureInput,
+  consentGranted: boolean,
+  policy?: TrainingPolicy
+): TrainingManifest {
   const rows: AssetProvenance[] = [
     ...input.materials.map((m) => materialToProvenance({ ...m, consentGranted })),
     ...input.beats.map((b) => beatToProvenance({ ...b, consentGranted })),
     ...input.vocals.map((v) => vocalToProvenance({ ...v, consentGranted })),
   ];
-  return buildTrainingManifest(rows);
+  return buildTrainingManifest(rows, policy);
 }

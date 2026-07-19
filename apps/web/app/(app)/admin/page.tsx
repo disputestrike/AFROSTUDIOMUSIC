@@ -112,6 +112,22 @@ function AdminPageInner() {
     }
   }
 
+  // ENTER STUDIO — one click, logged into that workspace as its owner (2h
+  // support session; the API swaps THIS browser's session cookie, so coming
+  // back to the operator account = sign in again as yourself).
+  async function enterStudio(row: WorkspaceRow) {
+    if (!confirm(`Enter "${row.name}" as its owner? Your current session is replaced (sign back in as yourself to return).`)) return;
+    setBusy(row.id);
+    setActionErr('');
+    try {
+      await api.post(`/admin/workspaces/${row.id}/enter`, {});
+      window.location.href = '/catalog';
+    } catch (e) {
+      setActionErr(actionErrText('Enter studio failed', e));
+      setBusy(null);
+    }
+  }
+
   if (needsKey) {
     return (
       <div className="mx-auto max-w-md px-6 py-20 text-center">
@@ -218,6 +234,13 @@ function AdminPageInner() {
               <td className="space-x-2">
                 <button
                   disabled={busy === r.id}
+                  onClick={() => void enterStudio(r)}
+                  className="rounded-full bg-brand-gradient px-3 py-1 text-xs font-medium text-ink disabled:opacity-50"
+                >
+                  Enter studio →
+                </button>
+                <button
+                  disabled={busy === r.id}
                   onClick={() => void grant(r.id)}
                   className="rounded-full border border-slate-700 px-3 py-1 text-xs hover:border-afrobrand-500 disabled:opacity-50"
                 >
@@ -270,6 +293,7 @@ function TrainingConsentCard() {
   const [status, setStatus] = useState<{
     granted: boolean; current?: boolean; version?: string; reason?: string;
     trainableNow?: number; total?: number; byOrigin?: Record<string, number>;
+    outsideLearning?: boolean;
   } | null>(null);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
@@ -280,7 +304,7 @@ function TrainingConsentCard() {
       const id = me.workspaceId ?? null;
       setWsId(id);
       if (!id) return;
-      const m = await api.get<{ consent?: { granted?: boolean; current?: boolean; version?: string; reason?: string }; trainableNow?: number; counts?: { total?: number; byOrigin?: Record<string, number> } }>(`/admin/training/manifest?workspaceId=${id}`);
+      const m = await api.get<{ consent?: { granted?: boolean; current?: boolean; version?: string; reason?: string }; outsideRenderLearning?: boolean; trainableNow?: number; counts?: { total?: number; byOrigin?: Record<string, number> } }>(`/admin/training/manifest?workspaceId=${id}`);
       setStatus({
         granted: !!m.consent?.granted,
         current: m.consent?.current,
@@ -289,11 +313,26 @@ function TrainingConsentCard() {
         trainableNow: m.trainableNow,
         total: m.counts?.total,
         byOrigin: m.counts?.byOrigin,
+        outsideLearning: !!m.outsideRenderLearning,
       });
     } catch (e) { setErr((e as Error).message.slice(0, 140)); }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
   useEffect(() => { void load(); }, [load]);
+
+  // OUTSIDE-RENDER LEARNING (owner switch): admits MiniMax/Suno-era renders as
+  // training fuel. Owner's call, owner's risk — the confirm states it plainly,
+  // and turning it OFF later stops new fuel but cannot un-train weights.
+  async function flipOutsideLearning(enabled: boolean) {
+    const warning = enabled
+      ? 'Turn ON learning from outside-engine renders?\n\nThis admits MiniMax/Suno-era songs as training fuel. Their terms forbid training a competing model on their output — flipping this ON is accepting that risk, and a model cannot UNLEARN later. Every flip is logged.'
+      : 'Turn OFF outside-render learning? New training runs go back to rights-clean fuel only (already-trained weights keep what they learned).';
+    if (!confirm(warning)) return;
+    setBusy(true); setErr('');
+    try { await api.post('/admin/training/outside-learning', { enabled }); await load(); }
+    catch (e) { setErr((e as Error).message.slice(0, 140)); }
+    setBusy(false);
+  }
 
   async function grant() {
     if (!wsId) return;
@@ -332,10 +371,14 @@ function TrainingConsentCard() {
               {origin.replace(/-/g, ' ')}: {n}
             </span>
           ))}
-          <span className="text-slate-500">— third-party renders (MiniMax/Suno-era songs) can NEVER be fuel: their terms, your protection.</span>
+          <span className="text-slate-500">
+            {status?.outsideLearning
+              ? '— OUTSIDE-RENDER LEARNING IS ON: MiniMax/Suno-era songs count as fuel (operator override, labeled in every manifest).'
+              : '— third-party renders (MiniMax/Suno-era songs) are not fuel while the switch below is OFF: their terms, your protection.'}
+          </span>
         </div>
       )}
-      <div className="mt-4 flex gap-3">
+      <div className="mt-4 flex flex-wrap items-center gap-3">
         {!granted ? (
           <button onClick={() => void grant()} disabled={busy || !wsId}
             className="rounded-full bg-brand-gradient px-5 py-2.5 text-sm font-medium text-ink shadow-glow disabled:opacity-50">
@@ -347,9 +390,13 @@ function TrainingConsentCard() {
             {busy ? 'Withdrawing…' : 'Withdraw (future training only)'}
           </button>
         )}
+        <button onClick={() => void flipOutsideLearning(!status?.outsideLearning)} disabled={busy || !status}
+          className={`rounded-full px-5 py-2.5 text-sm font-medium disabled:opacity-50 ${status?.outsideLearning ? 'bg-amber-500/20 text-amber-200 border border-amber-500/40' : 'border border-slate-700 text-slate-300'}`}>
+          {status?.outsideLearning ? '⚠ Outside-render learning: ON — click to turn OFF' : 'Outside-render learning: OFF — click to turn ON'}
+        </button>
       </div>
       {err && <div className="mt-3 rounded-lg border border-red-500/40 bg-red-500/10 p-3 text-xs text-red-300">{err}</div>}
-      <p className="mt-3 text-[11px] text-slate-500">Granting records the exact license text (hashed) under your admin identity. The nightly flywheel then counts this workspace&apos;s own uploads, masters and vocals as training fuel. Third-party engine renders are never fuel, grant or no grant.</p>
+      <p className="mt-3 text-[11px] text-slate-500">Granting records the exact license text (hashed) under your admin identity. The nightly flywheel then counts this workspace&apos;s own uploads, masters and vocals as training fuel. The outside-render switch is yours: OFF keeps the rights-clean line (their ToS forbid training on their output); ON admits those renders as fuel, every flip is logged, and manifests always label their origin honestly. A later OFF stops new fuel but trained weights don&apos;t forget.</p>
     </section>
   );
 }

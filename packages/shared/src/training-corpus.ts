@@ -118,11 +118,29 @@ export interface EligibilityVerdict {
 }
 
 /**
+ * OPERATOR TRAINING POLICY (owner order 2026-07-19: "our engine has to learn —
+ * slacken the no-outside-learning rule, I need to turn it on and off").
+ *
+ * `allowThirdPartyRenders` admits third-party-engine output as training fuel.
+ * It ships OFF and is an EXPLICIT operator decision (admin console toggle,
+ * SystemSetting-backed, audit-logged) — never an env default, never inferred.
+ * The risk is the operator's, stated on the switch: MiniMax/Suno ToS forbid
+ * training competing models on their output, and a model cannot UNLEARN after
+ * the fact — flipping OFF later stops new fuel but does not purge weights.
+ * Provenance is never laundered: an admitted third-party render keeps its
+ * 'third-party-render' origin label in every manifest, so what trained the
+ * weights stays provable either way.
+ */
+export interface TrainingPolicy {
+  allowThirdPartyRenders?: boolean;
+}
+
+/**
  * Can this asset train our weights? Reuses the W-5 provenance gate for the clean
  * three; adds the consent requirement for user-original; refuses everything else
  * with a plain reason (nothing is silently dropped).
  */
-export function trainingEligibility(a: AssetProvenance): EligibilityVerdict {
+export function trainingEligibility(a: AssetProvenance, policy?: TrainingPolicy): EligibilityVerdict {
   const origin = deriveTrainingOrigin(a);
   switch (origin) {
     case 'own-master':
@@ -143,10 +161,17 @@ export function trainingEligibility(a: AssetProvenance): EligibilityVerdict {
             reason: `track ${a.id}: user-original content needs an explicit training-license grant (consentGranted) before it can train our weights`,
           };
     case 'third-party-render':
+      if (policy?.allowThirdPartyRenders === true) {
+        return {
+          eligible: true,
+          origin, // label survives — the manifest shows exactly what this is
+          reason: `track ${a.id}: admitted by OPERATOR OVERRIDE (outside-render learning ON) — third-party-engine output, ToS risk accepted by the operator`,
+        };
+      }
       return {
         eligible: false,
         origin,
-        reason: `track ${a.id}: third-party-engine output (MiniMax/Suno/ACE-step/MusicGen) — their ToS forbids training a competing model on it; render on our OWN engine to make it trainable`,
+        reason: `track ${a.id}: third-party-engine output (MiniMax/Suno/ACE-step/MusicGen) — their ToS forbids training a competing model on it; render on our OWN engine to make it trainable (or the operator flips outside-render learning ON)`,
       };
     case 'unknown':
     default:
@@ -174,12 +199,12 @@ export interface TrainingManifest {
  * to show exactly what it trained on and what it refused, so "rights-clean
  * weights" is provable, not asserted.
  */
-export function buildTrainingManifest(rows: AssetProvenance[]): TrainingManifest {
+export function buildTrainingManifest(rows: AssetProvenance[], policy?: TrainingPolicy): TrainingManifest {
   const eligible: TrainingManifest['eligible'] = [];
   const rejected: TrainingManifest['rejected'] = [];
   const byOrigin: Record<string, number> = {};
   for (const row of rows) {
-    const v = trainingEligibility(row);
+    const v = trainingEligibility(row, policy);
     byOrigin[v.origin] = (byOrigin[v.origin] ?? 0) + 1;
     if (v.eligible) eligible.push({ id: row.id, origin: v.origin });
     else rejected.push({ id: row.id, origin: v.origin, reason: v.reason ?? 'ineligible' });

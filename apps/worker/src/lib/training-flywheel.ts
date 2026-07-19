@@ -16,7 +16,7 @@
  * arms it and the shelf is big enough. Every run files a providerJob receipt
  * (kind 'music-training') so kickoffs are auditable.
  */
-import { prisma } from "@afrohit/db";
+import { isOutsideRenderLearningEnabled, prisma } from "@afrohit/db";
 import JSZip from "jszip";
 import { createHash } from "node:crypto";
 import {
@@ -142,9 +142,15 @@ async function liveManifest(): Promise<{
   const m = split(materials, r => r.workspaceId);
   const b = split(enrichedBeats, r => r.project?.workspaceId);
   const v = split(vocals, r => r.project?.workspaceId);
+  // OUTSIDE-RENDER LEARNING: same operator toggle the API manifest honors —
+  // one law, two callers, zero drift. Fail-closed; provenance labels survive.
+  const policy = { allowThirdPartyRenders: await isOutsideRenderLearningEnabled() };
+  if (policy.allowThirdPartyRenders) {
+    console.warn("[flywheel] OUTSIDE-RENDER LEARNING is ON (operator override) — third-party renders admitted as fuel, labeled third-party-render");
+  }
   const manifest = mergeManifests(
-    manifestFromCatalog({ materials: m.yes, beats: b.yes, vocals: v.yes }, true),
-    manifestFromCatalog({ materials: m.no, beats: b.no, vocals: v.no }, false)
+    manifestFromCatalog({ materials: m.yes, beats: b.yes, vocals: v.yes }, true, policy),
+    manifestFromCatalog({ materials: m.no, beats: b.no, vocals: v.no }, false, policy)
   );
   const urlById = new Map<string, string>();
   for (const row of materials) urlById.set(`material:${row.id}`, row.url);

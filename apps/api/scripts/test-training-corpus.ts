@@ -65,11 +65,36 @@ assert.match(noConsent.reason ?? '', /training-license grant|consent/i, 'refusal
 const withConsent = trainingEligibility({ id: 'u2', materialSource: 'upload', rightsBasis: 'user-attested', consentGranted: true });
 assert.equal(withConsent.eligible, true, 'user-original WITH consent is trainable (the unlock)');
 
-// the guard that protects the company
+// the guard that protects the company (default: switch OFF)
 const mm = trainingEligibility({ id: 'm1', engine: 'minimax' });
-assert.equal(mm.eligible, false, 'MiniMax render is NEVER trainable');
+assert.equal(mm.eligible, false, 'MiniMax render is not trainable while the outside switch is OFF (the default)');
 assert.match(mm.reason ?? '', /ToS|third-party|own engine/i, 'refusal explains WHY + the own-engine path');
 assert.equal(trainingEligibility({ id: 'z' }).eligible, false, 'unknown provenance refused (fail-closed)');
+
+// ── OUTSIDE-RENDER LEARNING (owner switch, 2026-07-19) ──────────────────────
+// ON admits third-party renders — but the origin LABEL survives (provenance is
+// never laundered) and the verdict names the operator override.
+const mmOn = trainingEligibility({ id: 'm2', engine: 'minimax' }, { allowThirdPartyRenders: true });
+assert.equal(mmOn.eligible, true, 'switch ON admits a third-party render');
+assert.equal(mmOn.origin, 'third-party-render', 'admitted render KEEPS its third-party-render label');
+assert.match(mmOn.reason ?? '', /operator|override/i, 'admission names the operator override');
+// The switch slackens ONLY the third-party line — everything else stays law:
+assert.equal(
+  trainingEligibility({ id: 'z2' }, { allowThirdPartyRenders: true }).eligible,
+  false,
+  'unknown provenance STILL refused with the switch ON (fail-closed is not negotiable)'
+);
+assert.equal(
+  trainingEligibility({ id: 'u3', materialSource: 'upload', rightsBasis: 'user-attested' }, { allowThirdPartyRenders: true }).eligible,
+  false,
+  'user-original consent gate unaffected by the outside switch'
+);
+const manifestOn = buildTrainingManifest(
+  [{ id: 'mm', engine: 'minimax' }, { id: 'huh2', engine: 'mystery-box' }],
+  { allowThirdPartyRenders: true }
+);
+assert.equal(manifestOn.eligible.length, 1, 'manifest with switch ON admits only the third-party render, not the unknown');
+assert.equal(manifestOn.counts.byOrigin['third-party-render'], 1, 'byOrigin still counts it as third-party-render');
 
 // ── manifest: eligible + rejected both reported, nothing silently dropped ────
 const manifest = buildTrainingManifest([

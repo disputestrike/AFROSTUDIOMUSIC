@@ -60,20 +60,20 @@ export function resolveEngineForWorkspace(
   // OWN MODEL FIRST when the flag is on — our own engine is the default customer
   // render path (still resellable + rights-clean by construction). Falls through
   // to the rented engines only when own-first is off.
-  // OWNER ORDER 2026-07-19 (supersedes the 2026-07-11 fal removal AND the
-  // "minimax holds the standard route" note above for accounts with fal
-  // connected): the open ACE-Step on the owner's fal account (~$0.036/song,
-  // MIT weights) is the default singer. SONG_ENGINE / an explicit request
-  // still wins; the quality bake-off vs minimax remains owed and one env
-  // (SONG_ENGINE=minimax) rolls back instantly.
+  // BAKE-OFF VERDICT (owner's ear, 2026-07-19 evening — supersedes the same
+  // morning's fal-default order): tuned ACE-Step passed the lyric gate but the
+  // owner judged the sound "terrible — no beats, no drums, scattered", so
+  // minimax holds the default singer again. ACE-Step remains available for
+  // explicit picks (dual-route below) and as the last-resort default when no
+  // replicate/eleven route exists. SONG_ENGINE / explicit requests still win.
   const bestResellable = ownEngineFirst
     ? 'own_engine'
-    : falAvailable
-      ? 'ace_step'
-      : replicateAvailable
-        ? 'minimax'
-        : opts.elevenAvailable
-          ? 'eleven'
+    : replicateAvailable
+      ? 'minimax'
+      : opts.elevenAvailable
+        ? 'eleven'
+        : falAvailable
+          ? 'ace_step'
           : 'unavailable';
   const normalizedRequested = requested === 'replicate' ? 'minimax' : requested;
   const wanted = normalizedRequested && normalizedRequested !== 'auto'
