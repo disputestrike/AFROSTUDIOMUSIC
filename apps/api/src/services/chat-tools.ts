@@ -1753,6 +1753,7 @@ async function generateStoryboard(
     durationS?: number;
     format?: "vertical" | "square" | "landscape";
     prompt?: string;
+    songId?: string;
   }
 ) {
   if (!ctx.projectId) return { error: "no_project_in_thread" };
@@ -1790,9 +1791,31 @@ async function generateStoryboard(
   });
   const storyboard = normalizeStoryboardShots(result.shots, a.durationS ?? 15);
   if (!storyboard.length) return { error: "invalid_storyboard_output" };
+  // MISSING-VIDEO FIX: the catalog finds a finished video by walking
+  // Song -> VideoConcept.songId -> VideoRender. A concept created here with NO
+  // songId is ORPHANED and invisible in the catalog. Bind it to the song this
+  // video is for: the explicit songId if given, else the project's freshest
+  // real song. Never leaves songId null when a song exists.
+  const targetSongId =
+    (a.songId &&
+      (
+        await prisma.song.findFirst({
+          where: { id: a.songId, project: { workspaceId: ctx.workspaceId } },
+          select: { id: true },
+        })
+      )?.id) ||
+    (
+      await prisma.song.findFirst({
+        where: { projectId: project.id, deletedAt: null },
+        orderBy: { createdAt: "desc" },
+        select: { id: true },
+      })
+    )?.id ||
+    null;
   const concept = await prisma.videoConcept.create({
     data: {
       projectId: project.id,
+      songId: targetSongId,
       title: result.title,
       storyboard: storyboard as never,
       durationS: storyboard.reduce((sum, shot) => sum + shot.duration_s, 0),

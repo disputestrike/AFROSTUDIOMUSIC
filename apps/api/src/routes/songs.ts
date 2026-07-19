@@ -225,6 +225,52 @@ export default async function songs(app: FastifyInstance) {
       }
       if (best) videoBySong.set(songId, best);
     }
+    // ORPHAN-VIDEO RECOVERY (missing-video fix): concepts made via chat (or
+    // pre-songId migration) can have songId=null, so the walk above misses their
+    // finished cuts — the "I made a video but can't find it" bug. Recover them
+    // read-only: for null-songId concepts in these songs' projects, bind each
+    // assembled render to the song it was actually made from
+    // (meta.assembly.audioSource.songId, authoritative) or, only when the project
+    // has a single listed song, to that song. Never guesses in multi-song projects.
+    const songIdSet = new Set<string>(songIds);
+    const orphanConcepts = projectIds.length
+      ? await prisma.videoConcept.findMany({
+          where: { projectId: { in: projectIds }, songId: null },
+          select: { id: true, projectId: true },
+        })
+      : [];
+    if (orphanConcepts.length) {
+      const projectOfConcept = new Map(orphanConcepts.map((c) => [c.id, c.projectId]));
+      const soleSongByProject = new Map<string, string>();
+      const multiSongProject = new Set<string>();
+      for (const s of rows as CatalogRow[]) {
+        if (soleSongByProject.has(s.projectId)) multiSongProject.add(s.projectId);
+        else soleSongByProject.set(s.projectId, s.id);
+      }
+      const orphanRenders = await prisma.videoRender.findMany({
+        where: { conceptId: { in: orphanConcepts.map((c) => c.id) } },
+        orderBy: { createdAt: 'asc' },
+        select: { conceptId: true, url: true, durationS: true, meta: true },
+      });
+      for (const r of orphanRenders) {
+        const meta = r.meta && typeof r.meta === 'object' && !Array.isArray(r.meta) ? (r.meta as Record<string, unknown>) : {};
+        const assembly =
+          meta.assembly && typeof meta.assembly === 'object' && !Array.isArray(meta.assembly)
+            ? (meta.assembly as Record<string, unknown>)
+            : null;
+        if (!assembly) continue;
+        const audioSource =
+          assembly.audioSource && typeof assembly.audioSource === 'object' && !Array.isArray(assembly.audioSource)
+            ? (assembly.audioSource as Record<string, unknown>)
+            : null;
+        const projId = r.conceptId ? projectOfConcept.get(r.conceptId) : undefined;
+        let boundSong = typeof audioSource?.songId === 'string' ? (audioSource.songId as string) : null;
+        if (!boundSong && projId && !multiSongProject.has(projId)) boundSong = soleSongByProject.get(projId) ?? null;
+        if (!boundSong || !songIdSet.has(boundSong) || videoBySong.has(boundSong)) continue;
+        const kind = assembly.kind === 'teaser' ? ('teaser' as const) : ('full' as const);
+        videoBySong.set(boundSong, { url: r.url, kind, durationS: r.durationS });
+      }
+    }
     await Promise.all(
       [...videoBySong.entries()].map(async ([songId, v]) => {
         videoBySong.set(songId, { ...v, url: await presignAssetRef(v.url, 3600) });
