@@ -34,6 +34,7 @@ import {
   Sparkles,
   Trash2,
   UserRound,
+  Camera,
 } from 'lucide-react';
 
 interface Artist {
@@ -80,6 +81,11 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 export function MyLikeness() {
   const api = useApi();
   const fileRef = useRef<HTMLInputElement>(null);
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const streamRef = useRef<MediaStream | null>(null);
+  const capturedRef = useRef<File[]>([]);
+  const [cameraOn, setCameraOn] = useState(false);
+  const [capturedCount, setCapturedCount] = useState(0);
 
   const [artists, setArtists] = useState<Artist[]>([]);
   const [artistId, setArtistId] = useState('');
@@ -144,7 +150,7 @@ export function MyLikeness() {
     }
   }
 
-  async function uploadPhotos(files: FileList | null) {
+  async function uploadPhotos(files: FileList | File[] | null) {
     if (!files?.length || busy !== 'idle') return;
     setError(null);
     setNotice(null);
@@ -193,6 +199,81 @@ export function MyLikeness() {
       if (fileRef.current) fileRef.current.value = '';
     }
   }
+
+  // IN-APP FACE CAPTURE (owner: "enable face recording so no friction — directly
+  // on app"). Webcam frames become the SAME File[] the uploader already accepts,
+  // so this needs zero backend change: grab guided stills → uploadPhotos().
+  async function openCamera() {
+    if (!consentId) { setError('Sign the likeness consent first — captures attach under your consent record.'); return; }
+    setError(null);
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'user', width: { ideal: 1280 }, height: { ideal: 1280 } }, audio: false });
+      streamRef.current = stream;
+      capturedRef.current = [];
+      setCapturedCount(0);
+      setCameraOn(true);
+      // attach after the <video> mounts
+      requestAnimationFrame(() => {
+        if (videoRef.current) {
+          videoRef.current.srcObject = stream;
+          void videoRef.current.play().catch(() => undefined);
+        }
+      });
+    } catch {
+      setError('Could not open the camera — check that this site has camera permission, or use "Add photos of me" instead.');
+    }
+  }
+
+  function stopStream() {
+    streamRef.current?.getTracks().forEach((t) => t.stop());
+    streamRef.current = null;
+    if (videoRef.current) videoRef.current.srcObject = null;
+  }
+
+  function captureFrame() {
+    const v = videoRef.current;
+    if (!v || !v.videoWidth) return;
+    // center-square crop so the trainer gets a clean, consistent face frame
+    const side = Math.min(v.videoWidth, v.videoHeight);
+    const canvas = document.createElement('canvas');
+    canvas.width = side;
+    canvas.height = side;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+    ctx.drawImage(v, (v.videoWidth - side) / 2, (v.videoHeight - side) / 2, side, side, 0, 0, side, side);
+    canvas.toBlob(
+      (blob) => {
+        if (!blob) return;
+        const n = capturedRef.current.length + 1;
+        capturedRef.current.push(new File([blob], `camera-${n}.jpg`, { type: 'image/jpeg' }));
+        setCapturedCount(capturedRef.current.length);
+      },
+      'image/jpeg',
+      0.92,
+    );
+  }
+
+  async function finishCamera() {
+    const shots = capturedRef.current;
+    setCameraOn(false);
+    stopStream();
+    if (shots.length) await uploadPhotos(shots);
+    capturedRef.current = [];
+    setCapturedCount(0);
+  }
+
+  function cancelCamera() {
+    setCameraOn(false);
+    stopStream();
+    capturedRef.current = [];
+    setCapturedCount(0);
+  }
+
+  // never leave the camera light on if the component unmounts mid-capture
+  useEffect(() => () => stopStream(), []);
+
+  // guided prompts cycle so the trainer gets varied angles
+  const CAPTURE_PROMPTS = ['Look straight ahead', 'Turn slightly left', 'Turn slightly right', 'Chin up a little', 'Smile', 'Neutral face'];
 
   async function train() {
     if (!summary?.gate.ok || !consentId || busy !== 'idle') return;
@@ -345,6 +426,49 @@ export function MyLikeness() {
           {busy === 'uploading' ? <Loader2 className="h-4 w-4 animate-spin" /> : <UploadCloud className="h-4 w-4" />}
           {uploadPct ? `Uploading ${uploadPct.index}/${uploadPct.total}…` : 'Add photos of me'}
         </button>
+        {!cameraOn && (
+          <button
+            onClick={() => void openCamera()}
+            disabled={busy !== 'idle' || !consentId}
+            title={consentId ? 'Capture straight from your webcam — no files to hunt for' : 'Sign the consent first'}
+            className="ml-2 mt-3 inline-flex items-center gap-2 rounded-full border border-white/15 bg-white/5 px-4 py-2 text-sm text-slate-200 hover:bg-white/10 disabled:opacity-50"
+          >
+            <Camera className="h-4 w-4" /> Use camera
+          </button>
+        )}
+        {cameraOn && (
+          <div className="mt-4 rounded-2xl border border-white/10 bg-black/40 p-3">
+            <div className="relative mx-auto aspect-square w-full max-w-xs overflow-hidden rounded-xl bg-black">
+              {/* mirror the preview so it reads like a selfie */}
+              <video ref={videoRef} playsInline muted className="h-full w-full -scale-x-100 object-cover" />
+              <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/70 to-transparent px-3 py-2 text-center text-xs text-slate-200">
+                {CAPTURE_PROMPTS[capturedCount % CAPTURE_PROMPTS.length]} · {capturedCount} shot{capturedCount === 1 ? '' : 's'}
+              </div>
+            </div>
+            <div className="mt-3 flex flex-wrap items-center justify-center gap-2">
+              <button
+                onClick={captureFrame}
+                className="inline-flex items-center gap-2 rounded-full bg-brand-gradient px-4 py-2 text-sm font-medium text-ink shadow-glow"
+              >
+                <Camera className="h-4 w-4" /> Capture shot
+              </button>
+              <button
+                onClick={() => void finishCamera()}
+                disabled={capturedCount === 0}
+                className="inline-flex items-center gap-2 rounded-full border border-white/15 bg-white/5 px-4 py-2 text-sm text-slate-200 hover:bg-white/10 disabled:opacity-40"
+              >
+                <Check className="h-4 w-4" /> Add {capturedCount} shot{capturedCount === 1 ? '' : 's'}
+              </button>
+              <button
+                onClick={cancelCamera}
+                className="inline-flex items-center gap-2 rounded-full border border-white/15 px-4 py-2 text-sm text-slate-400 hover:bg-white/5"
+              >
+                <X className="h-4 w-4" /> Cancel
+              </button>
+            </div>
+            <p className="mt-2 text-center text-[11px] text-slate-500">Aim for 10+ varied shots — different angles &amp; lighting. Only you in frame.</p>
+          </div>
+        )}
         {!consentId && <p className="mt-2 text-[11px] text-amber-300">Photos unlock after the consent is recorded — that order is the law here.</p>}
         {photos.length > 0 && (
           <div className="mt-4 grid grid-cols-3 gap-2 sm:grid-cols-5">
