@@ -106,6 +106,9 @@ assert(!!badMeta && badMeta!.bpm === PRODUCTION_PLAN_LIMITS.maxBpm && badMeta!.k
 const root = join(__dirname, '..', '..', '..');
 const ownEngine = readFileSync(join(root, 'apps/worker/src/processors/own-engine.ts'), 'utf8');
 assert(ownEngine.includes('planProduction'), 'own-engine calls the Producer Brain');
+assert(ownEngine.includes('learnedListeningLessons') && ownEngine.includes('laneDna'), 'EVERYTHING FEEDS THE ENGINE: Listen/Zap lessons + lane DNA reach the plan');
+const stemsSrc = readFileSync(join(root, 'apps/worker/src/processors/stems.ts'), 'utf8');
+assert(stemsSrc.includes('"vocal_chop"') && stemsSrc.includes('provider_stem') , 'OWNED vocals file to the shelf as vocal_chop (provider vocals still excluded)');
 assert(ownEngine.includes('OWN_ENGINE_PRODUCER_BRAIN'), 'kill switch present');
 assert(ownEngine.includes('recentRenderOutcomes'), 'P2 feedback loop wired (outcomes read)');
 assert(ownEngine.includes('productionPlan: productionPlanMeta'), 'P2 feedback loop wired (plan stamped on the beat)');

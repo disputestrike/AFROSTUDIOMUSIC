@@ -372,6 +372,78 @@ export async function processStems(p: StemsPayload) {
       }
     }
 
+    // VOCAL MATERIAL (owner 2026-07-19: "we've put sung bars, Q's voices —
+    // don't shrink us"): the vocals stem was EXCLUDED from the shelf, so every
+    // sung take the studio owns was invisible to the own engine even though the
+    // taxonomy has a whole vocals family ("the arranger places these"). OWNED
+    // vocals (artist uploads/imports + self-harvested promoted renders) now
+    // file as `vocal_chop` material — real sung audio the Producer Brain can
+    // place like any role. RIGHTS LINE: provider_stem vocals (a third-party
+    // engine's singer) are NEVER filed — the exclusion stays for those.
+    if (stemSource !== "provider_stem") {
+      const vocalStem = ingested.find(item => item.role === "vocals");
+      if (vocalStem) {
+        try {
+          const bytes = await downloadToBuffer(vocalStem.url);
+          const inspection = await inspectMaterialAudio({
+            bytes,
+            url: vocalStem.url,
+            role: "vocal_chop",
+            roleEvidence: "stem-separated",
+            deep: beat?.bpm == null || beat?.keySignature == null,
+          });
+          if (inspection.readiness === "ready") {
+            const duplicate = await prisma.materialAsset.findFirst({
+              where: { workspaceId: p.workspaceId, contentHash: inspection.contentHash },
+              select: { id: true },
+            });
+            if (!duplicate) {
+              await prisma.materialAsset.create({
+                data: {
+                  workspaceId: p.workspaceId,
+                  kind: "stem",
+                  role: "vocal_chop",
+                  genre: project?.genre ?? null,
+                  bpm: beat?.bpm ?? inspection.detectedBpm ?? null,
+                  keySignature: beat?.keySignature ?? inspection.detectedKey ?? null,
+                  durationS: vocalStem.certification.qc.durationS,
+                  url: vocalStem.url,
+                  source: stemSource,
+                  readiness: inspection.readiness,
+                  qualityState: vocalStem.certification.qualityState,
+                  roleEvidence: "stem-separated",
+                  rightsBasis: stemRightsBasis,
+                  contentHash: vocalStem.certification.contentHash,
+                  verifiedAt: vocalStem.certification.verifiedAt,
+                  meta: {
+                    fromBeatId: beat?.id ?? null,
+                    fromSongId: p.songId,
+                    fromSourceUrl: sepSource,
+                    stemRole: "vocals",
+                    provider: beat?.provider ?? null,
+                    owned: isOwned,
+                    ...(p.selfHarvest ? { selfHarvest: true } : {}),
+                    qc: inspection.qc,
+                    rightsBasis: stemRightsBasis,
+                    sourceLineage,
+                    certification: audioCertificationReceipt(vocalStem.certification),
+                  } as never,
+                },
+              });
+              retainedMaterialUrls.add(vocalStem.url);
+              console.log(`[stems] OWNED vocal filed to the shelf as vocal_chop material`);
+            }
+          } else {
+            console.warn(
+              `[stems] owned vocal not admitted as material: ${inspection.reasons.join(", ") || "unmeasured"}`
+            );
+          }
+        } catch (err) {
+          console.warn("[stems] vocal material harvest failed:", (err as Error)?.message);
+        }
+      }
+    }
+
     // Beat-less harvests have no Stem rows. Keep only objects admitted as
     // materials; delete vocals, mixed-other, failed-QC, and duplicate uploads.
     if (!beat) {

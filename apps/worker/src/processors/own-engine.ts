@@ -221,6 +221,47 @@ function sectionsFrom(
   ];
 }
 
+/** EVERYTHING FEEDS THE ENGINE (owner 2026-07-19): compact production lessons
+ *  from the workspace's Listen/Zap studies (SoundReference recipes — the deep
+ *  reads of the artist's OWN references). Facts from the data lake reach the
+ *  Producer Brain's plan; the audio itself never does (rights law unchanged).
+ *  Fail-open: any error returns [] and the plan proceeds without them. */
+async function learnedListeningLessons(
+  workspaceId: string,
+  genre: string
+): Promise<string[]> {
+  try {
+    const refs = await prisma.soundReference.findMany({
+      where: { workspaceId, NOT: { sourceUrl: { startsWith: "lyric:" } } },
+      orderBy: { createdAt: "desc" },
+      take: 12,
+      select: { genre: true, recipe: true },
+    });
+    const lessons: string[] = [];
+    const laneFirst = [...refs].sort((a, b) => {
+      const am = materialGenreMatches(a.genre, genre) ? 0 : 1;
+      const bm = materialGenreMatches(b.genre, genre) ? 0 : 1;
+      return am - bm;
+    });
+    for (const ref of laneFirst) {
+      const recipe = ref.recipe && typeof ref.recipe === "object" && !Array.isArray(ref.recipe)
+        ? (ref.recipe as Record<string, unknown>)
+        : null;
+      if (!recipe) continue;
+      const parts: string[] = [];
+      for (const key of ["summary", "groove", "arrangement", "production", "productionNotes", "drums", "energy"]) {
+        const value = recipe[key];
+        if (typeof value === "string" && value.trim()) parts.push(value.trim().slice(0, 160));
+      }
+      if (parts.length) lessons.push(parts.join(" — ").slice(0, 320));
+      if (lessons.length >= 3) break;
+    }
+    return lessons;
+  } catch {
+    return [];
+  }
+}
+
 /** P2 FEEDBACK LOOP (read side): what this workspace's last planned renders
  *  MEASURED like — plan intent + the ear's verdict + the A&R hit score. The
  *  Producer Brain receives these as LAST_OUTCOMES so each plan learns from the
@@ -693,12 +734,24 @@ export async function processOwnEngine(p: OwnEnginePayload): Promise<void> {
       for (const pick of picks)
         shelfCounts.set(pick.role, (shelfCounts.get(pick.role) ?? 0) + 1);
       const lastOutcomes = await recentRenderOutcomes(p.workspaceId, p.genre);
+      // EVERYTHING FEEDS THE ENGINE (owner 2026-07-19: "all the zaps, all the
+      // listen-and-learn, all the measurements — bring them into our engine").
+      const dna = getSoundDNA(p.genre);
+      const laneDna = dna
+        ? `${dna.groove.feel}. Arrangement wisdom: ${dna.arrangement
+            .slice(0, 6)
+            .map(a => `${a.section}[${a.bars}]: ${a.whatHappens}`)
+            .join(" | ")}`
+        : null;
+      const learnedLessons = await learnedListeningLessons(p.workspaceId, p.genre);
       const plan = await planProduction({
         genre: p.genre,
         theme: p.melodyPrompt ?? null,
         bpmHint: bpm,
         keyHint: homeKey,
         targetBars,
+        laneDna,
+        learnedLessons,
         shelf: [...shelfCounts.entries()].map(([role, count]) => ({ role, count })),
         requestedRoles,
         lastOutcomes,

@@ -63,6 +63,12 @@ export async function planProduction(opts: {
   /** Full-song bar budget (lane durationS * bpm / 240) — the audit's "own
    *  renders are short" fix: the brain plans to the lane's REAL length. */
   targetBars?: number;
+  /** The lane's Sound-DNA arrangement wisdom (groove feel + section map) —
+   *  "everything we've built feeds the engine" (owner 2026-07-19). */
+  laneDna?: string | null;
+  /** Compact lessons from the workspace's Listen/Zap studies — what the
+   *  artist's own references actually do. Facts from the data lake, not vibes. */
+  learnedLessons?: string[];
   shelf: ShelfRole[];
   requestedRoles?: readonly string[];
   lastOutcomes?: RenderOutcome[];
@@ -82,6 +88,10 @@ export async function planProduction(opts: {
           keyHint: opts.keyHint,
           ...(opts.targetBars
             ? { TOTAL_BAR_BUDGET: `${opts.targetBars} bars (±20%) — this is the lane's FULL-SONG length; plan the whole record, not a sketch` }
+            : {}),
+          ...(opts.laneDna ? { LANE_DNA: opts.laneDna } : {}),
+          ...(opts.learnedLessons?.length
+            ? { LEARNED_FROM_LISTENING: opts.learnedLessons }
             : {}),
           SHELF_ROLES: opts.shelf,
           REQUESTED_ROLES: opts.requestedRoles?.length ? opts.requestedRoles : undefined,
