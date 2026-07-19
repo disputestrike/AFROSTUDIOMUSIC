@@ -1369,9 +1369,17 @@ export async function ensureSignatureKits(): Promise<void> {
       select: { workspaceId: true, genre: true },
     });
     const seen = new Set<string>();
+    // COST GUARD (owner order 2026-07-19: "we don't wanna pay a DIME"): the
+    // nightly rich forge is PAID Replicate renders on the HOUSE token — up to
+    // the budget EVERY night, forever (once kits are covered it forges
+    // variants, so it never goes quiet on its own). ~$0.07-0.10 x 30 ≈ $2-3 a
+    // night ≈ $60-90/month of standing spend. Default is now ZERO — the free
+    // synth-primitive tier below still runs every night, so shelves never go
+    // empty. Set KIT_FORGES_PER_NIGHT (e.g. 30) to deliberately buy real
+    // African-instrument depth; that is the ONE dial for this spend.
     let forgeBudget = Math.max(
       0,
-      parseInt(process.env.KIT_FORGES_PER_NIGHT ?? "30", 10) || 30
+      parseInt(process.env.KIT_FORGES_PER_NIGHT ?? "0", 10) || 0
     );
     for (const pr of projects) {
       if (!pr.genre) continue;
