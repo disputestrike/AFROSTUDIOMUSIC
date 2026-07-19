@@ -359,6 +359,7 @@ async function runOfflineTests(): Promise<void> {
     ['SONG_STATE (no AI "mastered")', "test-song-state.ts"],
     ["Night law (bulk run never bills Claude)", "test-night-law.ts"],
     ["Hit concept gate (emotion, not scenery)", "test-concept-gate.ts"],
+    ["Producer Brain (plan referee + wiring)", "test-producer-plan.ts"],
     ["Aggregate harness timeout/progress", "test-harness-timeout.ts"],
     ["Security boundaries", "test-security-boundaries.ts"],
     ["Durable jobs + billing receipts", "test-durable-workflows.ts"],

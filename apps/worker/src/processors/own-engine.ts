@@ -42,7 +42,7 @@ import {
   type MaterialRole,
   type RequestedMaterialRoleProvenance,
 } from "@afrohit/shared";
-import { melodyBrain, getSoundDNA } from "@afrohit/ai";
+import { melodyBrain, getSoundDNA, planProduction, type RenderOutcome } from "@afrohit/ai";
 import {
   deleteObjectByUrl,
   downloadToBuffer,
@@ -215,6 +215,63 @@ function sectionsFrom(
     { name: "hook2", bars: 8, roles: full },
     { name: "outro", bars: 4, roles: lite },
   ];
+}
+
+/** P2 FEEDBACK LOOP (read side): what this workspace's last planned renders
+ *  MEASURED like — plan intent + the ear's verdict + the A&R hit score. The
+ *  Producer Brain receives these as LAST_OUTCOMES so each plan learns from the
+ *  previous render's receipts instead of repeating them. Fail-open: any error
+ *  returns [] and the plan simply starts fresh. (V1 scopes to the workspace's
+ *  most recent planned renders — one artist works one lane at a time; a
+ *  per-genre index can sharpen this later.) */
+async function recentRenderOutcomes(
+  workspaceId: string,
+  _genre: string
+): Promise<RenderOutcome[]> {
+  try {
+    const beats = await prisma.beatAsset.findMany({
+      where: { project: { workspaceId }, provider: { in: ["material", "afrohit-own"] } },
+      orderBy: { createdAt: "desc" },
+      take: 10,
+      select: { songId: true, qualityState: true, meta: true },
+    });
+    const planned = beats
+      .filter(b => {
+        const meta = b.meta as Record<string, unknown> | null;
+        return !!meta?.productionPlan || !!meta?.qc;
+      })
+      .slice(0, 2);
+    const outcomes: RenderOutcome[] = [];
+    for (const b of planned) {
+      const meta = (b.meta ?? {}) as Record<string, unknown>;
+      const plan = (meta.productionPlan ?? null) as Record<string, unknown> | null;
+      const qc = (meta.qc ?? null) as Record<string, unknown> | null;
+      let hitScore: number | null = null;
+      if (b.songId) {
+        const song = await prisma.song.findUnique({
+          where: { id: b.songId },
+          select: { hitRead: true },
+        });
+        const read = (song?.hitRead ?? null) as Record<string, unknown> | null;
+        const score = Number(read?.bestScore);
+        hitScore = Number.isFinite(score) ? score : null;
+      }
+      outcomes.push({
+        intent: typeof plan?.intent === "string" ? plan.intent : undefined,
+        earVerdict:
+          typeof qc?.verdict === "string" ? qc.verdict : b.qualityState,
+        flags: Array.isArray(qc?.flags)
+          ? (qc.flags as unknown[]).filter((f): f is string => typeof f === "string")
+          : undefined,
+        integratedLufs:
+          typeof qc?.integratedLufs === "number" ? qc.integratedLufs : null,
+        hitScore,
+      });
+    }
+    return outcomes;
+  } catch {
+    return [];
+  }
 }
 
 /** Minimal direct MusicGen call (Replicate, Prefer:wait) with OUR groove as the
@@ -606,11 +663,59 @@ export async function processOwnEngine(p: OwnEnginePayload): Promise<void> {
       );
     }
 
-    // L1b — assemble on the grid via the existing renderer (child job, called inline).
-    const sections = sectionsFrom(
-      p.blueprint,
-      picks.map(x => x.role)
-    );
+    // L1b — THE PRODUCER BRAIN (owner directive 2026-07-19: "dynamically
+    // deterministic, not rigid heuristic laws"; audit receipt: 39 render
+    // decisions, 0 LLM-judged, one hardcoded form for every song). Precedence:
+    //   measured blueprint (Listen & recreate ground truth)
+    //     > producer-brain plan (LLM taste over the ACTUAL shelf, bulk tier $0)
+    //       > deterministic template (the fail-open floor — never worse than before).
+    // The plan is refereed in code (roles must exist, bars/energy clamped) and
+    // the assembler executes it EXACTLY. Kill switch: OWN_ENGINE_PRODUCER_BRAIN=0.
+    let plannedSections: Array<{ name: string; bars: number; roles: string[] }> | null = null;
+    let productionPlanMeta: Record<string, unknown> | null = null;
+    if (
+      !p.blueprint?.sections?.length &&
+      process.env.OWN_ENGINE_PRODUCER_BRAIN !== "0"
+    ) {
+      const shelfCounts = new Map<string, number>();
+      for (const pick of picks)
+        shelfCounts.set(pick.role, (shelfCounts.get(pick.role) ?? 0) + 1);
+      const lastOutcomes = await recentRenderOutcomes(p.workspaceId, p.genre);
+      const plan = await planProduction({
+        genre: p.genre,
+        theme: p.melodyPrompt ?? null,
+        bpmHint: bpm,
+        keyHint: homeKey,
+        shelf: [...shelfCounts.entries()].map(([role, count]) => ({ role, count })),
+        requestedRoles,
+        lastOutcomes,
+      });
+      if (plan) {
+        plannedSections = plan.sections.map(s => ({
+          name: s.name,
+          bars: s.bars,
+          roles: s.roles,
+        }));
+        productionPlanMeta = {
+          intent: plan.intent ?? null,
+          sections: plan.sections,
+          suggestedBpm: plan.bpm ?? null,
+          suggestedKey: plan.keySignature ?? null,
+          fedOutcomes: lastOutcomes.length,
+        };
+        notes.push(
+          `producer brain: ${plan.intent ?? "planned arrangement"} (${plan.sections.length} sections${lastOutcomes.length ? `, learned from ${lastOutcomes.length} prior render(s)` : ""})`
+        );
+      } else {
+        notes.push("producer brain: no usable plan this run — deterministic template");
+      }
+    }
+    const sections =
+      plannedSections ??
+      sectionsFrom(
+        p.blueprint,
+        picks.map(x => x.role)
+      );
     const child = await prisma.providerJob.create({
       data: {
         workspaceId: p.workspaceId,
@@ -654,6 +759,32 @@ export async function processOwnEngine(p: OwnEnginePayload): Promise<void> {
     notes.push(
       `rhythm: assembled ${picks.map(x => x.role).join("+")} across ${sections.length} sections`
     );
+
+    // P2 FEEDBACK LOOP (write side): the plan + its measured outcome live on
+    // the beat, so the NEXT render's Producer Brain reads what this one
+    // actually sounded like (LAST_OUTCOMES). Fail-open — a meta stamp never
+    // breaks a finished render.
+    if (productionPlanMeta) {
+      try {
+        const beatRow = await prisma.beatAsset.findUnique({
+          where: { id: out.beatId },
+          select: { meta: true },
+        });
+        await prisma.beatAsset.update({
+          where: { id: out.beatId },
+          data: {
+            meta: {
+              ...((beatRow?.meta ?? {}) as Record<string, unknown>),
+              productionPlan: productionPlanMeta,
+            } as never,
+          },
+        });
+      } catch (err) {
+        notes.push(
+          `plan stamp skipped: ${(err as Error)?.message?.slice(0, 80)}`
+        );
+      }
+    }
 
     // MELODY BRAIN (Own Singer piece 3) — the studio COMPOSES the vocal melody
     // itself when this render belongs to a song with a lyric: explicit notes
