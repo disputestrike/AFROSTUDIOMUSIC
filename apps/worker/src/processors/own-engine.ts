@@ -467,8 +467,18 @@ export async function processOwnEngine(p: OwnEnginePayload): Promise<void> {
     //     are synth-forged (family-mapped so they never hard-fail).
     // On-demand real forging is bounded so one song can't spend the night;
     // the nightly kit-forge grows each lane so this rarely fires twice.
+    // COST GUARD (owner order 2026-07-19: "using our own engine we don't wanna
+    // pay a DIME"): each real-forge render is a PAID Replicate call — up to
+    // forgeCap per song — and the house token used to count as "connected", so
+    // every fresh-shelf render silently billed the operator (the receipts the
+    // owner saw). The paid on-demand forge now runs ONLY when (a) the WORKSPACE
+    // brought its own Replicate key (their bill), or (b) the operator opts in
+    // via OWN_ENGINE_REAL_FORGE=1 (a deliberate shelf-stocking spend). Default:
+    // the $0 synth floor covers every missing role (family-mapped, never
+    // hard-fails); the operator-budgeted NIGHTLY forge remains the deliberate
+    // way to stock shelves with real instruments.
     const engineConnected =
-      Boolean(replicateToken()) ||
+      (process.env.OWN_ENGINE_REAL_FORGE === "1" && Boolean(replicateToken())) ||
       (await (async () => {
         const ws = await prisma.workspace.findUnique({
           where: { id: p.workspaceId },
