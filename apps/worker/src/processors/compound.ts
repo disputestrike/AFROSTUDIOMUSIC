@@ -55,6 +55,7 @@ import {
 } from "../lib/ffmpeg";
 import { downloadToBuffer } from "../lib/storage";
 import { buildMasterReport } from "./master";
+import { runTrainingFlywheel } from "../lib/training-flywheel";
 
 // The nightly report card measures recurring identity gaps per lane and writes
 // the worst here; the GENERATION path (presong.ts houseGapBrief) reads it and
@@ -2133,6 +2134,14 @@ export async function processNightlyCompound(): Promise<void> {
       await processWiktionaryHarvest();
       await processGlossPass();
       await processVerifyLexicon({ limit: 30 });
+      // P3 THE TRAINING FLYWHEEL (owner 2026-07-19): nightly, the rights-clean
+      // corpus (own-master/licensed/live — NEVER MiniMax/Suno/MusicGen) is
+      // manifested, zipped, and — ONLY when the operator has armed the trainer
+      // (MUSIC_TRAINER_ENABLED=1 + MODEL/VERSION) — a fine-tune kicks off with
+      // an auditable receipt. Unarmed = honest logged skip, zero spend.
+      await runTrainingFlywheel().catch(err =>
+        console.warn(`[flywheel] failed: ${(err as Error)?.message?.slice(0, 120)}`)
+      );
       await prisma.systemSetting
         .upsert({
           where: { key: "compound.lastRunAt" },

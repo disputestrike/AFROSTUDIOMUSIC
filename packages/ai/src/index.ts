@@ -32,3 +32,4 @@ export * from './agents/language-agent';
 export * from './agents/ar-scorer';
 export * from './agents/concept-director';
 export * from './agents/producer-brain';
+export * from "./music-trainer";

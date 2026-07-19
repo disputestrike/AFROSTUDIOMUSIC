@@ -49,3 +49,4 @@ export * from "./likeness";
 export * from "./share-safety";
 export * from "./content-safety";
 export * from "./production-plan";
+export * from "./training-capture";
