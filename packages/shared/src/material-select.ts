@@ -369,11 +369,20 @@ export function materialCoverage(picks: Array<{ role: string }>) {
   const tonal = jobs.filter(
     job => job === "harmony" || job === "melody"
   ).length;
+  // BED FLOOR is an env knob (default 5 = unchanged). Root cause of the
+  // "verified shelf is incomplete" hard-fails: this demanded beds>=5 but the
+  // synth floor only makes 4 distinct beds for non-log-drum genres, so cold
+  // lanes could never pass their own gate. Set OWN_ENGINE_MIN_BEDS=4 on Railway
+  // to let a 4-role synth bed ship (cold-lane reliability) without a deploy;
+  // keep 5 to hold the fuller-bed quality bar. Used by BOTH the API auto-route
+  // and the worker gate, so they can never disagree.
+  const minBeds = Math.max(1, Number(process.env.OWN_ENGINE_MIN_BEDS) || 5);
   return {
     beds: beds.length,
     rhythm,
     lowEnd,
     tonal,
-    ready: beds.length >= 5 && rhythm >= 2 && lowEnd >= 1 && tonal >= 1,
+    minBeds,
+    ready: beds.length >= minBeds && rhythm >= 2 && lowEnd >= 1 && tonal >= 1,
   };
 }
