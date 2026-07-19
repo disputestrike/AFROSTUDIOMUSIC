@@ -199,9 +199,29 @@ app.setErrorHandler((unknownError, req, reply) => {
         error: status === 503 ? "service_unavailable" : "internal_error",
       });
   }
-  const code = validation
-    ? "invalid_request"
-    : status === 401
+  if (validation) {
+    // Surface WHICH field failed instead of an opaque "invalid_request" — the
+    // owner kept hitting a blind 400 (create-from-lyrics) with no way to know
+    // the cause. Field names + zod messages ONLY (no user values echoed).
+    // Logged to Railway AND returned so the next 400 names its own reason.
+    const raw = (error.validation as Array<Record<string, unknown>>) ?? [];
+    const fields = raw
+      .map((v) => {
+        const issue = (v.params as { issue?: { path?: unknown[]; message?: string } } | undefined)?.issue;
+        const pathArr = (issue?.path ?? (v.path as unknown[] | undefined)) as unknown[] | undefined;
+        const path = pathArr?.length
+          ? pathArr.join(".")
+          : String(v.instancePath ?? "").replace(/^\//, "").replace(/\//g, ".");
+        const msg = String(issue?.message ?? v.message ?? "invalid");
+        return path ? `${path}: ${msg}` : msg;
+      })
+      .filter(Boolean)
+      .slice(0, 10);
+    req.log.warn({ validation: fields, url: req.url, method: req.method }, "request rejected: validation");
+    return reply.code(status).send({ error: "invalid_request", fields });
+  }
+  const code =
+    status === 401
       ? "unauthorized"
       : status === 403
         ? "forbidden"
@@ -212,7 +232,7 @@ app.setErrorHandler((unknownError, req, reply) => {
             : "request_rejected";
   return reply.code(status).send({
     error: code,
-    ...(validation ? {} : { message: redactSensitiveText(error.message, 240) }),
+    message: redactSensitiveText(error.message, 240),
   });
 });
 
