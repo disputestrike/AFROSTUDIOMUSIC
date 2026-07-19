@@ -43,4 +43,17 @@ assert.equal(attachSchema.safeParse({ title: 'My lyrics', body: longBody }).succ
 assert.equal(attachSchema.safeParse({ title: 'My lyrics', body: 'a real short verse here we go' }).success, true, 'normal lyrics attach fine');
 assert.equal(attachSchema.safeParse({ title: 'My lyrics', body: 'x'.repeat(13000) }).success, false, 'an absurd 13k lyric is still bounded');
 
-console.log('FIXED + PROVEN: from-lyrics 400 gone — bpm ranges agree (40-220, crazy clamps to 112), lyric cap 6000->12000.');
+// ── FIX 3: THE REAL "every time" 400 — songId Invalid cuid ───────────────────
+// /lyrics/attach minted idempotent songs as `idem_song_<hash>` (starts with 'i',
+// underscores) which FAILS z.string().cuid() — the exact field the live 400
+// named. Now minted `csong<hash>` which passes .cuid(). Prove both directions
+// against the REAL generateBeatInputSchema.songId.
+const HEX24 = 'a1b2c3d4e5f6a1b2c3d4e5f6';
+const genWith = (songId: string) => generateBeatInputSchema.omit({ projectId: true }).safeParse({
+  songId, genre: 'afrobeats', bpm: 103, withStems: false,
+});
+assert.equal(genWith(`idem_song_${HEX24}`).success, false, 'REPRO: old idem_song_ id fails songId cuid -> the live 400');
+assert.equal(genWith(`csong${HEX24}`).success, true, 'FIXED: new csong<hex> idempotent id passes songId cuid');
+assert.equal(genWith(`clyr${HEX24}`).success, true, 'the lyric-side id shape is cuid-valid too');
+
+console.log('FIXED + PROVEN: from-lyrics 400 gone — songId idempotent id now cuid-valid (csong<hex>), bpm ranges agree, lyric cap 12000.');

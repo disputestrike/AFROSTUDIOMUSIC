@@ -650,20 +650,27 @@ export default async function lyrics(app: FastifyInstance) {
       const suffix = operationKey
         ? createHash('sha256').update(`${workspaceId}|${operationKey}`).digest('hex').slice(0, 24)
         : undefined;
+      // Idempotent ids MUST be cuid-shaped. The old `idem_song_<hash>` (starts
+      // with 'i', has underscores) FAILED z.string().cuid() — which ~20 downstream
+      // schemas apply to songId — so EVERY create-from-lyrics render 400'd with
+      // "songId: Invalid cuid" (2026-07-19). A 'c'+hex id passes .cuid() and is
+      // still deterministic for idempotent replay.
+      const idemSongId = suffix ? `csong${suffix}` : undefined;
+      const idemLyricId = suffix ? `clyr${suffix}` : undefined;
       const result = await prisma.$transaction(async (tx) => {
-        if (suffix) {
+        if (idemSongId) {
           const existing = await tx.song.findFirst({
-            where: { id: `idem_song_${suffix}`, workspaceId, projectId: project.id },
+            where: { id: idemSongId, workspaceId, projectId: project.id },
             include: { lyric: { select: { id: true } } },
           });
           if (existing?.lyric) return { songId: existing.id, lyricId: existing.lyric.id, replayed: true };
         }
         const song = await tx.song.create({
-          data: { ...(suffix ? { id: `idem_song_${suffix}` } : {}), workspaceId, projectId: project.id, title, status: 'SKETCH' },
+          data: { ...(idemSongId ? { id: idemSongId } : {}), workspaceId, projectId: project.id, title, status: 'SKETCH' },
         });
         const lyric = await tx.lyricDraft.create({
           data: {
-            ...(suffix ? { id: `idem_lyric_${suffix}` } : {}),
+            ...(idemLyricId ? { id: idemLyricId } : {}),
             projectId: project.id,
             songId: song.id,
             title,
