@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs';
 import {
   assetProducedByChild,
   dropChildTerminalState,
+  dropQualityGateEvidence,
   isCertifiedPlayableAsset,
   passedDropQualityGate,
 } from '../src/routes/drop';
@@ -110,11 +111,27 @@ assert.equal(
 
 assert.deepEqual(
   passedDropQualityGate({ willBlow: true, bestScore: 93, blowPasses: 1 }, 90),
-  { willBlow: true, bestScore: 93, passes: 1, target: 90 }
+  { passed: true, willBlow: true, bestScore: 93, passes: 1, target: 90 }
 );
 assert.equal(passedDropQualityGate(null, 90), null);
 assert.equal(passedDropQualityGate({ willBlow: false, bestScore: 93 }, 90), null);
 assert.equal(passedDropQualityGate({ willBlow: true, bestScore: 89 }, 90), null);
+
+// DELIVER, DON'T DESTROY (live incident 2026-07-19): a below-bar read is honest
+// EVIDENCE (passed:false), never a throw — the paid song ships, labeled. Only a
+// read with no usable score at all is null (infrastructure error upstream).
+assert.deepEqual(
+  dropQualityGateEvidence({ willBlow: false, bestScore: 62, blowPasses: 2 }, 90),
+  { passed: false, willBlow: false, bestScore: 62, passes: 2, target: 90 }
+);
+assert.equal(dropQualityGateEvidence({ willBlow: false }, 90), null);
+// The drop path must not throw on a below-bar score anymore, and playables must
+// carry the honest certification flag.
+assert.doesNotMatch(dropSourceEarly(), /drop quality gate failed for song/);
+assert.match(dropSourceEarly(), /certified: gate\.passed/);
+function dropSourceEarly(): string {
+  return readFileSync(new URL('../src/routes/drop.ts', import.meta.url), 'utf8');
+}
 
 const dropSource = readFileSync(new URL('../src/routes/drop.ts', import.meta.url), 'utf8');
 const terminalAt = dropSource.lastIndexOf('const directChildren = await waitForDropChildren');

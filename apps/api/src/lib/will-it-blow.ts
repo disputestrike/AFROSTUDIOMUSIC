@@ -16,11 +16,14 @@
  *
  * Honest scope: it strengthens the commercial WRITING (hook/lyric/structure) and
  * confirms the mastered result. It can't guarantee a chart hit; a song that can't
- * reach 75 even after the rewrites is left as-is and flagged "needs work" — and it
- * won't green-light for release.
+ * reach the bar even after the rewrites is DELIVERED as-is and labeled honestly
+ * (below-bar, A&R read attached) — it plays, it's owned, it just won't
+ * green-light for release/certification. The gate improves and labels;
+ * it never destroys a paid create (live incident 2026-07-19: the drop used to
+ * THROW here, so a 62-scoring song with a finished render died as FAILED).
  *
- * Tunables: WILL_IT_BLOW_TARGET (default 75), WILL_IT_BLOW_MAX_PASSES (cheap rewrite
- * attempts, default 3, max 6; set 0 to score-only).
+ * Tunables: WILL_IT_BLOW_TARGET (default 90 — Benjamin's release bar),
+ * WILL_IT_BLOW_MAX_PASSES (cheap rewrite attempts, default 3, max 6; 0 = score-only).
  */
 import type { FastifyInstance } from 'fastify';
 import { prisma, isAutonomyEnabled } from '@afrohit/db';

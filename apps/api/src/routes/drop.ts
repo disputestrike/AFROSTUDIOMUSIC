@@ -124,7 +124,9 @@ export type PersistedPlayable = {
 };
 
 export type DropQualityGateEvidence = {
-  willBlow: true;
+  /** true only when the hit-read cleared the certification bar. */
+  passed: boolean;
+  willBlow: boolean;
   bestScore: number;
   passes: number;
   target: number;
@@ -143,7 +145,11 @@ export type DropPlayableOutput = {
   verifiedAt: string;
   qualityState: 'passed';
   approved: true;
-  certified: true;
+  /** true = cleared the hit-read certification bar; false = delivered honestly
+   *  below the bar (playable, owned, NOT release-certified). A paid create must
+   *  never end in nothing — the live failure this fixes: EVERY drop died at a
+   *  90-point wall after hooks+lyrics+render all succeeded (measured 62 vs 90). */
+  certified: boolean;
   qualityGate: DropQualityGateEvidence;
 };
 
@@ -206,12 +212,24 @@ export function passedDropQualityGate(
   hitRead: unknown,
   target = BLOW_TARGET
 ): DropQualityGateEvidence | null {
+  const evidence = dropQualityGateEvidence(hitRead, target);
+  return evidence?.passed ? evidence : null;
+}
+
+/** The gate as EVIDENCE, not a wall: always returns what was measured (or null
+ *  when there is no usable read at all). `passed` says whether the score cleared
+ *  the certification bar — the drop DELIVERS either way and labels honestly. */
+export function dropQualityGateEvidence(
+  hitRead: unknown,
+  target = BLOW_TARGET
+): DropQualityGateEvidence | null {
   const read = record(hitRead);
   const bestScore = Number(read?.bestScore);
   const passes = Number(read?.blowPasses);
-  if (read?.willBlow !== true || !Number.isFinite(bestScore) || bestScore < target) return null;
+  if (!Number.isFinite(bestScore)) return null;
   return {
-    willBlow: true,
+    passed: read?.willBlow === true && bestScore >= target,
+    willBlow: read?.willBlow === true,
     bestScore,
     passes: Number.isFinite(passes) ? Math.max(0, Math.trunc(passes)) : 0,
     target,
@@ -323,17 +341,14 @@ async function requirePassedDropQualityGates(
       throw new Error(`drop quality gate receipt unavailable for song ${item.songId}`);
     }
     const hitRead = songById.get(item.songId)?.hitRead;
-    const evidence = passedDropQualityGate(hitRead);
+    // DELIVER, DON'T DESTROY (live incident 2026-07-19): the old code THREW here
+    // on any below-bar score, so a paid drop whose hooks+lyrics+render all
+    // SUCCEEDED (measured 62 vs a 90 wall) died as FAILED with nothing to play.
+    // A below-bar read is now honest evidence (passed:false) — the song ships,
+    // labeled. Only a missing/unreadable receipt is still an infrastructure error.
+    const evidence = dropQualityGateEvidence(hitRead);
     if (!evidence) {
-      const read = record(hitRead);
-      const measured = Number(read?.bestScore);
-      const failed = read?.willBlow === false
-        || (Number.isFinite(measured) && measured < BLOW_TARGET);
-      throw new Error(
-        failed
-          ? `drop quality gate failed for song ${item.songId}`
-          : `drop quality gate unavailable for song ${item.songId}`
-      );
+      throw new Error(`drop quality gate unavailable for song ${item.songId}`);
     }
     evidenceBySongId.set(item.songId, { ...evidence, receiptJobId: readJob.id });
   }
@@ -364,9 +379,19 @@ async function requirePassedDropQualityGates(
   const gateJobByKey = new Map<string, { id: string; idempotencyKey: string | null }>(
     gateJobs.flatMap((job) => job.idempotencyKey ? [[job.idempotencyKey, job]] : [])
   );
-  const missing = [...gateKeyBySongId.entries()].filter(([, key]) => !gateJobByKey.has(key));
-  if (missing.length) {
-    throw new Error(`drop quality gate corrective render unavailable for song ${missing[0]![0]}`);
+  // passes>0 does NOT guarantee a corrective render exists: will-it-blow only
+  // re-sings when the rewrite improved >= +4 (and resing itself can refuse —
+  // artist-authored verbatim law, contamination-rejected rewrite, route error).
+  // A missing corrective render is therefore a FALLBACK to the direct render,
+  // never a reason to destroy the paid drop.
+  for (const [songId, key] of [...gateKeyBySongId.entries()]) {
+    if (!gateJobByKey.has(key)) {
+      console.warn(`[drop] corrective render absent for song ${songId} (rewrite not rendered) — delivering the direct render`);
+      gateKeyBySongId.delete(songId);
+    }
+  }
+  if (!gateKeyBySongId.size) {
+    return { evidenceBySongId, gateJobBySongId: new Map() };
   }
 
   const terminalGateJobs = await waitForDropChildren(ctx, gateJobs.map((job) => job.id));
@@ -492,7 +517,7 @@ async function loadDropPlayableOutputs(
       verifiedAt: asset.verifiedAt!.toISOString(),
       qualityState: 'passed',
       approved: true,
-      certified: true,
+      certified: gate.passed, // below-bar delivers honestly, never certified
       qualityGate: gate,
     };
   });
@@ -682,7 +707,11 @@ async function runDropPipelineInner(app: FastifyInstance, ctx: DropCtx, input: D
   // re-render created by the gate is also a required terminal child.
   await willItBlowGate(app, ctx.workspaceId, rendered);
   const quality = await requirePassedDropQualityGates(ctx, rendered);
-  app.log.info({ dropJobId, songs: quality.evidenceBySongId.size }, `[drop] quality gate passed @${secs()}s`);
+  const belowBar = [...quality.evidenceBySongId.values()].filter((e) => !e.passed);
+  app.log.info(
+    { dropJobId, songs: quality.evidenceBySongId.size, belowBar: belowBar.length },
+    `[drop] quality read complete (${belowBar.length ? `${belowBar.length} below the ${BLOW_TARGET} bar — delivering labeled` : 'all certified'}) @${secs()}s`
+  );
 
   const playableOutputs = await loadDropPlayableOutputs(ctx, rendered, directChildren, quality);
   if (!playableOutputs.length) {
@@ -705,9 +734,12 @@ async function runDropPipelineInner(app: FastifyInstance, ctx: DropCtx, input: D
     childJobs: directChildren.map((child) => ({ jobId: child.id, status: 'SUCCEEDED' as const })),
     playableOutputs,
     qualityGate: {
-      status: 'passed' as const,
+      status: belowBar.length ? ('below_bar' as const) : ('passed' as const),
       target: BLOW_TARGET,
       songs: [...quality.evidenceBySongId.entries()].map(([songId, evidence]) => ({ songId, ...evidence })),
+      ...(belowBar.length
+        ? { note: `${belowBar.length} of ${quality.evidenceBySongId.size} song(s) read under the ${BLOW_TARGET}-point certification bar — delivered anyway (yours to keep, playable), with the A&R read attached. Certification (release eligibility) needs a take at or above the bar.` }
+        : {}),
     },
     ...(costs ? { llmCosts: { estUsd: +costs.estUsd.toFixed(4), calls: costs.calls, byBrain: Object.fromEntries(Object.entries(costs.byBrain).map(([k, v]) => [k, { calls: v.calls, estUsd: +v.estUsd.toFixed(4) }])), degraded: costs.degraded, note: 'LLM writing bill (estimates); the render cost lands on the render job' } } : {}),
   };
