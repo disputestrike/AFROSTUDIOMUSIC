@@ -108,35 +108,55 @@ export async function processSynthMaterial(p: SynthMaterialPayload): Promise<voi
       const tmp = join(tmpdir(), `synth-${role}-${digest.slice(0, 10)}.wav`);
       let uploadedUrl: string | null = null;
       try {
-        await runSynth(role, bpm, tmp, p.genre, key, fourOnFloor, Number.parseInt(digest.slice(0, 6), 16) % 9973);
-        const rendered = await readFile(tmp);
-        // BELT-AND-BRACES EXACT BARS (source-truth item 5): the py synth now
-        // slices its 0.25s scratch tail itself; trimToLoop with startS 0 (a
-        // synth loop starts ON the grid by construction — never the 0.5s
-        // provider default) re-asserts the exact 2-bar length and adds the
-        // declick edge fades so the loop seam never pops.
-        const trimmed = await trimToLoop(rendered, bpm, 2, { startS: 0 });
-        // Same shelf-level law as the forge (item 3): every material loop
-        // lands at ~-18 LUFS so the role-gain doctrine acts on KNOWN levels
-        // (the synth's 0.89-peak normalize says nothing about loudness).
-        const loudness = await normalizeLoopLoudness(trimmed);
-        const bytes = loudness.bytes;
-        const url = await uploadBytes({ workspaceId: p.workspaceId, kind: 'materials', bytes, contentType: 'audio/wav', ext: 'wav' });
-        uploadedUrl = url;
-        const inspection = await inspectMaterialAudio({ bytes, url, role, roleEvidence: 'synth-code', deep: false });
-        if (inspection.readiness !== 'ready') {
-          throw new Error(`synthesized material failed technical QC (${inspection.reasons.join(', ') || 'unmeasured'})`);
-        }
-        const duplicate = await prisma.materialAsset.findFirst({
-          where: { workspaceId: p.workspaceId, contentHash: inspection.contentHash },
-          select: { id: true, role: true },
-        });
-        if (duplicate) {
+        // CROSS-ROLE DEDUP RETRY (owner incident 2026-07-19: the py generator
+        // collapsed synth_pad onto kalimba's exact waveform, the dedup gate
+        // refused to file it, and the requested role never existed). A cross-
+        // role hash collision now retries ONCE with a perturbed seed — two
+        // different seeds virtually never collapse to identical bytes unless
+        // the generator ignores the seed entirely, in which case the role fails
+        // honestly (and the own-engine renders without it, never dying).
+        const baseSeed = Number.parseInt(digest.slice(0, 6), 16) % 9973;
+        let url = '';
+        let inspection: Awaited<ReturnType<typeof inspectMaterialAudio>> | null = null;
+        let loudness: Awaited<ReturnType<typeof normalizeLoopLoudness>> | null = null;
+        let sameRoleDup = false;
+        let crossRoleDup: { id: string; role: string } | null = null;
+        for (const seed of [baseSeed, (baseSeed + 4099) % 9973]) {
+          await runSynth(role, bpm, tmp, p.genre, key, fourOnFloor, seed);
+          const rendered = await readFile(tmp);
+          // BELT-AND-BRACES EXACT BARS (source-truth item 5): the py synth now
+          // slices its 0.25s scratch tail itself; trimToLoop with startS 0 (a
+          // synth loop starts ON the grid by construction — never the 0.5s
+          // provider default) re-asserts the exact 2-bar length and adds the
+          // declick edge fades so the loop seam never pops.
+          const trimmed = await trimToLoop(rendered, bpm, 2, { startS: 0 });
+          // Same shelf-level law as the forge (item 3): every material loop
+          // lands at ~-18 LUFS so the role-gain doctrine acts on KNOWN levels
+          // (the synth's 0.89-peak normalize says nothing about loudness).
+          loudness = await normalizeLoopLoudness(trimmed);
+          const bytes = loudness.bytes;
+          url = await uploadBytes({ workspaceId: p.workspaceId, kind: 'materials', bytes, contentType: 'audio/wav', ext: 'wav' });
+          uploadedUrl = url;
+          inspection = await inspectMaterialAudio({ bytes, url, role, roleEvidence: 'synth-code', deep: false });
+          if (inspection.readiness !== 'ready') {
+            throw new Error(`synthesized material failed technical QC (${inspection.reasons.join(', ') || 'unmeasured'})`);
+          }
+          const duplicate = await prisma.materialAsset.findFirst({
+            where: { workspaceId: p.workspaceId, contentHash: inspection.contentHash },
+            select: { id: true, role: true },
+          });
+          if (!duplicate) { sameRoleDup = false; crossRoleDup = null; break; }
           await deleteObjectByUrl(url).catch(() => {});
           uploadedUrl = null;
-          if (duplicate.role !== role) throw new Error(`synth output duplicates ${duplicate.id} filed as ${duplicate.role}`);
+          if (duplicate.role === role) { sameRoleDup = true; break; }
+          crossRoleDup = { id: duplicate.id, role: duplicate.role }; // perturbed seed retries
+        }
+        if (sameRoleDup) {
           completed.push(role);
           continue;
+        }
+        if (crossRoleDup || !inspection || !loudness) {
+          throw new Error(`synth output duplicates ${crossRoleDup?.id} filed as ${crossRoleDup?.role} (even after seed retry)`);
         }
         // ACTUAL duration on the record: the QC'd length of the bytes that
         // ship (exactly 2 bars after the tail fix + trim), with the pure math

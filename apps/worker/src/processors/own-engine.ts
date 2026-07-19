@@ -567,20 +567,42 @@ export async function processOwnEngine(p: OwnEnginePayload): Promise<void> {
       picks,
       requestedRoles
     );
+    // OWNER DOCTRINE (2026-07-19, live kill: "synth_pad" failed its synth dedup
+    // and this throw died the WHOLE paid render): a create never dead-ends over
+    // one instrument. The unavailable role is DROPPED from the ask and the
+    // record renders from everything that IS proven — with the honest note
+    // riding the render. Same strip+disclose law as the API pre-flight, applied
+    // at render depth where forge/synth failures actually surface.
+    let provenRequestedRoles: MaterialRole[] = requestedRoles;
     if (missingRequestedRoles.length) {
-      throw new Error(
-        `own-engine: exact requested material unavailable (${missingRequestedRoles.join(", ")})`
+      const missingSet = new Set<string>(missingRequestedRoles);
+      provenRequestedRoles = requestedRoles.filter(
+        role => !missingSet.has(role)
+      );
+      notes.push(
+        `requested role(s) unavailable, rendered without: ${missingRequestedRoles.join("+")} (no proven material — upload or forge it and it joins future renders)`
       );
     }
-    if (requestedRoles.length) {
+    if (provenRequestedRoles.length) {
       notes.push(
-        `requested roles: ${requestedRoles.join("+")} (exact evidence)`
+        `requested roles: ${provenRequestedRoles.join("+")} (exact evidence)`
       );
     }
     const coverage = materialCoverage(picks);
     if (!coverage.ready) {
-      throw new Error(
-        `own-engine: verified shelf is incomplete (beds=${coverage.beds}, rhythm=${coverage.rhythm}, low-end=${coverage.lowEnd}, tonal=${coverage.tonal})`
+      // OWNER DOCTRINE (2026-07-19, live kill #3: "verified shelf is incomplete
+      // (beds=1, rhythm=1, low-end=0, tonal=0)" died the whole paid render): a
+      // thin shelf renders a thin-but-real record WITH AN HONEST NOTE — it
+      // never dies. The shelf grows with every synth pass / upload / nightly
+      // forge, so early renders in a fresh lane are sparse by nature, not
+      // broken. The ONLY hard stop left is literally zero usable material.
+      if (!picks.length) {
+        throw new Error(
+          "own-engine: the shelf has no usable material at all for this lane — synth pass produced nothing"
+        );
+      }
+      notes.push(
+        `sparse shelf: rendered from ${picks.length} proven loop(s) (beds=${coverage.beds}, rhythm=${coverage.rhythm}, low-end=${coverage.lowEnd}, tonal=${coverage.tonal}) — the lane fills as material lands; re-render later for a fuller bed`
       );
     }
 

@@ -678,14 +678,17 @@ export async function processAssembleBeat(p: AssemblePayload) {
         "no bed material — forge drums/bass/chords for this genre first"
       );
     // UNIFIED GATE (2026-07-19): use the SAME materialCoverage() as the parent
-    // own-engine gate (env-controlled OWN_ENGINE_MIN_BEDS, default 4) so the two
-    // can NEVER disagree. This child previously hardcoded `bedPicks.length < 5`,
-    // so a shelf that passed the parent at minBeds=4 was rejected HERE ->
-    // "grid assembly failed (see child job)". One source of truth now.
+    // own-engine gate so the two can NEVER disagree. This child previously
+    // hardcoded `bedPicks.length < 5`, so a shelf that passed the parent was
+    // rejected HERE -> "grid assembly failed (see child job)".
+    // OWNER DOCTRINE (2026-07-19, live kill: "verified shelf is incomplete"
+    // died the paid render): a thin shelf ASSEMBLES a thin-but-real bed — it
+    // never dies. The parent already stamped the honest sparse-shelf note; the
+    // only hard stop is zero bed material (guarded above).
     const cov = materialCoverage(picks);
     if (!cov.ready) {
-      throw new Error(
-        `material bed incomplete (beds=${cov.beds}, rhythm=${cov.rhythm}, low-end=${cov.lowEnd}, tonal=${cov.tonal})`
+      console.warn(
+        `[assemble] sparse bed (beds=${cov.beds}, rhythm=${cov.rhythm}, low-end=${cov.lowEnd}, tonal=${cov.tonal}) — assembling from ${bedPicks.length} loop(s)`
       );
     }
     // Pull every picked loop local.
