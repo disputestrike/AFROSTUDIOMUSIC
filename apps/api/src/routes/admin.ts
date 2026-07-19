@@ -101,23 +101,39 @@ export default async function admin(app: FastifyInstance) {
     await requireAdmin(req);
     const { userId } = requireAuth(req);
     const { workspaceId } = consentSchema.parse(req.body);
-    await prisma.workspace.findUniqueOrThrow({ where: { id: workspaceId }, select: { id: true } });
-    const existing = await prisma.trainingConsent.findFirst({
-      where: { workspaceId, revokedAt: null, consentVersion: TRAINING_LICENSE_VERSION },
-      select: { id: true },
-    });
-    if (existing) return reply.send({ ok: true, alreadyGranted: true, consentId: existing.id });
-    const row = await prisma.trainingConsent.create({
-      data: {
-        workspaceId,
-        grantedByUserId: userId,
-        consentText: TRAINING_LICENSE_CLAUSE,
-        consentVersion: TRAINING_LICENSE_VERSION,
-        consentTextHash: hashTrainingLicense(),
-      },
-    });
-    reply.code(201);
-    return { ok: true, consentId: row.id, version: TRAINING_LICENSE_VERSION };
+    // ADMIN SURFACE = REAL ERRORS (live 500 on the owner's first tap was masked
+    // as "internal_error"; the likely class — e.g. the TrainingConsent table
+    // missing because a deploy's db push didn't land — must NAME itself).
+    try {
+      await prisma.workspace.findUniqueOrThrow({ where: { id: workspaceId }, select: { id: true } });
+      const existing = await prisma.trainingConsent.findFirst({
+        where: { workspaceId, revokedAt: null, consentVersion: TRAINING_LICENSE_VERSION },
+        select: { id: true },
+      });
+      if (existing) return reply.send({ ok: true, alreadyGranted: true, consentId: existing.id });
+      const row = await prisma.trainingConsent.create({
+        data: {
+          workspaceId,
+          grantedByUserId: userId,
+          consentText: TRAINING_LICENSE_CLAUSE,
+          consentVersion: TRAINING_LICENSE_VERSION,
+          consentTextHash: hashTrainingLicense(),
+        },
+      });
+      reply.code(201);
+      return { ok: true, consentId: row.id, version: TRAINING_LICENSE_VERSION };
+    } catch (err) {
+      const e = err as Error & { code?: string };
+      req.log.error({ err }, 'training consent grant failed');
+      return reply.code(500).send({
+        error: 'training_consent_failed',
+        code: e.code ?? null,
+        message: (e.message ?? 'unknown').slice(0, 300),
+        ...(e.code === 'P2021'
+          ? { hint: 'The TrainingConsent table does not exist yet — the deploy\'s `prisma db push` has not landed. Redeploy the API service (or run prisma db push) and tap again.' }
+          : {}),
+      });
+    }
   });
 
   /** WITHDRAW the grant for FUTURE training (fail-closed from the next run). */

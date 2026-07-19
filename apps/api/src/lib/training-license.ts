@@ -26,20 +26,32 @@ export function hashTrainingLicense(clause: string = TRAINING_LICENSE_CLAUSE): s
 export async function resolveWorkspaceTrainingConsent(
   workspaceId: string
 ): Promise<TrainingConsentVerdict> {
-  const row = await prisma.trainingConsent.findFirst({
-    where: { workspaceId, revokedAt: null },
-    orderBy: { signedAt: 'desc' },
-    select: { consentVersion: true, signedAt: true, consentTextHash: true, revokedAt: true },
-  });
-  return resolveTrainingConsent(
-    row
-      ? {
-          version: row.consentVersion,
-          acceptedAt: row.signedAt,
-          textHash: row.consentTextHash,
-          revokedAt: row.revokedAt,
-        }
-      : null,
-    { expectedHash: hashTrainingLicense() }
-  );
+  try {
+    const row = await prisma.trainingConsent.findFirst({
+      where: { workspaceId, revokedAt: null },
+      orderBy: { signedAt: 'desc' },
+      select: { consentVersion: true, signedAt: true, consentTextHash: true, revokedAt: true },
+    });
+    return resolveTrainingConsent(
+      row
+        ? {
+            version: row.consentVersion,
+            acceptedAt: row.signedAt,
+            textHash: row.consentTextHash,
+            revokedAt: row.revokedAt,
+          }
+        : null,
+      { expectedHash: hashTrainingLicense() }
+    );
+  } catch (err) {
+    // FAIL-SOFT with the REAL reason (live 500 on the owner's first tap): a
+    // missing table (P2021 — db push not landed) or any read error resolves as
+    // not-granted with the cause named, never a masked internal_error.
+    const e = err as Error & { code?: string };
+    return {
+      granted: false,
+      current: false,
+      reason: `consent record unreadable (${e.code ?? 'error'}): ${(e.message ?? '').slice(0, 160)}`,
+    };
+  }
 }
