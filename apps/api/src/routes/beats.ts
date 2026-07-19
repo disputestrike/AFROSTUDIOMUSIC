@@ -285,8 +285,14 @@ export default async function beats(app: FastifyInstance) {
       const charge = await app.chargeCredits({
         workspaceId,
         key: useOwnEngine ? 'beat_idea_short_30s' : input.withVocals || input.withStems ? 'full_song_demo' : 'beat_idea_short_30s',
-        // WO-1/WO-5: N candidates = N renders = N charges against the cap.
-        multiplier: useOwnEngine ? 1 : Math.max(1, input.candidates ?? 1),
+        // OUR ENGINE IS FREE FOR NOW (owner, 2026-07-19: "anybody using our engine
+        // is free — that's how we get people to come test it"). Own-engine renders
+        // cost us ~nothing (pure synth) so they cost the USER nothing either:
+        // multiplier 0 = zero credits debited. Set OWN_ENGINE_FREE=0 to re-enable
+        // charging. Provider renders bill as before (N candidates = N charges).
+        multiplier: useOwnEngine
+          ? (process.env.OWN_ENGINE_FREE === '0' ? 1 : 0)
+          : Math.max(1, input.candidates ?? 1),
         refTable: 'Project',
         refId: project.id,
         // IDEMPOTENCY (audit FAKE_GREEN: supported but never passed): a retried/

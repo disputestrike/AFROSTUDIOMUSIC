@@ -10829,6 +10829,12 @@ export function synthKitFor(genre?: string | null): string[] {
   if (has('bass_guitar', 'synth_bass', 'sub_bass', 'bass_808', 'sliding_808', 'moog_bass', 'reese_bass', 'upright_bass', 'organ_bass', 'pluck_bass')) out.push('bass');
   if (has('piano', 'rhodes', 'wurlitzer', 'organ', 'hammond', 'gospel_organ', 'guitar_chords', 'highlife_guitar', 'house_piano_stab', 'synth_pad', 'warm_pad')) out.push('chords');
   out.push('fill');
+  // TONAL GUARANTEE (2026-07-19): the own-engine coverage gate requires tonal>=1,
+  // but some genres' kits (e.g. street_pop) map to NO chords role -> tonal=0 ->
+  // "verified shelf is incomplete (tonal=0)" -> the own engine could NEVER render
+  // them. Every beat needs harmony and the synth makes chords for any lane, so
+  // guarantee a tonal role for EVERY genre. This also adds one more bed.
+  if (!out.includes('chords')) out.push('chords');
   return out.length > 1 ? [...new Set(out)] : ['drums', 'bass', 'chords', 'percussion', 'fill'];
 }
 

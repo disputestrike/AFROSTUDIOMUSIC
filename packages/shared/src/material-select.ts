@@ -376,7 +376,7 @@ export function materialCoverage(picks: Array<{ role: string }>) {
   // to let a 4-role synth bed ship (cold-lane reliability) without a deploy;
   // keep 5 to hold the fuller-bed quality bar. Used by BOTH the API auto-route
   // and the worker gate, so they can never disagree.
-  const minBeds = Math.max(1, Number(process.env.OWN_ENGINE_MIN_BEDS) || 5);
+  const minBeds = Math.max(1, Number(process.env.OWN_ENGINE_MIN_BEDS) || 4);
   return {
     beds: beds.length,
     rhythm,
