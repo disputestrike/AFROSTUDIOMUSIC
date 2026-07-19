@@ -33,6 +33,14 @@ export function beatToProvenance(row: {
   provider?: string | null;
   consentGranted?: boolean;
   meta?: unknown;
+  /** rightsBasis of every ingredient MaterialAsset (assembled beds carry
+   *  meta.materialIds; callers resolve them). A bed is as clean as its
+   *  DIRTIEST loop: any provider-generated/unresolvable ingredient refuses the
+   *  whole bed; any user-attested makes it consent-gated; all code/self-
+   *  generated = own-master. This is what lets the own engine's assembled
+   *  records ('provider: material' — previously classified UNKNOWN and thrown
+   *  away, owner incident 2026-07-19 "why only 38?") count as fuel honestly. */
+  ingredientRights?: Array<string | null | undefined>;
 }): AssetProvenance {
   const meta = row.meta && typeof row.meta === 'object' && !Array.isArray(row.meta)
     ? (row.meta as Record<string, unknown>)
@@ -41,6 +49,22 @@ export function beatToProvenance(row: {
     ? (meta.melodyLayer as Record<string, unknown>)
     : null;
   const layerEngine = typeof layer?.engine === 'string' && layer.engine.trim() ? layer.engine : null;
+  // INGREDIENT LAW (most restrictive wins, after the melody-topping check):
+  if (!layerEngine && row.ingredientRights?.length) {
+    const rights = row.ingredientRights.map(r => (r ?? '').trim().toLowerCase());
+    if (rights.some(r => r === 'provider-generated')) {
+      return { id: `beat:${row.id}`, rightsBasis: 'provider-generated', consentGranted: row.consentGranted };
+    }
+    if (rights.some(r => !r || r === 'unknown')) {
+      // an unresolvable ingredient fails the whole bed closed
+      return { id: `beat:${row.id}`, engine: row.provider, consentGranted: row.consentGranted };
+    }
+    if (rights.some(r => r === 'user-attested')) {
+      return { id: `beat:${row.id}`, materialSource: 'upload', rightsBasis: 'user-attested', consentGranted: row.consentGranted };
+    }
+    // all ingredients code/self-generated → the bed is fully our own audio
+    return { id: `beat:${row.id}`, rightsBasis: 'self-generated', consentGranted: row.consentGranted };
+  }
   // THE OWNERSHIP VOUCH (audit 2026-07-19): an uploaded/imported instrumental
   // carries the artist's "user-attested" rights vouch in meta — it used to sit
   // UNREAD, so owner uploads classified 'unknown' and were refused. With no
@@ -74,8 +98,20 @@ export function vocalToProvenance(row: {
 
 export interface CaptureInput {
   materials: Array<{ id: string; source?: string | null; rightsBasis?: string | null }>;
-  beats: Array<{ id: string; provider?: string | null; meta?: unknown }>;
+  beats: Array<{ id: string; provider?: string | null; meta?: unknown; ingredientRights?: Array<string | null | undefined> }>;
   vocals: Array<{ id: string; performanceSource?: string | null }>;
+}
+
+/** The ingredient MaterialAsset ids an assembled bed was built from
+ *  (meta.materialIds) — callers resolve these to rightsBasis values and pass
+ *  them back as `ingredientRights` for the lineage-aware classification. */
+export function beatIngredientIds(meta: unknown): string[] {
+  const m = meta && typeof meta === 'object' && !Array.isArray(meta)
+    ? (meta as Record<string, unknown>)
+    : null;
+  return Array.isArray(m?.materialIds)
+    ? (m.materialIds as unknown[]).filter((id): id is string => typeof id === 'string' && !!id)
+    : [];
 }
 
 /**

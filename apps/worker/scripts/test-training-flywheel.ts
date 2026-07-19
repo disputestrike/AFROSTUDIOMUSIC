@@ -62,6 +62,25 @@ assert(doorClosed.eligible.length === 0, 'door closed: owner catalog rejected (f
 const doorOpen = manifestFromCatalog(ownerCatalog, true);
 assert(doorOpen.eligible.length === 3, `door open: owner masters+import+take all train (${doorOpen.eligible.length}/3)`);
 assert(doorOpen.eligible.some(e => e.id === 'beat:b-import'), 'attested uploaded instrumental classifies user-original (vouch now READ)');
+// INGREDIENT LAW (owner "why only 38?" 2026-07-19): an assembled bed
+// (provider 'material') rates by its DIRTIEST ingredient loop.
+const allOwn = beatToProvenance({ id: 'a1', provider: 'material', ingredientRights: ['code-generated', 'self-generated'] });
+assert(allOwn.rightsBasis === 'self-generated', 'all-own ingredients -> own bed (was UNKNOWN/refused before)');
+const dirty = beatToProvenance({ id: 'a2', provider: 'material', ingredientRights: ['code-generated', 'provider-generated'] });
+assert(dirty.rightsBasis === 'provider-generated', 'one provider-generated loop poisons the whole bed');
+const attestedMix = beatToProvenance({ id: 'a3', provider: 'material', ingredientRights: ['code-generated', 'user-attested'] });
+assert(attestedMix.rightsBasis === 'user-attested', 'a user-attested loop makes the bed consent-gated');
+const unresolvable = beatToProvenance({ id: 'a4', provider: 'material', ingredientRights: ['code-generated', null] });
+assert(unresolvable.rightsBasis === undefined && unresolvable.engine === 'material', 'an unresolvable ingredient fails the bed closed');
+const ingredientManifest = manifestFromCatalog({
+  materials: [], vocals: [],
+  beats: [
+    { id: 'ib-own', provider: 'material', ingredientRights: ['code-generated', 'self-generated'] },
+    { id: 'ib-dirty', provider: 'material', ingredientRights: ['provider-generated'] },
+  ],
+}, false);
+assert(ingredientManifest.eligible.some(e => e.id === 'beat:ib-own') && ingredientManifest.eligible.length === 1, 'own-ingredient bed trains without consent; dirty bed never does');
+
 // The vouch never overrides a third-party topping (most-restrictive still wins).
 const smuggled = manifestFromCatalog({
   materials: [], vocals: [],

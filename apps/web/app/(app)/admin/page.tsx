@@ -269,7 +269,7 @@ function TrainingConsentCard() {
   const [wsId, setWsId] = useState<string | null>(null);
   const [status, setStatus] = useState<{
     granted: boolean; current?: boolean; version?: string; reason?: string;
-    trainableNow?: number; total?: number;
+    trainableNow?: number; total?: number; byOrigin?: Record<string, number>;
   } | null>(null);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
@@ -280,7 +280,7 @@ function TrainingConsentCard() {
       const id = me.workspaceId ?? null;
       setWsId(id);
       if (!id) return;
-      const m = await api.get<{ consent?: { granted?: boolean; current?: boolean; version?: string; reason?: string }; trainableNow?: number; counts?: { total?: number } }>(`/admin/training/manifest?workspaceId=${id}`);
+      const m = await api.get<{ consent?: { granted?: boolean; current?: boolean; version?: string; reason?: string }; trainableNow?: number; counts?: { total?: number; byOrigin?: Record<string, number> } }>(`/admin/training/manifest?workspaceId=${id}`);
       setStatus({
         granted: !!m.consent?.granted,
         current: m.consent?.current,
@@ -288,6 +288,7 @@ function TrainingConsentCard() {
         reason: m.consent?.reason,
         trainableNow: m.trainableNow,
         total: m.counts?.total,
+        byOrigin: m.counts?.byOrigin,
       });
     } catch (e) { setErr((e as Error).message.slice(0, 140)); }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -322,6 +323,16 @@ function TrainingConsentCard() {
             <span className="text-slate-400">trainable now: <span className="text-slate-200">{status.trainableNow}</span>{typeof status.total === 'number' ? ` of ${status.total} assets` : ''}</span>
           )}
           {!granted && status.reason && <span className="text-xs text-slate-500">{status.reason}</span>}
+        </div>
+      )}
+      {status?.byOrigin && (
+        <div className="mt-2 flex flex-wrap gap-1.5 text-[11px]">
+          {Object.entries(status.byOrigin).map(([origin, n]) => (
+            <span key={origin} className={`rounded-full border px-2 py-0.5 ${origin === 'third-party-render' || origin === 'unknown' ? 'border-slate-700 text-slate-500' : 'border-emerald-500/30 text-emerald-300/80'}`}>
+              {origin.replace(/-/g, ' ')}: {n}
+            </span>
+          ))}
+          <span className="text-slate-500">— third-party renders (MiniMax/Suno-era songs) can NEVER be fuel: their terms, your protection.</span>
         </div>
       )}
       <div className="mt-4 flex gap-3">

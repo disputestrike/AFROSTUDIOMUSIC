@@ -11,7 +11,7 @@
  * pending-consent rather than being silently treated as trainable.
  */
 import { prisma } from '@afrohit/db';
-import { manifestFromCatalog, type TrainingManifest } from '@afrohit/shared';
+import { beatIngredientIds, manifestFromCatalog, type TrainingManifest } from '@afrohit/shared';
 
 export {
   materialToProvenance,
@@ -60,6 +60,24 @@ export async function buildWorkspaceTrainingManifest(opts: {
     }),
   ]);
 
-  const manifest = manifestFromCatalog({ materials, beats, vocals }, consentGranted);
+  // INGREDIENT LINEAGE (parity with the flywheel): assembled beds classify by
+  // their ingredient loops' rights, not the 'material' provider stamp.
+  const allIngredientIds = [...new Set(beats.flatMap((row) => beatIngredientIds(row.meta)))];
+  const rightsById = new Map<string, string | null>();
+  if (allIngredientIds.length) {
+    const rows = await prisma.materialAsset.findMany({
+      where: { id: { in: allIngredientIds } },
+      select: { id: true, rightsBasis: true },
+    });
+    for (const row of rows) rightsById.set(row.id, row.rightsBasis);
+  }
+  const enrichedBeats = beats.map((row) => {
+    const ids = beatIngredientIds(row.meta);
+    return ids.length
+      ? { ...row, ingredientRights: ids.map((id) => rightsById.get(id) ?? 'unknown') }
+      : row;
+  });
+
+  const manifest = manifestFromCatalog({ materials, beats: enrichedBeats, vocals }, consentGranted);
   return { ...manifest, scannedWorkspace: opts.workspaceId ?? 'ALL' };
 }

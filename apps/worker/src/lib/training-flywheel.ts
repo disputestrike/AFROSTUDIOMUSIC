@@ -20,6 +20,7 @@ import { prisma } from "@afrohit/db";
 import JSZip from "jszip";
 import { createHash } from "node:crypto";
 import {
+  beatIngredientIds,
   manifestFromCatalog,
   resolveTrainingConsent,
   TRAINING_LICENSE_CLAUSE,
@@ -112,13 +113,34 @@ async function liveManifest(): Promise<{
     }),
     consentedWorkspaceIds(),
   ]);
+  // INGREDIENT LINEAGE (owner incident 2026-07-19 "why only 38?"): assembled
+  // beds (provider 'material') classified UNKNOWN because their rights live in
+  // the ingredient loops. Resolve every bed's meta.materialIds -> rightsBasis
+  // in one batch; the pure classifier then rates each bed by its dirtiest loop.
+  const allIngredientIds = [
+    ...new Set(beats.flatMap(row => beatIngredientIds(row.meta))),
+  ];
+  const rightsById = new Map<string, string | null>();
+  if (allIngredientIds.length) {
+    const rows = await prisma.materialAsset.findMany({
+      where: { id: { in: allIngredientIds } },
+      select: { id: true, rightsBasis: true },
+    });
+    for (const row of rows) rightsById.set(row.id, row.rightsBasis);
+  }
+  const enrichedBeats = beats.map(row => {
+    const ids = beatIngredientIds(row.meta);
+    return ids.length
+      ? { ...row, ingredientRights: ids.map(id => rightsById.get(id) ?? "unknown") }
+      : row;
+  });
   const isGranted = (ws?: string | null) => !!ws && granted.has(ws);
   const split = <T>(rows: T[], ws: (r: T) => string | null | undefined) => ({
     yes: rows.filter(r => isGranted(ws(r))),
     no: rows.filter(r => !isGranted(ws(r))),
   });
   const m = split(materials, r => r.workspaceId);
-  const b = split(beats, r => r.project?.workspaceId);
+  const b = split(enrichedBeats, r => r.project?.workspaceId);
   const v = split(vocals, r => r.project?.workspaceId);
   const manifest = mergeManifests(
     manifestFromCatalog({ materials: m.yes, beats: b.yes, vocals: v.yes }, true),
