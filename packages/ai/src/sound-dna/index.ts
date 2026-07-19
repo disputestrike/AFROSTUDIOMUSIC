@@ -17,6 +17,7 @@
 import { SOUND_DNA, type SoundDNA } from './recipes';
 import { GLOBAL_SOUND_DNA, GLOBAL_ENRICHMENT } from './global-genres';
 import { GENRE_ENRICHMENT, type GenreEnrichment } from './enrichment';
+import { genreLookupKey } from '@afrohit/shared';
 
 export { SOUND_DNA };
 export type { SoundDNA } from './recipes';
@@ -33,13 +34,15 @@ export const GENRE_ENRICHMENT_ALL = ALL_ENRICHMENT;
 /** Look up the recipe for a genre (Afro OR global). Returns undefined if unknown. */
 export function getSoundDNA(genre?: string | null): SoundDNA | undefined {
   if (!genre) return undefined;
-  return ALL_DNA[genre];
+  // CANONICALIZE FIRST (audit quick-win 2026-07-19): 'hip hop'/'afro r&b'/
+  // 'Lo-Fi' used to miss the DNA table entirely — raw exact tag still wins.
+  return ALL_DNA[genre] ?? ALL_DNA[genreLookupKey(genre)];
 }
 
 /** Current-trends enrichment for a genre (Afro OR global). */
 export function getEnrichment(genre?: string | null): GenreEnrichment | undefined {
   if (!genre) return undefined;
-  return ALL_ENRICHMENT[genre];
+  return ALL_ENRICHMENT[genre] ?? ALL_ENRICHMENT[genreLookupKey(genre)];
 }
 
 function dedupe(items: Array<string | undefined | null>): string[] {

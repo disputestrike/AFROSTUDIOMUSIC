@@ -13,6 +13,8 @@
  *  - test-genre-signatures: proves total coverage — no lane ships unspecified
  */
 
+import { genreLookupKey } from './genre-canon';
+
 export interface GenreSignature {
   /** The lane's natural tempo — Create auto-sets this on genre pick; fusions blend. */
   bpm: number;
@@ -81,8 +83,11 @@ export const GENRE_SIGNATURES: Record<string, GenreSignature> = {
 };
 
 export function genreSignature(genre?: string | null): GenreSignature {
+  // CANONICALIZE FIRST (audit quick-win 2026-07-19): 'Amapiano'/'UK drill'/
+  // 'lo-fi' used to miss and render at the generic 106bpm — the measured 4/12.
   return (
-    GENRE_SIGNATURES[genre ?? ''] ?? {
+    GENRE_SIGNATURES[genre ?? ''] ??
+    GENRE_SIGNATURES[genreLookupKey(genre)] ?? {
       bpm: 106,
       durationS: 180,
       languages: ['en'],

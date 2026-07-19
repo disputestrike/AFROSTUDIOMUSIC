@@ -62,6 +62,7 @@
  *    afro_dancehall (+snare/clap), afro_house (+rimshot/snap).
  * -----------------------------------------------------------------------------
  */
+import { genreLookupKey } from './genre-canon';
 
 export const GENRE_PALETTES: Record<string, readonly string[]> = {
   // ---- Afro / diaspora core -------------------------------------------------
@@ -479,5 +480,7 @@ export const GENRE_PALETTES: Record<string, readonly string[]> = {
 
 /** The lane's full palette (empty for unknown lanes — the kit core still forges). */
 export function paletteFor(genre?: string | null): readonly string[] {
-  return (genre && GENRE_PALETTES[genre]) || [];
+  if (!genre) return [];
+  // CANONICALIZE FIRST (audit quick-win 2026-07-19) — raw exact tag still wins.
+  return GENRE_PALETTES[genre] ?? GENRE_PALETTES[genreLookupKey(genre)] ?? [];
 }

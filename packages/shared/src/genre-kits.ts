@@ -11,6 +11,7 @@
  * synth, the arranger, the engine brief and the verifier all read from.
  */
 import { jobOf, familyOf, isMaterialRole, type MaterialRole } from './material-roles';
+import { genreLookupKey } from './genre-canon';
 import { paletteFor } from './genre-palettes';
 
 export interface GenreKit {
@@ -10804,7 +10805,11 @@ export const GENRE_KITS: Record<string, GenreKit> = {
 };
 
 export function getGenreKit(genre?: string | null): GenreKit | undefined {
-  return genre ? GENRE_KITS[genre] : undefined;
+  if (!genre) return undefined;
+  // CANONICALIZE FIRST (audit quick-win 2026-07-19): 'Lo-Fi'/'hip hop'/
+  // 'afro r&b'/'Amapiano' used to miss this exact-key table and silently fall
+  // to the generic kit. Raw key still tried first so any legacy exact tag wins.
+  return GENRE_KITS[genre] ?? GENRE_KITS[genreLookupKey(genre)];
 }
 
 /** Every genre that has a full producer-grade kit. */
