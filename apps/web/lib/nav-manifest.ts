@@ -20,28 +20,34 @@ export interface NavItem {
   label: string;
   /** 'all' = every signed-in user; 'operator' = ADMIN_EMAILS allowlist only. */
   audience: NavAudience;
+  /** Shown INLINE in the desktop top bar. Non-primary items collapse into the
+   *  "More" dropdown so the header never overflows (the full set — esp. the
+   *  operator's — is far too wide for one row). Billing/Settings also live in
+   *  the account menu, so they don't need an inline slot. */
+  primary?: boolean;
 }
 
 /**
  * Every top-nav surface, in display order. The order intentionally matches the
- * operator's muscle memory from the pre-isolation nav.
+ * operator's muscle memory from the pre-isolation nav. `primary` = the everyday
+ * surfaces that stay inline; the rest live under "More".
  */
 export const NAV_MANIFEST: readonly NavItem[] = [
-  { href: '/create', label: 'Create', audience: 'all' },
+  { href: '/create', label: 'Create', audience: 'all', primary: true },
   { href: '/zap', label: 'Zap', audience: 'operator' },
-  { href: '/voice', label: 'My Voice', audience: 'all' },
-  { href: '/likeness', label: 'My Likeness', audience: 'all' },
-  { href: '/listen', label: 'Listen', audience: 'all' },
-  { href: '/studio', label: 'Chat', audience: 'all' },
+  { href: '/voice', label: 'My Voice', audience: 'all', primary: true },
+  { href: '/likeness', label: 'My Likeness', audience: 'all', primary: true },
+  { href: '/listen', label: 'Listen', audience: 'all', primary: true },
+  { href: '/studio', label: 'Chat', audience: 'all', primary: true },
   // Raw projects list is operator plumbing — consumers reach their work
   // through Catalog and the Studio flows (project DETAIL pages stay shared).
   { href: '/projects', label: 'Projects', audience: 'operator' },
-  { href: '/catalog', label: 'Catalog', audience: 'all' },
+  { href: '/catalog', label: 'Catalog', audience: 'all', primary: true },
   { href: '/materials', label: 'Materials', audience: 'operator' },
   { href: '/instrumentals', label: 'Instrumentals', audience: 'operator' },
   { href: '/lake', label: 'Data Lake', audience: 'operator' },
   { href: '/lexicon', label: 'Word Bank', audience: 'operator' },
-  { href: '/albums', label: 'Albums', audience: 'all' },
+  { href: '/albums', label: 'Albums', audience: 'all', primary: true },
   { href: '/billing', label: 'Billing', audience: 'all' },
   { href: '/settings', label: 'Settings', audience: 'all' },
   { href: '/benchmark', label: 'Benchmark', audience: 'operator' },
