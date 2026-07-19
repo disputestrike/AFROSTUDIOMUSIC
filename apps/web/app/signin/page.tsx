@@ -181,7 +181,7 @@ export default function SignInPage() {
             <label htmlFor="email" className="studio-field-label">Email</label>
             <div className="studio-input-wrap">
               <Mail aria-hidden="true" />
-              <input id="email" value={email} onChange={(event) => setEmail(event.target.value)} type="email" inputMode="email" autoComplete="email" name="email" placeholder="you@example.com" required />
+              <input id="email" value={email} onChange={(event) => setEmail(event.target.value)} type="email" inputMode="email" autoComplete="email" name="email" placeholder="name@yourstudio.com" required />
             </div>
           </div>
 

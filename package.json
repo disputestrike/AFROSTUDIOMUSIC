@@ -2,7 +2,7 @@
   "name": "afrohit-studio",
   "version": "0.1.0",
   "private": true,
-  "description": "AfroHit Studio — AI production house for African and diaspora artists",
+  "description": "AfroHit Studio - AI production house for African and diaspora artists",
   "packageManager": "pnpm@9.12.0",
   "engines": {
     "node": ">=20.10.0",

@@ -9,7 +9,9 @@ const EXPECTED_CI_NODE = "20.19.0";
 const EXPECTED_PYTHON = "3.11";
 const PRODUCTION_ROOTS = [
   "apps/api/src",
-  "apps/web/src",
+  "apps/web/app",
+  "apps/web/components",
+  "apps/web/lib",
   "apps/worker/src",
   "packages/ai/src",
   "packages/db/src",
