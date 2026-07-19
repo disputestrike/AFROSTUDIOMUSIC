@@ -161,7 +161,7 @@ The repository was fetched and fast-forward checked before this brief. The revie
 
 ### Passing evidence
 
-- `pnpm verify` passes all 69 required offline proofs.
+- `pnpm verify` passes all required offline proofs.
 - `pnpm build` passes across all six workspace packages, including the 29-route Next application.
 - Lane-engine, lane-material, and material-system checks pass.
 - Stem-integrity, own-engine bed-floor, AfroOne singing, controlled-direction, and producer-evidence checks pass.
