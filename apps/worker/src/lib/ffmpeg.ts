@@ -712,6 +712,8 @@ export async function assembleBeat(opts: {
   layers: AssemblyLayer[];
   sections: AssemblySection[];
   targetBpm: number;
+  /** Native stem buses retain silent gaps where a role is not active. */
+  preserveEmptySections?: boolean;
 }): Promise<Buffer> {
   const dir = await mkdtemp(join(tmpdir(), 'assemble-'));
   try {
@@ -720,7 +722,20 @@ export async function assembleBeat(opts: {
       const sec = opts.sections[s]!;
       const secDur = (60 / opts.targetBpm) * 4 * sec.bars;
       const active = sec.layerIdx.map((i) => opts.layers[i]).filter(Boolean) as AssemblyLayer[];
-      if (!active.length) continue;
+      if (!active.length) {
+        if (!opts.preserveEmptySections) continue;
+        const outPath = join(dir, `sec${s}.wav`);
+        await runFfmpeg([
+          '-f', 'lavfi',
+          '-i', 'anullsrc=r=44100:cl=stereo',
+          '-t', secDur.toFixed(3),
+          '-ar', '44100',
+          '-ac', '2',
+          outPath,
+        ]);
+        sectionFiles.push(outPath);
+        continue;
+      }
       const inputs: string[] = [];
       const chains: string[] = [];
       const labels: string[] = [];

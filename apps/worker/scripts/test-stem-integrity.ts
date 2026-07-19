@@ -8,6 +8,7 @@ import {
   resolveMusicStemSources,
   sniffStemAudio,
 } from '../src/lib/demucs-local';
+import { certifiedCurrentReleaseStems } from '../src/processors/export';
 
 const wavStem: StemAudioOutput = {
   role: 'vocals',
@@ -172,11 +173,85 @@ function testSniffingAndPostcondition(): void {
   );
 }
 
+function testCertifiedReleaseSelection(): void {
+  const sourceHash = "a".repeat(64);
+  const stemHash = "b".repeat(64);
+  const verifiedAt = new Date("2026-07-19T12:00:00.000Z");
+  const current = certifiedCurrentReleaseStems(
+    [
+      {
+        id: "stem-current",
+        role: "drums",
+        url: "private://drums.wav",
+        format: "wav",
+        origin: "native",
+        qualityState: "passed",
+        contentHash: stemHash,
+        verifiedAt,
+        lineage: {
+          schemaVersion: 1,
+          role: "drums",
+          source: {
+            kind: "beat",
+            assetId: "beat-current",
+            contentHash: sourceHash,
+          },
+          derivation: { kind: "native_bus", engine: "afroone", jobId: "job-1" },
+          createdAt: verifiedAt.toISOString(),
+        },
+      },
+      {
+        id: "stem-stale",
+        role: "bass",
+        url: "private://bass.wav",
+        format: "wav",
+        origin: "separation",
+        qualityState: "passed",
+        contentHash: "c".repeat(64),
+        verifiedAt,
+        lineage: {
+          schemaVersion: 1,
+          role: "bass",
+          source: {
+            kind: "beat",
+            assetId: "beat-old",
+            contentHash: sourceHash,
+          },
+          derivation: { kind: "separation", engine: "demucs", jobId: "job-0" },
+          createdAt: verifiedAt.toISOString(),
+        },
+      },
+      {
+        id: "stem-legacy",
+        role: "vocals",
+        url: "private://vocals.wav",
+        format: "wav",
+        origin: "legacy",
+        qualityState: "unmeasured",
+        contentHash: null,
+        verifiedAt: null,
+        lineage: null,
+      },
+    ],
+    [{ kind: "beat", assetId: "beat-current", contentHash: sourceHash }]
+  );
+  assert.equal(
+    current.length,
+    1,
+    "only byte-certified stems from current lineage may ship"
+  );
+  assert.equal(current[0]?.id, "stem-current");
+  assert.equal(current[0]?.archivePath, "stems/01-drums.wav");
+}
+
 function testProcessorWiring(): void {
   const music = readFileSync(join(process.cwd(), 'src/processors/music.ts'), 'utf8');
   const stems = readFileSync(join(process.cwd(), 'src/processors/stems.ts'), 'utf8');
+  const material = readFileSync(join(process.cwd(), 'src/processors/material.ts'), 'utf8');
   const ownEngine = readFileSync(join(process.cwd(), 'src/processors/own-engine.ts'), 'utf8');
   const cleanup = readFileSync(join(process.cwd(), 'src/processors/asset-cleanup.ts'), 'utf8');
+  const exportWorker = readFileSync(join(process.cwd(), 'src/processors/export.ts'), 'utf8');
+  const schema = readFileSync(join(process.cwd(), '../../packages/db/prisma/schema.prisma'), 'utf8');
   const hashAt = music.indexOf('const sourceContentHash');
   const resolveAt = music.indexOf('const stemResolution = await resolveMusicStemSources');
   const transactionAt = music.indexOf('const beat = await prisma.$transaction');
@@ -196,6 +271,22 @@ function testProcessorWiring(): void {
   assert.match(music, /salvage: \{ failedStep: s\.step/);
   assert.match(stems, /materializeStemAudio/);
   assert.match(stems, /format:\s*(?:s|stem)\.format/);
+  assert.match(stems, /export async function persistNativeStemBuses/);
+  assert.match(stems, /if \(p\.nativeBuses\?\.length\)/);
+  assert.match(stems, /source: "native"/);
+  assert.match(stems, /origin:\s*"native"/);
+  assert.match(stems, /contentHash:\s*options\.certification\.contentHash/);
+  assert.match(stems, /lineage:\s*\{ \.\.\.options\.lineage, role: options\.role \}/);
+  assert.match(material, /persistNativeStemBuses/);
+  assert.match(material, /preserveEmptySections: true/);
+  assert.match(material, /nativeStems/);
+  assert.match(ownEngine, /withStems: p\.withStems/);
+  assert.match(exportWorker, /certifiedCurrentReleaseStems/);
+  assert.match(exportWorker, /assertStoredContentHash\(\s*bytes,\s*stem\.contentHash/);
+  assert.match(exportWorker, /metadata\/stems\.json/);
+  assert.doesNotMatch(exportWorker, /stems omitted because individual stem hashes are not stored yet/);
+  assert.match(schema, /model Stem \{[\s\S]*contentHash\s+String\?/);
+  assert.match(schema, /model Stem \{[\s\S]*lineage\s+Json\?/);
 
   const melodyMixAt = ownEngine.indexOf('const mixed = await mixBuffers');
   const melodyCertAt = ownEngine.indexOf('const certified = await certifyAudioBytes', melodyMixAt);
@@ -251,6 +342,7 @@ async function main(): Promise<void> {
   await testProviderMetadata();
   await testCanonicalFallback();
   testSniffingAndPostcondition();
+  testCertifiedReleaseSelection();
   testProcessorWiring();
   console.log('stem integrity: format, canonical separation, persistence, and failure contracts passed');
 }

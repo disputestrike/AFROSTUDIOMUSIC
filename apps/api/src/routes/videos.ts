@@ -1,6 +1,6 @@
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
-import { prisma } from "@afrohit/db";
+import { openSecret, prisma } from "@afrohit/db";
 import {
   checkGenerativeContent,
   decorateTreatmentShotsForRender,
@@ -33,6 +33,14 @@ import {
   playableArrangement,
   playableAssetHistory,
 } from "../lib/current-playable-asset";
+import {
+  resolveVideoProviderReadiness,
+  type VideoEngineClass,
+} from "../lib/config-readiness";
+import {
+  assemblyEvidenceReport,
+  completeSceneRows,
+} from "../lib/video-evidence";
 
 type LikenessRenderPayload = {
   trainedModelRef: string;
@@ -77,6 +85,30 @@ async function resolveLikenessPayload(
     consentId: trained.consentId,
     rightsBasis: "user-attested-likeness",
   };
+}
+
+async function workspaceReplicateKey(
+  workspaceId: string
+): Promise<string | undefined> {
+  const workspace = await prisma.workspace.findUnique({
+    where: { id: workspaceId },
+    select: { musicProvider: true, musicApiKey: true },
+  });
+  return workspace?.musicProvider === "replicate"
+    ? (openSecret(workspace.musicApiKey) ?? undefined)
+    : undefined;
+}
+
+function videoProviderNotReady(
+  engineClass: VideoEngineClass,
+  useLikeness: boolean,
+  workspaceKey: string | undefined
+) {
+  return resolveVideoProviderReadiness({
+    engineClass,
+    useLikeness,
+    workspaceReplicateKey: workspaceKey,
+  });
 }
 
 export default async function videos(app: FastifyInstance) {
@@ -367,6 +399,21 @@ export default async function videos(app: FastifyInstance) {
         }
       }
 
+      const workspaceKey = await workspaceReplicateKey(workspaceId);
+      const providerReadiness = videoProviderNotReady(
+        engineClass,
+        Boolean(likenessPayload),
+        workspaceKey
+      );
+      if (!providerReadiness.ready) {
+        return reply.code(503).send({
+          error: "video_provider_not_ready",
+          engineClass,
+          missing: providerReadiness.missing,
+          issues: providerReadiness.issues,
+        });
+      }
+
       // Flat shots from EITHER storage shape — the legacy array or the
       // full-song treatment's compatibility view. Per-shot billing and the
       // worker payload keep the exact same shot element shape either way.
@@ -432,7 +479,7 @@ export default async function videos(app: FastifyInstance) {
         workspaceId,
         projectId: concept.projectId,
         kind: "video",
-        provider: process.env.VIDEO_PROVIDER ?? "unavailable",
+        provider: providerReadiness.selected,
         inputJson: input,
         charge,
         idempotencyKey,
@@ -493,6 +540,23 @@ export default async function videos(app: FastifyInstance) {
         }
       }
 
+
+      const engineClass = input.engineClass ?? "standard";
+      const workspaceKey = await workspaceReplicateKey(workspaceId);
+      const providerReadiness = videoProviderNotReady(
+        engineClass,
+        Boolean(likenessPayload),
+        workspaceKey
+      );
+      if (!providerReadiness.ready) {
+        return reply.code(503).send({
+          error: "video_provider_not_ready",
+          engineClass,
+          missing: providerReadiness.missing,
+          issues: providerReadiness.issues,
+        });
+      }
+
       // Which scenes already have a successful render — the SAME pure law
       // (perShotRenders) the assembly gate reads, so "rendered" can never
       // mean two different things on the billing and assembly sides.
@@ -503,10 +567,18 @@ export default async function videos(app: FastifyInstance) {
       const renders = await prisma.videoRender.findMany({
         where: { conceptId: concept.id },
         orderBy: { createdAt: "asc" },
-        select: { id: true, url: true, createdAt: true, meta: true },
+        select: {
+          id: true,
+          url: true,
+          durationS: true,
+          provider: true,
+          createdAt: true,
+          meta: true,
+        },
       });
-      const rendered = perShotRenders(renders);
-      const usage = videoRenderAllUsage(shots, rendered.keys(), input.engineClass);
+      const sceneEvidence = completeSceneRows(renders);
+      const rendered = perShotRenders(sceneEvidence.complete);
+      const usage = videoRenderAllUsage(shots, rendered.keys(), engineClass);
       if (!usage) {
         return reply.code(400).send({ error: "invalid_video_shot_selection" });
       }
@@ -520,6 +592,7 @@ export default async function videos(app: FastifyInstance) {
             renderedShotIndexes: usage.renderedShotIndexes,
             unrenderedShotIndexes: [],
           },
+          evidence: sceneEvidence.reports,
         });
       }
 
@@ -536,7 +609,7 @@ export default async function videos(app: FastifyInstance) {
       const billUsage = videoRenderAllUsage(
         shots,
         [...usage.renderedShotIndexes, ...salvagedShotIndexes],
-        input.engineClass
+        engineClass
       );
       if (!billUsage) {
         return reply.code(400).send({ error: "invalid_video_shot_selection" });
@@ -600,12 +673,12 @@ export default async function videos(app: FastifyInstance) {
           workspaceId,
           projectId: concept.projectId,
           kind: "video",
-          provider: process.env.VIDEO_PROVIDER ?? "unavailable",
+          provider: providerReadiness.selected,
           inputJson: {
             conceptId: concept.id,
             projectId: concept.projectId,
             shotIndex,
-            engineClass: input.engineClass,
+            engineClass,
             useLikeness: input.useLikeness ?? false,
             source: "render-all",
           },
@@ -623,7 +696,7 @@ export default async function videos(app: FastifyInstance) {
             shotIndex,
             shots,
             format: concept.format,
-            engineClass: input.engineClass,
+            engineClass,
             ...(likenessPayload ? { likeness: likenessPayload } : {}),
           }),
         });
@@ -646,7 +719,7 @@ export default async function videos(app: FastifyInstance) {
             autoAssemble: {
               requested: true,
               kind: "full",
-              engineClass: input.engineClass,
+              engineClass,
               requestedAt: new Date().toISOString(),
               queuedShotIndexes: usage.shotIndexes,
             },
@@ -665,6 +738,10 @@ export default async function videos(app: FastifyInstance) {
         billingUnits: billUsage.billingUnits,
         totalCost: billUsage.totalCost,
         autoAssemble: { requested: true, kind: "full" },
+        evidence: {
+          completeScenes: sceneEvidence.reports.filter(report => report.ok).length,
+          incompleteScenes: sceneEvidence.reports.filter(report => !report.ok),
+        },
       };
     }
   );
@@ -724,6 +801,7 @@ export default async function videos(app: FastifyInstance) {
     id: string;
     url: string;
     durationS: number | null;
+    provider: string;
     createdAt: Date;
     meta: unknown;
   }) {
@@ -736,6 +814,8 @@ export default async function videos(app: FastifyInstance) {
         ? (meta.assembly as Record<string, unknown>)
         : null;
     if (!assembly) return null;
+    const evidence = assemblyEvidenceReport(row);
+    if (!evidence.ok) return null;
     const num = (value: unknown): number | null =>
       typeof value === "number" && Number.isFinite(value) ? value : null;
     return {
@@ -752,6 +832,7 @@ export default async function videos(app: FastifyInstance) {
         (assembly.audioSource as Record<string, unknown> | undefined)?.startS
       ),
       createdAt: row.createdAt,
+      evidence,
     };
   }
 
@@ -769,12 +850,20 @@ export default async function videos(app: FastifyInstance) {
       const renders = await prisma.videoRender.findMany({
         where: { conceptId: concept.id },
         orderBy: { createdAt: "asc" },
-        select: { id: true, url: true, durationS: true, createdAt: true, meta: true },
+        select: {
+          id: true,
+          url: true,
+          durationS: true,
+          provider: true,
+          createdAt: true,
+          meta: true,
+        },
       });
+      const sceneEvidence = completeSceneRows(renders);
       const audio = await resolveConceptAudio(concept, workspaceId);
       const status = videoAssemblyStatus({
         storyboard: concept.storyboard,
-        renders,
+        renders: sceneEvidence.complete,
         songDurationS: audio.ok ? audio.songDurationS : null,
       });
       const assemblies: {
@@ -896,6 +985,13 @@ export default async function videos(app: FastifyInstance) {
                   : "No song audio yet — make the song first.",
             },
         assemblies,
+        evidence: {
+          scenes: sceneEvidence.reports,
+          completeSceneCount: sceneEvidence.reports.filter(report => report.ok)
+            .length,
+          incompleteSceneCount: sceneEvidence.reports.filter(report => !report.ok)
+            .length,
+        },
       };
     }
   );
@@ -928,12 +1024,20 @@ export default async function videos(app: FastifyInstance) {
       const renders = await prisma.videoRender.findMany({
         where: { conceptId: concept.id },
         orderBy: { createdAt: "asc" },
-        select: { id: true, url: true, createdAt: true, meta: true },
+        select: {
+          id: true,
+          url: true,
+          durationS: true,
+          provider: true,
+          createdAt: true,
+          meta: true,
+        },
       });
+      const sceneEvidence = completeSceneRows(renders);
       const gate = planVideoAssembly({
         kind: input.kind,
         storyboard: concept.storyboard,
-        renders,
+        renders: sceneEvidence.complete,
         songDurationS: audio.songDurationS,
       });
       if (!gate.ok) {
@@ -941,7 +1045,13 @@ export default async function videos(app: FastifyInstance) {
           .code(409)
           .send(
             gate.error === "shots_missing"
-              ? { error: "shots_missing", missing: gate.missing }
+              ? {
+                  error: "shots_missing",
+                  missing: gate.missing,
+                  incompleteEvidence: sceneEvidence.reports.filter(
+                    report => !report.ok
+                  ),
+                }
               : { error: gate.error }
           );
       }

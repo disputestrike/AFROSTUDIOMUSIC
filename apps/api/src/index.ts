@@ -35,6 +35,10 @@ import {
   sanitizeRequestUrl,
 } from "./lib/observability";
 import { assertStorageConfiguration } from "./lib/storage";
+import {
+  publicRuntimeReadiness,
+  runtimeReadinessReport,
+} from "./lib/config-readiness";
 
 import projects from "./routes/projects";
 import briefs from "./routes/briefs";
@@ -61,6 +65,8 @@ import reviews from "./routes/reviews";
 import songs from "./routes/songs";
 import albums from "./routes/albums";
 import materials from "./routes/materials";
+import producerKits from "./routes/producer-kits";
+import producerEvidence from "./routes/producer-evidence";
 import instrumentals from "./routes/instrumentals";
 import lexicon from "./routes/lexicon";
 import zap from "./routes/zap";
@@ -375,6 +381,10 @@ async function bootstrap() {
     let worker = false;
     let workerSha: string | null = null;
     let earOk: boolean | null = null;
+    let workerFeatures: {
+      video?: boolean;
+      likenessTraining?: boolean;
+    } | null = null;
     let pendingOutbox = 0;
     let oldestPendingSeconds: number | null = null;
     try {
@@ -413,6 +423,10 @@ async function bootstrap() {
             at?: string;
             sha?: string;
             earOk?: boolean | null;
+            features?: {
+              video?: boolean;
+              likenessTraining?: boolean;
+            };
           };
           const at = new Date(beat.at ?? 0).getTime();
           if (Number.isFinite(at) && checkedAt.getTime() - at < 45_000) {
@@ -426,6 +440,10 @@ async function bootstrap() {
             // DSP quality/learning ear is actually listening — false/null here
             // means measurement + learning are silently no-op.
             earOk = typeof beat.earOk === "boolean" ? beat.earOk : null;
+            workerFeatures =
+              beat.features && typeof beat.features === "object"
+                ? beat.features
+                : null;
             break;
           }
         } catch {
@@ -481,6 +499,10 @@ async function bootstrap() {
         pendingOutbox,
         oldestPendingSeconds,
       },
+      features: {
+        api: publicRuntimeReadiness(runtimeReadinessReport()),
+        worker: workerFeatures,
+      },
     };
     return reply.code(apiReady ? 200 : 503).send(response);
   });
@@ -520,6 +542,8 @@ async function bootstrap() {
       await api.register(adjust, { prefix: "/songs" }); // §9 lane-report + §10 Adjust-Song
       await api.register(albums, { prefix: "/albums" });
       await api.register(materials, { prefix: "/materials" });
+      await api.register(producerKits, { prefix: "/producer-kits" });
+      await api.register(producerEvidence, { prefix: "/producer-evidence" });
       await api.register(benchmark, { prefix: "/benchmark" });
       await api.register(authRoutes, { prefix: "/auth" });
       await api.register(instrumentals, { prefix: "/instrumentals" });

@@ -3,6 +3,11 @@ import { openSecret, prisma, sealSecret, secretHint } from '@afrohit/db';
 import { integrationsInputSchema } from '@afrohit/shared';
 import { requireAuth, requireRole } from '../middleware/auth';
 import { musicRouteCapabilities, musicRoutePolicy } from '../lib/music-capabilities';
+import {
+  resolveVideoProviderReadiness,
+  runtimeReadinessReport,
+} from '../lib/config-readiness';
+import { distributionConfigurationStatus } from '../lib/distribution';
 
 /**
  * In-app integrations — the music engine key lives here, not in Railway env.
@@ -28,6 +33,49 @@ export default async function settings(app: FastifyInstance) {
   app.addHook('preHandler', async (req) => {
     requireRole(req, ['OWNER', 'ADMIN']);
   });
+
+  app.get('/runtime-readiness', async (req) => {
+    const { workspaceId } = requireAuth(req);
+    const workspace = await prisma.workspace.findUniqueOrThrow({
+      where: { id: workspaceId },
+      select: { musicProvider: true, musicApiKey: true },
+    });
+    const workspaceKey =
+      workspace.musicProvider === 'replicate'
+        ? (openSecret(workspace.musicApiKey) ?? undefined)
+        : undefined;
+    const distribution = distributionConfigurationStatus();
+    return {
+      checkedAt: new Date().toISOString(),
+      api: runtimeReadinessReport(),
+      workspace: {
+        replicateConnected: Boolean(workspaceKey),
+        video: {
+          draft: resolveVideoProviderReadiness({
+            engineClass: 'draft',
+            workspaceReplicateKey: workspaceKey,
+          }),
+          standard: resolveVideoProviderReadiness({
+            engineClass: 'standard',
+            workspaceReplicateKey: workspaceKey,
+          }),
+          flagship: resolveVideoProviderReadiness({
+            engineClass: 'flagship',
+            workspaceReplicateKey: workspaceKey,
+          }),
+          likeness: resolveVideoProviderReadiness({
+            engineClass: 'standard',
+            useLikeness: true,
+            workspaceReplicateKey: workspaceKey,
+          }),
+        },
+      },
+      distribution,
+      note:
+        'This report validates runtime configuration without exposing credentials. Use the existing integration test endpoint to verify workspace-key connectivity.',
+    };
+  });
+
   app.get('/integrations', async (req) => {
     const { workspaceId } = requireAuth(req);
     const ws = await prisma.workspace.findUniqueOrThrow({

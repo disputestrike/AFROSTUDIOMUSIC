@@ -1,5 +1,7 @@
 import { createHmac } from "node:crypto";
 import {
+  distributionConfigurationStatus,
+  distributionLifecycleDiagnostics,
   distributionSignature,
   sanitizeDistributionChannels,
   verifyDistributionSignature,
@@ -33,6 +35,34 @@ const expected =
     .update(body)
     .digest("hex");
 const signature = distributionSignature(secret, timestamp, body);
+
+const configured = distributionConfigurationStatus({
+  DISTRIBUTOR: "partner",
+  DISTRIBUTOR_WEBHOOK_URL: "https://distribution.example/releases",
+  DISTRIBUTOR_WEBHOOK_SECRET: secret,
+});
+check(
+  configured.ready,
+  "distribution readiness accepts signed HTTPS configuration"
+);
+check(
+  !distributionConfigurationStatus({
+    DISTRIBUTOR_WEBHOOK_URL: "http://localhost/releases",
+    DISTRIBUTOR_WEBHOOK_SECRET: "short",
+  }).ready,
+  "distribution readiness rejects weak or non-HTTPS configuration"
+);
+const lifecycle = distributionLifecycleDiagnostics(
+  {
+    status: "accepted",
+    distributor: "partner",
+    externalId: "release_contract_1",
+    distributionStatusAt: new Date("2026-07-01T00:00:00.000Z"),
+  },
+  configured,
+  new Date("2026-07-19T00:00:00.000Z")
+);
+check(lifecycle.stale, "distribution diagnostics expose stale partner states");
 
 check(
   signature === expected,

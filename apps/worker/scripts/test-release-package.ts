@@ -124,6 +124,26 @@ assert.match(
   /checkCRC32/,
   "export must verify the generated ZIP"
 );
+assert.match(
+  exportWorker,
+  /certifiedCurrentReleaseStems/,
+  "export must select stems bound to current certified lineage"
+);
+assert.match(
+  exportWorker,
+  /metadata\/stems\.json/,
+  "export must package a stem lineage manifest"
+);
+assert.match(
+  exportWorker,
+  /assertStoredContentHash\(\s*bytes,\s*stem\.contentHash/,
+  "export must verify each stem's stored bytes"
+);
+assert.doesNotMatch(
+  exportWorker,
+  /stems omitted because individual stem hashes are not stored yet/,
+  "certified stems cannot be unconditionally omitted"
+);
 assert.doesNotMatch(
   exportWorker,
   /For MVP|Next pass/i,

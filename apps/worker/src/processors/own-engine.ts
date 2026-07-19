@@ -19,6 +19,9 @@
 import { openSecret, prisma } from "@afrohit/db";
 import {
   blueprintFromMeasured,
+  AFROONE_ONTOLOGY_VERSION,
+  AFROONE_RENDER_SPEC_VERSION,
+  applyAfroOneDirection,
   forgeKitFor,
   structureMatch,
   genreSignature,
@@ -32,6 +35,8 @@ import {
   materialCoverage,
   materialGenreMatches,
   type SongBlueprint,
+  type AfroOneDirection,
+  type AfroOneRenderSpecification,
   type MeasuredAnalysis,
   type MelodyScore,
   withCoarseMaterialRoles,
@@ -42,7 +47,14 @@ import {
   type MaterialRole,
   type RequestedMaterialRoleProvenance,
 } from "@afrohit/shared";
-import { melodyBrain, getSoundDNA, planProduction, type RenderOutcome } from "@afrohit/ai";
+import {
+  afroOneSingingJobContract,
+  createAfroOneSingingManifest,
+  melodyBrain,
+  getSoundDNA,
+  planProduction,
+  type RenderOutcome,
+} from "@afrohit/ai";
 import {
   deleteObjectByUrl,
   downloadToBuffer,
@@ -60,6 +72,7 @@ import { processSynthMaterial } from "./synth-material";
 import { processAssembleBeat, processForgeMaterial } from "./material";
 import { forgePromptFor } from "../lib/forge-prompts";
 import { replicateToken } from "@afrohit/ai";
+import { processAfroOneSinging } from "./afroone-singing";
 
 export interface OwnEnginePayload {
   jobId: string;
@@ -77,6 +90,26 @@ export interface OwnEnginePayload {
   blueprint?: SongBlueprint | null;
   requestedRoles?: MaterialRole[];
   requestedRoleProvenance?: RequestedMaterialRoleProvenance;
+  renderSeed?: number;
+  direction?: AfroOneDirection;
+  deterministicMode?: boolean;
+  renderSpec?: AfroOneRenderSpecification;
+  /** Exact prior material receipt for replay. No forge/substitution is allowed. */
+  lockedMaterialIds?: string[];
+  withStems?: boolean;
+  withVocals?: boolean;
+  lyrics?: string;
+  language?: string | null;
+  voiceProfileId?: string | null;
+  /** Exact score carried by a replay receipt. */
+  melodyScore?: MelodyScore | null;
+  trainingUsage?: {
+    referenceIds?: string[];
+    pinnedReferenceId?: string | null;
+    genre?: string;
+    measured?: number;
+    inferredOnly?: number;
+  };
 }
 
 async function pickKit(
@@ -85,7 +118,8 @@ async function pickKit(
   bpm: number,
   key: string,
   varietySeed: number,
-  requestedRoles: readonly MaterialRole[] = []
+  requestedRoles: readonly MaterialRole[] = [],
+  lockedMaterialIds: readonly string[] = []
 ) {
   // GENRE MATCHING IN JS (source-truth wave item 8): the Prisma exact-equality
   // `genre` filter hid 'Afrobeats'-tagged material from an 'afrobeats' lane —
@@ -104,8 +138,10 @@ async function pickKit(
     orderBy: { createdAt: "desc" },
     take: 600,
   });
+  const locked = new Set(lockedMaterialIds);
   const rows = shelf
     .filter((row: { genre: string | null }) => materialGenreMatches(row.genre, genre))
+    .filter((row: { id: string }) => !locked.size || locked.has(row.id))
     .slice(0, 240);
   const exactRequested = new Set<string>(requestedRoles);
   const eligibleRows = rows.filter(
@@ -511,7 +547,7 @@ export async function processOwnEngine(p: OwnEnginePayload): Promise<void> {
   try {
     const bpm = p.bpm ?? genreSignature(p.genre).bpm ?? 112;
     const homeKey = getSoundDNA(p.genre)?.commonKeys?.[0] ?? "A minor";
-    const varietySeed = seedFrom(p.jobId, bpm);
+    const varietySeed = p.renderSeed ?? seedFrom(p.jobId, bpm);
 
     const rawRequestedRoles = p.requestedRoles ?? [];
     const invalidRequestedRoles = rawRequestedRoles.filter(
@@ -556,8 +592,20 @@ export async function processOwnEngine(p: OwnEnginePayload): Promise<void> {
       bpm,
       homeKey,
       varietySeed,
-      requestedRoles
+      requestedRoles,
+      p.lockedMaterialIds ?? []
     );
+    const replayLocked = Boolean(p.lockedMaterialIds?.length);
+    if (replayLocked) {
+      const pickedIds = new Set(picks.map(pick => pick.id));
+      const unavailable = p.lockedMaterialIds!.filter(id => !pickedIds.has(id));
+      if (unavailable.length) {
+        throw new Error(
+          `own-engine replay refused: ${unavailable.length} locked material(s) are missing or no longer eligible`
+        );
+      }
+      notes.push(`replay: locked ${p.lockedMaterialIds!.length} material receipt(s)`);
+    }
     const haveRoles = new Set(picks.map(x => x.role));
     // MATERIALS FROM THE RICH FORGE FIRST, synth only as the floor (owner,
     // 2026-07-17: "use all African instruments — not a stand-in"). Two tiers,
@@ -580,8 +628,9 @@ export async function processOwnEngine(p: OwnEnginePayload): Promise<void> {
     // hard-fails); the operator-budgeted NIGHTLY forge remains the deliberate
     // way to stock shelves with real instruments.
     const engineConnected =
+      !replayLocked &&
       (process.env.OWN_ENGINE_REAL_FORGE === "1" && Boolean(replicateToken())) ||
-      (await (async () => {
+      (!replayLocked && await (async () => {
         const ws = await prisma.workspace.findUnique({
           where: { id: p.workspaceId },
           select: { musicProvider: true, musicApiKey: true },
@@ -644,7 +693,9 @@ export async function processOwnEngine(p: OwnEnginePayload): Promise<void> {
     const synthTargets = [
       ...new Set([...synthKitFor(p.genre), ...requestedRoles]),
     ];
-    const missing = synthTargets.filter(r => !haveRoles.has(r));
+    const missing = replayLocked
+      ? []
+      : synthTargets.filter(r => !haveRoles.has(r));
     if (missing.length) {
       notes.push(`kit: synth-forged ${missing.join("+")}`);
       await processSynthMaterial({
@@ -662,7 +713,8 @@ export async function processOwnEngine(p: OwnEnginePayload): Promise<void> {
         bpm,
         homeKey,
         varietySeed,
-        requestedRoles
+        requestedRoles,
+        p.lockedMaterialIds ?? []
       );
     }
     const missingRequestedRoles = missingExactRequestedMaterialRoles(
@@ -728,6 +780,7 @@ export async function processOwnEngine(p: OwnEnginePayload): Promise<void> {
     let productionPlanMeta: Record<string, unknown> | null = null;
     if (
       !p.blueprint?.sections?.length &&
+      !p.deterministicMode &&
       process.env.OWN_ENGINE_PRODUCER_BRAIN !== "0"
     ) {
       const shelfCounts = new Map<string, number>();
@@ -782,6 +835,15 @@ export async function processOwnEngine(p: OwnEnginePayload): Promise<void> {
         p.blueprint,
         picks.map(x => x.role)
       );
+    const direction = p.direction ?? "commercial_safe";
+    if (p.direction || p.deterministicMode) {
+      sections = applyAfroOneDirection(
+        sections,
+        direction,
+        picks.map(pick => pick.role)
+      );
+      notes.push(`direction: ${direction} (seed ${varietySeed})`);
+    }
     // Template/fallback sections scale to the lane's length contract too — a
     // measured blueprint keeps its own bars (ground truth), everything else
     // meets the target. (The plan is already budget-clamped by the referee.)
@@ -808,6 +870,16 @@ export async function processOwnEngine(p: OwnEnginePayload): Promise<void> {
         inputJson: {
           ownEngineChild: p.jobId,
           assemble: true,
+          renderSpec:
+            p.renderSpec ?? {
+              version: AFROONE_RENDER_SPEC_VERSION,
+              ontologyVersion: AFROONE_ONTOLOGY_VERSION,
+              seed: varietySeed,
+              direction,
+              genre: p.genre,
+              bpm,
+              durationS: laneDurationS,
+            },
           ...(requestedRoles.length
             ? { requestedRoles, requestedRoleProvenance }
             : {}),
@@ -823,6 +895,7 @@ export async function processOwnEngine(p: OwnEnginePayload): Promise<void> {
       genre: p.genre,
       picks,
       sections,
+      withStems: p.withStems,
     } as never);
     const done = await prisma.providerJob.findUnique({
       where: { id: child.id },
@@ -876,15 +949,16 @@ export async function processOwnEngine(p: OwnEnginePayload): Promise<void> {
     // seam below sings it once a trained voice is READY) and the guide WAV is
     // filed as audible evidence. ALL fail-open — a melody failure never breaks
     // the beat, it just leaves an honest note.
-    let melodyScore: MelodyScore | null = null;
+    let melodyScore: MelodyScore | null = p.melodyScore ?? null;
     let melodyGuideUrl: string | null = null;
-    if (p.songId) {
+    if (p.songId && !melodyScore) {
       try {
         const draft = await prisma.lyricDraft.findUnique({
           where: { songId: p.songId },
         });
-        const lyricSections = draft?.body
-          ? parseLyricSections(draft.body).filter(s => s.lines.length > 0)
+        const lyricBody = p.lyrics?.trim() || draft?.body?.trim() || "";
+        const lyricSections = lyricBody
+          ? parseLyricSections(lyricBody).filter(s => s.lines.length > 0)
           : [];
         if (!lyricSections.length) {
           notes.push("melody score skipped: no lyric draft for this song");
@@ -904,7 +978,7 @@ export async function processOwnEngine(p: OwnEnginePayload): Promise<void> {
             genre: p.genre,
             bpm,
             key: homeKey,
-            seed: seedFrom(p.songId, bpm),
+            seed: p.renderSpec?.seed ?? p.renderSeed ?? seedFrom(p.songId, bpm),
             swing: feel.swing,
             syncopation: feel.syncopation,
             sections: lyricSections.map(s => ({
@@ -1106,11 +1180,25 @@ export async function processOwnEngine(p: OwnEnginePayload): Promise<void> {
           ...((beatRow?.meta ?? {}) as Record<string, unknown>),
           ...(melodyScore ? { melodyScore } : {}),
           ...(melodyGuideUrl ? { melodyGuideUrl } : {}),
+          ...(p.trainingUsage ? { trainingUsage: p.trainingUsage } : {}),
           laneAssessment,
           ownEngine: {
-            v: 2,
+            v: 3,
             layers: notes,
             blueprintMatch,
+            withVocals: p.withVocals === true,
+            voiceProfileId: p.voiceProfileId ?? null,
+            language: p.language ?? null,
+            renderSpec:
+              p.renderSpec ?? {
+                version: AFROONE_RENDER_SPEC_VERSION,
+                ontologyVersion: AFROONE_ONTOLOGY_VERSION,
+                seed: varietySeed,
+                direction,
+                genre: p.genre,
+                bpm,
+                durationS: laneDurationS,
+              },
             ...(requestedRoles.length
               ? {
                   requestedRoles,
@@ -1132,15 +1220,144 @@ export async function processOwnEngine(p: OwnEnginePayload): Promise<void> {
       },
     });
 
-    // Voice is an explicit verified handoff: RVC changes identity, but it does
-    // not invent a sung performance from an instrumental or melody guide.
+    const referenceIds = [
+      ...new Set((p.trainingUsage?.referenceIds ?? []).filter(Boolean)),
+    ];
+    if (referenceIds.length) {
+      const references = await prisma.soundReference.findMany({
+        where: {
+          workspaceId: p.workspaceId,
+          id: { in: referenceIds },
+          active: true,
+          analysisState: { not: "failed" },
+          rightsBasis: { not: "unknown" },
+        },
+        select: {
+          id: true,
+          title: true,
+          analysisState: true,
+          rightsBasis: true,
+        },
+      });
+      const byId = new Map(references.map(reference => [reference.id, reference]));
+      await prisma.referenceUsage.createMany({
+        data: referenceIds.flatMap((referenceId, position) => {
+          const reference = byId.get(referenceId);
+          if (!reference) return [];
+          return [
+            {
+              workspaceId: p.workspaceId,
+              referenceId,
+              providerJobId: p.jobId,
+              beatId: finalBeatId,
+              songId: p.songId ?? null,
+              genre: p.trainingUsage?.genre || p.genre,
+              position,
+              pinned: p.trainingUsage?.pinnedReferenceId === referenceId,
+              influence: {
+                path: "afroone-producer-brain+measured-lane-tags",
+                title: reference.title,
+                analysisState: reference.analysisState,
+                rightsBasis: reference.rightsBasis,
+                renderSeed: p.renderSpec?.seed ?? varietySeed,
+                direction,
+              } as never,
+            },
+          ];
+        }),
+        skipDuplicates: true,
+      });
+      notes.push(`training lineage: ${references.length} eligible reference receipt(s)`);
+    }
+
+    let singing: Record<string, unknown> | null = null;
+    if (p.withVocals) {
+      const lyricBody = p.lyrics?.trim();
+      if (!lyricBody) {
+        throw new Error("own-engine singing requested without lyrics");
+      }
+      if (!melodyScore) {
+        throw new Error("own-engine singing requested without a valid melody score");
+      }
+      const manifest = createAfroOneSingingManifest({
+        lyrics: lyricBody,
+        melodyScore,
+        genre: p.genre,
+        language: p.language,
+        targetDurationS: laneDurationS,
+      });
+      const singingContract = afroOneSingingJobContract(
+        manifest,
+        p.voiceProfileId
+      );
+      const singingJob = await prisma.providerJob.create({
+        data: {
+          workspaceId: p.workspaceId,
+          projectId: p.projectId,
+          kind: "voice",
+          provider: "afroone-singing",
+          status: "QUEUED",
+          idempotencyKey: `${p.jobId}:sing`,
+          inputJson: {
+            ...singingContract,
+            parentJobId: p.jobId,
+            beatId: finalBeatId,
+            renderSpec: p.renderSpec ?? null,
+          } as never,
+        },
+      });
+      await processAfroOneSinging({
+        jobId: singingJob.id,
+        workspaceId: p.workspaceId,
+        projectId: p.projectId,
+        songId: p.songId,
+        voiceProfileId: p.voiceProfileId,
+        lyrics: lyricBody,
+        melodyScore,
+        genre: p.genre,
+        language: p.language,
+        targetDurationS: laneDurationS,
+        instrumentalBeatId: finalBeatId,
+        instrumentalUrl: finalUrl,
+      });
+      const completedSinging = await prisma.providerJob.findUnique({
+        where: { id: singingJob.id },
+        select: { status: true, outputJson: true, errorJson: true, cost: true },
+      });
+      if (completedSinging?.status !== "SUCCEEDED") {
+        const message = (completedSinging?.errorJson as { message?: string } | null)
+          ?.message;
+        throw new Error(
+          `own-engine singing failed${message ? `: ${message}` : ""}`
+        );
+      }
+      singing = {
+        jobId: singingJob.id,
+        costUsd: completedSinging.cost?.toString() ?? null,
+        ...((completedSinging.outputJson ?? {}) as Record<string, unknown>),
+      };
+      notes.push("singing: genuine vocal generated, verified, and mixed over the owned bed");
+    }
+
     await markSucceeded(p.jobId, {
       engine: "afrohit-own-v1",
       beatId: finalBeatId,
-      url: finalUrl,
+      instrumentalUrl: finalUrl,
+      url:
+        singing && typeof singing.url === "string" ? singing.url : finalUrl,
       blueprintMatch,
       laneAssessment,
       layers: notes,
+      renderSpec:
+        p.renderSpec ?? {
+          version: AFROONE_RENDER_SPEC_VERSION,
+          ontologyVersion: AFROONE_ONTOLOGY_VERSION,
+          seed: varietySeed,
+          direction,
+          genre: p.genre,
+          bpm,
+          durationS: laneDurationS,
+        },
       ...(requestedRoles.length
         ? {
             requestedRoles,
@@ -1157,8 +1374,12 @@ export async function processOwnEngine(p: OwnEnginePayload): Promise<void> {
               })),
           }
         : {}),
-      voice:
-        "record/upload a sung lead, or convert an existing performance with POST /voices/:voiceId/sing",
+      ...(singing
+        ? { singing }
+        : {
+            voice:
+              "record/upload a sung lead, or convert an existing performance with POST /voices/:voiceId/sing",
+          }),
     });
     console.log(
       `[own-engine] ${p.genre} done — ${notes.join(" | ")}${blueprintMatch != null ? ` | skeleton ${Math.round(blueprintMatch * 100)}%` : ""}`

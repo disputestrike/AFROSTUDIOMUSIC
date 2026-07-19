@@ -687,17 +687,24 @@ model BeatAsset {
 }
 
 model Stem {
-  id        String   @id @default(cuid())
-  beatId    String
-  role      String // "drums","perc","bass","keys","guitar","pad","logdrum","fx","vocal","backing","adlib"
-  url       String
-  format    String   @default("wav")
-  duration  Float?
-  createdAt DateTime @default(now()) @db.Timestamptz(6)
+  id           String    @id @default(cuid())
+  beatId       String
+  role         String // "drums","perc","bass","keys","guitar","pad","logdrum","fx","vocal","backing","adlib"
+  url          String
+  format       String    @default("wav")
+  duration     Float?
+  origin       String    @default("legacy") // legacy | provider | separation | native
+  qualityState String    @default("unmeasured") // passed | weak | failed | unmeasured
+  contentHash  String?
+  verifiedAt   DateTime? @db.Timestamptz(6)
+  lineage      Json? // immutable source + derivation receipt for these exact bytes
+  createdAt    DateTime  @default(now()) @db.Timestamptz(6)
 
   beat BeatAsset @relation(fields: [beatId], references: [id], onDelete: Cascade)
 
   @@index([beatId])
+  @@index([beatId, qualityState, verifiedAt])
+  @@index([beatId, contentHash])
 }
 
 model VocalRender {

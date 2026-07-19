@@ -20,6 +20,7 @@
 import { replicateToken } from './providers/music';
 
 const DEFAULT_SING_MODEL = 'zsxkib/realistic-voice-cloning';
+export const DEFAULT_VOICE_CONVERSION_COST_USD = 0.15;
 
 export type SingPitchChange = 'no-change' | 'male-to-female' | 'female-to-male';
 

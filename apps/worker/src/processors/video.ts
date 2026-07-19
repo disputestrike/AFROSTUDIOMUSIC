@@ -35,6 +35,12 @@ import {
   inspectVideoBytes,
   type VideoInspection,
 } from "../lib/video-inspection";
+import { workerVideoProviderReadiness } from "../lib/config-readiness";
+import {
+  assertSceneEvidenceComplete,
+  sceneEvidenceCompleteness,
+  VIDEO_EVIDENCE_VERSION,
+} from "../lib/video-evidence";
 
 interface VideoShot {
   index?: number;
@@ -458,8 +464,20 @@ export async function processVideo(p: VideoPayload) {
       adapter = videoAdapterForClass(p.engineClass, workspaceKey);
     }
     adapter = adapter ?? videoAdapter();
-    if (adapter.name === "stub" && process.env.ALLOW_STUB_AUDIO !== "1") {
-      await markFailed(p.jobId, "video_failed: no video engine configured");
+    const providerReadiness = workerVideoProviderReadiness({
+      provider: adapter.name,
+      workspaceReplicateKey: workspaceKey,
+      useLikeness: Boolean(p.likeness),
+      imageToVideo: adapter.capabilities?.imageToVideo,
+    });
+    if (!providerReadiness.ready) {
+      await markFailed(
+        p.jobId,
+        `video_provider_not_ready: ${[
+          ...providerReadiness.missing,
+          ...providerReadiness.issues,
+        ].join("; ")}`
+      );
       return;
     }
     await prisma.providerJob.updateMany({
@@ -821,6 +839,10 @@ export async function processVideo(p: VideoPayload) {
         .digest("hex")
         .slice(0, 24)}`;
       const renderMeta = {
+        evidenceVersion: VIDEO_EVIDENCE_VERSION,
+        providerJobId: p.jobId,
+        providerExternalId: render.externalId ?? entry.externalId ?? null,
+        renderedAt: new Date().toISOString(),
         shotIndex,
         shotPrompt: shot.prompt,
         motion: shot.motion,
@@ -861,6 +883,16 @@ export async function processVideo(p: VideoPayload) {
             }
           : {}),
       };
+      assertSceneEvidenceComplete(
+        {
+          id: renderId,
+          url: stored.url,
+          durationS: stored.inspection.durationS,
+          provider: adapter.name,
+          meta: renderMeta,
+        },
+        { likenessRequired: Boolean(p.likeness), requireVersion: true }
+      );
       await prisma.videoRender.upsert({
         where: { id: renderId },
         create: {
@@ -1090,13 +1122,23 @@ async function maybeTriggerAutoAssemble(p: {
     const renders = await prisma.videoRender.findMany({
       where: { conceptId: concept.id },
       orderBy: { createdAt: "asc" },
-      select: { id: true, url: true, createdAt: true, meta: true },
+      select: {
+        id: true,
+        url: true,
+        durationS: true,
+        provider: true,
+        createdAt: true,
+        meta: true,
+      },
     });
+    const completeRenders = renders.filter(
+      render => sceneEvidenceCompleteness(render).ok
+    );
     const audio = await resolveConceptAudio(concept.songId, p.workspaceId);
     const gate = planVideoAssembly({
       kind: auto.kind === "teaser" ? "teaser" : "full",
       storyboard: concept.storyboard,
-      renders,
+      renders: completeRenders,
       songDurationS: audio.ok ? audio.songDurationS : null,
     });
 

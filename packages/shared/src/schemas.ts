@@ -10,6 +10,7 @@ import {
   VIDEO_ENGINE_CLASSES,
 } from "./likeness";
 import { isMaterialRole, type MaterialRole } from "./material-roles";
+import { AFROONE_DIRECTIONS } from "./afroone-render";
 import {
   GENRES,
   LANGUAGES,
@@ -263,8 +264,14 @@ export const generateBeatInputSchema = z.object({
   /** HARD language constraint — outranks the artist profile's defaults. */
   languages: z.array(z.string().min(2).max(12)).max(5).optional(),
   voice: z.enum(["auto", "female", "male", "duet", "group"]).optional(),
+  /** Optional consented trained voice for AfroOne singing personalization. */
+  voiceProfileId: z.string().cuid().optional(),
   /** WO-5: takes rendered for THIS request (draft default 1; Hit-Maker flows pass 2). */
   candidates: z.number().int().min(1).max(4).optional(),
+  /** Stable producer-owned seed. Reusing it reproduces AfroOne decisions. */
+  renderSeed: z.number().int().min(0).max(0xffffffff).optional(),
+  /** Named AfroOne arrangements. Three profiles produce the launch batch. */
+  directionProfiles: z.array(z.enum(AFROONE_DIRECTIONS)).min(1).max(3).optional(),
   withStems: z.boolean().default(true),
   // Full song WITH AI vocals: set withVocals + provide lyrics (or let the API
   // pull the latest lyric for the song). Routes to the vocals model.

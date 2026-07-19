@@ -25,7 +25,7 @@ export async function assembleProofPack(workspaceId: string, songId: string): Pr
   if (!song) return null;
   const beat = song.beats[0];
   const master = song.masters[0];
-  const bm = (beat?.meta ?? {}) as { qc?: { verdict?: string; integratedLufs?: number | null } | null; measured?: { engineOk?: boolean }; compliance?: unknown; laneRepair?: string | null; bestOf?: { tried?: number; rendered?: number; rankedBy?: string; laneScore?: number | null }; assemblyLog?: Array<{ materialId?: string; role?: string }> };
+  const bm = (beat?.meta ?? {}) as { qc?: { verdict?: string; integratedLufs?: number | null } | null; measured?: { engineOk?: boolean }; compliance?: unknown; laneRepair?: string | null; bestOf?: { tried?: number; rendered?: number; rankedBy?: string; laneScore?: number | null }; assemblyLog?: Array<{ materialId?: string; role?: string }>; ownEngine?: { renderSpec?: unknown } };
   const mm = (master?.meta ?? {}) as { qc?: { integratedLufs?: number; verdict?: string } | null };
 
   // THE REQUEST THAT MADE IT — read back from the stored render job, never
@@ -158,6 +158,7 @@ export async function assembleProofPack(workspaceId: string, songId: string): Pr
           at: renderJob.createdAt,
         }
       : { note: 'no render job stored — request facts unavailable, not reconstructed' },
+    renderSpecification: bm.ownEngine?.renderSpec ?? null,
     // Which references shaped this render. New takes read the append-only usage
     // ledger; pre-ledger takes fall back to their stored job metadata.
     training: referenceReceipts.length

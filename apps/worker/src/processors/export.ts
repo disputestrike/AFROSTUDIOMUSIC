@@ -30,6 +30,29 @@ interface ExportPayload {
 type PackageFile = { path: string; bytes: Buffer };
 type ManifestEntry = { path: string; sizeBytes: number; sha256: string };
 type JsonRecord = Record<string, unknown>;
+export type CertifiedStemSource = {
+  kind: "beat" | "mix" | "master";
+  assetId: string;
+  contentHash: string;
+};
+export type ReleaseStemRow = {
+  id: string;
+  role: string;
+  url: string;
+  format: string;
+  origin: string;
+  qualityState: string;
+  contentHash: string | null;
+  verifiedAt: Date | null;
+  lineage: unknown;
+};
+export type CertifiedReleaseStem = ReleaseStemRow & {
+  contentHash: string;
+  verifiedAt: Date;
+  lineage: JsonRecord;
+  archivePath: string;
+};
+
 
 const ZIP_DATE = new Date('1980-01-01T00:00:00.000Z');
 const MAX_ARCHIVE_BYTES = 900 * 1024 * 1024;
@@ -47,6 +70,75 @@ function safeFileBase(value: string): string {
     .replace(/-+/g, '-')
     .slice(0, 80)
     .toLowerCase() || 'afrohit-release';
+}
+
+const CERTIFIED_HASH = /^[a-f0-9]{64}$/i;
+const RELEASE_STEM_FORMATS = new Set([
+  "wav",
+  "mp3",
+  "flac",
+  "aiff",
+  "m4a",
+  "ogg",
+]);
+
+/** Fail closed: a stem enters a release only when its own certified bytes and
+ * source receipt bind to one exact asset in the current release lineage. */
+export function certifiedCurrentReleaseStems(
+  rows: ReleaseStemRow[],
+  sources: CertifiedStemSource[]
+): CertifiedReleaseStem[] {
+  const currentSources = new Set(
+    sources.map(
+      source =>
+        `${source.kind}:${source.assetId}:${source.contentHash.toLowerCase()}`
+    )
+  );
+  const certified = rows
+    .filter(row => {
+      if (
+        row.qualityState !== "passed" ||
+        !row.verifiedAt ||
+        !CERTIFIED_HASH.test(row.contentHash ?? "") ||
+        !RELEASE_STEM_FORMATS.has(row.format.toLowerCase())
+      ) {
+        return false;
+      }
+      const lineage = jsonRecord(row.lineage);
+      const source = jsonRecord(lineage?.source);
+      const derivation = jsonRecord(lineage?.derivation);
+      if (
+        lineage?.schemaVersion !== 1 ||
+        lineage?.role !== row.role ||
+        !source ||
+        !derivation ||
+        !["separation", "native_bus", "provider"].includes(
+          String(derivation.kind ?? "")
+        ) ||
+        !["beat", "mix", "master"].includes(String(source.kind ?? "")) ||
+        typeof source.assetId !== "string" ||
+        typeof source.contentHash !== "string"
+      ) {
+        return false;
+      }
+      return currentSources.has(
+        `${source.kind}:${source.assetId}:${source.contentHash.toLowerCase()}`
+      );
+    })
+    .sort(
+      (left, right) =>
+        left.role.localeCompare(right.role) || left.id.localeCompare(right.id)
+    );
+
+  return certified.map((row, index) => ({
+    ...row,
+    contentHash: row.contentHash!.toLowerCase(),
+    verifiedAt: row.verifiedAt!,
+    lineage: jsonRecord(row.lineage)!,
+    archivePath:
+      `stems/${String(index + 1).padStart(2, "0")}-` +
+      `${safeFileBase(row.role)}.${row.format.toLowerCase()}`,
+  }));
 }
 
 function csvCell(value: unknown): string {
@@ -315,9 +407,61 @@ export async function processExport(payload: ExportPayload): Promise<void> {
       throw new Error('export_blocked: rights receipt does not bind current exact audio lineage');
     }
 
+    const certifiedStemSources: CertifiedStemSource[] = [
+      lineage.beat
+        ? {
+            kind: "beat" as const,
+            assetId: lineage.beat.id,
+            contentHash: lineage.beat.contentHash,
+          }
+        : null,
+      {
+        kind: "mix" as const,
+        assetId: lineage.mix.id,
+        contentHash: lineage.mix.contentHash,
+      },
+      lineage.master
+        ? {
+            kind: "master" as const,
+            assetId: lineage.master.id,
+            contentHash: lineage.master.contentHash,
+          }
+        : null,
+    ].filter((value): value is CertifiedStemSource => value !== null);
+    const stemRows = lineage.beat
+      ? ((await prisma.stem.findMany({
+          where: { beatId: lineage.beat.id },
+          orderBy: [{ role: "asc" }, { id: "asc" }],
+          select: {
+            id: true,
+            role: true,
+            url: true,
+            format: true,
+            origin: true,
+            qualityState: true,
+            contentHash: true,
+            verifiedAt: true,
+            lineage: true,
+          },
+        })) as ReleaseStemRow[])
+      : [];
+    const releaseStems = certifiedCurrentReleaseStems(
+      stemRows,
+      certifiedStemSources
+    );
+    const stemEvidence = releaseStems.map(stem => ({
+      id: stem.id,
+      role: stem.role,
+      format: stem.format,
+      origin: stem.origin,
+      contentHash: stem.contentHash,
+      lineage: stem.lineage,
+    }));
+
     const sourceFingerprint = releaseEvidenceHash({
-      version: 2,
+      version: 3,
       lineage: exactLineage,
+      stems: stemEvidence,
       artifacts: certification.artifactSnapshot,
       rightsReceipt: {
         id: certification.rightsReceipt.id,
@@ -333,6 +477,7 @@ export async function processExport(payload: ExportPayload): Promise<void> {
         wav: 'pcm_s24le_44100_stereo',
         mp3: '320k_44100_stereo',
         cover: 'jpeg_rgb_3000_square',
+        stems: 'certified_original_bytes',
         zip: 'deflate9_deterministic_date',
       },
     });
@@ -347,6 +492,12 @@ export async function processExport(payload: ExportPayload): Promise<void> {
     ];
     if (lineage.beat) {
       requiredArchivePaths.push('performance/' + base + '-backing-track.wav');
+    }
+    if (releaseStems.length) {
+      requiredArchivePaths.push(
+        "metadata/stems.json",
+        ...releaseStems.map(stem => stem.archivePath)
+      );
     }
     const existing = await prisma.export.findUnique({
       where: { songId_sourceFingerprint: { songId: payload.songId, sourceFingerprint } },
@@ -410,6 +561,24 @@ export async function processExport(payload: ExportPayload): Promise<void> {
     if (backing && backingBytes) {
       assertStoredContentHash(backingBytes, backing.contentHash, 'export_source_backing');
     }
+    const certifiedStemFiles: PackageFile[] = [];
+    let certifiedStemBytes = 0;
+    for (const stem of releaseStems) {
+      const bytes = await downloadToBuffer(stem.url, {
+        maxBytes: 512 * 1024 * 1024,
+        timeoutMs: NATIVE_AUDIO_LIMITS.remoteInputTimeoutMs,
+      });
+      assertStoredContentHash(
+        bytes,
+        stem.contentHash,
+        `export_stem_${stem.id}`
+      );
+      certifiedStemBytes += bytes.byteLength;
+      if (certifiedStemBytes > MAX_ARCHIVE_BYTES) {
+        throw new Error("release_certified_stems_exceed_archive_limit");
+      }
+      certifiedStemFiles.push({ path: stem.archivePath, bytes });
+    }
     const media = await renderReleaseMedia({
       audio: audioBytes,
       cover: coverBytes,
@@ -423,6 +592,7 @@ export async function processExport(payload: ExportPayload): Promise<void> {
     if (media.backingWav) {
       addPackageFile(files, 'performance/' + base + '-backing-track.wav', media.backingWav);
     }
+    files.push(...certifiedStemFiles);
     addPackageFile(files, 'lyrics/lyrics.txt', certification.lyric.body.trim() + '\n');
     if (certification.lyric.cleanVersion?.trim()) {
       addPackageFile(files, 'lyrics/clean-lyrics.txt', certification.lyric.cleanVersion.trim() + '\n');
@@ -450,8 +620,25 @@ export async function processExport(payload: ExportPayload): Promise<void> {
         sourceContentHash: certification.cover.contentHash,
         delivery: '3000x3000 RGB JPEG',
       },
+      stems: releaseStems.map(stem => ({
+        id: stem.id,
+        role: stem.role,
+        format: stem.format,
+        origin: stem.origin,
+        contentHash: stem.contentHash,
+        verifiedAt: stem.verifiedAt.toISOString(),
+        path: stem.archivePath,
+        lineage: stem.lineage,
+      })),
     };
     addPackageFile(files, 'metadata/metadata.json', canonicalJson(metadata) + '\n');
+    if (releaseStems.length) {
+      addPackageFile(
+        files,
+        'metadata/stems.json',
+        canonicalJson({ schemaVersion: 1, stems: metadata.stems }) + '\n',
+      );
+    }
     addPackageFile(
       files,
       'metadata/metadata.csv',
@@ -506,7 +693,13 @@ export async function processExport(payload: ExportPayload): Promise<void> {
     const omissions = [
       !certification.lyric.cleanVersion?.trim() ? 'clean lyrics not supplied' : null,
       !media.backingWav ? 'certified instrumental backing track not available' : null,
-      'stems omitted because individual stem hashes are not stored yet',
+      stemRows.length === 0 ? 'stems not generated' : null,
+      stemRows.length > 0 && releaseStems.length === 0
+        ? 'no stems are certified against the current release lineage'
+        : null,
+      stemRows.length > releaseStems.length && releaseStems.length > 0
+        ? `${stemRows.length - releaseStems.length} stale or uncertified stem(s) excluded`
+        : null,
       'video omitted because current video assets are not release-certified',
     ].filter(Boolean);
     const manifest = {

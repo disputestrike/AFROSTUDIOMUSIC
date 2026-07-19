@@ -32,6 +32,8 @@
     "test:security-hardening": "tsx scripts/test-security-hardening.ts",
     "test:learning-loops": "tsx scripts/test-learning-loops.ts",
     "test:video-treatment-async": "tsx scripts/test-video-treatment-async.ts",
+    "test:runtime-readiness": "tsx scripts/test-runtime-readiness.ts",
+    "test:video-evidence": "tsx scripts/test-video-evidence.ts",
     "test:brain-reliability": "tsx scripts/test-brain-reliability.ts",
     "test:lyric-quality-floor": "tsx scripts/test-lyric-quality-floor.ts",
     "test:chat-mic": "tsx scripts/test-chat-mic.ts",
@@ -40,7 +42,9 @@
     "test:music-training": "tsx scripts/test-music-training.ts",
     "test:seed-plan": "tsx scripts/test-seed-plan.ts",
     "test:own-engine-bedfloor": "tsx scripts/test-own-engine-bedfloor.ts",
-    "test:create-from-lyrics": "tsx scripts/test-create-from-lyrics.ts"
+    "test:create-from-lyrics": "tsx scripts/test-create-from-lyrics.ts",
+    "test:afroone-render": "tsx scripts/test-afroone-render-contract.ts",
+    "test:producer-kits": "tsx scripts/test-producer-kits.ts"
   },
   "dependencies": {
     "@afrohit/ai": "workspace:*",

@@ -456,7 +456,7 @@ export default function CreatePage() {
         // click — right after the owner proudly restored the picker. The chip
         // says so honestly; the request matches: instrumental bed, vocals come
         // by upload or re-sing.
-        { theme, vibe: vibe.trim().slice(0, 500) || undefined, songTitle: songName.trim() || undefined, voice: voice === 'auto' ? undefined : voice, candidates: takes > 1 ? takes : undefined, pinnedReferenceId: pinnedRef || undefined, count: 1, genre, fusionGenres: fusion.length ? fusion : undefined, mood, bpm, withVocals: engine !== 'own', songEngine: engine === 'auto' ? undefined : engine, influence: influence.trim() || undefined, languages: langs, instruments: instruments.length ? instruments : undefined },
+        { theme, vibe: vibe.trim().slice(0, 500) || undefined, songTitle: songName.trim() || undefined, voice: voice === 'auto' ? undefined : voice, candidates: takes > 1 ? takes : undefined, pinnedReferenceId: pinnedRef || undefined, count: 1, genre, fusionGenres: fusion.length ? fusion : undefined, mood, bpm, withVocals: true, songEngine: engine === 'auto' ? undefined : engine, influence: influence.trim() || undefined, languages: langs, instruments: instruments.length ? instruments : undefined },
         // One key per CLICK: the retry-on-network-death in apiFetch can re-send
         // this POST — the server returns the drop already running instead of
         // starting (and charging) a second one.
@@ -632,7 +632,7 @@ export default function CreatePage() {
         // hard-422'd server-side, so every "Sing MY lyrics" click on Our Engine
         // failed. The lyrics stay attached to the song — sing them over the bed
         // by upload or re-sing once a vocal engine is picked.
-        withVocals: engine !== 'own',
+        withVocals: true,
         // NO inline lyrics — the attach above stored the draft artistAuthored, and
         // the server sings draft.body VERBATIM on that path. Passing the text
         // inline skipped the artistAuthored check and the enrichment REWROTE the
@@ -752,14 +752,12 @@ export default function CreatePage() {
           creationKind: 'instrumental',
           songEngine: engine === 'auto' ? undefined : engine,
           instruments: instruments.length ? instruments : undefined,
-          // OUR ENGINE'S ROUTING CONTRACT (beats.ts resolveOwnEngineRouting):
-          // 'own' honors genre + tempo + exact instrument picks ONLY — mood,
-          // fusion and multi-takes are provider dials and would hard-422 the
-          // request. The door says so in the open; the payload matches.
+          // AfroOne renders named, deterministic directions from the same shelf.
+          // Provider-only mood/fusion controls remain off this exact path.
+          candidates: takes > 1 ? takes : undefined,
           ...(own ? {} : {
             fusionGenres: fusion.length ? fusion : undefined,
             mood,
-            candidates: takes > 1 ? takes : undefined,
           }),
         });
       } catch (error) {
@@ -1283,7 +1281,7 @@ export default function CreatePage() {
           ))}
         </div>
         {engine === 'own' && (
-          <p className="mt-2 text-xs text-amber-300/90">Our Engine builds strictly from your own + synthesized material: genre, tempo and exact instrument picks. Mood, fusion and extra takes are provider-engine dials — they don’t apply on this path.</p>
+          <p className="mt-2 text-xs text-amber-300/90">Our Engine builds from your own + synthesized material. Three directions are intentional: commercial-safe, spacious, and hook-forward.</p>
         )}
         {musicRoutes && !hasMusicRoute && engine !== 'own' && (
           <p className="mt-2 text-sm text-amber-300">No provider engine is connected. Our Engine still works — or ask an owner to connect one in Settings.</p>
@@ -1293,7 +1291,7 @@ export default function CreatePage() {
       <div className="mt-4"><div className="mb-2 text-sm text-slate-400">Takes <span className="text-xs text-slate-500">— more takes = more directions; the ear keeps the one most in your lane</span></div>
         <div className="flex gap-2">
           {([1, 2, 3] as const).map((n) => (
-            <button key={n} onClick={() => setTakes(n)} disabled={engine === 'own'} className={`rounded-full px-4 py-2 text-sm disabled:cursor-not-allowed disabled:opacity-40 ${takes === n ? 'bg-brand-gradient text-ink shadow-glow' : 'border border-white/10 bg-white/5 text-slate-300 hover:bg-white/10'}`}>
+            <button key={n} onClick={() => setTakes(n)} className={`rounded-full px-4 py-2 text-sm ${takes === n ? 'bg-brand-gradient text-ink shadow-glow' : 'border border-white/10 bg-white/5 text-slate-300 hover:bg-white/10'}`}>
               {n === 1 ? '1 · Draft' : `${n} directions`}
             </button>
           ))}

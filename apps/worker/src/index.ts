@@ -39,6 +39,7 @@ import {
   processVoiceDatasetPurgeBackfill,
 } from "./processors/voice-dataset";
 import { processSingConvert } from "./processors/voice-sing";
+import { processAfroOneSinging } from "./processors/afroone-singing";
 import { processVoiceCleanup } from "./processors/voice-cleanup";
 import { processVoiceRehost } from "./processors/voice-rehost";
 import {
@@ -73,6 +74,10 @@ import { processSynthMaterial } from "./processors/synth-material";
 import { processAssetCleanup } from "./processors/asset-cleanup";
 import { enqueueJob } from "./lib/enqueue";
 import { assertStorageConfiguration } from "./lib/storage";
+import {
+  publicWorkerRuntimeReadiness,
+  workerRuntimeReadiness,
+} from "./lib/config-readiness";
 import {
   processNightlyCompound,
   processMeasureBackfill,
@@ -444,6 +449,8 @@ const workers = [
       await processVoiceProfile(job.data as never);
     else if (job.name === "sing-convert")
       await processSingConvert(job.data as never);
+    else if (job.name === "afroone-sing")
+      await processAfroOneSinging(job.data as never);
     else if (job.name === "inspect-vocal")
       await processVocalInspect(job.data as never);
     else if (job.name === "rehost-voice-model")
@@ -606,6 +613,9 @@ void dspAvailable()
     earOk = false;
   });
 async function writeWorkerHeartbeat(): Promise<void> {
+  const featureReadiness = publicWorkerRuntimeReadiness(
+    workerRuntimeReadiness()
+  );
   const value = JSON.stringify({
     at: new Date().toISOString(),
     startedAt: workerStartedAt,
@@ -615,6 +625,7 @@ async function writeWorkerHeartbeat(): Promise<void> {
     // API's /health/ready reports it (sha only; no secrets, no config).
     sha: process.env.RAILWAY_GIT_COMMIT_SHA ?? null,
     earOk,
+    features: featureReadiness,
   });
   await prisma.systemSetting.upsert({
     where: { key: workerHeartbeatKey },

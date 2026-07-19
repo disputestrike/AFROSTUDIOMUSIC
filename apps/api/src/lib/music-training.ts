@@ -9,7 +9,24 @@ export {
   musicTrainerConfig,
   minCorpusSize,
   buildTrainerDataset,
+  trainingDatasetHash,
   kickoffMusicTraining,
+  pollMusicTraining,
+  musicCandidateModelRef,
   evaluateAndPromote,
+  emptyMusicModelRoute,
+  parseMusicModelRoute,
+  promoteMusicModelRoute,
+  rollbackMusicModelRoute,
 } from '@afrohit/ai';
-export type { MusicTrainerConfig, TrainerDataset, KickoffResult } from '@afrohit/ai';
+export type {
+  MusicTrainerConfig,
+  TrainerDataset,
+  TrainerDatasetFingerprint,
+  KickoffResult,
+  MusicTrainingProviderState,
+  MusicTrainingProviderStatus,
+  MusicModelRouteEntry,
+  MusicModelRouteEvent,
+  MusicModelRouteState,
+} from '@afrohit/ai';
