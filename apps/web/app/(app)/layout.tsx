@@ -1,12 +1,12 @@
-import { NavBar } from '@/components/NavBar';
-import { AudioSolo } from '@/components/AudioSolo';
+import { AppShellRouter } from '@/components/consumer/AppShellRouter';
 
+/**
+ * (app) LAYOUT — role-gated shell (USERSHELL, owner order 2026-07-19).
+ * The operator keeps today's top-bar frame; every other account gets the
+ * Suno-shaped consumer shell (sidebar + persistent player). The decision
+ * lives in AppShellRouter, driven by GET /auth/me. Children stay server
+ * components — they pass through the client shell as a slot.
+ */
 export default function AppLayout({ children }: { children: React.ReactNode }) {
-  return (
-    <div className="flex h-screen flex-col">
-      <AudioSolo />
-      <NavBar />
-      <main className="min-h-0 flex-1 overflow-y-auto">{children}</main>
-    </div>
-  );
+  return <AppShellRouter>{children}</AppShellRouter>;
 }

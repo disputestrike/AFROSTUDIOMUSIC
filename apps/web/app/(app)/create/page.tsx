@@ -32,6 +32,7 @@ import {
   Music2,
   Piano,
   Play,
+  Plus,
   RotateCcw,
   ShieldCheck,
   SlidersHorizontal,
@@ -41,6 +42,8 @@ import {
 import { BringYourOwn } from '@/components/BringYourOwn';
 import { MumbleBooth } from '@/components/MumbleBooth';
 import WorkspaceLibrary from '@/components/WorkspaceLibrary';
+import { MyWorkspacePane } from '@/components/consumer/MyWorkspacePane';
+import { useOperatorView } from '@/components/OperatorGate';
 import { useRouter } from 'next/navigation';
 import { useApi } from '@/lib/api';
 
@@ -97,6 +100,16 @@ const INSTRUMENTS = [
   'saxophone', 'trumpet', 'brass section', 'flute', 'kalimba', 'balafon',
   'highlife guitar', 'palm-wine guitar', 'piano', 'rhodes', 'organ', 'strings',
   'warm sub bass', 'amapiano log bass', 'synth pads', 'kora',
+];
+// SIMPLE-MODE SUGGESTIONS (USERSHELL) — real prefill chips: each one only
+// sets the same vibe/genre/mood state the form already owns. Prefill only;
+// nothing renders until the user walks through the confirm step.
+const SIMPLE_SUGGESTIONS: Array<{ label: string; vibe: string; genre?: string; mood?: string }> = [
+  { label: 'Amapiano night drive', vibe: 'a smooth amapiano night-drive song, log drums and space, chant-along hook', genre: 'amapiano', mood: 'chill' },
+  { label: 'Praise lift', vibe: 'an afro-gospel praise song that lifts the whole room, choir answers on the hook', genre: 'afro_gospel', mood: 'praise' },
+  { label: 'Street anthem', vibe: 'a street-pop anthem with zanku energy and a chant hook', genre: 'street_pop', mood: 'energetic' },
+  { label: 'Slow-burn love', vibe: 'an afro r&b slow burn about a love that took its time', genre: 'afro_rnb', mood: 'romantic' },
+  { label: 'Summer party', vibe: 'an afrobeats party record for the summer, horns and bounce', genre: 'afrobeats', mood: 'party' },
 ];
 const STEPS = ['Setting up your session', 'Writing hooks + A&R picking the best', 'Writing the lyrics', 'Singing & producing your song'];
 // Door 2/3 producing steps — HONEST: no "writing lyrics" line when nothing is
@@ -296,6 +309,21 @@ export default function CreatePage() {
     setPendingAction(null);
     try { localStorage.setItem(DOOR_KEY, d); } catch { /* noop */ }
   };
+
+  // USERSHELL (owner order 2026-07-19): consumers get the Suno-shaped
+  // two-pane console with a Simple/Advanced toggle; the operator's console
+  // stays EXACTLY as it was. SAME state, SAME handlers, SAME confirm step —
+  // only the arrangement differs (no forked business logic).
+  const view = useOperatorView();
+  const consumerShell = !view.loading && !view.effectiveOperator;
+  const [uiMode, setUiMode] = useState<'simple' | 'advanced'>('simple');
+  const [lyricsOpen, setLyricsOpen] = useState(false);
+  const [allGenresOpen, setAllGenresOpen] = useState(false);
+  // Simple mode only speaks song/instrumental — a film/video door remembered
+  // on this device belongs to Advanced (where all four doors still live).
+  useEffect(() => {
+    if (consumerShell && uiMode === 'simple' && (door === 'film' || door === 'video')) setDoor('song');
+  }, [consumerShell, uiMode, door]);
 
   // FILM DOOR state — scene-first sound design.
   const [filmScene, setFilmScene] = useState('');
@@ -1105,10 +1133,79 @@ export default function CreatePage() {
     );
   }
 
-  // ---- The CONSOLE (T2, console layout): create panel LEFT with the player under
-  // the Create button; workspace library RIGHT. Stacks on mobile. ----
-  return (
-    <div className="mx-auto max-w-6xl px-5 py-8 sm:px-6 lg:grid lg:grid-cols-[minmax(0,1fr)_340px] lg:items-start lg:gap-8">
+  // ---- The CONSOLE (T2, console layout): create panel LEFT with the player
+  // under the Create button; library RIGHT. Stacks on mobile.
+  // USERSHELL: while /auth/me resolves we hold on a small loading state —
+  // the operator console and the consumer two-pane are too different to
+  // guess between (the same pattern OperatorGate already uses). ----
+  if (view.loading) {
+    return (
+      <div className="flex items-center justify-center py-24 text-sm text-slate-500">
+        <LoaderCircle className="mr-2 h-4 w-4 animate-spin" aria-hidden /> Opening the console…
+      </div>
+    );
+  }
+
+  // Shared console pieces — EXTRACTED (not forked) so Simple, Advanced and
+  // the operator console all run the exact same no-auto-spend review step
+  // and the same inline player.
+  const confirmPanel = pendingAction && (
+        <section className="studio-confirm-panel mt-7" aria-labelledby="confirm-render-title" aria-live="polite">
+          <div className="flex items-start gap-3">
+            <div className="studio-choice-icon"><Gauge aria-hidden /></div>
+            <div className="min-w-0 flex-1">
+              <p className="text-xs font-semibold uppercase text-slate-500">Final review</p>
+              <h2 id="confirm-render-title" className="mt-1 font-display text-xl text-white">
+                {pendingAction === 'film' ? 'Confirm one scene-sound render' : `Confirm ${takes} ${takes === 1 ? 'direction' : 'directions'}`}
+              </h2>
+              <dl className="mt-4 grid gap-3 text-xs sm:grid-cols-2">
+                <div><dt className="text-slate-500">Output</dt><dd className="mt-1 text-slate-200">{pendingAction === 'song' || pendingAction === 'lyrics' ? 'Full song with vocals' : pendingAction === 'instrumental' ? 'Instrumental without vocals' : `${filmDuration}-second scene sound`}</dd></div>
+                <div><dt className="text-slate-500">Engine</dt><dd className="mt-1 text-slate-200">{pendingAction === 'film' ? 'Best connected route' : engine === 'auto' ? 'Best available route' : engine === 'own' ? 'Our Engine' : 'Selected engine class'}</dd></div>
+                <div><dt className="text-slate-500">Lane</dt><dd className="mt-1 text-slate-200">{pendingAction === 'film' ? FILM_TYPES.find((item) => item.id === filmType)?.label : genreLabel}</dd></div>
+                <div><dt className="text-slate-500">Billing</dt><dd className="mt-1 text-slate-200">Your plan rate applies after confirmation</dd></div>
+              </dl>
+              <p className="mt-4 flex items-start gap-2 text-xs leading-5 text-slate-500">
+                <ShieldCheck className="mt-0.5 h-3.5 w-3.5 shrink-0 text-sage" aria-hidden />
+                No work has started yet. Confirming runs the existing balance and daily-cap preflight before any render is accepted.
+              </p>
+            </div>
+          </div>
+          <div className="mt-5 flex flex-col-reverse gap-2 border-t border-white/10 pt-4 sm:flex-row sm:justify-end">
+            <button type="button" onClick={() => setPendingAction(null)} className="studio-secondary-button">Cancel</button>
+            <button type="button" onClick={() => router.push('/billing')} className="studio-secondary-button">Review billing</button>
+            <button type="button" onClick={confirmRender} className="studio-primary-button">
+              <Play aria-hidden /> Confirm and start
+            </button>
+          </div>
+        </section>
+  );
+
+  // THE CONSOLE PLAYER — right under the Create button (the console layout).
+  // New songs auto-play here; library rows play here too.
+  const consolePlayer = nowPlaying && (
+        <div className="mt-5 rounded-lg border border-white/10 bg-white/[0.04] p-4">
+          <div className="flex items-center justify-between">
+            <div className="min-w-0">
+              <div className="text-xs text-slate-500">Now playing</div>
+              <div className="truncate font-display text-lg">{nowPlaying.title}</div>
+            </div>
+            <button
+              onClick={() => { playerRef.current?.pause(); setNowPlaying(null); }}
+              title="Stop playback"
+              aria-label="Stop playback"
+              className="studio-icon-button ml-3 shrink-0"
+            >
+              <X aria-hidden />
+            </button>
+          </div>
+          <audio ref={playerRef} controls autoPlay src={nowPlaying.url} className="mt-3 w-full" />
+          <button type="button" onClick={() => router.push('/catalog')} className="studio-secondary-button mt-4 w-full justify-center">
+            <Download aria-hidden /> Open Catalog for stems and DAW export
+          </button>
+        </div>
+  );
+
+  const consoleForm = (
     <div className="min-w-0">
       {firstRun && (
         <section className="studio-first-run mb-6" aria-labelledby="first-run-title">
@@ -1559,62 +1656,9 @@ export default function CreatePage() {
       )}
       </>)}
 
-      {pendingAction && (
-        <section className="studio-confirm-panel mt-7" aria-labelledby="confirm-render-title" aria-live="polite">
-          <div className="flex items-start gap-3">
-            <div className="studio-choice-icon"><Gauge aria-hidden="true" /></div>
-            <div className="min-w-0 flex-1">
-              <p className="text-xs font-semibold uppercase text-slate-500">Final review</p>
-              <h2 id="confirm-render-title" className="mt-1 font-display text-xl text-white">
-                {pendingAction === 'film' ? 'Confirm one scene-sound render' : `Confirm ${takes} ${takes === 1 ? 'direction' : 'directions'}`}
-              </h2>
-              <dl className="mt-4 grid gap-3 text-xs sm:grid-cols-2">
-                <div><dt className="text-slate-500">Output</dt><dd className="mt-1 text-slate-200">{pendingAction === 'song' || pendingAction === 'lyrics' ? 'Full song with vocals' : pendingAction === 'instrumental' ? 'Instrumental without vocals' : `${filmDuration}-second scene sound`}</dd></div>
-                <div><dt className="text-slate-500">Engine</dt><dd className="mt-1 text-slate-200">{pendingAction === 'film' ? 'Best connected route' : engine === 'auto' ? 'Best available route' : engine === 'own' ? 'Our Engine' : 'Selected engine class'}</dd></div>
-                <div><dt className="text-slate-500">Lane</dt><dd className="mt-1 text-slate-200">{pendingAction === 'film' ? FILM_TYPES.find((item) => item.id === filmType)?.label : genreLabel}</dd></div>
-                <div><dt className="text-slate-500">Billing</dt><dd className="mt-1 text-slate-200">Your plan rate applies after confirmation</dd></div>
-              </dl>
-              <p className="mt-4 flex items-start gap-2 text-xs leading-5 text-slate-500">
-                <ShieldCheck className="mt-0.5 h-3.5 w-3.5 shrink-0 text-sage" aria-hidden="true" />
-                No work has started yet. Confirming runs the existing balance and daily-cap preflight before any render is accepted.
-              </p>
-            </div>
-          </div>
-          <div className="mt-5 flex flex-col-reverse gap-2 border-t border-white/10 pt-4 sm:flex-row sm:justify-end">
-            <button type="button" onClick={() => setPendingAction(null)} className="studio-secondary-button">Cancel</button>
-            <button type="button" onClick={() => router.push('/billing')} className="studio-secondary-button">Review billing</button>
-            <button type="button" onClick={confirmRender} className="studio-primary-button">
-              <Play aria-hidden="true" /> Confirm and start
-            </button>
-          </div>
-        </section>
-      )}
+      {confirmPanel}
 
-      {/* THE CONSOLE PLAYER — on the left half, right under the Create button
-          (the console layout). New songs auto-play here; library rows
-          play here too. */}
-      {nowPlaying && (
-        <div className="mt-5 rounded-lg border border-white/10 bg-white/[0.04] p-4">
-          <div className="flex items-center justify-between">
-            <div className="min-w-0">
-              <div className="text-xs text-slate-500">Now playing</div>
-              <div className="truncate font-display text-lg">{nowPlaying.title}</div>
-            </div>
-            <button
-              onClick={() => { playerRef.current?.pause(); setNowPlaying(null); }}
-              title="Stop playback"
-              aria-label="Stop playback"
-              className="studio-icon-button ml-3 shrink-0"
-            >
-              <X aria-hidden="true" />
-            </button>
-          </div>
-          <audio ref={playerRef} controls autoPlay src={nowPlaying.url} className="mt-3 w-full" />
-          <button type="button" onClick={() => router.push('/catalog')} className="studio-secondary-button mt-4 w-full justify-center">
-            <Download aria-hidden="true" /> Open Catalog for stems and DAW export
-          </button>
-        </div>
-      )}
+      {consolePlayer}
 
       {door === 'video' && (
         <VideoDoorPanel />
@@ -1635,6 +1679,200 @@ export default function CreatePage() {
       />
       )}
     </div>
+  );
+
+  // ═══ USERSHELL CONSUMER CONSOLE — the Suno-shaped two-pane. Same state,
+  // same handlers, same confirm step; Simple just shows fewer dials. ═══
+  if (consumerShell) {
+    const lyricsReady = lyricsText.trim().length >= 20;
+    const simpleAction: RenderAction =
+      door === 'instrumental' ? 'instrumental' : lyricsOpen && lyricsReady ? 'lyrics' : 'song';
+    const simpleBlocked =
+      door === 'instrumental'
+        ? engine !== 'own' && !hasMusicRoute
+        : !hasMusicRoute || (lyricsOpen && lyricsText.trim().length > 0 && !lyricsReady);
+    const simpleGenres = [
+      ...GENRES.filter((g) => genres.includes(g.value)),
+      ...GENRES.filter((g) => !genres.includes(g.value)),
+    ].slice(0, allGenresOpen ? GENRES.length : 12);
+    return (
+      <div className="mx-auto max-w-7xl px-4 py-6 sm:px-6 lg:grid lg:grid-cols-[minmax(0,1fr)_370px] lg:items-start lg:gap-6">
+        <div className="min-w-0">
+          {/* Simple / Advanced pills */}
+          <div className="mb-6 flex items-center gap-2">
+            {(['simple', 'advanced'] as const).map((m) => (
+              <button
+                key={m}
+                type="button"
+                onClick={() => setUiMode(m)}
+                aria-pressed={uiMode === m}
+                className={`rounded-full px-4 py-1.5 text-sm capitalize transition-colors ${
+                  uiMode === m
+                    ? 'bg-white/10 text-white shadow-[inset_0_0_0_1px_rgba(249,115,22,.35)]'
+                    : 'border border-white/10 text-slate-400 hover:bg-white/5'
+                }`}
+              >
+                {m}
+              </button>
+            ))}
+            <span className="ml-1 hidden text-xs text-slate-600 sm:inline">
+              {uiMode === 'simple' ? 'The quick brief — Advanced opens every dial.' : 'The full console — every dial the studio has.'}
+            </span>
+          </div>
+
+          {uiMode === 'advanced' ? (
+            consoleForm
+          ) : (
+            <div className="min-w-0">
+              <h1 className="font-display text-3xl text-white">Create</h1>
+              <p className="mt-1.5 text-sm text-slate-400">Describe it, review the brief, and the studio makes it. Nothing renders until you confirm.</p>
+
+              {/* Song description */}
+              <div className="mt-6">
+                <div className="mb-2 text-sm text-slate-400">Song description</div>
+                <textarea
+                  value={vibe}
+                  onChange={(e) => setVibe(e.target.value)}
+                  rows={4}
+                  maxLength={500}
+                  placeholder="a smooth amapiano song about moving to Lagos — chant-along hook, log drums, night-drive energy"
+                  className="w-full rounded-2xl border border-white/10 bg-black/30 px-4 py-3 text-sm text-slate-100 placeholder:text-slate-600 focus:border-orange-400/60 focus:outline-none"
+                />
+              </div>
+
+              {/* Suggestions — prefill only, never render */}
+              <div className="mt-3 flex flex-wrap items-center gap-2">
+                <span className="text-xs text-slate-600">Suggestions</span>
+                {SIMPLE_SUGGESTIONS.map((s) => (
+                  <button
+                    key={s.label}
+                    type="button"
+                    onClick={() => {
+                      setVibe(s.vibe);
+                      if (s.genre && GENRES.some((g) => g.value === s.genre)) { setGenres([s.genre]); setGenreTouched(true); }
+                      if (s.mood && MOODS.includes(s.mood)) setMood(s.mood);
+                    }}
+                    className="rounded-full border border-white/10 bg-white/5 px-3 py-1.5 text-xs text-slate-300 transition-colors hover:bg-white/10"
+                  >
+                    {s.label}
+                  </button>
+                ))}
+              </div>
+
+              {/* + Lyrics expander (song only — an instrumental has no lyrics) */}
+              {door !== 'instrumental' && (
+                <div className="mt-5">
+                  <button
+                    type="button"
+                    onClick={() => setLyricsOpen((o) => { const next = !o; setPath(next ? 'lyrics' : 'song'); return next; })}
+                    aria-expanded={lyricsOpen}
+                    className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/5 px-4 py-2 text-sm text-slate-300 transition-colors hover:bg-white/10"
+                  >
+                    <Plus className={`h-4 w-4 transition-transform ${lyricsOpen ? 'rotate-45' : ''}`} aria-hidden /> Lyrics
+                  </button>
+                  {lyricsOpen && (
+                    <div className="mt-3">
+                      <textarea
+                        value={lyricsText}
+                        onChange={(e) => { setLyricsText(e.target.value); setDecon(null); }}
+                        rows={8}
+                        placeholder={'[Hook]\nYour words here…\n\n[Verse]\n…'}
+                        className="w-full rounded-2xl border border-white/10 bg-black/30 px-4 py-3 font-mono text-xs leading-relaxed text-slate-100 placeholder:text-slate-600 focus:border-orange-400/60 focus:outline-none"
+                      />
+                      <p className="mt-1.5 text-xs text-slate-500">Your words are sung exactly as written — the studio never rewrites lyrics you bring.</p>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* Instrumental toggle — the SAME door 2 the full console uses */}
+              <div className="mt-5">
+                <button
+                  type="button"
+                  role="switch"
+                  aria-checked={door === 'instrumental'}
+                  onClick={() => pickDoor(door === 'instrumental' ? 'song' : 'instrumental')}
+                  className="flex w-full items-center justify-between rounded-2xl border border-white/10 bg-white/[0.03] px-4 py-3 text-left transition-colors hover:bg-white/[0.06]"
+                >
+                  <span>
+                    <span className="block text-sm text-slate-200">Instrumental</span>
+                    <span className="mt-0.5 block text-xs text-slate-500">No lyrics, no vocals — just the record.</span>
+                  </span>
+                  <span className={`relative h-6 w-11 shrink-0 rounded-full transition-colors ${door === 'instrumental' ? 'bg-afrobrand-500' : 'bg-white/10'}`} aria-hidden>
+                    <span className={`absolute top-0.5 h-5 w-5 rounded-full bg-white transition-all ${door === 'instrumental' ? 'left-[22px]' : 'left-0.5'}`} />
+                  </span>
+                </button>
+              </div>
+
+              {/* Genre chips — the same picker state, curated first */}
+              <div className="mt-5">
+                <div className="mb-2 text-sm text-slate-400">Genre — pick one; tap a second to fuse ({genreLabel})</div>
+                <div className="flex flex-wrap gap-2">
+                  {simpleGenres.map((g) => {
+                    const idx = genres.indexOf(g.value);
+                    return (
+                      <button
+                        key={g.value}
+                        type="button"
+                        onClick={() => toggleGenre(g.value)}
+                        className={`rounded-full px-3.5 py-1.5 text-sm ${idx === 0 ? 'bg-brand-gradient text-ink shadow-glow' : idx > 0 ? 'bg-white/20 text-white shadow-[inset_0_0_0_1px_rgba(226,62,140,.6)]' : 'border border-white/10 bg-white/5 text-slate-300 hover:bg-white/10'}`}
+                      >
+                        {idx > 0 ? '+ ' : ''}{g.label}
+                      </button>
+                    );
+                  })}
+                  <button
+                    type="button"
+                    onClick={() => setAllGenresOpen((o) => !o)}
+                    className="rounded-full border border-dashed border-white/15 px-3.5 py-1.5 text-sm text-slate-500 hover:bg-white/5"
+                  >
+                    {allGenresOpen ? 'Fewer genres' : 'All genres'}
+                  </button>
+                </div>
+              </div>
+
+              {err && phase === 'form' && (
+                <div className="mt-4 rounded-lg border border-red-500/40 bg-red-500/10 p-2.5 text-xs text-red-300">{err}</div>
+              )}
+
+              {/* The big Create button — opens the SAME review step as always */}
+              <div className="mt-7">
+                <button
+                  type="button"
+                  onClick={() => requestRender(simpleAction)}
+                  disabled={simpleBlocked}
+                  title={simpleBlocked ? (hasMusicRoute ? 'Finish your lyrics first (at least 20 characters)' : 'No music engine is connected — ask an owner to connect one in Settings') : undefined}
+                  className="w-full rounded-full bg-brand-gradient px-6 py-3.5 font-medium text-ink shadow-glow transition-transform hover:scale-[1.01] disabled:cursor-not-allowed disabled:opacity-50 sm:w-auto sm:px-10"
+                >
+                  <Play className="mr-2 inline h-4 w-4" aria-hidden />
+                  {simpleAction === 'instrumental' ? 'Create instrumental' : simpleAction === 'lyrics' ? 'Create with my lyrics' : 'Create'}
+                </button>
+                <p className="mt-3 text-xs text-slate-500">
+                  You review the brief and billing before anything starts — nothing renders or spends credits automatically. Advanced opens tempo, languages, voice, engine class, takes and more.
+                </p>
+                {musicRoutes && !hasMusicRoute && door !== 'instrumental' && (
+                  <p className="mt-2 text-sm text-amber-300">No music engine is connected. An owner must connect one in Settings before rendering.</p>
+                )}
+              </div>
+
+              {confirmPanel}
+              {consolePlayer}
+            </div>
+          )}
+        </div>
+
+        {/* Workspaces › My Workspace — the user's songs, always in reach. */}
+        <div className="mt-8 lg:sticky lg:top-6 lg:mt-0 lg:max-h-[calc(100vh-3rem)] lg:overflow-y-auto lg:pr-1">
+          <MyWorkspacePane refreshKey={libRefresh} />
+        </div>
+      </div>
+    );
+  }
+
+  // ═══ OPERATOR CONSOLE — EXACTLY the pre-USERSHELL layout ═══
+  return (
+    <div className="mx-auto max-w-6xl px-5 py-8 sm:px-6 lg:grid lg:grid-cols-[minmax(0,1fr)_340px] lg:items-start lg:gap-8">
+    {consoleForm}
 
     {/* Independent column: sticky with its OWN scrollbar so browsing the
         library never scrolls the create form (and vice versa). */}
