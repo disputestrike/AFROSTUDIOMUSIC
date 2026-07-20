@@ -14,19 +14,19 @@ export const metadata: Metadata = {
     icon: [{ url: '/icon-192.png', sizes: '192x192', type: 'image/png' }],
     apple: '/icon-192.png',
   },
-  title: 'AfroHit Studio — the AI production house',
+  title: 'AfroHit Studio - the AI production house',
   description:
-    'Bring your beat, finish the whole record. Hooks, lyrics, vocals, industry mastering, cover art & release — one AI production house built for African and diaspora artists.',
+    'Bring your beat, finish the whole record. Hooks, lyrics, vocals, industry mastering, cover art and release - one AI production house built for African and diaspora artists.',
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
+  const buildId = (process.env.RAILWAY_GIT_COMMIT_SHA ?? 'dev').slice(0, 7);
   return (
     <html lang="en" className={`${anton.variable} ${inter.variable} ${grotesk.variable}`}>
-      <body className="min-h-screen bg-night-950 font-sans text-slate-100 antialiased">
+      <body data-build-id={buildId} className="min-h-screen bg-night-950 font-sans text-slate-100 antialiased">
         <div className="aurora" aria-hidden />
         <div className="grain" aria-hidden />
-        <div className="relative z-10">{children}
-        <div className="pointer-events-none fixed bottom-1 right-2 z-50 text-[10px] text-slate-700">build {(process.env.RAILWAY_GIT_COMMIT_SHA ?? 'dev').slice(0, 7)}</div></div>
+        <div className="relative z-10">{children}</div>
       </body>
     </html>
   );
