@@ -200,32 +200,16 @@ async function main() {
   );
 
   // ══ 4) TRAINED-LAYER TEMPO-CONFORM — conform BEFORE the grid gate ════════════
+  // The conform IMPLEMENTATION is SOUNDWAVE3's conformMelodyTempoToGrid (merged
+  // from Codex — same fix, richer receipt; test-soundwave3.ts owns its internals).
+  // Here we only pin that the trained branch conforms tempo BEFORE the grid gate.
   const idxTrained = ownEngineSrc.indexOf("renderTrainedMusicLayer({");
   const idxStock = ownEngineSrc.indexOf("await melodyLayer(");
   const trainedBranch = ownEngineSrc.slice(idxTrained, idxStock);
-  const idxConform = trainedBranch.indexOf("conformLeadToGrid(lead, bpm)");
+  const idxConform = trainedBranch.indexOf("conformMelodyTempoToGrid(lead, bpm)");
   const idxGate = trainedBranch.indexOf("verifyMelodyAgainstGrid(lead, bpm, homeKey)");
   assert.ok(idxConform > 0, "the trained lead is tempo-conformed");
   assert.ok(idxGate > 0 && idxConform < idxGate, "the conform runs BEFORE the grid-honesty gate");
-  assert.ok(
-    ownEngineSrc.includes("async function conformLeadToGrid("),
-    "conformLeadToGrid is defined in the render path"
-  );
-  assert.ok(
-    ownEngineSrc.includes("transformAudio(lead, { tempo: ratio })") &&
-      ownEngineSrc.includes("const ratio = gridBpm / best;"),
-    "conform time-stretches the layer onto the grid via the atempo machinery"
-  );
-  assert.ok(
-    ownEngineSrc.includes("ratio < 0.5 || ratio > 1.5"),
-    "conform stays inside the pitch-safe atempo range (skips + discloses otherwise)"
-  );
-  assert.ok(
-    /if \(deviation <= 0\.05\) return \{ bytes: lead, applied: false, note: "" \};/.test(
-      ownEngineSrc
-    ),
-    "an already-on-grid (or octave-folded) layer is left untouched"
-  );
 
   // ══ 1) MELODY LEAD INTO THE FULL-LENGTH INSTRUMENTAL ═════════════════════════
   // Lane voices are MUSICAL, distinct, and NOT a bare sine.

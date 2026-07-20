@@ -1,7 +1,13 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { composeMelody, parseLyricSections } from '@afrohit/shared';
+import {
+  composeMelody,
+  estimateComposedMelodyDurationS,
+  fitMelodySectionsToDuration,
+  melodyScoreDurationS,
+  parseLyricSections,
+} from '@afrohit/shared';
 import {
   afroOneSingingJobContract,
   buildAfroOneSungAssetReceipt,
@@ -61,6 +67,86 @@ async function main(): Promise<void> {
     afroOneSingingJobContract(second, 'voice-a')
   );
   assert.notEqual(manifest(43).scoreHash, first.scoreHash);
+
+  const longLyrics = `[Verse 1]\nOne two three four\nFive six seven eight\nNine ten eleven twelve\nHold the line tonight\n[Hook]\nRaise it to the sky\nRaise it to the sky\nWe never let it die\nRaise it to the sky\n[Verse 2]\nMove it through the city\nCarry all the feeling\nEvery body ready\nBring the rhythm home`;
+  const longSections = parseLyricSections(longLyrics)
+    .filter(section => section.lines.length > 0)
+    .map(section => ({
+      name: section.name,
+      kind: section.kind,
+      lines: section.lines,
+    }));
+  const durationFloor = estimateComposedMelodyDurationS({
+    bpm: 100,
+    sections: longSections,
+  });
+  const longScore = composeMelody({
+    genre: 'afrobeats',
+    bpm: 100,
+    key: 'A minor',
+    seed: 99,
+    sections: longSections,
+  });
+  assert.equal(melodyScoreDurationS(longScore), durationFloor);
+  assert.ok(durationFloor > 30, 'full lyrics must raise a short render duration');
+  assert.throws(
+    () => createAfroOneSingingManifest({
+      lyrics: longLyrics,
+      melodyScore: longScore,
+      genre: 'afrobeats',
+      targetDurationS: 30,
+    }),
+    /afroone_singing_invalid_target_duration/,
+  );
+  assert.doesNotThrow(() => createAfroOneSingingManifest({
+    lyrics: longLyrics,
+    melodyScore: longScore,
+    genre: 'afrobeats',
+    targetDurationS: durationFloor,
+  }));
+
+  const ceilingSections = Array.from({ length: 5 }, (_, sectionIndex) => ({
+    name: sectionIndex === 1 ? 'Hook' : `Verse ${sectionIndex + 1}`,
+    kind: sectionIndex === 1 ? 'hook' as const : 'verse' as const,
+    lines: Array.from({ length: 10 }, (_, lineIndex) =>
+      `Complete lyric line ${sectionIndex + 1} ${lineIndex + 1}`
+    ),
+  }));
+  const unfittedDuration = estimateComposedMelodyDurationS({
+    bpm: 98,
+    sections: ceilingSections,
+  });
+  assert.ok(unfittedDuration > 240 && unfittedDuration < 246);
+  const fittedSections = fitMelodySectionsToDuration(
+    { bpm: 98, sections: ceilingSections },
+    240,
+  );
+  assert.deepEqual(
+    fittedSections.map(section => section.lines),
+    ceilingSections.map(section => section.lines),
+    'duration fitting must preserve every lyric line',
+  );
+  assert.equal(
+    fittedSections.reduce((sum, section) => sum + (section.bars ?? 0), 0),
+    98,
+  );
+  assert.equal(
+    estimateComposedMelodyDurationS({ bpm: 98, sections: fittedSections }),
+    240,
+  );
+  assert.deepEqual(
+    fitMelodySectionsToDuration({ bpm: 98, sections: ceilingSections }, 240),
+    fittedSections,
+    'duration fitting must be deterministic',
+  );
+  const fittedScore = composeMelody({
+    genre: 'afrobeats',
+    bpm: 98,
+    key: 'A minor',
+    seed: 99,
+    sections: fittedSections,
+  });
+  assert.equal(melodyScoreDurationS(fittedScore), 240);
 
   // The lyric/melody contract is exact. A stale or tampered syllable cannot be
   // rendered against newly approved lyrics.
@@ -219,6 +305,68 @@ async function main(): Promise<void> {
   );
   assert.equal(falRender.cost.synthesisUsd, 0.006);
   assert.equal(falRender.cost.totalUsd, 0.006);
+
+  const verifiedEngines: string[] = [];
+  const verifiedFallback = await renderAfroOneSinging(first, {
+    env: {
+      AFROONE_SINGING_ENABLED: '1',
+      AFROONE_SINGING_ENGINE_ORDER: 'local-score-singer,fal-ace-step',
+      AFROONE_SINGING_LOCAL_URL: 'https://singer.internal/render',
+      FAL_KEY: 'test-key',
+    },
+    fetch: (async (url: string | URL | Request) => {
+      const value = String(url);
+      if (value === 'https://singer.internal/render') {
+        return jsonResponse({
+          performanceKind: 'sung_vocal',
+          engine: 'diffsinger-local',
+          scoreInputConsumed: true,
+          scoreHash: first.scoreHash,
+          lyricsHash: first.lyricsHash,
+          alignmentHash: first.alignmentHash,
+          seed: first.seed,
+          audioUrl: 'https://audio.internal/rejected.wav',
+          outputKind: 'isolated_vocal',
+          costUsd: 0.002,
+          costFinal: true,
+        });
+      }
+      if (value === 'https://queue.fal.run/fal-ai/ace-step') {
+        return jsonResponse({ request_id: 'fal-verified' });
+      }
+      if (value.endsWith('/status')) {
+        return jsonResponse({ status: 'COMPLETED' });
+      }
+      return jsonResponse({
+        audio: { url: 'https://audio.example/verified.wav' },
+        seed: first.seed,
+      });
+    }) as typeof fetch,
+    sleep: async () => undefined,
+    verifyCandidate: async candidate => {
+      verifiedEngines.push(candidate.engine);
+      if (candidate.engine === 'local-score-singer') {
+        throw new Error('lyric_alignment_failed');
+      }
+    },
+  });
+  assert.equal(verifiedFallback.engine, 'fal-ace-step');
+  assert.deepEqual(verifiedEngines, ['local-score-singer', 'fal-ace-step']);
+  assert.deepEqual(
+    verifiedFallback.attempts.map(attempt => ({
+      engine: attempt.engine,
+      outcome: attempt.outcome,
+      cost: attempt.estimatedCostUsd,
+    })),
+    [
+      { engine: 'local-score-singer', outcome: 'failed', cost: 0.002 },
+      { engine: 'fal-ace-step', outcome: 'succeeded', cost: 0.006 },
+    ],
+  );
+  assert.match(verifiedFallback.attempts[0]!.reason ?? '', /verification:lyric_alignment_failed/);
+  assert.equal(verifiedFallback.cost.synthesisUsd, 0.008);
+  assert.equal(verifiedFallback.cost.totalUsd, 0.008);
+
   const replicateCalls: string[] = [];
   const replicateRender = await renderAfroOneSinging(first, {
     env: {
@@ -336,6 +484,8 @@ async function main(): Promise<void> {
   assert.match(ownEngine, /processAfroOneSinging/);
   assert.match(ownEngine, /genuine vocal generated/);
   assert.match(ownEngine, /singingOutput\.approved !== true/);
+  assert.match(ownEngine, /estimateComposedMelodyDurationS/);
+  assert.match(ownEngine, /const singingTargetDurationS = Math\.max/);
 
   console.log('AfroOne genuine singing contracts: PASS');
 }

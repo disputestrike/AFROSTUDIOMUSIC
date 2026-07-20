@@ -2017,7 +2017,16 @@ export async function buildSnippet(opts: {
  *  (0.5–1.5, pitch-preserving via atempo); semitones shifts pitch (−6..+6)
  *  using asetrate + a compensating atempo so DURATION follows only `tempo`.
  *  Output: 44.1k stereo WAV (master-grade, ready to re-master). */
-export async function transformAudio(input: Buffer, opts: { tempo?: number; semitones?: number }): Promise<Buffer> {
+export interface TransformAudioOptions {
+  tempo?: number;
+  semitones?: number;
+  /** Measured corrective gain on the complete bus, after all layer/fill balance. */
+  gainDb?: number;
+  /** Linear peak limiter ceiling; omitted for transforms that do not need it. */
+  peakLimit?: number;
+}
+
+export async function transformAudio(input: Buffer, opts: TransformAudioOptions): Promise<Buffer> {
   const tempo = Math.min(1.5, Math.max(0.5, opts.tempo ?? 1));
   const semis = Math.min(6, Math.max(-6, opts.semitones ?? 0));
   const dir = await mkdtemp(join(tmpdir(), 'xform-'));
@@ -2035,6 +2044,12 @@ export async function transformAudio(input: Buffer, opts: { tempo?: number; semi
     while (net < 0.5) { filters.push('atempo=0.5'); net /= 0.5; }
     while (net > 2.0) { filters.push('atempo=2.0'); net /= 2.0; }
     if (Math.abs(net - 1) > 0.001) filters.push(`atempo=${net.toFixed(4)}`);
+    const gainDb = Math.min(12, Math.max(-24, opts.gainDb ?? 0));
+    if (Math.abs(gainDb) > 0.01) filters.push(`volume=${gainDb.toFixed(2)}dB`);
+    if (opts.peakLimit !== undefined) {
+      const limit = Math.min(1, Math.max(0.1, opts.peakLimit));
+      filters.push(`alimiter=level=false:limit=${limit.toFixed(3)}:attack=2:release=80`);
+    }
     const af = filters.length ? filters.join(',') : 'anull';
     await runFfmpeg(['-i', inPath, '-af', af, '-ac', '2', '-ar', String(sr), outPath]);
     return await readFile(outPath);
@@ -2531,4 +2546,62 @@ export async function sliceAudioWav(
     '-ac', '2', '-ar', '44100', '-c:a', 'pcm_s16le',
     output,
   ]);
+}
+
+export interface AudioTempoConformPlan {
+  sourceBpm: number;
+  foldedSourceBpm: number;
+  targetBpm: number;
+  deviation: number;
+  tempoRatio: number;
+  needsConform: boolean;
+  supported: boolean;
+}
+
+/** Build a pitch-preserving tempo plan for a measured melody layer. Exact
+ * half/double-time equivalents are accepted first; otherwise a safe direct
+ * FFmpeg ratio wins before octave-folded alternatives are considered. */
+export function audioTempoConformPlan(
+  sourceBpm: number,
+  targetBpm: number,
+  tolerance = 0.05
+): AudioTempoConformPlan | null {
+  if (
+    !Number.isFinite(sourceBpm) ||
+    sourceBpm <= 0 ||
+    !Number.isFinite(targetBpm) ||
+    targetBpm <= 0
+  ) {
+    return null;
+  }
+
+  const candidates = [sourceBpm, sourceBpm / 2, sourceBpm * 2];
+  const octaveEquivalent = candidates.find(
+    candidate => Math.abs(candidate - targetBpm) / targetBpm <= tolerance
+  );
+  const directRatio = targetBpm / sourceBpm;
+  const foldedSourceBpm = octaveEquivalent ??
+    (directRatio >= 0.5 && directRatio <= 1.5
+      ? sourceBpm
+      : candidates
+          .filter(candidate => {
+            const ratio = targetBpm / candidate;
+            return ratio >= 0.5 && ratio <= 1.5;
+          })
+          .sort(
+            (left, right) =>
+              Math.abs(left - targetBpm) - Math.abs(right - targetBpm)
+          )[0] ?? sourceBpm);
+  const deviation = Math.abs(foldedSourceBpm - targetBpm) / targetBpm;
+  const needsConform = deviation > tolerance;
+  const tempoRatio = needsConform ? targetBpm / foldedSourceBpm : 1;
+  return {
+    sourceBpm,
+    foldedSourceBpm,
+    targetBpm,
+    deviation,
+    tempoRatio,
+    needsConform,
+    supported: tempoRatio >= 0.5 && tempoRatio <= 1.5,
+  };
 }

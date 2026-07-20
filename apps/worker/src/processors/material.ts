@@ -66,6 +66,7 @@ import {
   inspectMaterialAudio,
   measureLoopCutPoint,
   normalizeLoopLoudness,
+  preMasterQcGateDecision,
   qcGateDecision,
   resolveForgeCutTempo,
 } from "../lib/material-inspection";
@@ -83,6 +84,21 @@ interface ForgePayload {
   /** VARIANT DEPTH: ≥2 = "forge a DIFFERENT take of this role" (prompt gets the
    *  variation direction; the loop lands with meta.variant so the shelf shows it). */
   variant?: number;
+}
+
+/** Convert a measured true-peak failure into a conservative full-bus trim. */
+export function measuredAssemblyTrimDb(qc: {
+  flags?: readonly string[];
+  truePeakDb?: number | null;
+}): number | null {
+  if (!qc.flags?.includes("clipping")) return null;
+  const measuredPeak = Number.isFinite(qc.truePeakDb)
+    ? (qc.truePeakDb as number)
+    : 0.5;
+  // Leave 0.5 dB beyond the -1.5 dBTP target because alimiter is sample-peak,
+  // not an oversampled true-peak limiter.
+  const required = -1.5 - measuredPeak - 0.5;
+  return Math.round(Math.max(-12, Math.min(-2, required)) * 10) / 10;
 }
 
 export async function processForgeMaterial(p: ForgePayload) {
@@ -899,21 +915,18 @@ export async function processAssembleBeat(p: AssemblePayload) {
         layers.map(layer => layer.role)
       );
     // TACTICAL CORRECTION (owner law: a clipped take gets FIXED, not abandoned):
-    // render → QC; if the ONLY failure is clipping, trim every layer's gain and
-    // re-render — deterministic ffmpeg, no brain, no credit. Two attempts
-    // (unity, then -4.4 dB); anything still broken after that fails honestly.
+    // render → QC; a clipping failure gets one MEASURED full-bus correction
+    // after every layer and fill. Relative balance stays intact, then the bus is
+    // re-measured and still fails closed if it cannot certify.
     let url = "";
     let qc: Awaited<ReturnType<typeof measureAudioQuality>> | null = null;
     let tacticalTrim: number | null = null;
+    let tacticalTrimDb: number | null = null;
     let fillApplied = false;
-    for (const scale of [1, 0.6]) {
+    for (const corrected of [false, true]) {
       let attemptFillApplied = false;
-      const scaledLayers =
-        scale === 1
-          ? layers
-          : layers.map(l => ({ ...l, gain: +(l.gain * scale).toFixed(2) }));
       const beatWav = await assembleBeat({
-        layers: scaledLayers,
+        layers,
         sections: arrangedSections,
         targetBpm: p.bpm,
       });
@@ -976,6 +989,12 @@ export async function processAssembleBeat(p: AssemblePayload) {
           );
         }
       }
+      if (corrected) {
+        beatBytes = await transformAudio(beatBytes, {
+          gainDb: tacticalTrimDb ?? -2.5,
+          peakLimit: 0.707,
+        });
+      }
       url = await uploadBytes({
         workspaceId: p.workspaceId,
         kind: "beats",
@@ -989,31 +1008,29 @@ export async function processAssembleBeat(p: AssemblePayload) {
       const clippingOnly =
         qc?.verdict === "fail" && (qc.flags ?? []).includes("clipping");
       if (!clippingOnly) break;
-      if (scale !== 1) break; // trimmed retry still clips → fall through to the honest fail
-      tacticalTrim = 0.6;
+      if (!qc) break;
+      if (corrected) break; // measured retry still clips → fall through to the honest fail
+      tacticalTrimDb = measuredAssemblyTrimDb(qc);
+      tacticalTrim = +Math.pow(10, (tacticalTrimDb ?? -2.5) / 20).toFixed(4);
       console.warn(
-        "[assemble] take clipped — tactical correction: retrying with layer gains ×0.6"
+        `[assemble] take clipped at ${qc.truePeakDb ?? "unknown"} dBTP — measured full-bus correction ${tacticalTrimDb ?? -2.5} dB`
       );
     }
-    // WO-1 SAFETY RAIL: assembled output passes the SAME QC gate as provider
-    // output — a broken render (near-silence/clipping) is rejected with the real
-    // reason, never approved. 'weak' ships flagged; unmeasured ships disclosed.
+    // WO-1 SAFETY RAIL: measure the raw assembly before mastering. Low level is
+    // correctable here because the bus intentionally keeps mastering headroom;
+    // clipping, short, and unmeasured audio still stop before the master.
     if (!qc) {
       throw new Error(
         "assembled take could not be technically measured — nothing shipped"
       );
     }
-    // QC SHIP CONTRACT (SOUNDWAVE1 fix 6): the code's own doctrine — "'weak'
-    // ships flagged" — is now enforced instead of contradicted. Hard flags
-    // (too_quiet/clipping/short/unmeasured → verdict 'fail' or an unmeasured
-    // capture) still die with the actionable message; a 'flat'/'squashed'
-    // weak-but-real take SHIPS with qualityState + an honest note (the known
-    // empty-shelf "failed QC (flat)" kill). The shelf-class terminal-failure
-    // message is preserved for the truly-broken cases.
-    let qcShipNote: string | null = null;
+    // PRE-MASTER CONTRACT: a quiet raw sum advances to the master whose job is
+    // to correct level. Everything that ships is re-measured by the strict
+    // final gate below, so this changes ordering, not the release quality bar.
+    let rawQcNote: string | null = null;
     {
       const flags = (qc.flags ?? []).join(", ") || "broken audio";
-      const decision = qcGateDecision(qc);
+      const decision = preMasterQcGateDecision(qc);
       if (decision === "hard_fail") {
         // ACTIONABLE SHELF ERROR (owner, live kill 2026-07-19 evening: a new
         // studio picking AfroOne died on "failed QC (flat)" — a wall, not a
@@ -1027,10 +1044,8 @@ export async function processAssembleBeat(p: AssemblePayload) {
         );
       }
       if (decision === "ship_flagged") {
-        qcShipNote = !cov.ready
-          ? `weak take shipped flagged (${flags}) — your shelf is thin: upload a kit or forge starter material for this genre, then re-render for a fuller bed`
-          : `weak take shipped flagged (${flags})`;
-        console.warn(`[assemble] ${qcShipNote}`);
+        rawQcNote = `pre-master assembly flagged (${flags}); advancing to corrective mastering`;
+        console.warn(`[assemble] ${rawQcNote}`);
       }
     }
     for (const staleUrl of attemptedUrls.filter(
@@ -1075,7 +1090,8 @@ export async function processAssembleBeat(p: AssemblePayload) {
         `assembled master failed QC (${(masterQc?.flags ?? []).join(", ") || "unmeasured"}) — nothing shipped`
       );
     }
-    if (masterQc.verdict !== "pass" && !qcShipNote) {
+    let qcShipNote: string | null = null;
+    if (masterQc.verdict !== "pass") {
       qcShipNote = `weak master shipped flagged (${(masterQc.flags ?? []).join(", ")})`;
       console.warn(`[assemble] ${qcShipNote}`);
     }
@@ -1136,7 +1152,7 @@ export async function processAssembleBeat(p: AssemblePayload) {
             assembled: true,
             mastered: true,
             arrangedBy: planned.length >= 3 ? "claude" : "template",
-            ...(tacticalTrim ? { tacticalTrim } : {}),
+            ...(tacticalTrim ? { tacticalTrim, tacticalTrimDb } : {}),
             materialIds: usedPicks.map(pick => pick.id),
             roles: usedPicks.map(pick => pick.role),
             // The ARRANGED grid (post pre-hook drop) — what actually rendered.
@@ -1160,7 +1176,7 @@ export async function processAssembleBeat(p: AssemblePayload) {
             // the raw bus sum and its measurement stay as audit evidence.
             qc,
             masterReport,
-            audit: { rawSumUrl, rawSumQc },
+            audit: { rawSumUrl, rawSumQc, ...(rawQcNote ? { rawQcNote } : {}) },
           } as never,
         },
       });
@@ -1232,9 +1248,13 @@ export async function processAssembleBeat(p: AssemblePayload) {
                   section.layerIdx.some(index => sourceIndices.includes(index))
                 );
                 if (!used) return null;
+                // tacticalTrim corrects the SUM when several roles clip the
+                // full bus. Applying it again to an isolated role double-cuts
+                // that stem by 4.4 dB and can turn valid sparse buses into
+                // `too_quiet` failures. Native stems keep their authored role
+                // gain; the final combined mix retains the tactical trim.
                 const roleLayers = sourceIndices.map(index => ({
                   ...layers[index]!,
-                  gain: +(layers[index]!.gain * (tacticalTrim ?? 1)).toFixed(3),
                 }));
                 const indexMap = new Map(
                   sourceIndices.map((sourceIndex, roleIndex) => [sourceIndex, roleIndex])

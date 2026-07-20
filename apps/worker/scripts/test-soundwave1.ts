@@ -28,6 +28,7 @@ import {
 import { forgePromptFor } from '../src/lib/forge-prompts';
 import {
   FORGE_TEMPO_TOLERANCE,
+  preMasterQcGateDecision,
   qcGateDecision,
   resolveForgeCutTempo,
 } from '../src/lib/material-inspection';
@@ -36,6 +37,7 @@ import {
   buildMixBuffersGraph,
   SECTION_CROSSFADE_S,
 } from '../src/lib/ffmpeg';
+import { measuredAssemblyTrimDb } from '../src/processors/material';
 
 let failures = 0;
 const fail = (m: string) => { console.error(`FAIL: ${m}`); failures++; };
@@ -192,6 +194,19 @@ const fail = (m: string) => { console.error(`FAIL: ${m}`); failures++; };
   if (offenders.length) fail(`amix without normalize=0 (silent 1/n level drop): ${offenders.join(', ')}`);
 }
 
+// ---- 5b: measured full-bus clipping correction ---------------------------
+{
+  const trimDb = measuredAssemblyTrimDb({ flags: ['clipping'], truePeakDb: 2.5 });
+  if (trimDb !== -4.5) fail(`measured trim: expected -4.5 dB, got ${trimDb}`);
+  if (measuredAssemblyTrimDb({ flags: ['flat'], truePeakDb: 2.5 }) !== null) {
+    fail('measured trim: a non-clipping flag must not alter the bus');
+  }
+  const missingPeakTrim = measuredAssemblyTrimDb({ flags: ['clipping'], truePeakDb: null });
+  if (missingPeakTrim !== -2.5) {
+    fail(`measured trim: missing peak must use the conservative -2.5 dB fallback, got ${missingPeakTrim}`);
+  }
+}
+
 // ---- 6: QC SHIP CONTRACT (weak ships flagged; hard flags die) -------------
 {
   const cases: Array<[{ verdict: 'pass' | 'weak' | 'fail'; flags?: string[] }, string]> = [
@@ -208,6 +223,20 @@ const fail = (m: string) => { console.error(`FAIL: ${m}`); failures++; };
   for (const [qc, expected] of cases) {
     const got = qcGateDecision(qc);
     if (got !== expected) fail(`qc contract: ${qc.verdict}/[${(qc.flags ?? []).join(',')}] must be ${expected}, got ${got}`);
+  }
+
+  const preMasterCases: Array<[{ verdict: 'pass' | 'weak' | 'fail'; flags?: string[] }, string]> = [
+    [{ verdict: 'fail', flags: ['too_quiet'] }, 'ship_flagged'],
+    [{ verdict: 'fail', flags: ['too_quiet', 'flat'] }, 'ship_flagged'],
+    [{ verdict: 'fail', flags: ['too_quiet', 'clipping'] }, 'hard_fail'],
+    [{ verdict: 'fail', flags: ['short'] }, 'hard_fail'],
+    [{ verdict: 'weak', flags: ['unmeasured'] }, 'hard_fail'],
+    [{ verdict: 'weak', flags: ['flat'] }, 'ship_flagged'],
+    [{ verdict: 'pass', flags: [] }, 'ship'],
+  ];
+  for (const [qc, expected] of preMasterCases) {
+    const got = preMasterQcGateDecision(qc);
+    if (got !== expected) fail(`pre-master qc: ${qc.verdict}/[${(qc.flags ?? []).join(',')}] must be ${expected}, got ${got}`);
   }
 }
 

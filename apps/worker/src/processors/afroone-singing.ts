@@ -67,6 +67,13 @@ interface MeasuredSingingAlignment extends LyricAudioAlignmentScore {
   measuredAt: string;
 }
 
+interface VerifiedSingingCandidate {
+  engine: string;
+  isolatedBytes: Buffer;
+  inspection: Awaited<ReturnType<typeof inspectIsolatedVocal>>;
+  alignment: MeasuredSingingAlignment;
+}
+
 function objectValue(value: unknown): Record<string, unknown> {
   return value && typeof value === 'object' && !Array.isArray(value)
     ? (value as Record<string, unknown>)
@@ -345,39 +352,86 @@ export async function processAfroOneSinging(
     let voiceSignature = voice ? personalVoiceSignature(voice) : null;
     const instrumental = await certifiedInstrumental(payload);
 
+    let verifiedCandidate: VerifiedSingingCandidate | null = null;
+    let rejectedVerificationUsd = 0;
     const rendered = await renderAfroOneSinging(manifest, {
       env: { ...process.env, ...(falKey ? { FAL_KEY: falKey } : {}) },
+      verifyCandidate: async candidate => {
+        let candidateUrl = candidate.audioUrl;
+        let candidateBytes: Buffer;
+        if (candidate.outputKind === 'isolated_vocal') {
+          candidateBytes = await downloadToBuffer(candidate.audioUrl, {
+            maxBytes: 256 * 1024 * 1024,
+          });
+        } else {
+          const separated = await separateStemsRouted({
+            audioUrl: candidate.audioUrl,
+            apiKey: replicateApiKey,
+            mode: 'instrumental',
+            purpose: 'user',
+            workspaceId: payload.workspaceId,
+            preferLocal: true,
+          });
+          separated.stems.forEach((stem) => transientUrls.add(stem.url));
+          if (separated.instrumentalUrl) {
+            transientUrls.add(separated.instrumentalUrl);
+          }
+          const vocalUrl = separated.stems.find(
+            (stem) => stem.role === 'vocals'
+          )?.url;
+          if (!vocalUrl) {
+            throw new Error('afroone_singing_separation_returned_no_vocal');
+          }
+          candidateUrl = vocalUrl;
+          candidateBytes = await downloadToBuffer(vocalUrl, {
+            maxBytes: 256 * 1024 * 1024,
+          });
+        }
+        candidateBytes = await transformAudio(candidateBytes, {});
+        const candidateInspection = await inspectIsolatedVocal({
+          bytes: candidateBytes,
+          url: candidateUrl,
+          isolationConfirmed: true,
+        });
+        if (candidateInspection.qualityState === 'failed') {
+          throw new Error(
+            `vocal_qc_failed:${candidateInspection.reasons.join(',')}`
+          );
+        }
+        const candidateAlignment = await measureSingingAlignment({
+          lyrics: manifest.lyrics,
+          audioUrl: candidateUrl,
+          bytes: candidateBytes,
+          replicateApiKey,
+        });
+        if (!candidateAlignment) {
+          throw new Error('lyric_alignment_unverified');
+        }
+        if (!candidateAlignment.pass) {
+          rejectedVerificationUsd = money(
+            rejectedVerificationUsd +
+              estimatedVerificationCostUsd(
+                candidateInspection.durationS,
+                candidateAlignment
+              )
+          );
+          throw new Error(
+            `lyric_alignment_failed:${candidateAlignment.failures.join(',')}`
+          );
+        }
+        verifiedCandidate = {
+          engine: candidate.engine,
+          isolatedBytes: candidateBytes,
+          inspection: candidateInspection,
+          alignment: candidateAlignment,
+        };
+      },
     });
-
-    let isolatedBytes: Buffer;
-    if (rendered.outputKind === 'isolated_vocal') {
-      isolatedBytes = await downloadToBuffer(rendered.audioUrl, {
-        maxBytes: 256 * 1024 * 1024,
-      });
-    } else {
-      const separated = await separateStemsRouted({
-        audioUrl: rendered.audioUrl,
-        apiKey: replicateApiKey,
-        mode: 'instrumental',
-        purpose: 'user',
-        workspaceId: payload.workspaceId,
-        preferLocal: true,
-      });
-      separated.stems.forEach((stem) => transientUrls.add(stem.url));
-      if (separated.instrumentalUrl) {
-        transientUrls.add(separated.instrumentalUrl);
-      }
-      const vocalUrl = separated.stems.find(
-        (stem) => stem.role === 'vocals'
-      )?.url;
-      if (!vocalUrl) {
-        throw new Error('afroone_singing_separation_returned_no_vocal');
-      }
-      isolatedBytes = await downloadToBuffer(vocalUrl, {
-        maxBytes: 256 * 1024 * 1024,
-      });
+    const acceptedCandidate = verifiedCandidate as VerifiedSingingCandidate | null;
+    if (!acceptedCandidate || acceptedCandidate.engine !== rendered.engine) {
+      throw new Error('afroone_singing_verified_candidate_missing');
     }
-    isolatedBytes = await transformAudio(isolatedBytes, {});
+    let isolatedBytes = acceptedCandidate.isolatedBytes;
 
     let voiceConversionUsd = 0;
     let predictionId: string | null = null;
@@ -439,34 +493,37 @@ export async function processAfroOneSinging(
       ext: 'wav',
     });
     createdUrls.add(storedUrl);
-    const inspection = await inspectIsolatedVocal({
-      bytes: isolatedBytes,
-      url: storedUrl,
-      isolationConfirmed: true,
-    });
+    let inspection = acceptedCandidate.inspection;
+    let alignment: MeasuredSingingAlignment | null = acceptedCandidate.alignment;
+    if (voiceConverted) {
+      inspection = await inspectIsolatedVocal({
+        bytes: isolatedBytes,
+        url: storedUrl,
+        isolationConfirmed: true,
+      });
+      alignment = await measureSingingAlignment({
+        lyrics: manifest.lyrics,
+        audioUrl: storedUrl,
+        bytes: isolatedBytes,
+        replicateApiKey,
+      });
+    }
     if (inspection.qualityState === 'failed') {
       throw new Error(
         `afroone_singing_vocal_qc_failed:${inspection.reasons.join(',')}`
       );
     }
-
-    const alignment = await measureSingingAlignment({
-      lyrics: manifest.lyrics,
-      audioUrl: storedUrl,
-      bytes: isolatedBytes,
-      replicateApiKey,
-    });
     if (!alignment) {
       throw new Error('afroone_singing_lyric_alignment_unverified');
     }
-    if (alignment && !alignment.pass) {
+    if (!alignment.pass) {
       throw new Error(
         `afroone_singing_lyric_alignment_failed:${alignment.failures.join(',')}`
       );
     }
-    const verificationUsd = estimatedVerificationCostUsd(
-      inspection.durationS,
-      alignment
+    const verificationUsd = money(
+      rejectedVerificationUsd +
+        estimatedVerificationCostUsd(inspection.durationS, alignment)
     );
     const totalCost = combineAfroOneSingingCost({
       synthesisUsd: rendered.cost.synthesisUsd,
@@ -710,6 +767,7 @@ export async function processAfroOneSinging(
           data: { status: mix.approved ? 'MIXED' : 'DEMO' },
         });
       }
+      const finalApproved = mix ? mix.approved : approved;
       const completed = await tx.providerJob.updateMany({
         where: {
           id: payload.jobId,
@@ -731,7 +789,7 @@ export async function processAfroOneSinging(
             assetKind: 'isolated_vocal',
             performanceKind: 'sung_vocal',
             performanceSource: receipt.performanceSource,
-            approved,
+            approved: finalApproved,
             qualityState: inspection.qualityState,
             alignmentState: alignment?.state ?? 'unmeasured',
             contentHash: inspection.contentHash,

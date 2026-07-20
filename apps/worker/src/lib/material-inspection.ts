@@ -119,6 +119,26 @@ export function qcGateDecision(qc: { verdict: 'pass' | 'weak' | 'fail'; flags?: 
   return qc.verdict === 'weak' ? 'ship_flagged' : 'ship';
 }
 
+/**
+ * The assembly bus deliberately leaves mastering headroom. A raw bus whose
+ * only hard defect is low level must reach the master, because loudness is the
+ * master's job; the mastered artifact is measured again by qcGateDecision.
+ * Faults mastering cannot repair remain fail-closed before anything ships.
+ */
+export function preMasterQcGateDecision(qc: {
+  verdict: 'pass' | 'weak' | 'fail';
+  flags?: string[] | null;
+}): QcGateDecision {
+  const flags = qc.flags ?? [];
+  if (flags.some(flag => ['clipping', 'short', 'unmeasured'].includes(flag))) {
+    return 'hard_fail';
+  }
+  if (qc.verdict === 'fail' && !flags.includes('too_quiet')) {
+    return 'hard_fail';
+  }
+  return qc.verdict === 'pass' ? 'ship' : 'ship_flagged';
+}
+
 // ---------------------------------------------------------------------------
 // ROLE PURITY — absence gates (source-truth wave item 4).
 // ---------------------------------------------------------------------------

@@ -314,6 +314,79 @@ const DENSITY_DURS: Record<MelodyDensity, number[]> = {
 };
 
 const clamp = (x: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, x));
+
+function resolvedSectionBars(section: MelodySectionInput): number {
+  const lineCount = section.lines.map(line => line.trim()).filter(Boolean).length;
+  return Math.round(clamp(section.bars ?? lineCount * 2, 2, 32));
+}
+
+/** Exact duration of the deterministic composer before notes are emitted. */
+export function estimateComposedMelodyDurationS(
+  input: Pick<ComposeMelodyOpts, 'bpm' | 'sections'>,
+): number {
+  if (!Number.isFinite(input.bpm) || input.bpm <= 0) {
+    throw new Error('melody_score_invalid_bpm');
+  }
+  const bars = input.sections.reduce((total, section) => total + resolvedSectionBars(section), 0);
+  return Math.round(((bars * 240) / input.bpm) * 1_000_000) / 1_000_000;
+}
+
+/**
+ * Preserve every lyric section while removing only excess bar padding when a
+ * complete score narrowly exceeds a renderer's duration ceiling. Allocation
+ * is proportional and deterministic; each section keeps the composer's
+ * two-bar minimum, and callers get an explicit failure when even that minimum
+ * cannot fit.
+ */
+export function fitMelodySectionsToDuration(
+  input: Pick<ComposeMelodyOpts, 'bpm' | 'sections'>,
+  maxDurationS: number,
+): MelodySectionInput[] {
+  if (!Number.isFinite(input.bpm) || input.bpm <= 0) {
+    throw new Error('melody_score_invalid_bpm');
+  }
+  if (!Number.isFinite(maxDurationS) || maxDurationS <= 0) {
+    throw new Error('melody_score_invalid_max_duration');
+  }
+  if (!input.sections.length) return [];
+
+  const sourceBars = input.sections.map(resolvedSectionBars);
+  const sourceTotal = sourceBars.reduce((sum, bars) => sum + bars, 0);
+  const maxBars = Math.floor((maxDurationS * input.bpm) / 240 + 1e-9);
+  const minimumTotal = input.sections.length * 2;
+  if (maxBars < minimumTotal) {
+    throw new Error('melody_score_duration_unfit');
+  }
+  if (sourceTotal <= maxBars) {
+    return input.sections.map((section, index) => ({ ...section, bars: sourceBars[index]! }));
+  }
+
+  const targetExtras = maxBars - minimumTotal;
+  const sourceExtras = sourceBars.map(bars => bars - 2);
+  const totalSourceExtras = sourceExtras.reduce((sum, bars) => sum + bars, 0);
+  const exactExtras = sourceExtras.map(extra => (extra * targetExtras) / totalSourceExtras);
+  const allocatedExtras = exactExtras.map(Math.floor);
+  const remaining = targetExtras - allocatedExtras.reduce((sum, bars) => sum + bars, 0);
+  const remainderOrder = exactExtras
+    .map((exact, index) => ({ index, fraction: exact - Math.floor(exact) }))
+    .sort((a, b) => b.fraction - a.fraction || a.index - b.index);
+  for (let i = 0; i < remaining; i++) {
+    allocatedExtras[remainderOrder[i]!.index]! += 1;
+  }
+
+  return input.sections.map((section, index) => ({
+    ...section,
+    bars: 2 + allocatedExtras[index]!,
+  }));
+}
+
+export function melodyScoreDurationS(score: Pick<MelodyScore, 'bpm' | 'sections'>): number {
+  if (!Number.isFinite(score.bpm) || score.bpm <= 0) {
+    throw new Error('melody_score_invalid_bpm');
+  }
+  const bars = score.sections.reduce((total, section) => total + section.bars, 0);
+  return Math.round(((bars * 240) / score.bpm) * 1_000_000) / 1_000_000;
+}
 const r4 = (x: number) => Math.round(x * 10_000) / 10_000;
 
 // ---------------------------------------------------------------------------
@@ -520,7 +593,7 @@ export function composeMelody(opts: ComposeMelodyOpts): MelodyScore {
   for (const sIn of opts.sections) {
     const tpl = KIND_TEMPLATE[sIn.kind] ?? KIND_TEMPLATE.other;
     const lines = sIn.lines.map((l) => l.trim()).filter(Boolean);
-    const bars = Math.round(clamp(sIn.bars ?? lines.length * 2, 2, 32));
+    const bars = resolvedSectionBars(sIn);
     const totalBeats = bars * 4;
     const notes: MelodyNote[] = [];
     if (lines.length) {
