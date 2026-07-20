@@ -1211,9 +1211,13 @@ export async function processAssembleBeat(p: AssemblePayload) {
                   section.layerIdx.some(index => sourceIndices.includes(index))
                 );
                 if (!used) return null;
+                // tacticalTrim corrects the SUM when several roles clip the
+                // full bus. Applying it again to an isolated role double-cuts
+                // that stem by 4.4 dB and can turn valid sparse buses into
+                // `too_quiet` failures. Native stems keep their authored role
+                // gain; the final combined mix retains the tactical trim.
                 const roleLayers = sourceIndices.map(index => ({
                   ...layers[index]!,
-                  gain: +(layers[index]!.gain * (tacticalTrim ?? 1)).toFixed(3),
                 }));
                 const indexMap = new Map(
                   sourceIndices.map((sourceIndex, roleIndex) => [sourceIndex, roleIndex])
