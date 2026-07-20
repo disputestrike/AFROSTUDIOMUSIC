@@ -16,7 +16,7 @@ import { readFile, unlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { prisma } from '@afrohit/db';
-import { getGenreKit, normalizeMaterialGenre, synthKitFor } from '@afrohit/shared';
+import { getGenreKit, laneSwingRatio, normalizeMaterialGenre, synthKitFor } from '@afrohit/shared';
 import { deleteObjectByUrl, downloadToBuffer, uploadBytes } from '../lib/storage';
 import { trimToLoop } from '../lib/ffmpeg';
 import { markFailed, markRunning, markSucceeded } from '../lib/jobs';
@@ -37,8 +37,11 @@ function defaultKey(genre: string): string {
 
 function runSynth(role: string, bpm: number, out: string, genre: string, key: string, fourOnFloor: boolean, seed: number): Promise<void> {
   return new Promise((resolve, reject) => {
-    // ARGS: role bpm out seed genre key four_on_floor
-    const p = spawn(PYTHON, [SCRIPT, role, String(bpm), out, String(seed), genre, key, fourOnFloor ? '1' : '0']);
+    // ARGS: role bpm out seed genre key four_on_floor swing
+    // SWING (SOUNDWAVE2): the lane's expert-prior swing ratio rides into the
+    // synth so EVERY 16th-grid voice shares ONE pocket (the authoritative
+    // value; the py fallback table only covers direct invocations).
+    const p = spawn(PYTHON, [SCRIPT, role, String(bpm), out, String(seed), genre, key, fourOnFloor ? '1' : '0', laneSwingRatio(genre).toFixed(3)]);
     let err = '';
     p.stderr.on('data', (d) => (err += d.toString()));
     p.on('error', reject);

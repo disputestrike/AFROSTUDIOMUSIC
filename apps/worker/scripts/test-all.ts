@@ -351,6 +351,7 @@ async function runOfflineTests(): Promise<void> {
     ["Genre kits (42 producer kits)", "test-genre-kits.ts"],
     ["Material system (forge/layer/pan)", "test-material-system.ts"],
     ["SOUNDWAVE1 (verbatim forge/tempo/energy/QC/key)", "test-soundwave1.ts"],
+    ["SOUNDWAVE2 (vocal forward + afro pocket + my voice)", "test-soundwave2.ts"],
     ["Own-engine auto-forge (floor rescue)", "test-own-engine-autoforge.ts"],
     ["Material provenance + usage laws", "test-material-provenance.ts"],
     ["Training isolation (lane/pin/zap)", "test-training-isolation.ts"],

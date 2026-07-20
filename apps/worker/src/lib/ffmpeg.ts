@@ -8,7 +8,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { grooveOffsetMs, isMaterialRole, jobOf, parseStorageUri, sectionEnergyGainDb } from '@afrohit/shared';
+import { familyOf, grooveOffsetMs, isMaterialRole, jobOf, parseStorageUri, sectionEnergyGainDb } from '@afrohit/shared';
 import { downloadToBuffer } from './storage';
 
 export const NATIVE_AUDIO_LIMITS = Object.freeze({
@@ -705,6 +705,85 @@ function layerJobOf(role: string | undefined): string | null {
       chords: 'harmony',
     } as Record<string, string>
   )[role] ?? null;
+}
+
+// ---------------------------------------------------------------------------
+// PRE-HOOK DROP (SOUNDWAVE2 — "the beat is not Afrobeats"): every commercial
+// Afro record breathes for the final bar before the hook — kick and bass OUT,
+// shakers/percussion/harmony carry, then the full band slams back on the hook
+// downbeat. The assembler had no such move: hooks arrived as a layer-count
+// change and nothing else. This pure transform splits the last bar of any
+// section that leads into a hook into its own 1-bar drop section whose kick-
+// bearing and low-end layers are removed. Deterministic, bounded (1 bar, total
+// bar count preserved), fail-open (no hook / nothing to drop / nothing left →
+// section untouched), and receipted by the caller from the returned notes.
+// ---------------------------------------------------------------------------
+
+export const PRE_HOOK_DROP_BARS = 1;
+/** Sections whose ARRIVAL earns the breath before it. */
+const HOOK_SECTION_RE = /hook|chorus/i;
+/** Legacy coarse roles that carry the kick/low end (taxonomy roles resolve via
+ *  jobOf/familyOf below). */
+const LEGACY_DROP_ROLES = new Set(['drums', 'bass', 'log_drum']);
+
+/** Does this layer's role carry the kick or the low end? (the voices the
+ *  pre-hook breath removes — percussion/harmony/texture keep playing). */
+export function isPreHookDropRole(role: string | undefined): boolean {
+  if (!role) return false; // unknown is honorable — never silence what we can't identify
+  if (isMaterialRole(role)) return jobOf(role) === 'low_end' || familyOf(role) === 'drumkit';
+  return LEGACY_DROP_ROLES.has(role);
+}
+
+export interface PreHookDropNote {
+  /** the section whose final bar became the breath */
+  from: string;
+  /** the hook section the drop leads into */
+  into: string;
+  bars: number;
+  /** layer indexes silenced for the drop bar */
+  droppedLayerIdx: number[];
+}
+
+/** The drop bar sits back (energy 0.25 → ~-1.9 dB on the bounded curve) so the
+ *  equal-power bus trim can't level-compensate the missing low end away. */
+export const PRE_HOOK_DROP_ENERGY = 0.25;
+
+export function applyPreHookDrops(
+  sections: AssemblySection[],
+  layerRoles: Array<string | undefined>,
+): { sections: AssemblySection[]; drops: PreHookDropNote[] } {
+  const out: AssemblySection[] = [];
+  const drops: PreHookDropNote[] = [];
+  for (let i = 0; i < sections.length; i++) {
+    const sec = sections[i]!;
+    const next = sections[i + 1];
+    const leadsIntoHook = !!next && HOOK_SECTION_RE.test(next.name);
+    if (!leadsIntoHook || sec.bars < PRE_HOOK_DROP_BARS + 1) {
+      out.push(sec);
+      continue;
+    }
+    const kept = sec.layerIdx.filter((idx) => !isPreHookDropRole(layerRoles[idx]));
+    const dropped = sec.layerIdx.filter((idx) => isPreHookDropRole(layerRoles[idx]));
+    // Fail-open: nothing to drop, or the breath would be silence → untouched.
+    if (!dropped.length || !kept.length) {
+      out.push(sec);
+      continue;
+    }
+    out.push({ ...sec, bars: sec.bars - PRE_HOOK_DROP_BARS });
+    out.push({
+      name: `${sec.name}_prehook_drop`,
+      bars: PRE_HOOK_DROP_BARS,
+      layerIdx: kept,
+      energy: PRE_HOOK_DROP_ENERGY,
+    });
+    drops.push({
+      from: sec.name,
+      into: next!.name,
+      bars: PRE_HOOK_DROP_BARS,
+      droppedLayerIdx: dropped,
+    });
+  }
+  return { sections: out, drops };
 }
 
 /** SECTION CROSSFADE (SOUNDWAVE1 fix 4): sections used to be independent files
@@ -1498,6 +1577,123 @@ export async function mixdown(opts: {
     return await readFile(outPath);
   } finally {
     await rm(dir, { recursive: true, force: true });
+  }
+}
+
+// ---------------------------------------------------------------------------
+// VOCAL-FORWARD SUNG MIX (SOUNDWAVE2 — "I can't hear the voice"): the sung
+// path used static 1.0/1.1 amix weights on a separated stem that arrived at an
+// ARBITRARY level, no ducking, a dated fixed 60ms slapback, and the result
+// never met the master chain. This block is the cure, in three measured moves:
+//   A1 loudness-match — the caller measures bed + vocal LUFS (the existing
+//      ebur128/loudnorm pass) and vocalGainDbFromLufs() computes the gain that
+//      puts the vocal a FIXED offset ABOVE the bed (AFROONE_VOCAL_OFFSET_DB,
+//      default +2 dB — in front, not on top);
+//   A2 duck — sidechaincompress on the bed KEYED BY THE VOCAL (gentle 2.8:1,
+//      ~2-3 dB of ducking at the matched level, fast attack, musical release)
+//      so the bed breathes around the voice instead of fighting it;
+//   A3 the slapback is replaced by a short dense early-reflection cluster
+//      (23/41/59 ms taps at low decay — plate-ish, subtle), and the CALLER
+//      routes the finished mix through the SAME two-pass master() chain the
+//      instrumental beds get. Un-mastered demos stop shipping.
+// All pure graph builders exported for the offline gate suite.
+// ---------------------------------------------------------------------------
+
+export const AFROONE_VOCAL_OFFSET_DB_DEFAULT = 2;
+
+/** Env-tunable vocal-over-bed offset (dB). Clamped -3..+8 — a typo can make
+ *  the voice a touch shy or bold, never absent or screaming. */
+export function afroOneVocalOffsetDb(env: NodeJS.ProcessEnv = process.env): number {
+  const raw = env.AFROONE_VOCAL_OFFSET_DB?.trim();
+  if (!raw) return AFROONE_VOCAL_OFFSET_DB_DEFAULT;
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed)) return AFROONE_VOCAL_OFFSET_DB_DEFAULT;
+  return Math.min(8, Math.max(-3, parsed));
+}
+
+/** A1 — the loudness-match math: gain (dB) that lands the vocal at
+ *  bedLufs + offsetDb. Unmeasurable input → 0 dB and matched:false (fail-open,
+ *  the caller records the honest note). Clamped ±12 dB so a near-silent or
+ *  blazing stem is never dragged past its own noise floor / into distortion. */
+export function vocalGainDbFromLufs(
+  bedLufs: number | null | undefined,
+  vocalLufs: number | null | undefined,
+  offsetDb: number,
+): { gainDb: number; matched: boolean } {
+  if (
+    typeof bedLufs !== 'number' || !Number.isFinite(bedLufs)
+    || typeof vocalLufs !== 'number' || !Number.isFinite(vocalLufs)
+  ) {
+    return { gainDb: 0, matched: false };
+  }
+  const raw = bedLufs + offsetDb - vocalLufs;
+  return { gainDb: Math.round(Math.min(12, Math.max(-12, raw)) * 10) / 10, matched: true };
+}
+
+/** A2 — the duck, tuned for a loudness-MATCHED vocal (that's why A1 comes
+ *  first: with the vocal at a known level over the bed, threshold 0.1
+ *  (≈ -20 dBFS) with ratio 2.8 yields the intended ~2-3 dB of gain reduction
+ *  while the vocal is active). Attack fast enough to catch phrase onsets,
+ *  release musical (~200 ms) so the bed swells back between lines. */
+export const VOCAL_FORWARD_DUCK = Object.freeze({
+  threshold: 0.1,
+  ratio: 2.8,
+  attackMs: 8,
+  releaseMs: 200,
+});
+
+/** The vocal treatment chain: measured gain FIRST (so the fixed-threshold
+ *  compressor below sees a predictable level), the radio preset's proven
+ *  highpass + compressor, then the subtle early-reflection cluster that
+ *  replaces the 60ms slapback. */
+export function vocalForwardVocalChain(vocalGainDb: number): string {
+  return [
+    `volume=${vocalGainDb.toFixed(1)}dB`,
+    'highpass=f=90',
+    'acompressor=threshold=-18dB:ratio=3:attack=10:release=120',
+    'aecho=0.7:0.22:23|41|59:0.18|0.13|0.09',
+  ].join(',');
+}
+
+/** Full vocal-forward filtergraph: input 0 = bed, input 1 = vocal. The vocal
+ *  splits into the mix voice and the sidechain KEY; the bed ducks under the
+ *  key; the honest sum (normalize=0) rides the house -1 dB safety limiter. */
+export function buildVocalForwardMixGraph(vocalGainDb: number): string {
+  const d = VOCAL_FORWARD_DUCK;
+  return [
+    `[1:a]${vocalForwardVocalChain(vocalGainDb)},asplit=2[vmix][vkey]`,
+    `[0:a][vkey]sidechaincompress=threshold=${d.threshold}:ratio=${d.ratio}:attack=${d.attackMs}:release=${d.releaseMs}[bed]`,
+    '[bed][vmix]amix=inputs=2:duration=first:dropout_transition=0:normalize=0,alimiter=level=false:limit=0.891:attack=2:release=80[out]',
+  ].join(';');
+}
+
+/** Render the vocal-forward sung mix (bed + isolated vocal → one WAV). The
+ *  caller supplies the MEASURED vocal gain (vocalGainDbFromLufs) and then
+ *  masters the result — this function only mixes. */
+export async function mixdownVocalForward(opts: {
+  beat: Buffer;
+  vocal: Buffer;
+  vocalGainDb: number;
+}): Promise<Buffer> {
+  const dir = await mkdtemp(join(tmpdir(), 'afrohit-vfmix-'));
+  try {
+    const beatPath = join(dir, 'beat.bin');
+    const vocalPath = join(dir, 'vocal.bin');
+    const outPath = join(dir, 'mix.wav');
+    await writeFile(beatPath, opts.beat);
+    await writeFile(vocalPath, opts.vocal);
+    await runFfmpeg([
+      '-i', beatPath,
+      '-i', vocalPath,
+      '-filter_complex', buildVocalForwardMixGraph(opts.vocalGainDb),
+      '-map', '[out]',
+      '-ar', '44100',
+      '-ac', '2',
+      outPath,
+    ]);
+    return await readFile(outPath);
+  } finally {
+    await rm(dir, { recursive: true, force: true }).catch(() => {});
   }
 }
 

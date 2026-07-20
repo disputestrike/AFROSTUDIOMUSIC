@@ -27,7 +27,22 @@ export interface FillOverlayOpts {
    * untrimmed behavior, so existing callers/tests are unchanged until wired.
    */
   bpm?: number;
+  /**
+   * TRANSITION DUCK (SOUNDWAVE2 — "the beat is not Afrobeats"): dB to duck the
+   * FULL BAND during each fill bar so the transition is finally AUDIBLE (the
+   * old 0.5-gain fill under the un-ducked band was half-buried at every
+   * boundary). Requires bpm (the duck window is exactly the fill's one bar).
+   * Deterministic timeline volume automation — no sidechain latency, replays
+   * byte-identical. Optional for back-compat: absent → no duck (old graph).
+   */
+  duckDb?: number;
 }
+
+/** The owner-audible transition doctrine: fill at 0.8 rides OVER a band ducked
+ *  4 dB for exactly the fill bar. Exported so the assembler and the gate suite
+ *  share one truth. */
+export const FILL_TRANSITION_GAIN = 0.8;
+export const FILL_BAND_DUCK_DB = 4;
 
 /**
  * Build the `-filter_complex` graph: (optionally) trim the fill (input 1) to one
@@ -59,7 +74,19 @@ export function buildFillFilterGraph(placements: number[], opts?: FillOverlayOpt
     parts.push(`[f${i}]adelay=${ms}|${ms}[d${i}]`);
     delayed.push(`[d${i}]`);
   });
-  parts.push(`[0:a]${delayed.join('')}amix=inputs=${n + 1}:normalize=0:duration=first[mix]`);
+  // TRANSITION DUCK (see FillOverlayOpts.duckDb): one timeline-enabled volume
+  // stage per fill bar drops the band by duckDb for exactly [atS, atS+bar] —
+  // the fill reads, the band breathes, the downbeat slams back at unity.
+  const duckDb = Number.isFinite(opts?.duckDb) && (opts!.duckDb as number) > 0 ? (opts!.duckDb as number) : null;
+  let trackPad = '[0:a]';
+  if (duckDb && barS) {
+    const stages = pts
+      .map((t) => `volume=${Math.pow(10, -duckDb / 20).toFixed(4)}:enable='between(t,${t.toFixed(3)},${(t + barS).toFixed(3)})'`)
+      .join(',');
+    parts.push(`[0:a]${stages}[trk]`);
+    trackPad = '[trk]';
+  }
+  parts.push(`${trackPad}${delayed.join('')}amix=inputs=${n + 1}:normalize=0:duration=first[mix]`);
   // level=false is LOAD-BEARING: alimiter defaults level=true, which AUTO-BOOSTS
   // the output up to the ceiling — it re-normalized every fill-overlaid take to
   // -0.26 dB, defeating the assembly bus's -1 dB headroom AND the ×0.6 clipping

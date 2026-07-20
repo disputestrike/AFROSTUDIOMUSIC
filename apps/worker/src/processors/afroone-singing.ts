@@ -17,7 +17,14 @@ import {
 } from '@afrohit/shared';
 import { markFailed } from '../lib/jobs';
 import { separateStemsRouted } from '../lib/demucs-local';
-import { mixdown, transformAudio } from '../lib/ffmpeg';
+import {
+  afroOneVocalOffsetDb,
+  master,
+  measureAudioBufferQuality,
+  mixdownVocalForward,
+  transformAudio,
+  vocalGainDbFromLufs,
+} from '../lib/ffmpeg';
 import { certifyAudioBytes, type CertifiedAudio } from '../lib/certified-assets';
 import {
   deleteObjectByUrl,
@@ -103,6 +110,36 @@ async function loadPersonalVoice(
   const failure = singVoiceAuthorizationFailure(profile, workspaceId);
   if (failure) throw new Error(`afroone_singing_${failure}`);
   return profile;
+}
+
+/**
+ * SING IN MY VOICE (SOUNDWAVE2 Target C): when the workspace owns a trained,
+ * READY voice profile, AfroOne's sung takes convert into that artist's own
+ * timbre instead of shipping the generic engine voice. Default ON whenever a
+ * ready profile exists; AFROONE_SING_IN_MY_VOICE=0 is the kill switch. The
+ * payload's explicit voiceProfileId always wins over the auto-pick.
+ */
+export function singInMyVoiceEnabled(
+  env: NodeJS.ProcessEnv = process.env
+): boolean {
+  return env.AFROONE_SING_IN_MY_VOICE !== '0';
+}
+
+/** Newest READY, consent-active voice profile in the workspace (the auto-pick
+ *  for Target C). Null — never a throw — when the shelf has no trained voice. */
+async function newestReadyVoiceProfileId(
+  workspaceId: string
+): Promise<string | null> {
+  const profile = await prisma.voiceProfile.findFirst({
+    where: {
+      workspaceId,
+      status: 'READY',
+      consent: { workspaceId, revokedAt: null },
+    },
+    orderBy: { createdAt: 'desc' },
+    select: { id: true },
+  });
+  return profile?.id ?? null;
 }
 
 function personalVoiceSignature(profile: PersonalVoice): string {
@@ -275,11 +312,37 @@ export async function processAfroOneSinging(
     const falKey = workspace?.musicProvider === 'fal'
       ? workspaceMusicKey
       : process.env.FAL_KEY;
-    const voice = await loadPersonalVoice(
+    // VOICE SELECTION (Target C): the payload's explicit profile is law; when
+    // absent, the newest READY workspace profile is auto-picked (kill switch
+    // AFROONE_SING_IN_MY_VOICE=0). The auto path is FAIL-OPEN end to end — a
+    // broken profile or a failed conversion ships the studio voice with an
+    // honest note, never a dead render. An EXPLICIT profile keeps the original
+    // hard-fail law: the user asked for that voice; shipping another silently
+    // would be a lie.
+    let voice = await loadPersonalVoice(
       payload.workspaceId,
       payload.voiceProfileId
     );
-    const voiceSignature = voice ? personalVoiceSignature(voice) : null;
+    let voiceSource: 'payload' | 'auto' | null = voice ? 'payload' : null;
+    let attemptedVoiceProfileId: string | null = voice?.id ?? null;
+    let voiceNote: string | null = null;
+    if (!voice && singInMyVoiceEnabled()) {
+      try {
+        const autoId = await newestReadyVoiceProfileId(payload.workspaceId);
+        if (autoId) {
+          attemptedVoiceProfileId = autoId;
+          voice = await loadPersonalVoice(payload.workspaceId, autoId);
+          voiceSource = 'auto';
+        }
+      } catch (error) {
+        voiceNote = `sung in the studio voice — voice conversion skipped: ${
+          (error as Error)?.message ?? 'voice profile unavailable'
+        }`;
+        voice = null;
+        voiceSource = null;
+      }
+    }
+    let voiceSignature = voice ? personalVoiceSignature(voice) : null;
     const instrumental = await certifiedInstrumental(payload);
 
     const rendered = await renderAfroOneSinging(manifest, {
@@ -318,40 +381,54 @@ export async function processAfroOneSinging(
 
     let voiceConversionUsd = 0;
     let predictionId: string | null = null;
+    let voiceConverted = false;
     if (voice) {
-      const baseUrl = await uploadBytes({
-        workspaceId: payload.workspaceId,
-        kind: 'voice-input-snapshots',
-        bytes: isolatedBytes,
-        contentType: 'audio/wav',
-        ext: 'wav',
-      });
-      transientUrls.add(baseUrl);
-      const invocationVoice = await loadPersonalVoice(
-        payload.workspaceId,
-        payload.voiceProfileId
-      );
-      if (
-        !invocationVoice ||
-        personalVoiceSignature(invocationVoice) !== voiceSignature
-      ) {
-        throw new Error('afroone_singing_voice_changed_before_conversion');
+      try {
+        const baseUrl = await uploadBytes({
+          workspaceId: payload.workspaceId,
+          kind: 'voice-input-snapshots',
+          bytes: isolatedBytes,
+          contentType: 'audio/wav',
+          ext: 'wav',
+        });
+        transientUrls.add(baseUrl);
+        const invocationVoice = await loadPersonalVoice(
+          payload.workspaceId,
+          voice.id
+        );
+        if (
+          !invocationVoice ||
+          personalVoiceSignature(invocationVoice) !== voiceSignature
+        ) {
+          throw new Error('afroone_singing_voice_changed_before_conversion');
+        }
+        const modelUrl = trainedVoiceModelUrl(invocationVoice);
+        if (!modelUrl) throw new Error('afroone_singing_voice_model_missing');
+        const conversion = await singWithVoice({
+          songInputUrl: await resolveAssetForProvider(baseUrl),
+          modelUrl: await resolveAssetForProvider(modelUrl),
+          apiKey: replicateApiKey,
+        });
+        isolatedBytes = await transformAudio(
+          await downloadToBuffer(conversion.url, {
+            maxBytes: 256 * 1024 * 1024,
+          }),
+          {}
+        );
+        predictionId = conversion.predictionId;
+        voiceConversionUsd = DEFAULT_VOICE_CONVERSION_COST_USD;
+        voiceConverted = true;
+      } catch (error) {
+        // Explicit request → the original hard-fail law stands. Auto-pick →
+        // fail-open: the studio voice ships with the honest note.
+        if (voiceSource !== 'auto') throw error;
+        voiceNote = `sung in the studio voice — voice conversion skipped: ${
+          (error as Error)?.message ?? 'conversion failed'
+        }`;
+        voice = null;
+        voiceSource = null;
+        voiceSignature = null;
       }
-      const modelUrl = trainedVoiceModelUrl(invocationVoice);
-      if (!modelUrl) throw new Error('afroone_singing_voice_model_missing');
-      const conversion = await singWithVoice({
-        songInputUrl: await resolveAssetForProvider(baseUrl),
-        modelUrl: await resolveAssetForProvider(modelUrl),
-        apiKey: replicateApiKey,
-      });
-      isolatedBytes = await transformAudio(
-        await downloadToBuffer(conversion.url, {
-          maxBytes: 256 * 1024 * 1024,
-        }),
-        {}
-      );
-      predictionId = conversion.predictionId;
-      voiceConversionUsd = DEFAULT_VOICE_CONVERSION_COST_USD;
     }
 
     const storedUrl = await uploadBytes({
@@ -405,26 +482,89 @@ export async function processAfroOneSinging(
     });
     const approved = inspection.qualityState === 'passed' && alignment.pass;
     let finishedMix: CertifiedAudio | null = null;
+    // VOCAL-FORWARD RECEIPT (Target A4) — every field measured or a faithful
+    // record of the chain that ran; null only when there was no instrumental.
+    let vocalForward: {
+      bedLufs: number | null;
+      vocalLufs: number | null;
+      targetOffsetDb: number;
+      appliedVocalGainDb: number;
+      loudnessMatched: boolean;
+      ducked: boolean;
+      mastered: boolean;
+      masterPreset: string | null;
+      note?: string;
+    } | null = null;
     if (instrumental) {
       const instrumentalBytes = await downloadToBuffer(instrumental.url, {
         maxBytes: 256 * 1024 * 1024,
       });
-      const mixedBytes = await mixdown({
+      // A1 — MEASURE, then gain-stage the vocal to a fixed audible offset
+      // ABOVE the bed (the old static 1.0/1.1 weights left the separated stem
+      // at whatever level it happened to arrive — "the voice is behind").
+      const [bedQc, vocalQc] = await Promise.all([
+        measureAudioBufferQuality(instrumentalBytes).catch(() => null),
+        measureAudioBufferQuality(isolatedBytes).catch(() => null),
+      ]);
+      const targetOffsetDb = afroOneVocalOffsetDb();
+      const { gainDb, matched } = vocalGainDbFromLufs(
+        bedQc?.integratedLufs ?? null,
+        vocalQc?.integratedLufs ?? null,
+        targetOffsetDb
+      );
+      // A2 — the bed ducks under the vocal (sidechaincompress keyed by the
+      // voice); A3 prep — subtle early-reflection treatment replaces the 60ms
+      // slapback inside the vocal chain.
+      const mixedBytes = await mixdownVocalForward({
         beat: instrumentalBytes,
         vocal: isolatedBytes,
-        preset: 'radio',
+        vocalGainDb: gainDb,
       });
+      // A3 — the sung mix meets the SAME two-pass master chain instrumental
+      // beds get (genre tone curve included). Fail-open: an unmasterable mix
+      // ships un-mastered with the honest note, never dies here.
+      let shippedBytes = mixedBytes;
+      let mastered = false;
+      let masterNote: string | undefined;
+      try {
+        const masteredMix = await master({
+          mix: mixedBytes,
+          preset: 'afro_stream_-9',
+          genre: payload.genre,
+        });
+        shippedBytes = masteredMix.wav;
+        mastered = true;
+      } catch (error) {
+        masterNote = `master failed — un-mastered mix shipped (${
+          (error as Error)?.message ?? 'unknown'
+        })`;
+      }
+      vocalForward = {
+        bedLufs: bedQc?.integratedLufs ?? null,
+        vocalLufs: vocalQc?.integratedLufs ?? null,
+        targetOffsetDb,
+        appliedVocalGainDb: gainDb,
+        loudnessMatched: matched,
+        ducked: true,
+        mastered,
+        masterPreset: mastered ? 'afro_stream_-9' : null,
+        ...(masterNote
+          ? { note: masterNote }
+          : matched
+            ? {}
+            : { note: 'bed/vocal loudness unmeasurable — vocal mixed at unity gain' }),
+      };
       finishedMix = await certifyAudioBytes({
         workspaceId: payload.workspaceId,
         kind: 'mixes',
-        bytes: mixedBytes,
+        bytes: shippedBytes,
         contentType: 'audio/wav',
         ext: 'wav',
       });
       createdUrls.add(finishedMix.url);
     }
     const persistenceVoice = voice
-      ? await loadPersonalVoice(payload.workspaceId, payload.voiceProfileId)
+      ? await loadPersonalVoice(payload.workspaceId, voice.id)
       : null;
     if (
       voice &&
@@ -488,6 +628,16 @@ export async function processAfroOneSinging(
             alignmentState: alignment?.state ?? 'unmeasured',
             alignmentRequired: true,
             predictionId,
+            // SING-IN-MY-VOICE receipt (Target C): which profile was used or
+            // attempted, whether the timbre conversion actually happened, and
+            // the honest note when the auto path failed open.
+            voiceConversion: {
+              enabled: singInMyVoiceEnabled(),
+              voiceProfileId: persistenceVoice?.id ?? attemptedVoiceProfileId,
+              source: voiceSource,
+              converted: voiceConverted,
+              ...(voiceNote ? { note: voiceNote } : {}),
+            },
             quality: {
               reasons: inspection.reasons,
               activeRatio: inspection.activeRatio,
@@ -513,9 +663,19 @@ export async function processAfroOneSinging(
             data: {
               projectId: payload.projectId,
               songId: payload.songId ?? null,
-              preset: 'afroone-radio',
+              preset: 'afroone-vocal-forward',
               url: finishedMix.url,
-              notes: 'AfroOne owned instrumental with a genuine generated singing performance.',
+              notes: [
+                'AfroOne owned instrumental with a genuine generated singing performance.',
+                'Vocal loudness-matched over the bed, bed ducked under the voice' +
+                  (vocalForward?.mastered ? ', full mix mastered (afro_stream_-9).' : '.'),
+                ...(vocalForward?.note ? [vocalForward.note] : []),
+                ...(voiceConverted
+                  ? ["Sung in the artist's own trained voice (voice conversion)."]
+                  : voiceNote
+                    ? [voiceNote]
+                    : []),
+              ].join(' '),
               qualityState: finishedMix.qualityState,
               contentHash: finishedMix.contentHash,
               verifiedAt: finishedMix.verifiedAt,
@@ -529,6 +689,16 @@ export async function processAfroOneSinging(
                   vocalContentHash: inspection.contentHash,
                 },
                 receipt,
+                // Target A4 receipts: vocalLufs/bedLufs/appliedOffsetDb +
+                // ducked/mastered, all measured — never a guess.
+                vocalForward,
+                voiceConversion: {
+                  voiceProfileId:
+                    persistenceVoice?.id ?? attemptedVoiceProfileId,
+                  source: voiceSource,
+                  converted: voiceConverted,
+                  ...(voiceNote ? { note: voiceNote } : {}),
+                },
                 qc: finishedMix.qc,
               } as never,
             },
@@ -566,6 +736,15 @@ export async function processAfroOneSinging(
             alignmentState: alignment?.state ?? 'unmeasured',
             contentHash: inspection.contentHash,
             receipt,
+            // SOUNDWAVE2 receipts ride the job output so the own-engine's
+            // render meta/notes carry them without re-reading the rows.
+            vocalForward,
+            voiceConversion: {
+              voiceProfileId: persistenceVoice?.id ?? attemptedVoiceProfileId,
+              source: voiceSource,
+              converted: voiceConverted,
+              ...(voiceNote ? { note: voiceNote } : {}),
+            },
           } as never,
         },
       });

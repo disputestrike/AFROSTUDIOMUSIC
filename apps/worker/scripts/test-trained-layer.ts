@@ -292,12 +292,18 @@ async function main() {
     "the layer stamps engine 'lora' + the exact promoted ref on the beat meta"
   );
 
-  // Receipts: {trainedModelRef, layerRole, estimatedCostUsd} ride the beat's
-  // permanent record AND the job output; the job cost is recorded like every
-  // other adapter's estimatedCostUsd.
+  // Receipts: {trainedModelRef, layerRole, estimatedCostUsd, normalizedDb}
+  // ride the beat's permanent record AND the job output; the job cost is
+  // recorded like every other adapter's estimatedCostUsd. normalizedDb is the
+  // SOUNDWAVE2 Target D receipt: the measured shelf gain that tamed a hot
+  // fine-tune render before the gates.
   assert.ok(
-    trainedBranch.includes("trainedLayerReceipt = { trainedModelRef, layerRole, estimatedCostUsd }"),
-    "a mixed layer files the {trainedModelRef, layerRole, estimatedCostUsd} receipt"
+    /trainedLayerReceipt = \{\s*trainedModelRef,\s*layerRole,\s*estimatedCostUsd,\s*normalizedDb,\s*\}/m.test(trainedBranch),
+    "a mixed layer files the {trainedModelRef, layerRole, estimatedCostUsd, normalizedDb} receipt"
+  );
+  assert.ok(
+    trainedBranch.includes("normalizeLoopLoudness(leadRaw)"),
+    "the hot fine-tune render is leveled to the loop shelf BEFORE the gates"
   );
   assert.equal(
     (ownEngineSrc.match(/\{ trainedLayer: trainedLayerReceipt \}/g) ?? []).length,

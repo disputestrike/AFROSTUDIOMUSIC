@@ -9,6 +9,7 @@ import {
 } from "../lib/storage";
 import {
   trimToLoop,
+  applyPreHookDrops,
   assembleBeat,
   master,
   masterReferenceDelta,
@@ -19,7 +20,11 @@ import {
   type AssemblyLayer,
   type AssemblySection,
 } from "../lib/ffmpeg";
-import { overlayFills } from "../lib/fills";
+import {
+  FILL_BAND_DUCK_DB,
+  FILL_TRANSITION_GAIN,
+  overlayFills,
+} from "../lib/fills";
 import {
   genreSignature,
   planFills,
@@ -863,6 +868,19 @@ export async function processAssembleBeat(p: AssemblePayload) {
         }
       }
     }
+    // PRE-HOOK DROP (SOUNDWAVE2 — the breath every Afro record takes): the
+    // final bar before each hook loses its kick-bearing + low-end layers so
+    // the hook's arrival SLAMS instead of being a mere layer-count change.
+    // Pure, deterministic, bar-count-preserving, fail-open (no hook / nothing
+    // droppable → untouched); receipted in meta.arrangement below. Fill
+    // boundaries stay computed from the PRE-split sections (same bar totals),
+    // so the transition fill rides ON the drop bar — fill over the breath,
+    // band back on the downbeat.
+    const { sections: arrangedSections, drops: preHookDrops } =
+      applyPreHookDrops(
+        sections,
+        layers.map(layer => layer.role)
+      );
     // TACTICAL CORRECTION (owner law: a clipped take gets FIXED, not abandoned):
     // render → QC; if the ONLY failure is clipping, trim every layer's gain and
     // re-render — deterministic ffmpeg, no brain, no credit. Two attempts
@@ -879,7 +897,7 @@ export async function processAssembleBeat(p: AssemblePayload) {
           : layers.map(l => ({ ...l, gain: +(l.gain * scale).toFixed(2) }));
       const beatWav = await assembleBeat({
         layers: scaledLayers,
-        sections,
+        sections: arrangedSections,
         targetBpm: p.bpm,
       });
 
@@ -915,12 +933,18 @@ export async function processAssembleBeat(p: AssemblePayload) {
                   : rawFill;
               // bpm rides along so the fill is trimmed to exactly ONE bar
               // inside the filtergraph (fills.ts ONE-BAR LAW) — an 8-bar fill
-              // no longer plays 7 bars past every boundary.
+              // no longer plays 7 bars past every boundary. SOUNDWAVE2: the
+              // fill now rides at 0.8 OVER a band ducked 4 dB for its bar —
+              // transitions are audible events, not half-buried tom patterns.
               beatBytes = await overlayFills(
                 beatWav,
                 fillBuf,
                 placements.map(f => f.atS),
-                { bpm: p.bpm }
+                {
+                  bpm: p.bpm,
+                  fillGain: FILL_TRANSITION_GAIN,
+                  duckDb: FILL_BAND_DUCK_DB,
+                }
               );
               attemptFillApplied = true;
               console.log(
@@ -1098,10 +1122,20 @@ export async function processAssembleBeat(p: AssemblePayload) {
             ...(tacticalTrim ? { tacticalTrim } : {}),
             materialIds: usedPicks.map(pick => pick.id),
             roles: usedPicks.map(pick => pick.role),
-            sections: sections.map(
+            // The ARRANGED grid (post pre-hook drop) — what actually rendered.
+            sections: arrangedSections.map(
               section =>
                 `${section.name}:${section.bars}${section.energy != null ? `@${section.energy}` : ""}`
             ),
+            // SOUNDWAVE2 receipts: the two Afro arrangement moves, measured
+            // facts only — which drop bars were inserted (and which layers
+            // they silenced) and how the transition fill was leveled/ducked.
+            arrangement: {
+              preHookDrops,
+              fill: fillApplied
+                ? { gain: FILL_TRANSITION_GAIN, bandDuckDb: FILL_BAND_DUCK_DB }
+                : null,
+            },
             assemblyLog,
             // fix 6 receipt: why this take shipped flagged (null = clean pass)
             ...(qcShipNote ? { qcShipNote } : {}),

@@ -40,8 +40,41 @@ if s.render('chords', 112, 7, 'amapiano', 'A minor', False)[0].tobytes() == \
    s.render('chords', 112, 7, 'amapiano', 'C major', False)[0].tobytes():
     fails.append("chords ignore key")
 
+# 5) SOUNDWAVE2 — the pocket: one shared swing on odd 16ths only
+if s.resolve_swing('gqom') != 0.5:
+    fails.append("gqom must be straight (swing 0.5)")
+if not (0.56 <= s.resolve_swing('afrobeats') <= 0.58):
+    fails.append(f"afrobeats swing out of band: {s.resolve_swing('afrobeats')}")
+if s.resolve_swing('made_up', None) != s.SWING_DEFAULT:
+    fails.append("unknown genre must fall back to the default swing")
+if s.resolve_swing('afrobeats', 0.9) > 0.62 or s.resolve_swing('afrobeats', 'junk') != s.SWING_DEFAULT:
+    fails.append("caller swing must clamp/fall back safely")
+# odd 16ths shift late by (swing-0.5)*0.5 beat; even 16ths + 32nds untouched
+if abs(s.swung(0.25, 0.58) - (0.25 + 0.04)) > 1e-9:
+    fails.append(f"odd 16th must shift +0.04 beat at 58% swing (got {s.swung(0.25, 0.58)})")
+if s.swung(0.5, 0.58) != 0.5 or s.swung(2.0, 0.58) != 2.0:
+    fails.append("even 16ths (8ths/downbeats) must stay on the grid")
+if s.swung(2.125, 0.58) != 2.125:
+    fails.append("32nd-grid positions (fill rolls) must not swing")
+if s.swung(0.75, 0.5) != 0.75:
+    fails.append("straight lanes (swing 0.5) must not shift anything")
+
+# 6) swing is audible in the bytes: straight vs swung renders differ
+if s.render('percussion', 112, 7, 'afrobeats', 'A minor', False, 0.5)[0].tobytes() == \
+   s.render('percussion', 112, 7, 'afrobeats', 'A minor', False, 0.58)[0].tobytes():
+    fails.append("percussion ignores the swing parameter")
+
+# 7) velocity humanization: deterministic per seed, varied across seeds
+a1 = s.render('drums', 112, 7, 'afrobeats', 'A minor', False)[0]
+a2 = s.render('drums', 112, 7, 'afrobeats', 'A minor', False)[0]
+a3 = s.render('drums', 112, 8, 'afrobeats', 'A minor', False)[0]
+if a1.tobytes() != a2.tobytes():
+    fails.append("same seed must replay byte-identically (determinism law)")
+if a1.tobytes() == a3.tobytes():
+    fails.append("different seeds must produce different velocities/hits")
+
 if fails:
     for f in fails:
         print("FAIL:", f)
     sys.exit(1)
-print("synth: genre + key aware, real drums, all roles non-silent, key-correct")
+print("synth: genre + key aware, real drums, all roles non-silent, key-correct, one swung pocket (odd 16ths only), seeded humanization deterministic")

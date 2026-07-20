@@ -91,3 +91,20 @@ export function priorAnalyses(genre: string): MeasuredAnalysis[] {
 }
 
 export function hasExpertPrior(genre?: string | null): boolean { return !!genre && !!P[genre]; }
+
+/** SWING DOCTRINE (SOUNDWAVE2 — "that's not Afrobeats"): ONE shared per-genre
+ *  swing ratio for every 16th-grid voice the studio renders. 0.5 = dead
+ *  straight; 0.58 shifts every second 16th late by (0.58-0.5)*0.5 = 4% of a
+ *  beat (~22ms at 104 BPM) — the Afro pocket. Sourced from the SAME published
+ *  production priors the lane profiles use (uncopyrightable measured facts),
+ *  clamped to a musical band so a data typo can never produce a drunk shuffle.
+ *  Unknown genres get a gentle 0.54 default — most of the catalogue is
+ *  Afro-adjacent, and 2% of a beat reads as feel, never as error. */
+export const LANE_SWING_DEFAULT = 0.54;
+export const LANE_SWING_MIN = 0.5;
+export const LANE_SWING_MAX = 0.62;
+export function laneSwingRatio(genre?: string | null): number {
+  const pr = genre ? P[genre] : undefined;
+  const swing = pr?.swing ?? LANE_SWING_DEFAULT;
+  return Math.max(LANE_SWING_MIN, Math.min(LANE_SWING_MAX, swing));
+}

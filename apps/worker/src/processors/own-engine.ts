@@ -68,6 +68,10 @@ import {
   uploadBytes,
 } from "../lib/storage";
 import { measureAudioBufferQuality, mixBuffers } from "../lib/ffmpeg";
+import {
+  LOOP_LOUDNESS_TARGET,
+  normalizeLoopLoudness,
+} from "../lib/material-inspection";
 import { certifyAudioBytes } from "../lib/certified-assets";
 import { deleteUnreferencedAssetRefs } from "./asset-cleanup";
 import { renderMelodyGuide } from "../lib/melody-guide";
@@ -1218,6 +1222,9 @@ export async function processOwnEngine(p: OwnEnginePayload): Promise<void> {
       trainedModelRef: string;
       layerRole: string;
       estimatedCostUsd: number;
+      /** SOUNDWAVE2 Target D: measured gain applied to tame a hot fine-tune
+       *  render to the loop shelf level before the QC gate (0 = untouched). */
+      normalizedDb: number;
     } | null = null;
     {
       const activeModelRef = await resolveActiveMusicModelRef().catch(
@@ -1249,10 +1256,27 @@ export async function processOwnEngine(p: OwnEnginePayload): Promise<void> {
         if (layer.url) {
           let certifiedUrl: string | null = null;
           try {
-            const [bed, lead] = await Promise.all([
+            const [bed, leadRaw] = await Promise.all([
               downloadToBuffer(out.url),
               downloadToBuffer(layer.url),
             ]);
+            // TAME THE HOT RENDER (SOUNDWAVE2 Target D, live evidence
+            // 2026-07-20: the promoted fine-tune FIRED for the first time and
+            // was skipped with "audio_qc_failed: audio: clipping" — its output
+            // arrives loudness-maximised). Normalize the layer to the SAME
+            // loop shelf level every forge loop gets (-18 LUFS) BEFORE the
+            // honesty gates and the mix, so a hot-but-good trained render is
+            // tamed into the take instead of skipped. The gates below still
+            // run on what actually ships — truly broken audio still skips
+            // honestly (the fail-open catch keeps its note).
+            const leadLevel = await normalizeLoopLoudness(leadRaw);
+            const lead = leadLevel.bytes;
+            const normalizedDb =
+              leadLevel.applied && leadLevel.preLufs != null
+                ? Math.round(
+                    (LOOP_LOUDNESS_TARGET.lufs - leadLevel.preLufs) * 10
+                  ) / 10
+                : 0;
             // SAME HONESTY GATE as the stock topping: a fine-tune is still a
             // generative model — measure tempo/key against the grid BEFORE the
             // bed can be touched. A hard mismatch throws into the fail-open
@@ -1322,6 +1346,10 @@ export async function processOwnEngine(p: OwnEnginePayload): Promise<void> {
                     layerRole,
                     estimatedCostUsd,
                     placementS,
+                    // Target D receipts: measured pre-level + the shelf gain
+                    // that tamed it (0 = arrived at level / unmeasurable).
+                    normalizedDb,
+                    preLufs: leadLevel.preLufs,
                     sourceUrl: out.url,
                     qc: certified.qc,
                     contentHash: certified.contentHash,
@@ -1338,9 +1366,14 @@ export async function processOwnEngine(p: OwnEnginePayload): Promise<void> {
 
             finalUrl = certified.url;
             certifiedUrl = null;
-            trainedLayerReceipt = { trainedModelRef, layerRole, estimatedCostUsd };
+            trainedLayerReceipt = {
+              trainedModelRef,
+              layerRole,
+              estimatedCostUsd,
+              normalizedDb,
+            };
             notes.push(
-              `trained layer mixed: ${trainedModelRef} rendered this take's ${layerRole} at ${TRAINED_LAYER_GAIN} gain (placed ${Math.round(placementS)}s, ~$${estimatedCostUsd.toFixed(2)})`
+              `trained layer mixed: ${trainedModelRef} rendered this take's ${layerRole} at ${TRAINED_LAYER_GAIN} gain (placed ${Math.round(placementS)}s, ~$${estimatedCostUsd.toFixed(2)}${normalizedDb ? `, leveled ${normalizedDb > 0 ? '+' : ''}${normalizedDb} dB to the loop shelf` : ''})`
             );
             try {
               await deleteUnreferencedAssetRefs(p.workspaceId, [out.url]);

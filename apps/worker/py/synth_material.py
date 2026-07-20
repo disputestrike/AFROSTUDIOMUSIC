@@ -9,7 +9,16 @@ drums (four-on-floor for house/EDM, syncopated for afro, boom-bap for hip-hop),
 key-correct bass, and a genre-appropriate chord progression. log_drum stays the
 pitched-glide amapiano signature (only requested for log-drum genres).
 
-Usage: synth_material.py ROLE BPM OUTPATH [SEED] [GENRE] [KEY] [FOUR_ON_FLOOR]
+Usage: synth_material.py ROLE BPM OUTPATH [SEED] [GENRE] [KEY] [FOUR_ON_FLOOR] [SWING]
+
+SOUNDWAVE2 — THE POCKET: one shared per-genre swing ratio applied to EVERY
+16th-grid voice (hats, shakers, log-drum offbeats, kick pickups, bass pickups)
+so all voices share one feel — the old floor swung ONLY the shaker (hardcoded
+0.055 beat) against dead-straight everything else, which read as clashing mush,
+not Afrobeats. Velocity humanization (±13%, deterministic per seed) keeps bars
+from being carbon copies. SWING is the ratio (0.5 = straight, 0.58 = Afro
+pocket); the TS caller sources it from the lane's expert priors — the fallback
+table below mirrors those priors for direct/legacy invocations.
 """
 import sys, math
 import numpy as np
@@ -127,6 +136,37 @@ SEVENTH_GENRES = {'amapiano','afro_house','gospel','afro_gospel','afro_rnb','afr
                   'rnb','soul','jazz','lofi','blues','kwaito'}
 BOOMBAP_GENRES = {'hip_hop','trap','drill','lofi'}
 
+# Fallback swing table (mirrors packages/shared expert priors — the TS caller
+# passes the authoritative value as argv[8]; this covers direct invocations).
+GENRE_SWING = {
+    'afrobeats': 0.58, 'amapiano': 0.55, 'afro_fusion': 0.56, 'street_pop': 0.56,
+    'afro_pop': 0.55, 'afro_rnb': 0.54, 'afro_gospel': 0.55, 'highlife': 0.56,
+    'fuji': 0.58, 'juju': 0.57, 'apala': 0.58, 'praise': 0.56, 'jazz': 0.62,
+    'gqom': 0.5, 'house': 0.52, 'edm': 0.5, 'afro_house': 0.52, 'kwaito': 0.54,
+    'hip_hop': 0.5, 'trap': 0.5, 'drill': 0.5,
+}
+SWING_DEFAULT = 0.54
+
+def resolve_swing(genre, swing=None):
+    """Clamped swing ratio: explicit caller value wins, else the genre table."""
+    s = swing if swing is not None else GENRE_SWING.get(genre, SWING_DEFAULT)
+    try:
+        s = float(s)
+    except (TypeError, ValueError):
+        s = SWING_DEFAULT
+    return max(0.5, min(0.62, s))
+
+def swung(pos_beats, swing):
+    """Shift a beat-position late when it lands on an ODD 16th of the grid —
+    the ONE pocket every voice shares. Even 16ths (downbeats, 8ths) and
+    off-grid positions (32nd rolls) are untouched. Shift = (swing-0.5)*0.5
+    beat: 0.58 → 4% of a beat (~22ms at 104 BPM)."""
+    q = pos_beats * 4.0
+    r = round(q)
+    if abs(q - r) < 1e-6 and int(r) % 2 == 1:
+        return pos_beats + (swing - 0.5) * 0.5
+    return pos_beats
+
 def chord_prog(scale, is_minor, use7):
     # degree indices into the 2-octave scale (7 notes/octave)
     degs = [0, 5, 2, 6] if is_minor else [0, 4, 5, 3]  # i-VI-III-VII  /  I-V-vi-IV
@@ -136,9 +176,10 @@ def chord_prog(scale, is_minor, use7):
         chords.append([scale[i] for i in idx if i < len(scale)])
     return chords
 
-def render(role, bpm, seed=7, genre='afrobeats', key='A minor', four_on_floor=False):
+def render(role, bpm, seed=7, genre='afrobeats', key='A minor', four_on_floor=False, swing=None):
     beat = 60.0 / bpm
     total = beat * 8  # 2 bars of 4/4
+    sw = resolve_swing(genre, swing)
     # RENDER PAD vs LOOP LENGTH (source-truth wave, arithmetic certainty): the
     # buffer keeps a 0.25s scratch tail so hits placed near bar-end have room to
     # ring while we synthesize, but the RETURNED loop is sliced to EXACTLY
@@ -203,40 +244,55 @@ def render(role, bpm, seed=7, genre='afrobeats', key='A minor', four_on_floor=Fa
                 mapped = 'percussion'
         role = mapped
 
+    # VELOCITY HUMANIZATION (SOUNDWAVE2): ±13% deterministic-per-seed amp
+    # variation on every hit so bar 1 ≠ bar 2 — constant velocities were one of
+    # the "sequencer, not a band" tells. Same rng as the voices → replayable.
+    def hum(amp):
+        return amp * rng.uniform(0.87, 1.13)
+    # THE POCKET: every placement goes through the ONE shared swing (swung()
+    # shifts odd 16ths late by (sw-0.5)*0.5 beat; even 16ths and 32nd rolls
+    # stay). One feel across kick pickups, hats, shakers, log-drum offbeats
+    # and bass pickups — never a hard-swung shaker over straight hats again.
+    def put(hit, b):
+        place(buf, hit, swung(b, sw) * beat)
+
     if role == 'drums':
         # kick + snare/clap + hats, patterned by feel.
         if four_on_floor:                              # house / edm / afro_house / gqom
             for b in range(8):
-                place(buf, kick_hit(f0=130, f1=50, amp=1.0), b * beat)
+                put(kick_hit(f0=130, f1=50, amp=hum(1.0)), float(b))
             for b in (2, 6):                           # backbeat clap on 2 & 4 of each bar
-                place(buf, snare_hit(amp=0.7, rng=rng), b * beat)
-            for k in range(16):                        # offbeat 8th hats
-                place(buf, hat_hit(amp=0.3, rng=rng), (k + 0.5) * beat / 2)
+                put(snare_hit(amp=hum(0.7), rng=rng), float(b))
+            for k in range(16):                        # offbeat 8th hats (odd 16ths → swung)
+                put(hat_hit(amp=hum(0.3), rng=rng), (k + 0.5) / 2)
         elif genre in BOOMBAP_GENRES:                  # hip-hop / trap / drill / lofi
             for b in (0.0, 2.5, 4.0, 6.5):
-                place(buf, kick_hit(f0=110, f1=45, amp=1.0), b * beat)
+                put(kick_hit(f0=110, f1=45, amp=hum(1.0)), b)
             for b in (2.0, 6.0):
-                place(buf, snare_hit(amp=0.8, rng=rng), b * beat)
-            for k in range(32):                        # busy 16th hats
-                place(buf, hat_hit(dur=0.03, amp=0.22 + (0.1 if k % 4 == 0 else 0), rng=rng), k * beat / 4)
+                put(snare_hit(amp=hum(0.8), rng=rng), b)
+            for k in range(32):                        # busy 16th hats — swung on the odd 16ths
+                put(hat_hit(dur=0.03, amp=hum(0.22 + (0.1 if k % 4 == 0 else 0)), rng=rng), k / 4)
         else:                                          # afro pocket — syncopated kick, backbeat on 3
+            # 2.75/6.75 are the odd-16th kick pickups — they ride the swing too.
             for b in (0.0, 1.5, 2.75, 4.0, 5.5, 6.75):
-                place(buf, kick_hit(f0=125, f1=48, amp=0.95), b * beat)
+                put(kick_hit(f0=125, f1=48, amp=hum(0.95)), b)
             for b in (2.0, 6.0):
-                place(buf, snare_hit(amp=0.6, rng=rng), b * beat)
+                put(snare_hit(amp=hum(0.6), rng=rng), b)
             for k in range(16):
-                place(buf, hat_hit(amp=0.25, rng=rng), k * beat / 2)
+                put(hat_hit(amp=hum(0.25), rng=rng), k / 2)
 
     elif role == 'log_drum':                            # amapiano signature — tuned to key
         f0 = midi_freq(45 + root_semi)                  # ~ pitched sub around the key root
+        # offbeats (0.75/3.25/4.75/7.25 = odd 16ths) share the kit's swing
         pattern = [0.0, 0.75, 1.5, 2.5, 3.25, 4.0, 4.75, 5.5, 6.5, 7.25]
         for k, b in enumerate(pattern):
-            place(buf, log_drum_hit(f0=f0 + rng.uniform(-6, 6), f1=root_bass * 0.95, amp=0.95 if k % 3 else 1.0), b * beat)
+            put(log_drum_hit(f0=f0 + rng.uniform(-6, 6), f1=root_bass * 0.95, amp=hum(0.95 if k % 3 else 1.0)), b)
 
     elif role == 'percussion':
+        # 16th shaker bed — the hardcoded 0.055-beat shift is GONE; the shaker
+        # now rides the SAME swung() grid as every other voice (one pocket).
         for k in range(32):
-            swing = 0.055 * beat if k % 2 else 0.0
-            place(buf, shaker_hit(amp=0.55 if k % 4 == 0 else 0.32, rng=rng), k * beat / 4 + swing)
+            put(shaker_hit(amp=hum(0.55 if k % 4 == 0 else 0.32), rng=rng), k / 4)
 
     elif role == 'chords':
         use7 = genre in SEVENTH_GENRES
@@ -244,22 +300,24 @@ def render(role, bpm, seed=7, genre='afrobeats', key='A minor', four_on_floor=Fa
         # two chords per bar (on 1 and the 'and' of 3) — offbeat stabs
         hits = [(prog[0], 0.0), (prog[1], 2.5), (prog[2], 4.0), (prog[3], 6.5)]
         for freqs, b in hits:
-            place(buf, ep_chord(1.3, freqs, amp=0.7), b * beat)
+            put(ep_chord(1.3, freqs, amp=hum(0.7)), b)
 
     elif role == 'fill':
         # descending toms into the 1 — plain kicks (not log-drum timbre) so
         # non-amapiano genres don't get an amapiano sub in every fill.
         for b, f0 in [(0.0, 200), (0.75, 165), (1.5, 135), (2.25, 110), (3.0, 90)]:
-            place(buf, kick_hit(dur=0.18, f0=f0, f1=f0 * 0.6, amp=0.8), b * beat)
+            put(kick_hit(dur=0.18, f0=f0, f1=f0 * 0.6, amp=hum(0.8)), b)
         for k in range(16):
-            place(buf, snare_hit(dur=0.05, amp=0.12 + 0.03 * k, rng=rng), (2.0 + k * 0.125) * beat)
+            # 32nd-note snare ramp — off the 16th grid, so swung() leaves it be
+            put(snare_hit(dur=0.05, amp=hum(0.12 + 0.03 * k), rng=rng), 2.0 + k * 0.125)
 
     elif role == 'bass':
         r = root_bass
-        seq = [(0.0, 1.5, r, r), (1.5, 1.0, r * 1.5, r), (2.5, 1.5, r, r * 0.75),
-               (4.0, 1.5, r, r), (5.5, 1.0, r * 1.335, r), (6.5, 1.5, r, r)]
+        # 3.75 is the odd-16th PICKUP into bar 2 — it swings with the kit.
+        seq = [(0.0, 1.5, r, r), (1.5, 1.0, r * 1.5, r), (2.5, 1.25, r, r * 0.75),
+               (3.75, 0.25, r * 0.75, r), (4.0, 1.5, r, r), (5.5, 1.0, r * 1.335, r), (6.5, 1.5, r, r)]
         for at, dur, f0, f1 in seq:
-            place(buf, bass_note(dur * beat, f0, f1), at * beat)
+            put(bass_note(dur * beat, f0, f1, amp=hum(0.9)), at)
     else:
         raise SystemExit(f"unknown role: {role}")
 
@@ -279,6 +337,7 @@ if __name__ == '__main__':
     genre = sys.argv[5] if len(sys.argv) > 5 else 'afrobeats'
     key = sys.argv[6] if len(sys.argv) > 6 else 'A minor'
     four = (len(sys.argv) > 7 and sys.argv[7] == '1')
-    audio, dur = render(role, bpm, seed, genre, key, four)
+    swing_arg = float(sys.argv[8]) if len(sys.argv) > 8 else None
+    audio, dur = render(role, bpm, seed, genre, key, four, swing_arg)
     sf.write(out, audio, SR)
-    print(f"{{\"ok\":true,\"role\":\"{role}\",\"bpm\":{bpm},\"genre\":\"{genre}\",\"key\":\"{key}\",\"durationS\":{dur:.3f}}}")
+    print(f"{{\"ok\":true,\"role\":\"{role}\",\"bpm\":{bpm},\"genre\":\"{genre}\",\"key\":\"{key}\",\"swing\":{resolve_swing(genre, swing_arg)},\"durationS\":{dur:.3f}}}")
