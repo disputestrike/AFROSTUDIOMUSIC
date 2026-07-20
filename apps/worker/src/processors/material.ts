@@ -86,6 +86,21 @@ interface ForgePayload {
   variant?: number;
 }
 
+/** Convert a measured true-peak failure into a conservative full-bus trim. */
+export function measuredAssemblyTrimDb(qc: {
+  flags?: readonly string[];
+  truePeakDb?: number | null;
+}): number | null {
+  if (!qc.flags?.includes("clipping")) return null;
+  const measuredPeak = Number.isFinite(qc.truePeakDb)
+    ? (qc.truePeakDb as number)
+    : 0.5;
+  // Leave 0.5 dB beyond the -1.5 dBTP target because alimiter is sample-peak,
+  // not an oversampled true-peak limiter.
+  const required = -1.5 - measuredPeak - 0.5;
+  return Math.round(Math.max(-12, Math.min(-2, required)) * 10) / 10;
+}
+
 export async function processForgeMaterial(p: ForgePayload) {
   await markRunning(p.jobId);
   let uploadedUrl: string | null = null;
@@ -883,21 +898,18 @@ export async function processAssembleBeat(p: AssemblePayload) {
         layers.map(layer => layer.role)
       );
     // TACTICAL CORRECTION (owner law: a clipped take gets FIXED, not abandoned):
-    // render → QC; if the ONLY failure is clipping, trim every layer's gain and
-    // re-render — deterministic ffmpeg, no brain, no credit. Two attempts
-    // (unity, then -4.4 dB); anything still broken after that fails honestly.
+    // render → QC; a clipping failure gets one MEASURED full-bus correction
+    // after every layer and fill. Relative balance stays intact, then the bus is
+    // re-measured and still fails closed if it cannot certify.
     let url = "";
     let qc: Awaited<ReturnType<typeof measureAudioQuality>> | null = null;
     let tacticalTrim: number | null = null;
+    let tacticalTrimDb: number | null = null;
     let fillApplied = false;
-    for (const scale of [1, 0.6]) {
+    for (const corrected of [false, true]) {
       let attemptFillApplied = false;
-      const scaledLayers =
-        scale === 1
-          ? layers
-          : layers.map(l => ({ ...l, gain: +(l.gain * scale).toFixed(2) }));
       const beatWav = await assembleBeat({
-        layers: scaledLayers,
+        layers,
         sections: arrangedSections,
         targetBpm: p.bpm,
       });
@@ -960,6 +972,12 @@ export async function processAssembleBeat(p: AssemblePayload) {
           );
         }
       }
+      if (corrected) {
+        beatBytes = await transformAudio(beatBytes, {
+          gainDb: tacticalTrimDb ?? -2.5,
+          peakLimit: 0.707,
+        });
+      }
       url = await uploadBytes({
         workspaceId: p.workspaceId,
         kind: "beats",
@@ -973,10 +991,12 @@ export async function processAssembleBeat(p: AssemblePayload) {
       const clippingOnly =
         qc?.verdict === "fail" && (qc.flags ?? []).includes("clipping");
       if (!clippingOnly) break;
-      if (scale !== 1) break; // trimmed retry still clips → fall through to the honest fail
-      tacticalTrim = 0.6;
+      if (!qc) break;
+      if (corrected) break; // measured retry still clips → fall through to the honest fail
+      tacticalTrimDb = measuredAssemblyTrimDb(qc);
+      tacticalTrim = +Math.pow(10, (tacticalTrimDb ?? -2.5) / 20).toFixed(4);
       console.warn(
-        "[assemble] take clipped — tactical correction: retrying with layer gains ×0.6"
+        `[assemble] take clipped at ${qc.truePeakDb ?? "unknown"} dBTP — measured full-bus correction ${tacticalTrimDb ?? -2.5} dB`
       );
     }
     // WO-1 SAFETY RAIL: measure the raw assembly before mastering. Low level is
@@ -1115,7 +1135,7 @@ export async function processAssembleBeat(p: AssemblePayload) {
             assembled: true,
             mastered: true,
             arrangedBy: planned.length >= 3 ? "claude" : "template",
-            ...(tacticalTrim ? { tacticalTrim } : {}),
+            ...(tacticalTrim ? { tacticalTrim, tacticalTrimDb } : {}),
             materialIds: usedPicks.map(pick => pick.id),
             roles: usedPicks.map(pick => pick.role),
             // The ARRANGED grid (post pre-hook drop) — what actually rendered.
