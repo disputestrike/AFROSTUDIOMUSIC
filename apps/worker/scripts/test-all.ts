@@ -352,6 +352,7 @@ async function runOfflineTests(): Promise<void> {
     ["Material system (forge/layer/pan)", "test-material-system.ts"],
     ["SOUNDWAVE1 (verbatim forge/tempo/energy/QC/key)", "test-soundwave1.ts"],
     ["SOUNDWAVE2 (vocal forward + afro pocket + my voice)", "test-soundwave2.ts"],
+    ["SOUNDCORE (lead+forge-route+fan-out+conform+sample-seam)", "test-soundcore.ts"],
     ["Own-engine auto-forge (floor rescue)", "test-own-engine-autoforge.ts"],
     ["Material provenance + usage laws", "test-material-provenance.ts"],
     ["Training isolation (lane/pin/zap)", "test-training-isolation.ts"],

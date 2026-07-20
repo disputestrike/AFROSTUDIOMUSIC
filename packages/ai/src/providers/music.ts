@@ -1077,6 +1077,47 @@ class UnavailableMusicAdapter implements MusicProviderAdapter {
   }
 }
 
+/**
+ * ISOLATED-LOOP FORGE ROUTING (SOUNDCORE item 2) — resolve the adapter for
+ * forging a SINGLE-INSTRUMENT loop, which is NOT the same problem as rendering a
+ * full song. A workspace SONG engine (minimax/ace_step/suno) renders full MIXES;
+ * an isolated 'solo shekere' forge then fails the role-purity gate for role-bleed
+ * and only the synth stand-in survives — the owner's "not our instruments". This
+ * routes the forge to MusicGen (Replicate), which is loop-capable and honors the
+ * requested duration, so a solo voice actually lands and passes purity.
+ *
+ * WHO PAYS (cost guard preserved): MusicGen is a PAID Replicate call. Prefer the
+ * WORKSPACE's own Replicate key when their song engine already runs on Replicate
+ * (minimax/replicate) — their bill, unchanged. Otherwise the operator's house
+ * token (the same deliberate forge spend the caller's connected-engine/opt-in
+ * gate already authorized). No Replicate route at all → fall back to the song
+ * adapter (old behavior: a full-mix forge, honestly) so nothing regresses.
+ *
+ * The forge's verbatim prompt + key + 429 backoff live in the caller (material.ts)
+ * and are unchanged — this only swaps WHICH engine renders the loop.
+ */
+export function forgeLoopAdapter(input: {
+  songProvider?: string | null;
+  workspaceKey?: string;
+}): { adapter: MusicProviderAdapter; route: string } {
+  const provider = (input.songProvider ?? "").toLowerCase();
+  const replicateFamily =
+    provider === "replicate" || provider === "minimax" || provider === "minimax_ref";
+  if (replicateFamily && input.workspaceKey) {
+    return {
+      adapter: new ReplicateMusicGenAdapter(input.workspaceKey),
+      route: "musicgen-workspace-key",
+    };
+  }
+  if (replicateToken()) {
+    return { adapter: new ReplicateMusicGenAdapter(), route: "musicgen-house-token" };
+  }
+  return {
+    adapter: musicAdapter(input.songProvider ?? undefined, input.workspaceKey),
+    route: "song-provider-fallback",
+  };
+}
+
 export function musicAdapter(override?: string, apiKey?: string): MusicProviderAdapter {
   // fal was REMOVED ENTIRELY (owner directive 2026-07-11) — every render runs
   // on the exact provider configuration the owner's ear approved. If a cheaper

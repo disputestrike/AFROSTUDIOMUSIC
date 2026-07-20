@@ -28,6 +28,7 @@ export * from "./genre-signatures";
 export * from "./material-roles";
 export * from "./producer-kit";
 export * from "./material-select";
+export * from "./lane-sample-kit";
 export * from "./genre-kits";
 export * from "./genre-palettes";
 export * from "./learned-select";

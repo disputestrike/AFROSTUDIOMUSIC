@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { openSecret, prisma } from "@afrohit/db";
-import { musicAdapter } from "@afrohit/ai";
+import { forgeLoopAdapter, musicAdapter } from "@afrohit/ai";
 import { markFailed, markRunning, markSucceeded } from "../lib/jobs";
 import {
   deleteObjectByUrl,
@@ -110,10 +110,21 @@ export async function processForgeMaterial(p: ForgePayload) {
       where: { id: p.workspaceId },
       select: { musicProvider: true, musicApiKey: true },
     });
-    const adapter = musicAdapter(
-      ws?.musicProvider ?? undefined,
-      openSecret(ws?.musicApiKey)
-    );
+    // ISOLATED-LOOP FORGE ROUTING (SOUNDCORE item 2): an isolated single-
+    // instrument forge must render on a LOOP engine, not the workspace SONG
+    // engine. minimax/ace_step/suno render FULL MIXES, so a "solo shekere" forge
+    // rendered a whole track and was rejected for role-bleed (material.ts role-
+    // purity gate below) — leaving only synth stand-ins ("not our instruments").
+    // forgeLoopAdapter routes to MusicGen (Replicate, loop-capable, duration-
+    // honoring) so a real solo voice lands and passes purity. It bills the
+    // WORKSPACE's own Replicate key when their engine is Replicate-based, else the
+    // operator's house token — the same forge spend the caller's gate already
+    // authorized. The verbatim prompt + key + 429 backoff below are unchanged.
+    const forgeRoute = forgeLoopAdapter({
+      songProvider: ws?.musicProvider,
+      workspaceKey: openSecret(ws?.musicApiKey),
+    });
+    const adapter = forgeRoute.adapter;
     // Forging must start from a connected real engine; unavailable routes never
     // become registered material assets.
     if (adapter.name === "unavailable") {
@@ -300,6 +311,7 @@ export async function processForgeMaterial(p: ForgePayload) {
             prompt,
             promptMode: "verbatim",
             engine: adapter.name,
+            forgeRoute: forgeRoute.route,
             origin: "forged",
             rightsBasis: "provider-generated",
             ...(p.variant ? { variant: p.variant } : {}),
@@ -476,6 +488,7 @@ export async function processForgeMaterial(p: ForgePayload) {
           prompt,
           promptMode: "verbatim",
           engine: adapter.name,
+          forgeRoute: forgeRoute.route,
           origin: "forged",
           rightsBasis: "provider-generated",
           ...(p.variant ? { variant: p.variant } : {}),
@@ -745,23 +758,27 @@ export async function processAssembleBeat(p: AssemblePayload) {
         `[assemble] sparse bed (beds=${cov.beds}, rhythm=${cov.rhythm}, low-end=${cov.lowEnd}, tonal=${cov.tonal}) — assembling from ${bedPicks.length} loop(s)`
       );
     }
-    // Pull every picked loop local.
-    const layers: AssemblyLayer[] = [];
+    // Pull every picked loop local — CONCURRENTLY (SOUNDCORE item 3): the loops
+    // are independent downloads, so a serial `for...await` stalled assembly on N
+    // sequential fetches. Promise.all fans them out; the deterministic INDEX (map
+    // position, not completion order) still owns each `mat${i}.wav` path and the
+    // roleIdx, so the assembled arrangement is byte-identical to the serial path.
+    const layers: AssemblyLayer[] = await Promise.all(
+      bedPicks.map(async (pick, i) => {
+        const buf = await downloadToBuffer(pick.url);
+        const path = join(dir, `mat${i}.wav`);
+        await writeFile(path, buf);
+        return {
+          path,
+          sourceBpm: pick.sourceBpm || p.bpm,
+          gain: pick.gain,
+          pan: pick.pan ?? 0,
+          role: pick.role,
+        } satisfies AssemblyLayer;
+      })
+    );
     const roleIdx = new Map<string, number>();
-    for (let i = 0; i < bedPicks.length; i++) {
-      const pick = bedPicks[i]!;
-      const buf = await downloadToBuffer(pick.url);
-      const path = join(dir, `mat${i}.wav`);
-      await writeFile(path, buf);
-      layers.push({
-        path,
-        sourceBpm: pick.sourceBpm || p.bpm,
-        gain: pick.gain,
-        pan: pick.pan ?? 0,
-        role: pick.role,
-      });
-      roleIdx.set(pick.role, i);
-    }
+    bedPicks.forEach((pick, i) => roleIdx.set(pick.role, i));
     const idx = (roles: string[]) =>
       roles.map(r => roleIdx.get(r)).filter((i): i is number => i != null);
     const all = layers.map((_, i) => i);

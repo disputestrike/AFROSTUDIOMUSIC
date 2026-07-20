@@ -46,6 +46,8 @@ import {
   missingExactRequestedMaterialRoles,
   REQUESTED_MATERIAL_ROLES_VERSION,
   requestedMaterialRoleContract,
+  laneSampleKit,
+  sampleKitFloorRows,
   type MaterialRole,
   type RequestedMaterialRoleProvenance,
 } from "@afrohit/shared";
@@ -67,14 +69,14 @@ import {
   resolveAssetForProvider,
   uploadBytes,
 } from "../lib/storage";
-import { measureAudioBufferQuality, mixBuffers } from "../lib/ffmpeg";
+import { measureAudioBufferQuality, mixBuffers, transformAudio } from "../lib/ffmpeg";
 import {
   LOOP_LOUDNESS_TARGET,
   normalizeLoopLoudness,
 } from "../lib/material-inspection";
 import { certifyAudioBytes } from "../lib/certified-assets";
 import { deleteUnreferencedAssetRefs } from "./asset-cleanup";
-import { renderMelodyGuide } from "../lib/melody-guide";
+import { renderMelodyGuide, renderMelodyLead, leadVoiceFor } from "../lib/melody-guide";
 import { overlayFills } from "../lib/fills";
 import { resolveActiveMusicModelRef } from "../lib/training-flywheel";
 import { measureAudio, dspAvailable } from "../lib/dsp";
@@ -160,6 +162,17 @@ async function pickKit(
     (row: { role: string; roleEvidence?: string | null }) =>
       !exactRequested.has(row.role) || hasExactMaterialRoleEvidence(row)
   );
+  // L1-SAMPLE FLOOR (SOUNDCORE item 5): licensed REAL instruments are the
+  // instrument floor and must be preferred over synth primitives for the same
+  // role. Resolved FIRST — before the synth backfill in processOwnEngine — so a
+  // real licensed shekere wins over a math shaker the instant licensed loops
+  // land. laneSampleKit() returns [] today (packages/shared/src/lane-sample-kit.ts,
+  // a documented stub the sample-kit agent fills), so licensedFloor is [] and the
+  // selection below is byte-for-byte the current synth path.
+  // OTHER-AGENT-FILLS: populate laneSampleKit(genre) with the lane's licensed
+  // loops; sampleKitFloorRows prepends them here as rights-clean, auto-assemblable
+  // 'licensed' rows that selectMaterialRows prefers over the synth primitive.
+  const licensedFloor = sampleKitFloorRows(laneSampleKit(genre));
   // Rich signature roles lead; deterministic synth primitives remain the
   // controllable foundation when a lane's collected shelf is still shallow.
   const roles = withCoarseMaterialRoles([
@@ -167,7 +180,13 @@ async function pickKit(
     ...forgeKitFor(genre, 12),
     ...synthKitFor(genre),
   ]);
-  return selectMaterialRows(eligibleRows, roles, bpm, key, { varietySeed });
+  return selectMaterialRows(
+    licensedFloor.length ? [...licensedFloor, ...eligibleRows] : eligibleRows,
+    roles,
+    bpm,
+    key,
+    { varietySeed }
+  );
 }
 
 /** Hard ceiling on CONCURRENT roles in one section. The collected+forged kit
@@ -181,6 +200,100 @@ const SECTION_ROLE_CAP = 7;
  *  melody colour — 0.6 sits it audibly IN the record without burying anchors,
  *  below the 0.85 the stock musicgen mix used. */
 const TRAINED_LAYER_GAIN = 0.6;
+
+/** Melody-lead mix level (SOUNDCORE item 1): the composed topline sits ABOVE the
+ *  bed color and UNDER where the vocal lands — clearly the melody of the record,
+ *  but never louder than the voice that will ride on top. Between chords (~0.7)
+ *  and the old stock-musicgen topping (0.85). */
+const MELODY_LEAD_GAIN = 0.7;
+
+/** Bounded fan-out width for the two forge loops (SOUNDCORE item 3). ~4 keeps
+ *  well inside Replicate's creation rate while collapsing 8 serial multi-minute
+ *  renders into ~2 waves; the 429 backoff inside processForgeMaterial still
+ *  absorbs throttling. Override via OWN_ENGINE_FORGE_CONCURRENCY. */
+const FORGE_FANOUT_CONCURRENCY = Math.max(
+  1,
+  Number(process.env.OWN_ENGINE_FORGE_CONCURRENCY ?? 4) || 4
+);
+
+/** A bounded-concurrency pool: run `fn` over `items` at most `concurrency` at a
+ *  time. Independent units fan out; the caller awaits ALL of them before the
+ *  verification barrier (re-pickKit/coverage). Deterministic completion is NOT
+ *  guaranteed — callers that need order rebuild it from `items`. */
+async function forEachPool<T>(
+  items: readonly T[],
+  concurrency: number,
+  fn: (item: T, index: number) => Promise<void>
+): Promise<void> {
+  let cursor = 0;
+  const width = Math.min(Math.max(1, concurrency), items.length);
+  const workers = Array.from({ length: width }, async () => {
+    while (true) {
+      const i = cursor++;
+      if (i >= items.length) break;
+      await fn(items[i]!, i);
+    }
+  });
+  await Promise.all(workers);
+}
+
+/**
+ * TEMPO-CONFORM A TRAINED/GENERATIVE LEAD TO THE RENDER GRID (SOUNDCORE item 4).
+ * A promoted fine-tune renders at ITS tempo, not the render's — so the grid gate
+ * kept skipping it ("melody fights the grid: measured ~138 BPM vs 103 BPM"). This
+ * measures the lead, folds octave-ambiguous readings onto the grid, and — only on
+ * a real mismatch inside atempo's pitch-preserving range — time-stretches it to
+ * the grid BPM (the same atempo machinery forges/masters use) BEFORE the honesty
+ * gate, so a good-but-off-tempo trained render MIXES IN instead of being rejected.
+ * Fail-open: no DSP ear, unreadable tempo, out-of-range ratio, or a stretch error
+ * all return the audio untouched (the gate still runs on what actually ships).
+ */
+async function conformLeadToGrid(
+  lead: Buffer,
+  gridBpm: number
+): Promise<{ bytes: Buffer; applied: boolean; note: string }> {
+  if (!(await dspAvailable().catch(() => false))) {
+    return { bytes: lead, applied: false, note: "" };
+  }
+  const measured = await measureAudio(lead).catch(() => null);
+  const leadBpm =
+    measured?.engineOk && measured.tempoBpm?.source !== "unknown"
+      ? measured.tempoBpm?.value ?? null
+      : null;
+  if (!leadBpm || leadBpm <= 0) return { bytes: lead, applied: false, note: "" };
+  // Fold half/double-time onto the grid: a half-time read over the same groove
+  // IS the grid and needs no stretch.
+  const folded = [leadBpm, leadBpm * 2, leadBpm / 2];
+  const best = folded.reduce((a, b) =>
+    Math.abs(b - gridBpm) < Math.abs(a - gridBpm) ? b : a
+  );
+  const deviation = Math.abs(best - gridBpm) / gridBpm;
+  if (deviation <= 0.05) return { bytes: lead, applied: false, note: "" };
+  const ratio = gridBpm / best; // atempo multiplier onto the grid
+  // transformAudio's atempo is pitch-preserving over [0.5, 1.5]; a ratio outside
+  // that would be silently clamped into a lie, so we skip and disclose instead.
+  if (ratio < 0.5 || ratio > 1.5) {
+    return {
+      bytes: lead,
+      applied: false,
+      note: `trained layer tempo unconformable: measured ~${Math.round(leadBpm)} BPM vs ${gridBpm} BPM (stretch ${ratio.toFixed(2)}× outside the pitch-safe range)`,
+    };
+  }
+  try {
+    const stretched = await transformAudio(lead, { tempo: ratio });
+    return {
+      bytes: stretched,
+      applied: true,
+      note: `trained layer conformed: ~${Math.round(best)} BPM time-stretched ${ratio.toFixed(3)}× to the ${gridBpm} BPM grid before the honesty gate`,
+    };
+  } catch (err) {
+    return {
+      bytes: lead,
+      applied: false,
+      note: `trained layer tempo-conform skipped: ${(err as Error)?.message?.slice(0, 80)}`,
+    };
+  }
+}
 
 function sectionsFrom(
   blueprint: SongBlueprint | null | undefined,
@@ -688,7 +801,13 @@ export async function processOwnEngine(p: OwnEnginePayload): Promise<void> {
         .filter(r => !haveRoles.has(r))
         .filter(r => Boolean(forgePromptFor(r, p.genre, bpm, homeKey)))
         .slice(0, forgeCap);
-      for (const role of richMissing) {
+      // FORGE FAN-OUT (SOUNDCORE item 3): each role is an independent multi-minute
+      // provider render — run them through a bounded pool instead of strictly
+      // serially, honoring the 429 backoff inside processForgeMaterial. BARRIER:
+      // the pool fully settles before coverage/re-pickKit below. realForged is
+      // rebuilt in richMissing order for a deterministic note.
+      const realForgedSet = new Set<string>();
+      await forEachPool(richMissing, FORGE_FANOUT_CONCURRENCY, async role => {
         try {
           const forgeJob = await prisma.providerJob.create({
             data: {
@@ -714,7 +833,7 @@ export async function processOwnEngine(p: OwnEnginePayload): Promise<void> {
             bpm,
             keySignature: homeKey,
           });
-          realForged.push(role);
+          realForgedSet.add(role);
           haveRoles.add(role);
         } catch (err) {
           // Real forge unavailable/throttled/failed for this role → it falls
@@ -724,7 +843,8 @@ export async function processOwnEngine(p: OwnEnginePayload): Promise<void> {
             (err as Error)?.message
           );
         }
-      }
+      });
+      realForged.push(...richMissing.filter(role => realForgedSet.has(role)));
       if (realForged.length) notes.push(`kit: forged real ${realForged.join("+")}`);
     }
     // The synth FLOOR: base primitives + any requested role the real forge
@@ -808,9 +928,15 @@ export async function processOwnEngine(p: OwnEnginePayload): Promise<void> {
             `auto-forge unavailable: ${forgeTargets.length} starter loop(s) needed but no music engine is connected — upload a kit or connect an engine, then create again`
           );
         } else {
-          const attempted: string[] = [];
-          for (const role of forgeTargets) {
-            attempted.push(role);
+          // FORGE FAN-OUT (SOUNDCORE item 3): the starter loops are independent
+          // provider renders — a bounded pool replaces the strictly-serial loop
+          // (the #1 wall-clock sink), honoring the 429 backoff inside
+          // processForgeMaterial. BARRIER PRESERVED: the pool fully settles before
+          // the re-pickKit/coverage recompute below (CrucibAI proof-gated pattern:
+          // fan out, then a verification barrier). autoForgedRoles is reordered to
+          // the forgeTargets sequence for a deterministic disclosure note.
+          const attempted: string[] = [...forgeTargets];
+          await forEachPool(forgeTargets, FORGE_FANOUT_CONCURRENCY, async role => {
             try {
               const forgeJob = await prisma.providerJob.create({
                 data: {
@@ -851,7 +977,10 @@ export async function processOwnEngine(p: OwnEnginePayload): Promise<void> {
                 (err as Error)?.message
               );
             }
-          }
+          });
+          autoForgedRoles.sort(
+            (a, b) => forgeTargets.indexOf(a) - forgeTargets.indexOf(b)
+          );
           if (autoForgedRoles.length) {
             picks = await pickKit(
               p.workspaceId,
@@ -1203,6 +1332,90 @@ export async function processOwnEngine(p: OwnEnginePayload): Promise<void> {
       p.blueprint?.totalDurationS ??
       sections.reduce((a, s) => a + s.bars, 0) * (240 / bpm);
 
+    // L1c — MELODY LEAD INTO THE FULL-LENGTH INSTRUMENTAL (SOUNDCORE item 1, the
+    // highest-impact fix). melodyBrain already composed a real note-level score
+    // for this song, but it only ever became a separate 'melody-guides' WAV — it
+    // was NEVER summed into the bed, and the MusicGen topping is hard-gated to
+    // <=30s. So a full-length AfroOne bed shipped as percussion + bass + block
+    // chords with ZERO topline: a beat skeleton, not a song. Now the composed
+    // score is rendered to a MUSICAL, lane-appropriate lead voice (EP / kalimba /
+    // guitar / synth per genre — NOT a bare sine) and MIXED INTO THE BED as a lead
+    // layer at MELODY_LEAD_GAIN — ABOVE the beds, UNDER where the vocal will sit —
+    // for FULL-LENGTH songs, not just <=30s. Deterministic per seed (the score is
+    // seeded; the lead is a pure ffmpeg synth of it). The updated bed becomes
+    // out.url/finalUrl so the trained-layer + topping downstream build on the bed
+    // that actually ships. FAIL-OPEN: any failure leaves the bed untouched with an
+    // honest note (no lead), the render proceeds exactly as before.
+    if (melodyScore) {
+      let leadCertUrl: string | null = null;
+      try {
+        const leadWav = await renderMelodyLead(melodyScore, { genre: p.genre });
+        const bed = await downloadToBuffer(finalUrl);
+        const mixed = await mixBuffers(bed, leadWav, MELODY_LEAD_GAIN);
+        const certified = await certifyAudioBytes({
+          workspaceId: p.workspaceId,
+          kind: "beats",
+          bytes: mixed,
+          contentType: "audio/wav",
+          ext: "wav",
+        });
+        leadCertUrl = certified.url;
+        const assembled = await prisma.beatAsset.findUnique({
+          where: { id: finalBeatId },
+          select: { url: true, meta: true },
+        });
+        if (!assembled || assembled.url !== finalUrl) {
+          throw new Error("assembled beat changed before melody-lead certification");
+        }
+        const priorUrl = finalUrl;
+        const updated = await prisma.beatAsset.updateMany({
+          where: { id: finalBeatId, url: finalUrl },
+          data: {
+            url: certified.url,
+            provider: "afrohit-own",
+            duration: certified.qc.durationS,
+            qualityState: certified.qualityState,
+            contentHash: certified.contentHash,
+            verifiedAt: certified.verifiedAt,
+            meta: {
+              ...((assembled.meta ?? {}) as Record<string, unknown>),
+              melodyLead: {
+                voice: leadVoiceFor(p.genre).name,
+                gain: MELODY_LEAD_GAIN,
+                sourceUrl: priorUrl,
+                qc: certified.qc,
+                contentHash: certified.contentHash,
+                verifiedAt: certified.verifiedAt.toISOString(),
+              },
+            } as never,
+          },
+        });
+        if (updated.count !== 1) {
+          throw new Error("assembled beat changed during melody-lead certification");
+        }
+        finalUrl = certified.url;
+        out.url = certified.url;
+        leadCertUrl = null;
+        notes.push(
+          `melody lead: composed topline rendered as a ${leadVoiceFor(p.genre).name} voice and mixed into the full-length bed at ${MELODY_LEAD_GAIN} gain (${Math.round(totalS)}s)`
+        );
+        try {
+          await deleteUnreferencedAssetRefs(p.workspaceId, [priorUrl]);
+        } catch (retireError) {
+          notes.push(
+            `old lead bed retained for cleanup: ${(retireError as Error)?.message?.slice(0, 80)}`
+          );
+        }
+      } catch (err) {
+        if (leadCertUrl) {
+          await deleteObjectByUrl(leadCertUrl).catch(() => {});
+        }
+        notes.push(
+          `melody lead skipped: ${(err as Error)?.message?.slice(0, 120)}`
+        );
+      }
+    }
+
     // L2-TRAINED — THE TRAINING IN THE SOUND (owner order 2026-07-20: "where is
     // all the training? we trained — where is it?"). Promotion used to write a
     // pointer NOTHING read — training was invisible in the sound by
@@ -1270,13 +1483,24 @@ export async function processOwnEngine(p: OwnEnginePayload): Promise<void> {
             // run on what actually ships — truly broken audio still skips
             // honestly (the fail-open catch keeps its note).
             const leadLevel = await normalizeLoopLoudness(leadRaw);
-            const lead = leadLevel.bytes;
+            let lead = leadLevel.bytes;
             const normalizedDb =
               leadLevel.applied && leadLevel.preLufs != null
                 ? Math.round(
                     (LOOP_LOUDNESS_TARGET.lufs - leadLevel.preLufs) * 10
                   ) / 10
                 : 0;
+            // TEMPO-CONFORM (SOUNDCORE item 4): the promoted layer kept getting
+            // skipped even after clipping was tamed — now "melody fights the grid:
+            // measured ~138 BPM vs 103 BPM". A generative fine-tune renders at ITS
+            // tempo, not the render's grid. Time-stretch it onto the grid (the same
+            // pitch-preserving atempo machinery forges/masters use) BEFORE the
+            // honesty gate, so a good-but-off-tempo trained render MIXES IN instead
+            // of being rejected. Fail-open: an unconformable/unreadable layer is
+            // left untouched and the gate still decides on what actually ships.
+            const conform = await conformLeadToGrid(lead, bpm);
+            if (conform.applied) lead = conform.bytes;
+            if (conform.note) notes.push(conform.note);
             // SAME HONESTY GATE as the stock topping: a fine-tune is still a
             // generative model — measure tempo/key against the grid BEFORE the
             // bed can be touched. A hard mismatch throws into the fail-open
