@@ -702,10 +702,10 @@ export default function CreatePage() {
         fusionGenres: fusion.length ? fusion : undefined,
         bpm,
         withStems: false,
-        // OUR ENGINE IS INSTRUMENTAL-ONLY (2026-07-16): own + withVocals:true
-        // hard-422'd server-side, so every "Sing MY lyrics" click on Our Engine
-        // failed. The lyrics stay attached to the song — sing them over the bed
-        // by upload or re-sing once a vocal engine is picked.
+        // AFROONE SINGS (2026-07-20, supersedes the 2026-07-16 instrumental-only
+        // note): own + withVocals:true rides the armed singing path — the
+        // attached artistAuthored draft is sung VERBATIM over the owned bed,
+        // word-verified before it ships. Other engines sing it as before.
         withVocals: true,
         // NO inline lyrics — the attach above stored the draft artistAuthored, and
         // the server sings draft.body VERBATIM on that path. Passing the text

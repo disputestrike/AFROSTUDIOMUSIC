@@ -1539,8 +1539,15 @@ export async function processOwnEngine(p: OwnEnginePayload): Promise<void> {
       ...(singing
         ? { singing }
         : {
+            // CAPABILITY-AWARE (owner 2026-07-20: "it's still saying bring your
+            // own lyrics" — this stored note outlived the singing wave and kept
+            // telling users the engine couldn't sing). When the singing route is
+            // armed, a bed-only take names the real unlock; the upload path
+            // stays as the alternative, never the only option.
             voice:
-              "record/upload a sung lead, or convert an existing performance with POST /voices/:voiceId/sing",
+              process.env.AFROONE_SINGING_ENABLED === "1"
+                ? "AfroOne can sing this: create with vocals on (it writes the lyrics), or paste your own and it sings them verbatim. You can also upload your own lead."
+                : "record/upload a sung lead, or convert an existing performance with POST /voices/:voiceId/sing",
           }),
     });
     console.log(
