@@ -286,6 +286,8 @@ export default function CreatePage() {
   }, [api]);
   const hasMusicRoute = musicRoutes !== null
     && (musicRoutes.flagship || musicRoutes.advanced || musicRoutes.standard || musicRoutes.falAvailable === true);
+  const hasAfroOneSinging = musicRoutes?.afrooneSinging === true;
+  const hasSongRoute = hasMusicRoute || hasAfroOneSinging;
 
   // Three ways in: describe it / bring your own lyrics / listen & recreate.
   const [path, setPath] = useState<'song' | 'lyrics' | 'mumble'>('song');
@@ -408,14 +410,14 @@ export default function CreatePage() {
     // there on ?produce=1 to skip the form flash), so don't gate on phase==='form'.
     if (!autoProduce || musicRoutes === null) return;
     setAutoProduce(false);
-    if (!hasMusicRoute) {
+    if (!hasSongRoute) {
       setErr('No music engine is connected. Ask an owner to connect one in Settings.');
       setPhase('error');
       return;
     }
     void createSong();
 
-  }, [autoProduce, hasMusicRoute, musicRoutes]);
+  }, [autoProduce, hasSongRoute, musicRoutes]);
 
   // SALIENCE: the software knows each lane's natural tempo and tongue — picking a
   // genre sets them; fusing two BLENDS the tempo; the user's touch always wins.
@@ -489,7 +491,7 @@ export default function CreatePage() {
     setLastAction('song');
     setRenderStartedAt(Date.now());
     setErr('');
-    if (!hasMusicRoute) {
+    if (!hasSongRoute) {
       setErr('No music engine is connected. Ask an owner to connect one in Settings.');
       setPhase('error');
       return;
@@ -678,7 +680,7 @@ export default function CreatePage() {
     setLastAction('lyrics');
     setRenderStartedAt(Date.now());
     setErr('');
-    if (!hasMusicRoute) {
+    if (!hasSongRoute) {
       setErr('No music engine is connected. Ask an owner to connect one in Settings.');
       setPhase('error');
       return;
@@ -1415,7 +1417,7 @@ export default function CreatePage() {
             // (the studio's own material assembler) and is named proudly; it
             // was dropped in the Jul-13/14 rewrite and restored by owner order
             // (2026-07-16) together with the human hints from 3f62388.
-            { value: 'auto', label: 'Auto', hint: 'Best engine available (recommended)', available: hasMusicRoute },
+            { value: 'auto', label: 'Auto', hint: 'Best engine available (recommended)', available: hasSongRoute },
             { value: 'suno', label: 'Flagship', hint: 'Best quality (first-party releases)', available: musicRoutes?.flagship === true },
             { value: 'eleven', label: 'Advanced', hint: 'Section-controlled, high realism', available: musicRoutes?.advanced === true },
             { value: 'minimax', label: 'Standard A', hint: 'High vocal realism', available: musicRoutes?.standard === true },
@@ -1432,14 +1434,14 @@ export default function CreatePage() {
             // engine does everything the others do; the name alone says so.
             // Honesty lives where it belongs: the render note still discloses
             // if singing is unarmed on a given studio.)
-            { value: 'own', label: 'AfroOne Engine', hint: '', available: true },
+            { value: 'own', label: 'AfroOne Engine', hint: '', available: hasAfroOneSinging },
           ] as const).filter((e) => e.available).map((e) => (
             <button key={e.value} onClick={() => setEngine(e.value)} className={`rounded-full px-4 py-2 text-sm ${engine === e.value ? 'bg-brand-gradient text-ink shadow-glow' : 'border border-white/10 bg-white/5 text-slate-300 hover:bg-white/10'}`}>
               {e.label}{e.hint ? <span className="opacity-60"> · {e.hint}</span> : null}
             </button>
           ))}
         </div>
-        {musicRoutes && !hasMusicRoute && (
+        {musicRoutes && !hasSongRoute && (
           <p className="mt-2 text-sm text-amber-300">No vocal engine is connected. An owner must connect one in Settings before rendering.</p>
         )}
       </div>
@@ -1459,8 +1461,8 @@ export default function CreatePage() {
           <button
             type="button"
             onClick={() => requestRender('song')}
-            disabled={!hasMusicRoute}
-            title={!hasMusicRoute ? 'Connect a music engine in Settings first' : undefined}
+            disabled={!hasSongRoute}
+            title={!hasSongRoute ? 'Connect a music engine in Settings first' : undefined}
             className="rounded-full bg-brand-gradient px-6 py-3 font-medium text-ink shadow-glow disabled:cursor-not-allowed disabled:opacity-50"
           >
             <Play className="mr-2 inline h-4 w-4" aria-hidden="true" /> Review and create
@@ -1469,8 +1471,8 @@ export default function CreatePage() {
           <button
             type="button"
             onClick={() => requestRender('lyrics')}
-            disabled={lyricsText.trim().length < 20 || !hasMusicRoute}
-            title={!hasMusicRoute ? 'Connect a music engine in Settings first' : !decon ? 'Deconstruct your lyrics first' : undefined}
+            disabled={lyricsText.trim().length < 20 || !hasSongRoute}
+            title={!hasSongRoute ? 'Connect a music engine in Settings first' : !decon ? 'Deconstruct your lyrics first' : undefined}
             className="rounded-full bg-brand-gradient px-6 py-3 font-medium text-ink shadow-glow disabled:cursor-not-allowed disabled:opacity-50"
           >
             <Mic2 className="mr-2 inline h-4 w-4" aria-hidden="true" /> Review and sing my lyrics
@@ -1689,7 +1691,7 @@ export default function CreatePage() {
     const simpleBlocked =
       door === 'instrumental'
         ? engine !== 'own' && !hasMusicRoute
-        : !hasMusicRoute || (lyricsOpen && lyricsText.trim().length > 0 && !lyricsReady);
+        : !hasSongRoute || (lyricsOpen && lyricsText.trim().length > 0 && !lyricsReady);
     const simpleGenres = [
       ...GENRES.filter((g) => genres.includes(g.value)),
       ...GENRES.filter((g) => !genres.includes(g.value)),
@@ -1840,7 +1842,7 @@ export default function CreatePage() {
                   type="button"
                   onClick={() => requestRender(simpleAction)}
                   disabled={simpleBlocked}
-                  title={simpleBlocked ? (hasMusicRoute ? 'Finish your lyrics first (at least 20 characters)' : 'No music engine is connected — ask an owner to connect one in Settings') : undefined}
+                  title={simpleBlocked ? (hasSongRoute ? 'Finish your lyrics first (at least 20 characters)' : 'No music engine is connected — ask an owner to connect one in Settings') : undefined}
                   className="w-full rounded-full bg-brand-gradient px-6 py-3.5 font-medium text-ink shadow-glow transition-transform hover:scale-[1.01] disabled:cursor-not-allowed disabled:opacity-50 sm:w-auto sm:px-10"
                 >
                   <Play className="mr-2 inline h-4 w-4" aria-hidden />
@@ -1849,7 +1851,7 @@ export default function CreatePage() {
                 <p className="mt-3 text-xs text-slate-500">
                   You review the brief and billing before anything starts — nothing renders or spends credits automatically. Advanced opens tempo, languages, voice, engine class, takes and more.
                 </p>
-                {musicRoutes && !hasMusicRoute && door !== 'instrumental' && (
+                {musicRoutes && !hasSongRoute && door !== 'instrumental' && (
                   <p className="mt-2 text-sm text-amber-300">No music engine is connected. An owner must connect one in Settings before rendering.</p>
                 )}
               </div>

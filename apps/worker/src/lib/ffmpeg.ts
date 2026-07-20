@@ -2532,3 +2532,61 @@ export async function sliceAudioWav(
     output,
   ]);
 }
+
+export interface AudioTempoConformPlan {
+  sourceBpm: number;
+  foldedSourceBpm: number;
+  targetBpm: number;
+  deviation: number;
+  tempoRatio: number;
+  needsConform: boolean;
+  supported: boolean;
+}
+
+/** Build a pitch-preserving tempo plan for a measured melody layer. Exact
+ * half/double-time equivalents are accepted first; otherwise a safe direct
+ * FFmpeg ratio wins before octave-folded alternatives are considered. */
+export function audioTempoConformPlan(
+  sourceBpm: number,
+  targetBpm: number,
+  tolerance = 0.05
+): AudioTempoConformPlan | null {
+  if (
+    !Number.isFinite(sourceBpm) ||
+    sourceBpm <= 0 ||
+    !Number.isFinite(targetBpm) ||
+    targetBpm <= 0
+  ) {
+    return null;
+  }
+
+  const candidates = [sourceBpm, sourceBpm / 2, sourceBpm * 2];
+  const octaveEquivalent = candidates.find(
+    candidate => Math.abs(candidate - targetBpm) / targetBpm <= tolerance
+  );
+  const directRatio = targetBpm / sourceBpm;
+  const foldedSourceBpm = octaveEquivalent ??
+    (directRatio >= 0.5 && directRatio <= 1.5
+      ? sourceBpm
+      : candidates
+          .filter(candidate => {
+            const ratio = targetBpm / candidate;
+            return ratio >= 0.5 && ratio <= 1.5;
+          })
+          .sort(
+            (left, right) =>
+              Math.abs(left - targetBpm) - Math.abs(right - targetBpm)
+          )[0] ?? sourceBpm);
+  const deviation = Math.abs(foldedSourceBpm - targetBpm) / targetBpm;
+  const needsConform = deviation > tolerance;
+  const tempoRatio = needsConform ? targetBpm / foldedSourceBpm : 1;
+  return {
+    sourceBpm,
+    foldedSourceBpm,
+    targetBpm,
+    deviation,
+    tempoRatio,
+    needsConform,
+    supported: tempoRatio >= 0.5 && tempoRatio <= 1.5,
+  };
+}

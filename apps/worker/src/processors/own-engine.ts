@@ -67,7 +67,12 @@ import {
   resolveAssetForProvider,
   uploadBytes,
 } from "../lib/storage";
-import { measureAudioBufferQuality, mixBuffers } from "../lib/ffmpeg";
+import {
+  audioTempoConformPlan,
+  measureAudioBufferQuality,
+  mixBuffers,
+  transformAudio,
+} from "../lib/ffmpeg";
 import {
   LOOP_LOUDNESS_TARGET,
   normalizeLoopLoudness,
@@ -296,31 +301,66 @@ function sectionsFrom(
  *  Fail-open: any error returns [] and the plan proceeds without them. */
 async function learnedListeningLessons(
   workspaceId: string,
-  genre: string
+  genre: string,
+  preferredReferenceIds: readonly string[] = []
 ): Promise<string[]> {
   try {
     const refs = await prisma.soundReference.findMany({
-      where: { workspaceId, NOT: { sourceUrl: { startsWith: "lyric:" } } },
+      where: {
+        workspaceId,
+        active: true,
+        analysisState: { not: "failed" },
+        rightsBasis: { not: "unknown" },
+        NOT: { sourceUrl: { startsWith: "lyric:" } },
+      },
       orderBy: { createdAt: "desc" },
-      take: 12,
-      select: { genre: true, recipe: true },
+      take: 80,
+      select: { id: true, genre: true, summary: true, recipe: true },
     });
     const lessons: string[] = [];
-    const laneFirst = [...refs].sort((a, b) => {
-      const am = materialGenreMatches(a.genre, genre) ? 0 : 1;
-      const bm = materialGenreMatches(b.genre, genre) ? 0 : 1;
-      return am - bm;
-    });
+    const preferred = new Map(preferredReferenceIds.map((id, index) => [id, index]));
+    const laneFirst = refs
+      .filter(ref => materialGenreMatches(ref.genre, genre))
+      .sort((a, b) => {
+        const ap = preferred.get(a.id);
+        const bp = preferred.get(b.id);
+        if (ap !== undefined || bp !== undefined) {
+          return (ap ?? Number.MAX_SAFE_INTEGER) - (bp ?? Number.MAX_SAFE_INTEGER);
+        }
+        return 0;
+      });
     for (const ref of laneFirst) {
       const recipe = ref.recipe && typeof ref.recipe === "object" && !Array.isArray(ref.recipe)
         ? (ref.recipe as Record<string, unknown>)
         : null;
       if (!recipe) continue;
       const parts: string[] = [];
-      for (const key of ["summary", "groove", "arrangement", "production", "productionNotes", "drums", "energy"]) {
+      if (ref.summary?.trim()) parts.push(ref.summary.trim().slice(0, 180));
+      for (const key of ["whatToLearn", "vibe", "groove", "arrangement", "production", "productionNotes", "drums", "energy"]) {
         const value = recipe[key];
         if (typeof value === "string" && value.trim()) parts.push(value.trim().slice(0, 160));
       }
+      if (Array.isArray(recipe.craft)) {
+        const craft = recipe.craft
+          .filter((value): value is string => typeof value === "string" && !!value.trim())
+          .slice(0, 4)
+          .join("; ")
+          .slice(0, 220);
+        if (craft) parts.push(craft);
+      }
+      const measured = recipe.measured && typeof recipe.measured === "object"
+        ? (recipe.measured as Record<string, unknown>)
+        : null;
+      const measuredValue = (field: unknown): number | null => {
+        if (typeof field === "number" && Number.isFinite(field)) return field;
+        if (!field || typeof field !== "object") return null;
+        const value = (field as { value?: unknown }).value;
+        return typeof value === "number" && Number.isFinite(value) ? value : null;
+      };
+      const measuredBpm = measuredValue(measured?.tempoBpm) ?? measuredValue(recipe.bpm);
+      const measuredSwing = measuredValue(measured?.swingRatio);
+      if (measuredBpm) parts.push(`measured tempo ${Math.round(measuredBpm)} BPM`);
+      if (measuredSwing) parts.push(`measured swing ${Math.round(measuredSwing * 10) / 10}`);
       if (parts.length) lessons.push(parts.join(" — ").slice(0, 320));
       if (lessons.length >= 3) break;
     }
@@ -570,6 +610,85 @@ async function verifyMelodyAgainstGrid(
     note: qc
       ? `melody grid check unavailable (no DSP ear): ${qc.durationS}s at ${qc.integratedLufs ?? "?"} LUFS — tempo/key unverified`
       : "melody grid check unavailable (no DSP ear, ffmpeg QC failed) — tempo/key unverified",
+  };
+}
+
+export interface MelodyTempoConformReceipt {
+  sourceBpm: number | null;
+  foldedSourceBpm: number | null;
+  targetBpm: number;
+  tempoRatio: number;
+  tempoConformed: boolean;
+  verifiedBpm: number | null;
+}
+
+/** Put a trained melody on the song grid before the honesty gate. This is a
+ * local, pitch-preserving FFmpeg transform; no provider call or new audio is
+ * introduced. A performed transform must be re-measured before it may mix. */
+export async function conformMelodyTempoToGrid(
+  lead: Buffer,
+  gridBpm: number
+): Promise<{ bytes: Buffer; receipt: MelodyTempoConformReceipt }> {
+  const emptyReceipt: MelodyTempoConformReceipt = {
+    sourceBpm: null,
+    foldedSourceBpm: null,
+    targetBpm: gridBpm,
+    tempoRatio: 1,
+    tempoConformed: false,
+    verifiedBpm: null,
+  };
+  if (!(await dspAvailable().catch(() => false))) {
+    return { bytes: lead, receipt: emptyReceipt };
+  }
+  const measured = await measureAudio(lead).catch(() => null);
+  const sourceBpm =
+    measured?.engineOk &&
+    measured.tempoBpm.source !== "unknown" &&
+    typeof measured.tempoBpm.value === "number"
+      ? measured.tempoBpm.value
+      : null;
+  if (!sourceBpm) return { bytes: lead, receipt: emptyReceipt };
+
+  const plan = audioTempoConformPlan(sourceBpm, gridBpm);
+  if (!plan) return { bytes: lead, receipt: emptyReceipt };
+  const baseReceipt: MelodyTempoConformReceipt = {
+    sourceBpm,
+    foldedSourceBpm: plan.foldedSourceBpm,
+    targetBpm: gridBpm,
+    tempoRatio: plan.tempoRatio,
+    tempoConformed: false,
+    verifiedBpm: sourceBpm,
+  };
+  if (!plan.needsConform) return { bytes: lead, receipt: baseReceipt };
+  if (!plan.supported) {
+    throw new Error(
+      `trained melody tempo cannot conform safely: ${Math.round(sourceBpm)} BPM to ${gridBpm} BPM`
+    );
+  }
+
+  const bytes = await transformAudio(lead, { tempo: plan.tempoRatio });
+  const verified = await measureAudio(bytes).catch(() => null);
+  const verifiedBpm =
+    verified?.engineOk &&
+    verified.tempoBpm.source !== "unknown" &&
+    typeof verified.tempoBpm.value === "number"
+      ? verified.tempoBpm.value
+      : null;
+  const verificationPlan = verifiedBpm
+    ? audioTempoConformPlan(verifiedBpm, gridBpm)
+    : null;
+  if (!verificationPlan || verificationPlan.deviation > 0.05) {
+    throw new Error(
+      `trained melody tempo conform could not be verified against ${gridBpm} BPM`
+    );
+  }
+  return {
+    bytes,
+    receipt: {
+      ...baseReceipt,
+      tempoConformed: true,
+      verifiedBpm,
+    },
   };
 }
 
@@ -959,7 +1078,16 @@ export async function processOwnEngine(p: OwnEnginePayload): Promise<void> {
             .map(a => `${a.section}[${a.bars}]: ${a.whatHappens}`)
             .join(" | ")}`
         : null;
-      const learnedLessons = await learnedListeningLessons(p.workspaceId, p.genre);
+      const learnedLessons = await learnedListeningLessons(
+        p.workspaceId,
+        p.genre,
+        p.trainingUsage?.referenceIds ?? []
+      );
+      if (learnedLessons.length) {
+        notes.push(
+          `producer brain: ${learnedLessons.length} rights-safe Listen/Zap lesson(s) applied${p.trainingUsage?.referenceIds?.length ? " (selected references first)" : ""}`
+        );
+      }
       const plan = await planProduction({
         genre: p.genre,
         theme: p.melodyPrompt ?? null,
@@ -1225,6 +1353,12 @@ export async function processOwnEngine(p: OwnEnginePayload): Promise<void> {
       /** SOUNDWAVE2 Target D: measured gain applied to tame a hot fine-tune
        *  render to the loop shelf level before the QC gate (0 = untouched). */
       normalizedDb: number;
+      sourceBpm: number | null;
+      foldedSourceBpm: number | null;
+      targetBpm: number;
+      tempoRatio: number;
+      tempoConformed: boolean;
+      verifiedBpm: number | null;
     } | null = null;
     {
       const activeModelRef = await resolveActiveMusicModelRef().catch(
@@ -1270,13 +1404,20 @@ export async function processOwnEngine(p: OwnEnginePayload): Promise<void> {
             // run on what actually ships — truly broken audio still skips
             // honestly (the fail-open catch keeps its note).
             const leadLevel = await normalizeLoopLoudness(leadRaw);
-            const lead = leadLevel.bytes;
+            let lead = leadLevel.bytes;
             const normalizedDb =
               leadLevel.applied && leadLevel.preLufs != null
                 ? Math.round(
                     (LOOP_LOUDNESS_TARGET.lufs - leadLevel.preLufs) * 10
                   ) / 10
                 : 0;
+            const tempoConform = await conformMelodyTempoToGrid(lead, bpm);
+            lead = tempoConform.bytes;
+            if (tempoConform.receipt.tempoConformed) {
+              notes.push(
+                `trained layer tempo-conformed: ${Math.round(tempoConform.receipt.sourceBpm ?? 0)} BPM to ${bpm} BPM (ratio ${tempoConform.receipt.tempoRatio.toFixed(4)})`
+              );
+            }
             // SAME HONESTY GATE as the stock topping: a fine-tune is still a
             // generative model — measure tempo/key against the grid BEFORE the
             // bed can be touched. A hard mismatch throws into the fail-open
@@ -1349,6 +1490,12 @@ export async function processOwnEngine(p: OwnEnginePayload): Promise<void> {
                     // Target D receipts: measured pre-level + the shelf gain
                     // that tamed it (0 = arrived at level / unmeasurable).
                     normalizedDb,
+                    sourceBpm: tempoConform.receipt.sourceBpm,
+                    foldedSourceBpm: tempoConform.receipt.foldedSourceBpm,
+                    targetBpm: tempoConform.receipt.targetBpm,
+                    tempoRatio: tempoConform.receipt.tempoRatio,
+                    tempoConformed: tempoConform.receipt.tempoConformed,
+                    verifiedBpm: tempoConform.receipt.verifiedBpm,
                     preLufs: leadLevel.preLufs,
                     sourceUrl: out.url,
                     qc: certified.qc,
@@ -1371,6 +1518,12 @@ export async function processOwnEngine(p: OwnEnginePayload): Promise<void> {
               layerRole,
               estimatedCostUsd,
               normalizedDb,
+              sourceBpm: tempoConform.receipt.sourceBpm,
+              foldedSourceBpm: tempoConform.receipt.foldedSourceBpm,
+              targetBpm: tempoConform.receipt.targetBpm,
+              tempoRatio: tempoConform.receipt.tempoRatio,
+              tempoConformed: tempoConform.receipt.tempoConformed,
+              verifiedBpm: tempoConform.receipt.verifiedBpm,
             };
             notes.push(
               `trained layer mixed: ${trainedModelRef} rendered this take's ${layerRole} at ${TRAINED_LAYER_GAIN} gain (placed ${Math.round(placementS)}s, ~$${estimatedCostUsd.toFixed(2)}${normalizedDb ? `, leveled ${normalizedDb > 0 ? '+' : ''}${normalizedDb} dB to the loop shelf` : ''})`

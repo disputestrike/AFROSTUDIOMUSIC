@@ -710,6 +710,7 @@ export async function processAfroOneSinging(
           data: { status: mix.approved ? 'MIXED' : 'DEMO' },
         });
       }
+      const finalApproved = mix ? mix.approved : approved;
       const completed = await tx.providerJob.updateMany({
         where: {
           id: payload.jobId,
@@ -731,7 +732,7 @@ export async function processAfroOneSinging(
             assetKind: 'isolated_vocal',
             performanceKind: 'sung_vocal',
             performanceSource: receipt.performanceSource,
-            approved,
+            approved: finalApproved,
             qualityState: inspection.qualityState,
             alignmentState: alignment?.state ?? 'unmeasured',
             contentHash: inspection.contentHash,

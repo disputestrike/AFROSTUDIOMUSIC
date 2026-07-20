@@ -22,6 +22,30 @@ export interface MusicRouteCapabilities {
   afrooneSinging: boolean;
 }
 
+export type AfroOneVocalRouteDecision = 'afroone' | 'external' | 'unavailable';
+
+export function hasExternalMusicRoute(capabilities: MusicRouteCapabilities): boolean {
+  return capabilities.flagship || capabilities.advanced || capabilities.standard;
+}
+
+/** Route vocal asks before charging. An explicit AfroOne selection is strict;
+ *  Auto falls back to AfroOne singing only when no full-song provider exists. */
+export function resolveAfroOneVocalRoute(
+  requested: string | undefined,
+  withVocals: boolean | undefined,
+  capabilities: MusicRouteCapabilities,
+): AfroOneVocalRouteDecision {
+  if (!withVocals) return 'external';
+  if (requested === 'own') {
+    return capabilities.afrooneSinging ? 'afroone' : 'unavailable';
+  }
+  const automatic = !requested || requested === 'auto';
+  if (automatic && !hasExternalMusicRoute(capabilities)) {
+    return capabilities.afrooneSinging ? 'afroone' : 'external';
+  }
+  return 'external';
+}
+
 export function musicRoutePolicy(workspaceId: string): {
   firstParty: boolean;
   sunoAllowed: boolean;

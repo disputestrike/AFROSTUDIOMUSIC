@@ -27,6 +27,7 @@ import { createQueuedProviderJob } from "../lib/queued-job";
 import { assertSafeUrl } from "../lib/url-guard";
 import {
   musicRouteCapabilities,
+  resolveAfroOneVocalRoute,
   validateMusicRoute,
 } from "../lib/music-capabilities";
 import {
@@ -34,6 +35,7 @@ import {
   learnedStyleTags,
   learnedMeasuredTags,
   learnedUsage,
+  PinnedLearnedReferenceUnavailableError,
   learnedLyricCraftBrief,
   snapshotTrend,
   freshnessBrief,
@@ -1318,14 +1320,22 @@ async function createBeatJob(
   }
 ) {
   if (!ctx.projectId) return { error: "no_project_in_thread" };
-  // OUR ENGINE + VOCALS = the INSTRUMENTAL BED, said honestly — never a dead
-  // end. This used to hard-fail here ('own_vocal_pipeline_unavailable'), and on
-  // the drop path that fired AFTER the hooks + lyrics LLM spend: the studio
-  // wrote a whole song and then refused to render it. The own branch below
-  // already does the right thing with a sung ask — it binds the bed to the
-  // song that carries the lyrics and returns the "vocals by upload or re-sing"
-  // note (which this guard had turned into dead code). The own-engine worker
-  // payload never renders vocals regardless, so nothing is faked.
+  const capabilities = await musicRouteCapabilities(ctx.workspaceId);
+  const vocalRoute = resolveAfroOneVocalRoute(
+    a.songEngine,
+    a.withVocals,
+    capabilities
+  );
+  if (vocalRoute === "unavailable") {
+    return {
+      error: "afroone_singing_unavailable",
+      message:
+        "AfroOne singing is not armed. Connect its singing route or choose another song engine.",
+    };
+  }
+  const autoOwnSinging = vocalRoute === "afroone";
+  // AfroOne vocal asks are capability-gated here and never silently degrade to
+  // an instrumental after the studio has written a song.
 
   // Honor the requested genre for the whole session — the chat's scratch project
   // defaults to afro_fusion, so sync it to what was actually asked for.
@@ -1338,19 +1348,19 @@ async function createBeatJob(
   // branch, so picking "Our Engine" on Describe-it fell through to musicAdapter
   // ('own' is not a provider) → the Stub → a guaranteed fail with a MISLEADING
   // "no music engine configured". Assemble from the artist's material instead.
-  // Sung vocals aren't wired to the own engine yet — the bed renders and we SAY
-  // SO honestly rather than shipping an instrumental labeled as a song.
+  // When genuine singing is armed, the same owned branch composes, sings,
+  // verifies, and mixes the vocal over the material-built bed.
   // MATERIAL-FIRST AUTO (audit: 'auto' ALWAYS rented a provider): engine unset/
   // 'auto' + INSTRUMENTAL ask + a stocked shelf (≥ OWN_ENGINE_MIN_ROLES distinct
   // roles for this genre) → route here too, and SAY so (materialSource).
-  // withVocals NEVER auto-routes here — the own engine cannot sing.
+  // Vocal Auto routes here when no external full-song engine is connected.
   const roleRequest = requestedMaterialRoleContract(a.instruments);
   const engineUnset = !a.songEngine || (a.songEngine as string) === "auto";
   const autoOwnRoles =
     engineUnset && !a.withVocals && a.genre && !roleRequest.unsupportedInstruments.length
       ? await ownShelfRoles(ctx.workspaceId, a.genre)
       : null;
-  if (a.songEngine === "own" || autoOwnRoles) {
+  if (a.songEngine === "own" || autoOwnRoles || autoOwnSinging) {
     if (roleRequest.unsupportedInstruments.length) {
       return {
         error: "unsupported_exact_instruments",
@@ -1358,6 +1368,49 @@ async function createBeatJob(
           "Our Engine cannot prove an exact material role for every requested instrument.",
         unsupportedInstruments: roleRequest.unsupportedInstruments,
       };
+    }
+    const preflightOwnSong = a.songId
+      ? await prisma.song.findFirst({
+          where: { id: a.songId, projectId: ctx.projectId, workspaceId: ctx.workspaceId },
+          select: { id: true },
+        })
+      : a.withVocals
+        ? await prisma.song.findFirst({
+            where: { projectId: ctx.projectId },
+            orderBy: { createdAt: "desc" },
+            select: { id: true },
+          })
+        : null;
+    let ownLyrics: string | undefined;
+    if (a.withVocals && preflightOwnSong?.id) {
+      const ownDraft = await prisma.lyricDraft.findUnique({
+        where: { songId: preflightOwnSong.id },
+        select: { body: true },
+      });
+      ownLyrics = ownDraft?.body?.trim() || undefined;
+    }
+    if (a.withVocals && !ownLyrics) {
+      return {
+        error: "afroone_lyrics_required",
+        message: "Write or paste lyrics before asking AfroOne to sing.",
+      };
+    }
+    let ownTrainingUsage: Awaited<ReturnType<typeof learnedUsage>>;
+    try {
+      ownTrainingUsage = await learnedUsage(
+        ctx.workspaceId,
+        a.genre,
+        a.pinnedReferenceId
+      );
+    } catch (error) {
+      if (error instanceof PinnedLearnedReferenceUnavailableError) {
+        return {
+          error: error.code,
+          message: error.message,
+          pinnedReferenceId: error.referenceId,
+        };
+      }
+      throw error;
     }
     const idempotencyKey = toolKey(ctx, "beat-own");
     const ownCharge = await ctx.app.chargeCredits({
@@ -1377,18 +1430,7 @@ async function createBeatJob(
     // used to hang ONLY off withVocals — so once the web client honestly sends
     // withVocals:false for Our Engine, the drop's bed would have rendered
     // unbound and the drop could never find its playable output.
-    const ownSong = a.songId
-      ? await prisma.song.findFirst({
-          where: { id: a.songId, projectId: ctx.projectId, workspaceId: ctx.workspaceId },
-          select: { id: true },
-        })
-      : a.withVocals
-        ? await prisma.song.findFirst({
-            where: { projectId: ctx.projectId },
-            orderBy: { createdAt: "desc" },
-            select: { id: true },
-          })
-        : null;
+    const ownSong = preflightOwnSong;
     // AFROONE SINGS ON THE DROP PATH (owner, 2026-07-20: the "not wired yet"
     // note below outlived reality — live proof "Forged From Nothing" shipped
     // as a bed while the armed singing pipeline sat unused, because this
@@ -1396,18 +1438,8 @@ async function createBeatJob(
     // create page: when the singing route is armed and the drop's fresh song
     // carries approved lyrics, the own-engine job rides with withVocals +
     // lyrics and the parent does the rest (composes the melody score, runs
-    // the approval-gated singing ladder, mixes over the owned bed). No
-    // capability or no lyrics → the honest bed-only path, exactly as before.
-    const ownCaps = await musicRouteCapabilities(ctx.workspaceId);
-    let ownLyrics: string | undefined;
-    if (a.withVocals && ownCaps.afrooneSinging && ownSong?.id) {
-      const ownDraft = await prisma.lyricDraft.findUnique({
-        where: { songId: ownSong.id },
-        select: { body: true },
-      });
-      ownLyrics = ownDraft?.body?.trim() || undefined;
-    }
-    const ownSings = !!(a.withVocals && ownCaps.afrooneSinging && ownLyrics);
+    // the approval-gated singing ladder, and mixes over the owned bed).
+    const ownSings = !!a.withVocals;
     const ownJob = await createQueuedProviderJob({
       app: ctx.app,
       queue: ctx.app.queues.music,
@@ -1420,6 +1452,7 @@ async function createBeatJob(
         ownEngine: true,
         genre: a.genre,
         bpm: ownBpm,
+        trainingUsage: ownTrainingUsage,
         ...(ownSings ? { withVocals: true } : {}),
         ...(autoOwnRoles ? { autoOwn: true } : {}),
         ...(roleRequest.provenance.instruments.length
@@ -1438,6 +1471,7 @@ async function createBeatJob(
         songId: ownSong?.id,
         genre: a.genre,
         bpm: ownBpm,
+        trainingUsage: ownTrainingUsage,
         // LENGTH CONTRACT: the lane's full-song target (a.durationS wins if set).
         durationS: a.durationS ?? genreSignature(a.genre).durationS,
         melodyPrompt: genreSignature(a.genre).melodyPrompt,
@@ -1470,9 +1504,7 @@ async function createBeatJob(
         ? { materialSource: `own-shelf (${autoOwnRoles} roles)` }
         : {}),
       note: a.withVocals
-        ? ownSings
-          ? "AfroOne wrote it, built it, and is singing it — every word checked against the written lyrics before it ships."
-          : "AfroOne is building the beat from your sound. Singing isn't armed on this studio yet — add a vocal by upload, or pick a standard engine for a fully sung take."
+        ? "AfroOne wrote it, built it, and is singing it — every word checked against the written lyrics before it ships."
         : autoOwnRoles
           ? `The shelf is stocked — own-shelf (${autoOwnRoles} roles) of your own material — so this beat is assembled from YOUR OWN material instead of renting a provider. Poll the job.`
           : "Building the beat from your own + synthesized material (owned engine). Poll the job.",
@@ -1481,7 +1513,7 @@ async function createBeatJob(
 
   const route = validateMusicRoute(
     a.songEngine,
-    await musicRouteCapabilities(ctx.workspaceId),
+    capabilities,
     !!a.withVocals
   );
   if (!route.ok)
