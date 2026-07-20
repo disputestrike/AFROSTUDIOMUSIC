@@ -1,10 +1,12 @@
 /**
- * TENANT SURFACE ISOLATION (Wave 8a) — pure manifest test.
+ * TENANT SURFACE ISOLATION (Wave 8a → USERSHELL) — pure manifest test.
  *
  * Transpiles lib/nav-manifest.ts (no React, no client code) and asserts the
  * law of the manifest: the consumer set NEVER intersects the operator-only
- * set, the consumer nav is exactly the Suno-shaped list, and deep-link gating
- * covers every operator surface (list-only for /projects).
+ * set, the consumer surface set is exactly the approved Suno-shaped list
+ * (now including the consumer shell's own Home/Explore/Library/Notifications),
+ * the OPERATOR'S nav is byte-for-byte the pre-USERSHELL nav, and deep-link
+ * gating covers every operator surface (list-only for /projects).
  *
  * Run: pnpm --filter @afrohit/web test:nav-manifest
  */
@@ -31,7 +33,7 @@ try {
   for (const item of NAV_MANIFEST) {
     assert.ok(item.href?.startsWith('/'), `href must be a path: ${JSON.stringify(item)}`);
     assert.ok(item.label?.length > 0, `label required: ${JSON.stringify(item)}`);
-    assert.ok(['all', 'operator'].includes(item.audience), `audience must be declared: ${JSON.stringify(item)}`);
+    assert.ok(['all', 'operator', 'consumer'].includes(item.audience), `audience must be declared: ${JSON.stringify(item)}`);
   }
   assert.equal(new Set(NAV_MANIFEST.map((i) => i.href)).size, NAV_MANIFEST.length, 'duplicate hrefs in manifest');
 
@@ -41,24 +43,28 @@ try {
   for (const href of consumerHrefs) {
     assert.ok(!operatorHrefs.has(href), `surface in BOTH audiences: ${href}`);
   }
-  assert.equal(consumerHrefs.size + operatorHrefs.size, NAV_MANIFEST.length, 'every surface belongs to exactly one audience');
+  assert.equal(consumerHrefs.size + operatorHrefs.size, NAV_MANIFEST.length, 'every surface belongs to exactly one side of the wall');
 
   // The consumer app is Suno-shaped: exactly these surfaces, nothing internal.
   assert.deepEqual(
     consumerNav().map((i) => [i.href, i.label]),
     [
+      ['/home', 'Home'],
+      ['/explore', 'Explore'],
       ['/create', 'Create'],
       ['/voice', 'My Voice'],
       ['/likeness', 'My Likeness'],
       ['/listen', 'Listen'],
       ['/studio', 'Chat'],
+      ['/library', 'Library'],
+      ['/notifications', 'Notifications'],
       ['/catalog', 'Catalog'],
       ['/materials', 'My Sounds'],
       ['/albums', 'Albums'],
       ['/billing', 'Billing'],
       ['/settings', 'Settings'],
     ],
-    'consumer nav must be exactly the approved Suno-shaped set'
+    'consumer surface set must be exactly the approved Suno-shaped set'
   );
 
   // The engine room stays with the operator: exactly these surfaces.
@@ -68,9 +74,38 @@ try {
     'operator-only set must be exactly the engine room'
   );
 
-  // Role routing: consumers get only the consumer set; the operator gets everything.
+  // OWNER'S LAW (USERSHELL): the operator keeps EXACTLY the pre-shell nav —
+  // same surfaces, same labels, same order. Consumer-shell surfaces never
+  // appear in the operator's top bar.
+  assert.deepEqual(
+    navItemsFor(true).map((i) => [i.href, i.label]),
+    [
+      ['/create', 'Create'],
+      ['/zap', 'Zap'],
+      ['/voice', 'My Voice'],
+      ['/likeness', 'My Likeness'],
+      ['/listen', 'Listen'],
+      ['/studio', 'Chat'],
+      ['/projects', 'Projects'],
+      ['/catalog', 'Catalog'],
+      ['/materials', 'My Sounds'],
+      ['/instrumentals', 'Instrumentals'],
+      ['/lake', 'Data Lake'],
+      ['/lexicon', 'Word Bank'],
+      ['/albums', 'Albums'],
+      ['/billing', 'Billing'],
+      ['/settings', 'Settings'],
+      ['/benchmark', 'Benchmark'],
+      ['/admin', 'Admin'],
+    ],
+    'operator nav must remain byte-for-byte the pre-USERSHELL nav'
+  );
+  for (const item of navItemsFor(true)) {
+    assert.notEqual(item.audience, 'consumer', `consumer-shell surface leaked into operator nav: ${item.href}`);
+  }
+
+  // Role routing: consumers get only the consumer set.
   assert.deepEqual(navItemsFor(false), consumerNav());
-  assert.deepEqual(navItemsFor(true), [...NAV_MANIFEST]);
   for (const item of navItemsFor(false)) {
     assert.notEqual(item.audience, 'operator', `operator surface leaked into consumer nav: ${item.href}`);
   }
@@ -88,7 +123,7 @@ try {
   }
 
   console.log(
-    `nav manifest: ${consumerHrefs.size} consumer + ${operatorHrefs.size} operator-only surfaces, zero intersection`
+    `nav manifest: ${consumerHrefs.size} consumer + ${operatorHrefs.size} operator-only surfaces, zero intersection, operator nav unchanged`
   );
 } finally {
   rmSync(dir, { recursive: true, force: true });

@@ -1,44 +1,58 @@
 /**
- * TENANT SURFACE ISOLATION (Wave 8a) — the single source of truth for who
- * sees which surface.
+ * TENANT SURFACE ISOLATION (Wave 8a → USERSHELL) — the single source of truth
+ * for who sees which surface.
  *
  * The owner's law: ordinary users get a Suno-shaped consumer app; the
  * operator keeps the whole engine room (lake, word bank, materials, bench,
- * admin). This manifest is PRESENTATION routing only — the real wall is
- * server-side (`requireAdmin` on every operator route group in
- * apps/api/src/routes). Hiding a button is never the security boundary.
+ * admin) — and keeps EXACTLY today's top-bar layout. This manifest is
+ * PRESENTATION routing only — the real wall is server-side (`requireAdmin` on
+ * every operator route group in apps/api/src/routes). Hiding a button is
+ * never the security boundary.
+ *
+ * THREE AUDIENCES (USERSHELL, owner order 2026-07-19):
+ * - 'all'      — surfaces both roles can open.
+ * - 'operator' — the engine room; ADMIN_EMAILS allowlist only.
+ * - 'consumer' — the new consumer shell's own surfaces (Home, Explore,
+ *   Library, Notifications). They exist ONLY in the consumer sidebar so the
+ *   operator's nav stays byte-for-byte what it was before the shell landed.
  *
  * Pure data + pure functions: no React, no 'use client' — unit-testable
  * (scripts/test-nav-manifest.mjs asserts the consumer set NEVER intersects
- * the operator-only set).
+ * the operator-only set, and that the operator's nav is unchanged).
  */
 
-export type NavAudience = 'all' | 'operator';
+export type NavAudience = 'all' | 'operator' | 'consumer';
 
 export interface NavItem {
   href: string;
   label: string;
-  /** 'all' = every signed-in user; 'operator' = ADMIN_EMAILS allowlist only. */
+  /** 'all' = both roles; 'operator' = ADMIN_EMAILS allowlist only;
+   *  'consumer' = consumer-shell surfaces the operator nav never shows. */
   audience: NavAudience;
-  /** Shown INLINE in the desktop top bar. Non-primary items collapse into the
-   *  "More" dropdown so the header never overflows (the full set — esp. the
-   *  operator's — is far too wide for one row). Billing/Settings also live in
-   *  the account menu, so they don't need an inline slot. */
+  /** Shown INLINE in the operator's desktop top bar. Non-primary items
+   *  collapse into the "More" dropdown so the header never overflows.
+   *  (Consumer-audience rows carry it only for completeness — the consumer
+   *  sidebar lays itself out from its own groups.) */
   primary?: boolean;
 }
 
 /**
- * Every top-nav surface, in display order. The order intentionally matches the
- * operator's muscle memory from the pre-isolation nav. `primary` = the everyday
- * surfaces that stay inline; the rest live under "More".
+ * Every nav surface, in display order. The relative order of the
+ * non-consumer rows intentionally matches the operator's muscle memory from
+ * the pre-isolation nav — filtering out 'consumer' rows reproduces the
+ * operator's nav EXACTLY as it was.
  */
 export const NAV_MANIFEST: readonly NavItem[] = [
+  { href: '/home', label: 'Home', audience: 'consumer', primary: true },
+  { href: '/explore', label: 'Explore', audience: 'consumer', primary: true },
   { href: '/create', label: 'Create', audience: 'all', primary: true },
   { href: '/zap', label: 'Zap', audience: 'operator', primary: true },
   { href: '/voice', label: 'My Voice', audience: 'all', primary: true },
   { href: '/likeness', label: 'My Likeness', audience: 'all', primary: true },
   { href: '/listen', label: 'Listen', audience: 'all', primary: true },
   { href: '/studio', label: 'Chat', audience: 'all', primary: true },
+  { href: '/library', label: 'Library', audience: 'consumer', primary: true },
+  { href: '/notifications', label: 'Notifications', audience: 'consumer' },
   // Raw projects list is operator plumbing — consumers reach their work
   // through Catalog and the Studio flows (project DETAIL pages stay shared).
   { href: '/projects', label: 'Projects', audience: 'operator', primary: true },
@@ -54,9 +68,9 @@ export const NAV_MANIFEST: readonly NavItem[] = [
   { href: '/admin', label: 'Admin', audience: 'operator' },
 ];
 
-/** The consumer (tenant) nav — what an ordinary signed-up artist sees. */
+/** The consumer (tenant) surface set — what an ordinary signed-up artist can open. */
 export function consumerNav(): NavItem[] {
-  return NAV_MANIFEST.filter((item) => item.audience === 'all');
+  return NAV_MANIFEST.filter((item) => item.audience === 'all' || item.audience === 'consumer');
 }
 
 /** Surfaces ONLY the operator sees — the engine room. */
@@ -64,9 +78,15 @@ export function operatorOnlyNav(): NavItem[] {
   return NAV_MANIFEST.filter((item) => item.audience === 'operator');
 }
 
-/** What the NavBar renders for a given role (manifest order preserved). */
+/**
+ * What the top NavBar renders for a given role (manifest order preserved).
+ * The operator's list excludes 'consumer' rows — it is EXACTLY the
+ * pre-USERSHELL nav, unchanged.
+ */
 export function navItemsFor(operator: boolean): NavItem[] {
-  return operator ? [...NAV_MANIFEST] : consumerNav();
+  return operator
+    ? NAV_MANIFEST.filter((item) => item.audience !== 'consumer')
+    : consumerNav();
 }
 
 /**
