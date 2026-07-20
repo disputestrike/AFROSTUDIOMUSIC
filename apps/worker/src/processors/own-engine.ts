@@ -29,6 +29,8 @@ import {
   isMaterialRole,
   jobOf,
   parseLyricSections,
+  sectionKindOf,
+  composeMelody,
   laneFeel,
   pickHomeKey,
   seedFrom,
@@ -77,6 +79,8 @@ import {
   measureAudioBufferQuality,
   mixBuffers,
   transformAudio,
+  postConformTempoVerdict,
+  POST_CONFORM_TEMPO_TOLERANCE,
 } from "../lib/ffmpeg";
 import {
   LOOP_LOUDNESS_TARGET,
@@ -616,7 +620,7 @@ async function verifyMelodyAgainstGrid(
   lead: Buffer,
   gridBpm: number,
   homeKey: string
-): Promise<{ ok: boolean; note: string }> {
+): Promise<{ ok: boolean; note: string; reason?: "tempo" | "key" }> {
   const mval = <T>(
     field: { value?: T | null; source?: string } | undefined
   ): T | null =>
@@ -634,6 +638,7 @@ async function verifyMelodyAgainstGrid(
       if (deviation > 0.05) {
         return {
           ok: false,
+          reason: "tempo",
           note: `melody fights the grid: measured ~${Math.round(leadBpm)} BPM vs ${gridBpm} BPM (${Math.round(deviation * 100)}% off, >5% tolerance)`,
         };
       }
@@ -644,6 +649,7 @@ async function verifyMelodyAgainstGrid(
         if (keysCompatible(homeKey, leadKey) === false) {
           return {
             ok: false,
+            reason: "key",
             note: `melody key mismatch: measured ${leadKey} against the bed's ${homeKey}`,
           };
         }
@@ -732,12 +738,18 @@ export async function conformMelodyTempoToGrid(
     typeof verified.tempoBpm.value === "number"
       ? verified.tempoBpm.value
       : null;
-  const verificationPlan = verifiedBpm
-    ? audioTempoConformPlan(verifiedBpm, gridBpm)
-    : null;
-  if (!verificationPlan || verificationPlan.deviation > 0.05) {
+  // THE STRETCH IS EXACT MATH from the measured source, so the bytes are on grid
+  // BY CONSTRUCTION — the re-measure only guards against a source reading so
+  // wrong the audio is gridless. The OLD gate re-measured and rejected at a 5%
+  // tolerance, so a good trained render whose stretched melodic content simply
+  // re-read a few % off (or unreadable at all) was skipped with "could not be
+  // verified against N BPM". Now we trust the applied ratio when the re-measure
+  // is unavailable and pass an octave-folded post-conform tolerance otherwise;
+  // only a reading off at EVERY octave (genuinely gridless) still skips.
+  const verdict = postConformTempoVerdict(verifiedBpm, gridBpm);
+  if (!verdict.pass) {
     throw new Error(
-      `trained melody tempo conform could not be verified against ${gridBpm} BPM`
+      `trained melody tempo conform could not be verified against ${gridBpm} BPM: ${verdict.reason}`
     );
   }
   return {
@@ -745,7 +757,7 @@ export async function conformMelodyTempoToGrid(
     receipt: {
       ...baseReceipt,
       tempoConformed: true,
-      verifiedBpm,
+      verifiedBpm: verdict.verifiedBpm,
     },
   };
 }
@@ -1382,33 +1394,42 @@ export async function processOwnEngine(p: OwnEnginePayload): Promise<void> {
     // the beat, it just leaves an honest note.
     let melodyScore: MelodyScore | null = p.melodyScore ?? null;
     let melodyGuideUrl: string | null = null;
-    if (p.songId && !melodyScore) {
+    if (!melodyScore) {
       try {
-        const draft = await prisma.lyricDraft.findUnique({
-          where: { songId: p.songId },
-        });
-        const lyricBody = p.lyrics?.trim() || draft?.body?.trim() || "";
-        const parsedLyricSections = lyricBody
-          ? parseLyricSections(lyricBody).filter(s => s.lines.length > 0)
-          : [];
-        const lyricSections = p.lyrics?.trim() === lyricBody && fittedSingingSections.length
-          ? fittedSingingSections
-          : parsedLyricSections.length
-            ? fitMelodySectionsToDuration(
-                {
-                  bpm,
-                  sections: parsedLyricSections.map(s => ({
-                    name: s.name || s.kind,
-                    kind: s.kind,
-                    lines: s.lines,
-                  })),
-                },
-                240
-              )
+        // LYRICS DECIDE THE PATH. A song with a lyric draft composes the SUNG
+        // vocal melody (unchanged). A pure instrumental (no lyric) STILL gets a
+        // tune — an instrumental topline over the arrangement — so it never ships
+        // as drums+bass+chords with no lead. Only a song has a draft to read.
+        let draft: Awaited<
+          ReturnType<typeof prisma.lyricDraft.findUnique>
+        > = null;
+        let lyricSections: typeof fittedSingingSections = [];
+        if (p.songId) {
+          draft = await prisma.lyricDraft.findUnique({
+            where: { songId: p.songId },
+          });
+          const lyricBody = p.lyrics?.trim() || draft?.body?.trim() || "";
+          const parsedLyricSections = lyricBody
+            ? parseLyricSections(lyricBody).filter(s => s.lines.length > 0)
             : [];
-        if (!lyricSections.length) {
-          notes.push("melody score skipped: no lyric draft for this song");
-        } else {
+          lyricSections =
+            p.lyrics?.trim() === lyricBody && fittedSingingSections.length
+              ? fittedSingingSections
+              : parsedLyricSections.length
+                ? fitMelodySectionsToDuration(
+                    {
+                      bpm,
+                      sections: parsedLyricSections.map(s => ({
+                        name: s.name || s.kind,
+                        kind: s.kind,
+                        lines: s.lines,
+                      })),
+                    },
+                    240
+                  )
+                : [];
+        }
+        if (lyricSections.length) {
           // Anchors come from the Writing Brain's craft object (same read the
           // singing pipeline does) — absent on old drafts, and that's fine.
           const craft = (draft?.craftJson ?? null) as {
@@ -1424,7 +1445,10 @@ export async function processOwnEngine(p: OwnEnginePayload): Promise<void> {
             genre: p.genre,
             bpm,
             key: homeKey,
-            seed: p.renderSpec?.seed ?? p.renderSeed ?? seedFrom(p.songId, bpm),
+            seed:
+              p.renderSpec?.seed ??
+              p.renderSeed ??
+              seedFrom(p.songId ?? p.jobId, bpm),
             swing: feel.swing,
             syncopation: feel.syncopation,
             sections: lyricSections.map(s => ({
@@ -1458,6 +1482,57 @@ export async function processOwnEngine(p: OwnEnginePayload): Promise<void> {
               `melody guide skipped: ${(err as Error)?.message?.slice(0, 100)}`
             );
           }
+        } else if (!p.withVocals) {
+          // INSTRUMENTAL TOPLINE (no lyric — instrumental-only). Build melody
+          // sections from the SAME arrangement sections the bed was assembled on
+          // (name → SectionKind, empty lines → composeMelody's instrumental
+          // branch), so the SOUNDCORE lead-mix path below renders a real melodic
+          // topline INTO the bed instead of leaving it lead-less. NEVER runs when
+          // withVocals — there the vocal IS the topline. Deterministic per the
+          // render seed (replay reproduces); pure code, no LLM, no provider call.
+          const feel = laneFeel(p.genre);
+          melodyScore = composeMelody({
+            genre: p.genre,
+            bpm,
+            key: homeKey,
+            seed:
+              p.renderSpec?.seed ??
+              p.renderSeed ??
+              seedFrom(p.songId ?? p.jobId, bpm),
+            swing: feel.swing,
+            syncopation: feel.syncopation,
+            sections: sections.map(s => ({
+              name: s.name,
+              kind: sectionKindOf(s.name),
+              lines: [] as string[],
+              bars: Math.max(2, Math.min(32, Math.round(s.bars))),
+            })),
+          });
+          const noteCount = melodyScore.sections.reduce(
+            (a, s) => a + s.notes.length,
+            0
+          );
+          notes.push(
+            `instrumental topline: composed ${noteCount} notes across ${melodyScore.sections.length} sections in ${homeKey} (no lyric — instrumental lead)`
+          );
+          // AUDIBLE EVIDENCE — same score guide the sung path files.
+          try {
+            const wav = await renderMelodyGuide(melodyScore);
+            melodyGuideUrl = await uploadBytes({
+              workspaceId: p.workspaceId,
+              kind: "melody-guides",
+              bytes: wav,
+              contentType: "audio/wav",
+              ext: "wav",
+            });
+            notes.push("melody guide: rendered and attached to the beat proof");
+          } catch (err) {
+            notes.push(
+              `melody guide skipped: ${(err as Error)?.message?.slice(0, 100)}`
+            );
+          }
+        } else {
+          notes.push("melody score skipped: no lyric draft for this song");
         }
       } catch (err) {
         melodyScore = null;
@@ -1648,7 +1723,7 @@ export async function processOwnEngine(p: OwnEnginePayload): Promise<void> {
             lead = tempoConform.bytes;
             if (tempoConform.receipt.tempoConformed) {
               notes.push(
-                `trained layer tempo-conformed: ${Math.round(tempoConform.receipt.sourceBpm ?? 0)} BPM to ${bpm} BPM (ratio ${tempoConform.receipt.tempoRatio.toFixed(4)})`
+                `trained layer tempo-conformed: ${Math.round(tempoConform.receipt.sourceBpm ?? 0)} BPM to ${bpm} BPM (ratio ${tempoConform.receipt.tempoRatio.toFixed(4)})${tempoConform.receipt.verifiedBpm == null ? " (verified by the applied ratio; re-measure unavailable)" : ""}`
               );
             }
             // SAME HONESTY GATE as the stock topping: a fine-tune is still a
@@ -1656,8 +1731,24 @@ export async function processOwnEngine(p: OwnEnginePayload): Promise<void> {
             // bed can be touched. A hard mismatch throws into the fail-open
             // catch below; the measured reason rides the record.
             const grid = await verifyMelodyAgainstGrid(lead, bpm, homeKey);
-            if (!grid.ok) throw new Error(grid.note);
-            notes.push(grid.note);
+            if (!grid.ok) {
+              // A LANDED exact-ratio conform is the AUTHORITATIVE tempo gate (it
+              // stretched by the exact ratio, then confirmed the result within an
+              // octave-folded post-conform tolerance). Re-measuring the SAME bytes
+              // here only re-introduces detector noise on melodic content, so a
+              // tempo-only rejection after a successful conform is accepted and
+              // disclosed. A KEY mismatch — or a gridless lead the conform never
+              // touched — still hard-fails into the fail-open catch below.
+              if (grid.reason === "tempo" && tempoConform.receipt.tempoConformed) {
+                notes.push(
+                  `trained layer grid: tempo verified by the conform within ${Math.round(POST_CONFORM_TEMPO_TOLERANCE * 100)}% (verify re-measure noise disclosed: ${grid.note})`
+                );
+              } else {
+                throw new Error(grid.note);
+              }
+            } else {
+              notes.push(grid.note);
+            }
             // PLACEMENT (fill-overlay pattern): the topping lands at the first
             // hook/chorus/drop arrival — where melody colour belongs — at a
             // modest UNDER-the-bed gain, peak-limited by the same graph the

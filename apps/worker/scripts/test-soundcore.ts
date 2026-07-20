@@ -27,6 +27,8 @@ import {
   sampleKitFloorRows,
   materialCanAutoAssemble,
   effectiveMaterialRoleEvidence,
+  composeMelody,
+  scoreInKey,
   GENRE_KIT_KEYS,
   type MelodyScore,
 } from "@afrohit/shared";
@@ -263,6 +265,79 @@ async function main() {
     ownEngineSrc.includes("renderMelodyGuide(melodyScore)"),
     "the melody guide evidence WAV is retained"
   );
+
+  // ══ INSTRUMENTAL TOPLINE — a pure instrumental (no lyric) STILL composes ═════
+  // A line-less instrumental used to hit "melody score skipped: no lyric draft"
+  // and ship lead-less. Now the melody block composes an instrumental topline
+  // from the ARRANGEMENT sections — but ONLY when NOT withVocals (the vocal is
+  // the topline when there are vocals). The lead mix then renders it into the bed.
+  assert.ok(
+    ownEngineSrc.includes("} else if (!p.withVocals) {") &&
+      ownEngineSrc.includes("kind: sectionKindOf(s.name)") &&
+      ownEngineSrc.includes("lines: [] as string[]"),
+    "no-lyric + instrumental-only composes a topline from the arrangement sections"
+  );
+  assert.ok(
+    ownEngineSrc.includes("instrumental topline: composed"),
+    "the instrumental topline files an honest note (a tune, not a skip)"
+  );
+  // The skip note only survives for a withVocals render with no lyric yet — the
+  // vocal will be the topline, so no instrumental lead is composed there.
+  const skipIdx = ownEngineSrc.indexOf(
+    'notes.push("melody score skipped: no lyric draft for this song")'
+  );
+  const instrElseIdx = ownEngineSrc.indexOf("} else if (!p.withVocals) {");
+  assert.ok(
+    skipIdx > 0 && instrElseIdx > 0 && skipIdx > instrElseIdx,
+    "the 'no lyric draft' skip is the withVocals-only fallthrough AFTER the instrumental branch"
+  );
+
+  // LAYER PRESENT IN A >30s INSTRUMENTAL RENDER — compose a line-less
+  // instrumental score (the exact shape own-engine builds for a pure
+  // instrumental), render the lead, and prove a full-length topline lands.
+  const instrumentalScore: MelodyScore = composeMelody({
+    genre: "afrobeats",
+    bpm: 100,
+    key: "A minor",
+    seed: 11,
+    swing: 0.56,
+    syncopation: 0.7,
+    sections: [
+      { name: "intro", kind: "intro", lines: [], bars: 8 },
+      { name: "verse", kind: "verse", lines: [], bars: 16 },
+      { name: "hook", kind: "hook", lines: [], bars: 8 },
+    ], // 32 bars = 76.8s @100bpm
+  });
+  assert.equal(
+    scoreInKey(instrumentalScore),
+    1,
+    "the composed instrumental topline is 100% in key"
+  );
+  assert.ok(
+    instrumentalScore.sections.every((s) => s.notes.length > 0),
+    "every line-less section carries an instrumental phrase (no empty notes)"
+  );
+  try {
+    const instrLead = await renderMelodyLead(instrumentalScore, {
+      genre: "afrobeats",
+    });
+    const instrDur = await probeAudioBufferDurationS(instrLead);
+    assert.ok(
+      instrDur > 30,
+      `the instrumental topline renders a full-length >30s lead (got ${instrDur}s)`
+    );
+    assert.ok(
+      instrLead.length > 44 + 44100 * 2 * 20,
+      "the instrumental lead WAV carries real audio, not a header"
+    );
+    console.log(
+      `soundcore instrumental lead: rendered a ${Math.round(instrDur)}s topline from a line-less score (a pure instrumental now has a tune)`
+    );
+  } catch (err) {
+    console.log(
+      `soundcore instrumental lead: SKIP (ffmpeg unavailable) — ${(err as Error)?.message?.slice(0, 80)}`
+    );
+  }
 
   // LAYER PRESENT IN A >30s RENDER — the direct ear test (ffmpeg-gated). Build a
   // >30s score, render the lead, prove the WAV spans the full length and carries

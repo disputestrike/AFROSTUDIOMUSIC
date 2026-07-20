@@ -573,10 +573,119 @@ function motifDegreeOf(motifNote: string | undefined, key: ParsedKey, lo: number
   return undefined; // out of key/palette → ignored (grounding: taste never breaks the scale law)
 }
 
+// ---------------------------------------------------------------------------
+// Instrumental topline — a hummable in-key motif for a section with NO lyric
+// ---------------------------------------------------------------------------
+
+/**
+ * Compose an INSTRUMENTAL phrase over a line-less section's bars — a real,
+ * musical, in-key motif. This is the topline a pure-instrumental render sings
+ * WITHOUT a vocal (withVocals:false, no lyrics): before this, a line-less
+ * section shipped with `notes: []`, so the beat carried drums+bass+chords and
+ * NO melodic lead. It reuses the exact pitch (linePitches), rhythm (lineRhythm)
+ * and scale (degreeToMidi) engine the lyric path passes its validators with, so
+ * the phrase is scale-locked, fit-guarded and strong-position aware, and it is
+ * deterministic per the shared seeded rng. Taste follows the section KIND:
+ *   - intro/outro/bridge: SPARSE, low-mid register, plenty of breath;
+ *   - verse: MODERATE, call-and-response (a rising call, a falling answer);
+ *   - hook/chorus: DENSER, higher tessitura, the motif REPEATED (the earworm).
+ * Rests separate the cells (call-and-response phrasing) — a hummable topline,
+ * never a wall-to-wall scale run.
+ */
+function instrumentalNotes(o: {
+  kind: SectionKind;
+  bars: number;
+  key: ParsedKey;
+  rng: () => number;
+  afro: boolean;
+  tpl: KindTemplate;
+  density: MelodyDensity;
+  strongOffset: 0 | 0.5;
+  startDegree?: number;
+  motifNote?: string;
+}): MelodyNote[] {
+  const notes: MelodyNote[] = [];
+  const totalBeats = o.bars * 4;
+  const isHook = o.kind === 'hook';
+  // Motif size + breath by density: denser sections pack more notes, rest less.
+  const notesPerCell = o.density === 'dense' ? 6 : o.density === 'flowing' ? 4 : 3;
+  const restBeats = o.density === 'dense' ? 1 : o.density === 'flowing' ? 1.5 : 2.5;
+  // Cells are 2-bar call/response units; at least ONE cell always fires.
+  const phraseCount = Math.max(1, Math.round(o.bars / 2));
+  const cellBeats = totalBeats / phraseCount;
+  const motifDegree = isHook
+    ? motifDegreeOf(o.motifNote, o.key, o.tpl.lo, o.tpl.hi, o.afro)
+    : undefined;
+  let hookCell: number[] | null = null; // the hook repeats ONE motif (the earworm)
+  for (let p = 0; p < phraseCount; p++) {
+    const phraseStart = p * cellBeats;
+    const phraseEnd = (p + 1) * cellBeats;
+    // The "call" carries the full motif; the "response" answers with one note less.
+    const cellNotes = isHook
+      ? notesPerCell
+      : p % 2 === 0
+        ? notesPerCell
+        : Math.max(2, notesPerCell - 1);
+    const units: SylUnit[] = Array.from({ length: cellNotes }, () => ({
+      syllable: '', // instrumental — no lyric syllable (render reads only midi+dur)
+      notes: 1,
+      anchor: false,
+    }));
+    // Call rises to ASK, response falls to ANSWER home; the hook arches.
+    const contour: MelodyContour = isHook ? 'arch' : p % 2 === 0 ? 'rise' : 'fall';
+    let degrees: number[];
+    if (isHook && hookCell) {
+      degrees = hookCell; // MOTIF REPEATED across the hook — the same pitches recur
+    } else {
+      degrees = linePitches({
+        units,
+        key: o.key,
+        rng: o.rng,
+        afro: o.afro,
+        kind: o.kind,
+        contour,
+        lo: o.tpl.lo,
+        hi: o.tpl.hi,
+        startDegree: p === 0 ? o.startDegree : undefined,
+        motifDegree,
+        endOn: o.tpl.endOn,
+        firstLineOfSection: p === 0,
+      });
+      if (isHook) hookCell = degrees;
+    }
+    // Place the cell in the FIRST part of the phrase window and leave a rest, so
+    // the next cell ANSWERS instead of the notes running edge to edge.
+    const minRoom = phraseStart + cellNotes * MIN_STEP + END_GAP;
+    const playEnd = Math.min(phraseEnd, Math.max(minRoom, phraseEnd - restBeats));
+    const rhythm = lineRhythm({
+      units,
+      lineStart: phraseStart,
+      lineEnd: playEnd,
+      kind: o.kind,
+      density: o.density,
+      rng: o.rng,
+      strongOffset: o.strongOffset,
+    });
+    for (let ni = 0; ni < units.length; ni++) {
+      const r = rhythm[ni];
+      if (!r) continue;
+      notes.push({
+        startBeat: r4(r.start),
+        durBeats: r4(r.dur),
+        midi: degreeToMidi(o.key, degrees[ni]!),
+        syllable: '',
+      });
+    }
+  }
+  return notes;
+}
+
 /**
  * Compose the vocal melody — explicit notes per syllable, deterministic per
  * seed. This is the WHOLE composer: the taste layer (melodyBrain) only hands
- * it phrasing parameters; no model ever emits a note.
+ * it phrasing parameters; no model ever emits a note. A section with NO lyric
+ * lines gets an INSTRUMENTAL topline (instrumentalNotes) instead of silence, so
+ * a pure-instrumental render still carries a tune.
  */
 export function composeMelody(opts: ComposeMelodyOpts): MelodyScore {
   const key = parseKey(opts.key);
@@ -642,23 +751,43 @@ export function composeMelody(opts: ComposeMelodyOpts): MelodyScore {
           }
         }
       }
-      // SWING LAW — the lilt: every second 8th (the x.5 positions) slides late.
-      if (swing >= 0.54) {
-        const lilt = (swing - 0.5) * 0.5;
-        for (const n of notes) {
-          const frac = ((n.startBeat % 1) + 1) % 1;
-          if (Math.abs(frac - 0.5) < 1e-6) n.startBeat = r4(n.startBeat + lilt);
+    } else {
+      // INSTRUMENTAL TOPLINE — a line-less section still gets a tune: the studio
+      // composes a hummable, in-key motif over the section's bars so a pure
+      // instrumental render carries a melodic lead, not just drums+bass+chords.
+      const density = sIn.density ?? tpl.density;
+      const instrumental = instrumentalNotes({
+        kind: sIn.kind,
+        bars,
+        key,
+        rng,
+        afro,
+        tpl,
+        density,
+        strongOffset,
+        startDegree: sIn.startDegree,
+        motifNote: sIn.motifNote,
+      });
+      for (const n of instrumental) notes.push(n);
+    }
+    // SWING LAW — the lilt: every second 8th (the x.5 positions) slides late.
+    // Applies to BOTH branches so the Afro pocket rides the topline whether it
+    // is sung or instrumental. AFTER placement so the grid stays honest.
+    if (swing >= 0.54) {
+      const lilt = (swing - 0.5) * 0.5;
+      for (const n of notes) {
+        const frac = ((n.startBeat % 1) + 1) % 1;
+        if (Math.abs(frac - 0.5) < 1e-6) n.startBeat = r4(n.startBeat + lilt);
+      }
+      for (let i = 0; i + 1 < notes.length; i++) {
+        const nx = notes[i + 1]!;
+        if (notes[i]!.startBeat + notes[i]!.durBeats > nx.startBeat) {
+          notes[i]!.durBeats = r4(Math.max(0.125, nx.startBeat - notes[i]!.startBeat));
         }
-        for (let i = 0; i + 1 < notes.length; i++) {
-          const nx = notes[i + 1]!;
-          if (notes[i]!.startBeat + notes[i]!.durBeats > nx.startBeat) {
-            notes[i]!.durBeats = r4(Math.max(0.125, nx.startBeat - notes[i]!.startBeat));
-          }
-        }
-        const last = notes[notes.length - 1];
-        if (last && last.startBeat + last.durBeats > totalBeats - 0.25) {
-          last.durBeats = r4(Math.max(0.125, totalBeats - 0.25 - last.startBeat));
-        }
+      }
+      const last = notes[notes.length - 1];
+      if (last && last.startBeat + last.durBeats > totalBeats - 0.25) {
+        last.durBeats = r4(Math.max(0.125, totalBeats - 0.25 - last.startBeat));
       }
     }
     sections.push({ name: sIn.name, kind: sIn.kind, bars, notes });

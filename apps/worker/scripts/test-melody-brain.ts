@@ -167,5 +167,45 @@ console.log('\n[4] validators bite (tampered scores fail for the right reason)')
 console.log('\n[5] melodyBrain shipped in @afrohit/ai');
 assert(typeof melodyBrain === 'function', 'melodyBrain exported (LLM picks phrasing only; on any failure this exact composer takes the take)');
 
+// ---- 6: INSTRUMENTAL TOPLINE — a line-less section still gets a tune --------
+// A pure instrumental (no lyrics) used to compose notes ONLY inside `if
+// (lines.length)`, so a line-less section shipped `notes: []` — a beat with no
+// melodic lead. Now a line-less section composes a hummable, in-key motif.
+console.log('\n[6] instrumental topline (no lyric lines → a hummable in-key motif)');
+{
+  const instrumental = (seed: number): MelodyScore =>
+    composeMelody({
+      genre: 'afrobeats', bpm: 104, key: 'B minor', seed, swing: 0.56, syncopation: 0.7,
+      sections: [
+        { name: 'Intro', kind: 'intro', lines: [], bars: 8 },
+        { name: 'Hook', kind: 'hook', lines: [], bars: 8 },
+        { name: 'Verse', kind: 'verse', lines: [], bars: 8 },
+      ],
+    });
+  const s = instrumental(7);
+  const intro = s.sections.find((x) => x.kind === 'intro')!;
+  const hook = s.sections.find((x) => x.kind === 'hook')!;
+  const total = s.sections.reduce((a, x) => a + x.notes.length, 0);
+  console.log(`  instrumental: ${total} notes (intro ${intro.notes.length}, hook ${hook.notes.length}), inKey=${(scoreInKey(s) * 100).toFixed(0)}%, span=${melodySpanSemitones(s)} semis`);
+  assert(total > 0 && s.sections.every((x) => x.notes.length > 0), `every line-less section gets notes (total ${total})`);
+  assert(scoreInKey(s) === 1, `instrumental topline is 100% in key (got ${(scoreInKey(s) * 100).toFixed(0)}%)`);
+  assert(sectionsFitBars(s), 'instrumental topline fits its bars (no overflow)');
+  assert(melodySpanSemitones(s) <= 14, `instrumental span ≤ 14 semitones (got ${melodySpanSemitones(s)})`);
+  assert(anchorsOnStrongBeats(s) >= 0.7, 'instrumental prosody holds (no anchors → vacuously strong)');
+  // hook denser + higher than a sparse intro (the earworm arrives)
+  assert(hook.notes.length > intro.notes.length, `the hook is DENSER than the intro (${hook.notes.length} > ${intro.notes.length})`);
+  // motif repetition: the hook's pitch cell recurs across its phrases (even
+  // phrase count → the two halves carry identical pitches)
+  const hookMidis = hook.notes.map((n) => n.midi);
+  const half = hookMidis.length / 2;
+  assert(half >= 2 && hookMidis.slice(0, half).join() === hookMidis.slice(half).join(), `the hook MOTIF repeats (cell ${hookMidis.slice(0, Math.min(4, half)).map(midiNoteName).join(' ')})`);
+  // determinism per seed; different seeds diverge
+  assert(JSON.stringify(instrumental(7)) === JSON.stringify(s), 'instrumental topline is deterministic per seed');
+  assert(JSON.stringify(instrumental(42)) !== JSON.stringify(s), 'different seeds → different instrumental toplines');
+  // NOT a scale run — the phrase breathes (call-and-response rests), not wall-to-wall
+  const introSounding = intro.notes.reduce((a, n) => a + n.durBeats, 0);
+  assert(introSounding < intro.bars * 4, `the intro BREATHES (sounding ${introSounding.toFixed(1)} of ${intro.bars * 4} beats — rests)`);
+}
+
 console.log(failures ? `\nmelody-brain: ${failures} FAILURE(S)` : '\nmelody-brain: all composition laws hold (composed, not guessed)');
 process.exit(failures ? 1 : 0);

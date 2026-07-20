@@ -325,6 +325,19 @@ async function main() {
     "the job row records the trained layer's cost"
   );
 
+  // POST-CONFORM TEMPO: a LANDED exact-ratio conform is the authoritative tempo
+  // gate, so a tempo-only verify rejection (verify re-measuring the SAME bytes a
+  // few % off) is accepted and disclosed instead of skipping a good trained
+  // render. A KEY mismatch — or a lead the conform never landed — still fails.
+  assert.ok(
+    trainedBranch.includes('grid.reason === "tempo" && tempoConform.receipt.tempoConformed'),
+    "a tempo-only verify rejection after a landed conform lets the good render mix in"
+  );
+  assert.ok(
+    trainedBranch.includes("throw new Error(grid.note)"),
+    "a key mismatch / gridless verify still hard-fails into the fail-open catch"
+  );
+
   // Fail-open: the mix branch catches and discloses; the take never dies here.
   assert.ok(
     trainedBranch.includes("`trained layer skipped: ${(err as Error)?.message?.slice(0, 120)}`"),

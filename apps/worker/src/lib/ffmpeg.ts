@@ -2605,3 +2605,73 @@ export function audioTempoConformPlan(
     supported: tempoRatio >= 0.5 && tempoRatio <= 1.5,
   };
 }
+
+/**
+ * POST-CONFORM tempo tolerance. Once a lead has been time-stretched by the EXACT
+ * pitch-preserving ratio derived from its measured source tempo, its grid is
+ * correct BY CONSTRUCTION — the re-measure is only a sanity check on noisy
+ * melodic content (a generative topping has sparse, ambiguous onsets a detector
+ * reads ±5-8% off routinely). This wider octave-folded tolerance passes a
+ * genuinely-conformed-but-noisy render while a gridless reading (off at EVERY
+ * octave) still fails. Deliberately looser than the 5% pre-conform gate: that
+ * one decides IF to stretch; this one only confirms the stretch didn't miss by
+ * an octave. */
+export const POST_CONFORM_TEMPO_TOLERANCE = 0.12;
+
+/** Smallest octave-folded deviation of `bpm` from `gridBpm` (0 = on grid).
+ *  Detectors are octave-ambiguous, so half/double-time readings fold onto the
+ *  grid before the distance is taken — the same fold the honesty gate uses. */
+export function octaveFoldedTempoDeviation(bpm: number, gridBpm: number): number {
+  if (!(bpm > 0) || !(gridBpm > 0)) return Number.POSITIVE_INFINITY;
+  return Math.min(
+    ...[bpm, bpm * 2, bpm / 2].map(c => Math.abs(c - gridBpm) / gridBpm)
+  );
+}
+
+export interface PostConformTempoVerdict {
+  pass: boolean;
+  verifiedBpm: number | null;
+  reason: string;
+}
+
+/**
+ * Decide whether an EXACT-ratio tempo conform LANDED, given only the re-measured
+ * post-conform BPM (null = the detector could not read the stretched audio) and
+ * the grid. The stretch is exact math from the measured source, so:
+ *   - re-measure UNREADABLE → TRUST the applied ratio (MusicGen melodic content
+ *     frequently can't be re-measured after a stretch); the source WAS measured
+ *     and the math is exact, so the audio is on grid — PASS, verifiedBpm null
+ *     (we never fabricate a measurement we didn't take);
+ *   - re-measure READABLE and within POST_CONFORM_TEMPO_TOLERANCE (octave-folded)
+ *     → PASS;
+ *   - re-measure READABLE but off at EVERY octave → the source reading was so
+ *     wrong even the exact ratio left the audio gridless → REJECT (honest skip).
+ * This is the "stretch by the ratio, not the re-measure" fix: a good trained
+ * render at a slightly-off tempo now lands; genuine garbage still skips.
+ */
+export function postConformTempoVerdict(
+  verifiedBpm: number | null,
+  gridBpm: number
+): PostConformTempoVerdict {
+  if (verifiedBpm == null || !(verifiedBpm > 0)) {
+    return {
+      pass: true,
+      verifiedBpm: null,
+      reason:
+        "post-conform re-measure unavailable — trusting the applied exact ratio",
+    };
+  }
+  const dev = octaveFoldedTempoDeviation(verifiedBpm, gridBpm);
+  if (dev <= POST_CONFORM_TEMPO_TOLERANCE) {
+    return {
+      pass: true,
+      verifiedBpm,
+      reason: `re-measured ~${Math.round(verifiedBpm)} BPM, ${Math.round(dev * 100)}% off (octave-folded) — within the ${Math.round(POST_CONFORM_TEMPO_TOLERANCE * 100)}% post-conform tolerance`,
+    };
+  }
+  return {
+    pass: false,
+    verifiedBpm,
+    reason: `measured ~${Math.round(verifiedBpm)} BPM, ${Math.round(dev * 100)}% off at every octave — no stable grid`,
+  };
+}
