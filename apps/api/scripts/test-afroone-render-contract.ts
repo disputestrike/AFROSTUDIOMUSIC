@@ -6,6 +6,7 @@ import {
   resolveOwnEngineRouting,
   unsupportedOwnEngineControls,
 } from "../src/routes/beats";
+import { resolveAfroOneVocalRoute } from "../src/lib/music-capabilities";
 
 const parsed = generateBeatInputSchema.parse({
   projectId: "cm12345678901234567890123",
@@ -47,11 +48,36 @@ assert.deepEqual(
   "singing and native stems are owned-engine controls"
 );
 
+const ownedOnly = {
+  workspaceProvider: null,
+  firstParty: false,
+  sunoAllowed: false,
+  elevenAllowed: false,
+  flagship: false,
+  advanced: false,
+  standard: false,
+  sunoAvailable: false,
+  elevenAvailable: false,
+  replicateAvailable: false,
+  falAvailable: false,
+  afrooneSinging: true,
+};
+assert.equal(resolveAfroOneVocalRoute("own", true, ownedOnly), "afroone");
+assert.equal(resolveAfroOneVocalRoute(undefined, true, ownedOnly), "afroone");
+assert.equal(
+  resolveAfroOneVocalRoute("own", true, { ...ownedOnly, afrooneSinging: false }),
+  "unavailable"
+);
+assert.equal(
+  resolveAfroOneVocalRoute(undefined, true, { ...ownedOnly, standard: true }),
+  "external"
+);
+
 const source = readFileSync(
   join(process.cwd(), "src", "routes", "beats.ts"),
   "utf8"
 );
-assert.match(source, /'\/:beatId\/replay'/);
+assert.match(source, /["']\/:beatId\/replay["']/);
 assert.match(source, /lockedMaterialIds/);
 assert.match(source, /renderSpec/);
 assert.match(source, /deriveAfroOneSeed/);
@@ -62,6 +88,8 @@ assert.match(source, /withVocals: input\.withVocals/);
 assert.match(source, /voiceProfileId/);
 assert.match(source, /replayTrainingUsage/);
 assert.match(source, /batchSeed: baseSeed/);
+assert.match(source, /autoOwnSinging/);
+assert.match(source, /afroone_singing_unavailable/);
 
 const workerSource = readFileSync(
   join(process.cwd(), "..", "worker", "src", "processors", "own-engine.ts"),

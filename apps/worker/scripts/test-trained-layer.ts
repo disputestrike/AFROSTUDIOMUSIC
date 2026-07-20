@@ -297,10 +297,20 @@ async function main() {
   // recorded like every other adapter's estimatedCostUsd. normalizedDb is the
   // SOUNDWAVE2 Target D receipt: the measured shelf gain that tamed a hot
   // fine-tune render before the gates.
-  assert.ok(
-    /trainedLayerReceipt = \{\s*trainedModelRef,\s*layerRole,\s*estimatedCostUsd,\s*normalizedDb,\s*\}/m.test(trainedBranch),
-    "a mixed layer files the {trainedModelRef, layerRole, estimatedCostUsd, normalizedDb} receipt"
-  );
+  for (const receiptField of [
+    "trainedModelRef",
+    "layerRole",
+    "estimatedCostUsd",
+    "normalizedDb",
+    "tempoConformed",
+    "tempoRatio",
+    "verifiedBpm",
+  ]) {
+    assert.ok(
+      trainedBranch.includes(receiptField),
+      `trained-layer receipt includes ${receiptField}`
+    );
+  }
   assert.ok(
     trainedBranch.includes("normalizeLoopLoudness(leadRaw)"),
     "the hot fine-tune render is leveled to the loop shelf BEFORE the gates"

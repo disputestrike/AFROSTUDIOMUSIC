@@ -31,7 +31,11 @@ import { requireAuth } from '../middleware/auth';
 import { createQueuedProviderJob, scopedRequestKey } from '../lib/queued-job';
 import { publicUrlFor, verifyUploadedAudio } from '../lib/storage';
 import { voiceVocalTag, languageVocalTag } from '../services/chat-tools';
-import { musicRouteCapabilities, validateMusicRoute } from '../lib/music-capabilities';
+import {
+  musicRouteCapabilities,
+  resolveAfroOneVocalRoute,
+  validateMusicRoute,
+} from '../lib/music-capabilities';
 import { registerBeatForInspection } from '../lib/beat-ingest';
 
 export interface OwnEngineRoutingInput {
@@ -414,7 +418,20 @@ export default async function beats(app: FastifyInstance) {
         && !roleRequest.unsupportedInstruments.length
         ? await ownShelfRoles(workspaceId, genre)
         : null;
-      const useOwnEngine = ownRouting.mode === 'own' || !!autoOwnRoles;
+      const capabilities = await musicRouteCapabilities(workspaceId);
+      const vocalRoute = resolveAfroOneVocalRoute(
+        input.songEngine,
+        input.withVocals,
+        capabilities,
+      );
+      if (vocalRoute === 'unavailable') {
+        return reply.code(409).send({
+          error: 'afroone_singing_unavailable',
+          message: 'AfroOne singing is not armed. Connect its singing route or choose another song engine.',
+        });
+      }
+      const autoOwnSinging = vocalRoute === 'afroone';
+      const useOwnEngine = ownRouting.mode === 'own' || !!autoOwnRoles || autoOwnSinging;
       // OWNER DOCTRINE (2026-07-19, live 422 on "steel pan"): an EXPLICIT
       // own-engine ask never dead-ends over an unprovable instrument — strip it,
       // render the rest, disclose. (Auto still routes to a provider instead —
@@ -427,7 +444,7 @@ export default async function beats(app: FastifyInstance) {
         roleRequest = requestedMaterialRoleContract(input.instruments);
       }
       if (!useOwnEngine) {
-        const route = validateMusicRoute(input.songEngine, await musicRouteCapabilities(workspaceId), input.withVocals);
+        const route = validateMusicRoute(input.songEngine, capabilities, input.withVocals);
         if (!route.ok) return reply.code(route.statusCode).send({ error: route.error, message: route.message });
       }
       const idempotencyKey = scopedRequestKey(req.headers as Record<string, unknown>, 'beat-generate');
@@ -453,14 +470,13 @@ export default async function beats(app: FastifyInstance) {
       // OUR OWN ENGINE (Feature: both MiniMax AND ours). When the user picks
       // 'own', build the instrumental by ASSEMBLING the artist's harvested +
       // synthesized material (processOwnEngine) instead of renting a provider
-      // model — the "hard musical control" path. Full sung vocals aren't wired to
-      // the own engine yet, so 'own' produces the INSTRUMENTAL bed (vocals via
-      // upload or a separate render).
+      // model — the "hard musical control" path. Vocal requests continue into
+      // AfroOne's genuine singing worker only when that capability is armed.
       // MATERIAL-FIRST AUTO (audit: 'auto' ALWAYS rented a provider): engine
       // unset + INSTRUMENTAL ask + a stocked shelf (≥ OWN_ENGINE_MIN_ROLES
       // distinct roles for this genre) → the same own-engine path, and the
-      // response SAYS so (materialSource). withVocals NEVER auto-routes here —
-      // the own engine cannot sing; that stays with the providers.
+      // response SAYS so (materialSource). Auto vocal requests also land here
+      // when AfroOne is the reachable singer.
       if (useOwnEngine) {
         const ownBpm = input.bpm ?? genreSignature(genre).bpm;
         const durationS = input.durationS ?? genreSignature(genre).durationS;

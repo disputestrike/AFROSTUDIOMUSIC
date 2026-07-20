@@ -30,7 +30,10 @@ import {
   type LearnedPromptReference,
 } from "../src/lib/learned";
 import uploads from "../src/routes/uploads";
-import { resolveOwnEngineRouting } from "../src/routes/beats";
+import {
+  resolveOwnEngineRouting,
+  unsupportedOwnEngineControls,
+} from "../src/routes/beats";
 import { identitySafeZapFacts } from "../src/routes/zap";
 
 const repoRoot = fileURLToPath(new URL("../../../", import.meta.url));
@@ -182,10 +185,7 @@ function assertOwnEngineRoutingIsLossless(): void {
     { input: { keySignature: "F# minor", withStems: false }, expected: "keySignature" },
     { input: { pinnedReferenceId: "old-pin", withStems: false }, expected: "pinnedReferenceId" },
     { input: { withStems: false }, trainingReferenceCount: 1, expected: "trainingReferences" },
-    { input: { withStems: true }, expected: "withStems" },
-    { input: { durationS: 90, withStems: false }, expected: "durationS" },
     { input: { vibePrompt: "dry live room", withStems: false }, expected: "vibePrompt" },
-    { input: { candidates: 2, withStems: false }, expected: "candidates" },
   ];
 
   for (const testCase of unsupportedCases) {
@@ -222,6 +222,11 @@ function assertOwnEngineRoutingIsLossless(): void {
   assert.deepEqual(
     resolveOwnEngineRouting({ withStems: false }),
     { mode: "auto-candidate", unsupportedControls: [] },
+  );
+  assert.deepEqual(
+    unsupportedOwnEngineControls({ withStems: true, durationS: 90, candidates: 3 }),
+    [],
+    "native stems, duration, and controlled candidates must stay on AfroOne",
   );
   assert.equal(
     resolveOwnEngineRouting({ songEngine: "minimax", withStems: false }).mode,
@@ -342,34 +347,30 @@ async function assertRequestedRoleWiring(): Promise<void> {
       /requestedRoleProvenance:\s*roleRequest\.provenance/,
     );
   }
-  // OWN + VOCALS (2026-07-16): the chat/drop path must NEVER dead-end a sung
-  // ask on Our Engine — the own branch renders the instrumental bed and says
-  // so honestly (the note below), instead of 422ing AFTER the hooks+lyrics
-  // LLM spend. The REST path keeps its pre-spend guard for direct callers.
-  assert.doesNotMatch(
-    chatSource,
-    /error:\s*["']own_vocal_pipeline_unavailable["']/,
-    "createBeatJob must coerce own+vocals to the instrumental bed, not reject",
-  );
-  assert.match(
-    chatSource,
-    /Add a vocal by upload/,
-    "the own branch's instrumental disclosure must be live code",
-  );
-  assert.match(beatsSource, /error:\s*['"]own_vocal_pipeline_unavailable['"]/);
+  // AfroOne vocals share one capability-gated contract across REST and Chat.
+  // They sing or fail before charge; they never silently become a bed-only job.
+  for (const source of [chatSource, beatsSource]) {
+    assert.doesNotMatch(source, /error:\s*["']own_vocal_pipeline_unavailable["']/);
+    assert.match(source, /withVocals:\s*(?:input|a)\.withVocals|withVocals:\s*true/);
+    assert.match(source, /lyrics/);
+  }
+  assert.match(chatSource, /afroone_lyrics_required/);
+  assert.match(chatSource, /trainingUsage:\s*ownTrainingUsage/);
+  assert.match(ownEngineSource, /processAfroOneSinging\(/);
   assert.match(
     ownEngineSource,
     /missingExactRequestedMaterialRoles\(\s*picks,\s*requestedRoles\s*\)/,
   );
-  const routingGuardIndex = beatsSource.indexOf("const ownRouting = resolveOwnEngineRouting");
-  const chargeIndex = beatsSource.indexOf("const charge = await app.chargeCredits");
-  const ownJobIndex = beatsSource.indexOf("jobName: 'own-engine'");
+  const generateSource = beatsSource.slice(beatsSource.indexOf("'/generate'"));
+  const routingGuardIndex = generateSource.indexOf("const ownRouting = resolveOwnEngineRouting");
+  const chargeIndex = generateSource.indexOf("const charge = await app.chargeCredits");
+  const ownJobIndex = generateSource.indexOf("jobName: 'own-engine'");
   assert.ok(routingGuardIndex >= 0);
   assert.ok(
     routingGuardIndex < chargeIndex && routingGuardIndex < ownJobIndex,
     "owned-engine semantic validation must run before charging or creating a job",
   );
-  assert.match(ownEngineSource, /exact requested material unavailable/);
+  assert.match(ownEngineSource, /requested role\(s\) unavailable, rendered without/);
   assert.match(ownEngineSource, /requestedRoleReceipts/);
 }
 

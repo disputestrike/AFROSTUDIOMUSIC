@@ -20,6 +20,8 @@ const base: MusicRouteCapabilities = {
   sunoAvailable: false,
   elevenAvailable: false,
   replicateAvailable: false,
+  falAvailable: false,
+  afrooneSinging: false,
 };
 
 const saved = {
@@ -66,9 +68,10 @@ try {
 
   const createPage = readFileSync(resolve(process.cwd(), '../web/app/(app)/create/page.tsx'), 'utf8');
   check(
-    createPage.includes('disabled={!hasMusicRoute}')
-      && createPage.includes('lyricsText.trim().length < 20 || !hasMusicRoute'),
-    'Create UI disables generation when no music route is connected',
+    createPage.includes('const hasSongRoute = hasMusicRoute || hasAfroOneSinging')
+      && createPage.includes('disabled={!hasSongRoute}')
+      && createPage.includes('lyricsText.trim().length < 20 || !hasSongRoute'),
+    'Create UI allows reachable AfroOne singing and disables songs when no route exists',
   );
   check(
     createPage.includes('if (!autoProduce || musicRoutes === null) return;')
