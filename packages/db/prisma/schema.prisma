@@ -1418,6 +1418,26 @@ model ProviderJob {
   @@index([workspaceId, createdAt(sort: Desc)])
 }
 
+// ===========================================================================
+// Job events — append-only progress/partial channel for a ProviderJob.
+// The model itself only exposes terminal outputJson (written once); this log is
+// how the UI learns real pipeline state BETWEEN queued and terminal (kills the
+// fake spinner) and how a playable bed URL is surfaced MINUTES before a sung
+// render finishes (bed-first streaming). Deliberately decoupled — NO foreign
+// key — so emitJobEvent is fail-soft and can never throw into a render. `seq`
+// is a global autoincrement, so a client polls the tail with ?since=<seq>.
+// ===========================================================================
+model JobEvent {
+  seq         Int      @id @default(autoincrement())
+  jobId       String
+  phase       String
+  payloadJson Json?
+  createdAt   DateTime @default(now()) @db.Timestamptz(6)
+
+  // Tail read: newest-for-job + since-cursor, both served by this one index.
+  @@index([jobId, seq])
+}
+
 model JobOutbox {
   id            String       @id @default(cuid())
   workspaceId   String

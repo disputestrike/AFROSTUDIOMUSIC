@@ -25,11 +25,48 @@ export function runWithJobAttemptContext<T>(
   return attemptContext.run({ finalAttempt }, fn);
 }
 
+/**
+ * STREAMING PRIMITIVE — append one row to the job's event tail. This is the
+ * ONLY way the UI learns real pipeline state between RUNNING and SUCCEEDED, and
+ * the channel the render carries a playable bed URL on (bed-first streaming).
+ *
+ * FAIL-SOFT BY LAW: a progress breadcrumb must NEVER break a render. Every path
+ * swallows its own error — a lost event is invisible; a thrown one would kill a
+ * paid song. The render agent adds the bed emit at own-engine.ts as a one-liner
+ * (`await emitJobEvent(p.jobId, 'bed_ready', { url, beatId, qualityState })`)
+ * once the bed is certified; the API/web consume side is already wired.
+ */
+export async function emitJobEvent(
+  jobId: string,
+  phase: string,
+  payload?: unknown
+): Promise<void> {
+  try {
+    await prisma.jobEvent.create({
+      data: {
+        jobId,
+        phase,
+        payloadJson: (payload ?? undefined) as never,
+      },
+    });
+  } catch (err) {
+    // Never surface — the render owns the outcome, not its telemetry.
+    console.warn(
+      `[job ${jobId}] emitJobEvent(${phase}) skipped: ${
+        redactSensitiveText((err as Error)?.message ?? err, 200)
+      }`
+    );
+  }
+}
+
 export async function markRunning(jobId: string) {
   await prisma.providerJob.update({
     where: { id: jobId },
     data: { status: JobStatus.RUNNING, startedAt: new Date() },
   });
+  // Real "the engine picked up your job" signal — the client maps this to
+  // "building the beat", replacing the fabricated poll-counter stage text.
+  await emitJobEvent(jobId, "running", {});
 }
 
 export async function markSucceeded(
@@ -46,6 +83,10 @@ export async function markSucceeded(
       cost: cost == null ? undefined : (cost.toFixed(6) as unknown as never),
     },
   });
+  // Terminal breadcrumb so a client watching the event tail (not the status
+  // field) still learns the render is done. The URL/master still travels on
+  // outputJson + the SUCCEEDED status; this is purely the last phase marker.
+  await emitJobEvent(jobId, "render_done", {});
 }
 
 /** §1.11 THE WALL, at the ONE chokepoint every job error flows through:
