@@ -1,7 +1,12 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { composeMelody, parseLyricSections } from '@afrohit/shared';
+import {
+  composeMelody,
+  estimateComposedMelodyDurationS,
+  melodyScoreDurationS,
+  parseLyricSections,
+} from '@afrohit/shared';
 import {
   afroOneSingingJobContract,
   buildAfroOneSungAssetReceipt,
@@ -61,6 +66,43 @@ async function main(): Promise<void> {
     afroOneSingingJobContract(second, 'voice-a')
   );
   assert.notEqual(manifest(43).scoreHash, first.scoreHash);
+
+  const longLyrics = `[Verse 1]\nOne two three four\nFive six seven eight\nNine ten eleven twelve\nHold the line tonight\n[Hook]\nRaise it to the sky\nRaise it to the sky\nWe never let it die\nRaise it to the sky\n[Verse 2]\nMove it through the city\nCarry all the feeling\nEvery body ready\nBring the rhythm home`;
+  const longSections = parseLyricSections(longLyrics)
+    .filter(section => section.lines.length > 0)
+    .map(section => ({
+      name: section.name,
+      kind: section.kind,
+      lines: section.lines,
+    }));
+  const durationFloor = estimateComposedMelodyDurationS({
+    bpm: 100,
+    sections: longSections,
+  });
+  const longScore = composeMelody({
+    genre: 'afrobeats',
+    bpm: 100,
+    key: 'A minor',
+    seed: 99,
+    sections: longSections,
+  });
+  assert.equal(melodyScoreDurationS(longScore), durationFloor);
+  assert.ok(durationFloor > 30, 'full lyrics must raise a short render duration');
+  assert.throws(
+    () => createAfroOneSingingManifest({
+      lyrics: longLyrics,
+      melodyScore: longScore,
+      genre: 'afrobeats',
+      targetDurationS: 30,
+    }),
+    /afroone_singing_invalid_target_duration/,
+  );
+  assert.doesNotThrow(() => createAfroOneSingingManifest({
+    lyrics: longLyrics,
+    melodyScore: longScore,
+    genre: 'afrobeats',
+    targetDurationS: durationFloor,
+  }));
 
   // The lyric/melody contract is exact. A stale or tampered syllable cannot be
   // rendered against newly approved lyrics.
@@ -336,6 +378,8 @@ async function main(): Promise<void> {
   assert.match(ownEngine, /processAfroOneSinging/);
   assert.match(ownEngine, /genuine vocal generated/);
   assert.match(ownEngine, /singingOutput\.approved !== true/);
+  assert.match(ownEngine, /estimateComposedMelodyDurationS/);
+  assert.match(ownEngine, /const singingTargetDurationS = Math\.max/);
 
   console.log('AfroOne genuine singing contracts: PASS');
 }
