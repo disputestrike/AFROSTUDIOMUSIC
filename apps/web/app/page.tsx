@@ -58,6 +58,13 @@ const DOORS = [
     title: 'Sounds for film & creators',
     line: 'Score scenes, intros and content — moods and cues cut to length.',
   },
+  // OWNER 2026-07-19: the video door existed in the studio but was missing
+  // from the landing — the site must reflect what the product truly does.
+  {
+    emoji: '\u{1F39E}\u{FE0F}',
+    title: 'Make a music video',
+    line: 'Bring your finished song — leave with a storyboard, scenes and the video, priced per scene.',
+  },
 ];
 
 const FEATURES = [
@@ -70,8 +77,8 @@ const FEATURES = [
     line: 'Sound-DNA lanes and native-language checks keep Afrobeats, amapiano, highlife and gospel authentic.',
   },
   {
-    title: 'An engine you own the output of',
-    line: 'Records are built from real, rights-tracked material — no scraped catalogs anywhere in the chain.',
+    title: 'AfroOne — an engine that learns YOUR sound',
+    line: 'Our own engine builds from your rights-tracked material and, only with your signed consent, learns from your catalog — so every record gets more you. No scraped catalogs anywhere in the chain.',
   },
   {
     title: 'Rights-clean by design',

@@ -611,24 +611,26 @@ function EngineStatus() {
   const routing = (d.renderRouting ?? {}) as { adapters?: Record<string, string> };
   const brains = (d.brainTiers ?? {}) as { judgment?: { configured?: boolean }; fallback?: { configured?: boolean }; bulk?: { configured?: boolean; model?: string } };
   const spend = (d.last24hRenderSpend ?? []) as Array<{ engine: string; renders: number; costUsd: number }>;
-  // AFRO-1 — the own engine's NAME (owner 2026-07-19: "give our engine a
-  // name"). Display-only: the internal ids (afrohit-own / material /
-  // instrumental-reuse) are load-bearing for the rights classifiers and never
-  // change; the console unifies them under the brand.
-  const AFRO1_IDS = new Set(['afrohit-own', 'material', 'instrumental-reuse', 'own', 'own_engine']);
-  const engineLabel = (id: string) => (AFRO1_IDS.has(id) ? `AFRO-1 · ${id}` : id);
-  const afro1Renders = spend.filter((s2) => AFRO1_IDS.has(s2.engine)).reduce((a, s2) => a + s2.renders, 0);
+  // AfroOne — the own engine's ONE name (owner 2026-07-19 evening: "we need to
+  // stay consistent" — the codebase, docs, and training workspace all say
+  // AfroOne, so the earlier AFRO-1 display name is retired). Display-only: the
+  // internal ids (afrohit-own / material / instrumental-reuse) are load-bearing
+  // for the rights classifiers and never change; the console unifies them
+  // under the brand.
+  const AFROONE_IDS = new Set(['afrohit-own', 'material', 'instrumental-reuse', 'own', 'own_engine']);
+  const engineLabel = (id: string) => (AFROONE_IDS.has(id) ? `AfroOne · ${id}` : id);
+  const afrooneRenders = spend.filter((s2) => AFROONE_IDS.has(s2.engine)).reduce((a, s2) => a + s2.renders, 0);
   return (
     <div className="mt-10 rounded-2xl border border-slate-800 bg-slate-900/40 p-4">
       <h2 className="font-display text-2xl">Engine status</h2>
       <div className="mt-3 grid gap-3 text-sm sm:grid-cols-2 lg:grid-cols-4">
         <div>
           <div className="text-xs uppercase tracking-widest text-slate-500">Own engine</div>
-          <div className="text-afrobrand-300">AFRO-1 <span className="text-xs text-slate-500">— beds from YOUR shelf, $0, always the default for instrumentals</span></div>
+          <div className="text-afrobrand-300">AfroOne <span className="text-xs text-slate-500">— beds from YOUR shelf, $0, always the default for instrumentals</span></div>
         </div>
         <div>
           <div className="text-xs uppercase tracking-widest text-slate-500">Vocal default (the singer)</div>
-          <div className="text-afrobrand-300">{String(resolved.vocalDefault ?? '—')} <span className="text-xs text-slate-500">— sings when a record needs vocals; AFRO-1 renders the bed. Flip via SONG_ENGINE (ace_step after the bake-off).</span></div>
+          <div className="text-afrobrand-300">{String(resolved.vocalDefault ?? '—')} <span className="text-xs text-slate-500">— sings when a record needs vocals; AfroOne renders the bed. Flip via SONG_ENGINE.</span></div>
         </div>
         <div><div className="text-xs uppercase tracking-widest text-slate-500">Stems mode</div><div className="text-slate-200">{String(resolved.stemsMode ?? '—')}</div></div>
         <div><div className="text-xs uppercase tracking-widest text-slate-500">Brains</div><div className="text-slate-200">judgment: {brains.judgment?.configured ? 'anthropic ✓' : '✗'} · fallback: {brains.fallback?.configured ? 'openai ✓' : 'openai ✗ (set OPENAI_API_KEY)'} · bulk: {brains.bulk?.configured ? `cerebras ✓ (${brains.bulk?.model})` : 'not set'}</div></div>
@@ -636,13 +638,13 @@ function EngineStatus() {
       <div className="mt-3 grid gap-2 text-xs text-slate-400 sm:grid-cols-2">
         <div>
           <div className="text-slate-500 uppercase tracking-widest">Adapters</div>
-          <div>AFRO-1: <span className="text-slate-200">our engine — assembles from your material shelf ($0, rights-clean fuel)</span></div>
+          <div>AfroOne: <span className="text-slate-200">our engine — assembles from your material shelf ($0, rights-clean fuel)</span></div>
           {Object.entries(routing.adapters ?? {}).map(([k, v]) => <div key={k}>{k}: <span className="text-slate-200">{String(v)}</span></div>)}
         </div>
         <div>
           <div className="text-slate-500 uppercase tracking-widest">Last 24h render spend</div>
-          {afro1Renders > 0 && <div className="text-emerald-300/90">AFRO-1 (own): {afro1Renders} renders · $0</div>}
-          {spend.length === 0 ? <div>no renders</div> : spend.filter((s2) => !AFRO1_IDS.has(s2.engine)).map((s2) => <div key={s2.engine}>{engineLabel(s2.engine)}: {s2.renders} renders · ${s2.costUsd}</div>)}
+          {afrooneRenders > 0 && <div className="text-emerald-300/90">AfroOne (own): {afrooneRenders} renders · $0</div>}
+          {spend.length === 0 ? <div>no renders</div> : spend.filter((s2) => !AFROONE_IDS.has(s2.engine)).map((s2) => <div key={s2.engine}>{engineLabel(s2.engine)}: {s2.renders} renders · ${s2.costUsd}</div>)}
         </div>
       </div>
     </div>

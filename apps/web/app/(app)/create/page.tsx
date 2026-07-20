@@ -264,14 +264,15 @@ export default function CreatePage() {
   const [instruments, setInstruments] = useState<string[]>([]);
   // 'auto' lets the backend choose from routes connected for this workspace.
   const [engine, setEngine] = useState<'auto' | 'suno' | 'eleven' | 'ace_step' | 'minimax' | 'own'>('auto');
-  const [musicRoutes, setMusicRoutes] = useState<{ flagship: boolean; advanced: boolean; standard: boolean } | null>(null);
+  type MusicRoutes = { flagship: boolean; advanced: boolean; standard: boolean; falAvailable?: boolean; afrooneSinging?: boolean };
+  const [musicRoutes, setMusicRoutes] = useState<MusicRoutes | null>(null);
   useEffect(() => {
-    void api.get<{ flagship: boolean; advanced: boolean; standard: boolean }>('/settings/music-capabilities')
+    void api.get<MusicRoutes>('/settings/music-capabilities')
       .then(setMusicRoutes)
       .catch(() => setMusicRoutes({ flagship: false, advanced: false, standard: false }));
   }, [api]);
   const hasMusicRoute = musicRoutes !== null
-    && (musicRoutes.flagship || musicRoutes.advanced || musicRoutes.standard);
+    && (musicRoutes.flagship || musicRoutes.advanced || musicRoutes.standard || musicRoutes.falAvailable === true);
 
   // Three ways in: describe it / bring your own lyrics / listen & recreate.
   const [path, setPath] = useState<'song' | 'lyrics' | 'mumble'>('song');
@@ -1321,11 +1322,21 @@ export default function CreatePage() {
             { value: 'suno', label: 'Flagship', hint: 'Best quality (first-party releases)', available: musicRoutes?.flagship === true },
             { value: 'eleven', label: 'Advanced', hint: 'Section-controlled, high realism', available: musicRoutes?.advanced === true },
             { value: 'minimax', label: 'Standard A', hint: 'High vocal realism', available: musicRoutes?.standard === true },
-            { value: 'ace_step', label: 'Standard B', hint: 'Fast draft', available: musicRoutes?.standard === true },
-            // HONEST HINT (2026-07-16): the own engine builds the INSTRUMENTAL
-            // bed only — the old "fully owned" hint implied a sung song and set
-            // up a guaranteed failure. Say what it actually does.
-            { value: 'own', label: 'Our Engine', hint: 'Instrumental bed from YOUR material — add vocals by upload or re-sing', available: true },
+            { value: 'ace_step', label: 'Standard B', hint: 'Fast draft', available: musicRoutes?.standard === true || musicRoutes?.falAvailable === true },
+            // CAPABILITY-DRIVEN HINT (owner 2026-07-19: "our engine is still
+            // talking about bringing sound — that should have been corrected").
+            // The copy follows /settings/music-capabilities.afrooneSinging: it
+            // advertises genuine singing ONLY when the singing path is armed
+            // and reachable — the honest-hint law of 2026-07-16 still holds,
+            // the capability just moved from hardcoded to measured.
+            {
+              value: 'own',
+              label: 'AfroOne — Our Engine',
+              hint: musicRoutes?.afrooneSinging === true
+                ? 'Builds the record from YOUR material and sings the approved lyrics'
+                : 'Instrumental bed from YOUR material — add vocals by upload or re-sing',
+              available: true,
+            },
           ] as const).filter((e) => e.available).map((e) => (
             <button key={e.value} onClick={() => setEngine(e.value)} className={`rounded-full px-4 py-2 text-sm ${engine === e.value ? 'bg-brand-gradient text-ink shadow-glow' : 'border border-white/10 bg-white/5 text-slate-300 hover:bg-white/10'}`}>
               {e.label} <span className="opacity-60">· {e.hint}</span>
@@ -1426,12 +1437,12 @@ export default function CreatePage() {
             // OUR ENGINE FIRST — this door is its home turf: instrumental beds
             // assembled from YOUR OWN + synthesized material are exactly what it
             // does. External engines stay in CLASS language (§1.11 THE WALL).
-            { value: 'own', label: 'Our Engine', hint: 'Assembled from YOUR material — the studio’s own instrumental engine', available: true },
+            { value: 'own', label: 'AfroOne — Our Engine', hint: 'Assembled from YOUR material — the studio’s own instrumental engine', available: true },
             { value: 'auto', label: 'Auto', hint: 'Best engine available', available: hasMusicRoute },
             { value: 'suno', label: 'Flagship', hint: 'Best quality (first-party releases)', available: musicRoutes?.flagship === true },
             { value: 'eleven', label: 'Advanced', hint: 'Section-controlled, high realism', available: musicRoutes?.advanced === true },
             { value: 'minimax', label: 'Standard A', hint: 'High realism', available: musicRoutes?.standard === true },
-            { value: 'ace_step', label: 'Standard B', hint: 'Fast draft', available: musicRoutes?.standard === true },
+            { value: 'ace_step', label: 'Standard B', hint: 'Fast draft', available: musicRoutes?.standard === true || musicRoutes?.falAvailable === true },
           ] as const).filter((e) => e.available).map((e) => (
             <button key={e.value} onClick={() => setEngine(e.value)} className={`rounded-full px-4 py-2 text-sm ${engine === e.value ? 'bg-brand-gradient text-ink shadow-glow' : 'border border-white/10 bg-white/5 text-slate-300 hover:bg-white/10'}`}>
               {e.label} <span className="opacity-60">· {e.hint}</span>

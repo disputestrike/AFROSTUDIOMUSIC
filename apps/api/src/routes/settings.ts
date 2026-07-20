@@ -28,6 +28,11 @@ export default async function settings(app: FastifyInstance) {
       flagship: capabilities.flagship,
       advanced: capabilities.advanced,
       standard: capabilities.standard,
+      // Class-level facts only (no vendor names): the dual-route draft engine
+      // and whether AfroOne's genuine-singing path is live — the create page's
+      // copy follows these instead of hardcoding promises.
+      falAvailable: capabilities.falAvailable,
+      afrooneSinging: capabilities.afrooneSinging,
     };
   });
 

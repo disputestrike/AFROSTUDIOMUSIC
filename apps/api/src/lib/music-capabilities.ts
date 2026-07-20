@@ -12,6 +12,14 @@ export interface MusicRouteCapabilities {
   sunoAvailable: boolean;
   elevenAvailable: boolean;
   replicateAvailable: boolean;
+  /** fal route connected — satisfies ace_step (dual-route) even without Replicate. */
+  falAvailable: boolean;
+  /** AfroOne sings: the genuine-singing path is armed (flag ON) AND at least one
+   *  singing route (local score-singer / fal / replicate) is reachable. The UI
+   *  must NEVER advertise singing unless this is true — capability-driven copy,
+   *  not hardcoded promises (owner, 2026-07-19: "our engine is still not
+   *  singing... that should have been corrected" — the copy follows the flag). */
+  afrooneSinging: boolean;
 }
 
 export function musicRoutePolicy(workspaceId: string): {
@@ -40,6 +48,7 @@ export async function musicRouteCapabilities(workspaceId: string): Promise<Music
     !!(process.env.ELEVEN_API_KEY || process.env.ELEVENLABS_API_KEY || process.env.ELEVEN_LABS_API_KEY || process.env.XI_API_KEY);
   const replicateAvailable = (workspace.musicProvider === 'replicate' && hasWorkspaceKey) ||
     !!(process.env.REPLICATE_API_TOKEN || process.env.REPLICATE_TOKEN);
+  const falAvailable = !!process.env.FAL_KEY;
 
   return {
     workspaceProvider: workspace.musicProvider,
@@ -49,9 +58,13 @@ export async function musicRouteCapabilities(workspaceId: string): Promise<Music
     sunoAvailable,
     elevenAvailable: policy.elevenAllowed && elevenConnected,
     replicateAvailable,
+    falAvailable,
     flagship: policy.sunoAllowed && sunoAvailable,
     advanced: policy.elevenAllowed && elevenConnected,
     standard: replicateAvailable,
+    afrooneSinging:
+      process.env.AFROONE_SINGING_ENABLED === '1' &&
+      (!!process.env.AFROONE_SINGING_LOCAL_URL?.trim() || falAvailable || replicateAvailable),
   };
 }
 
