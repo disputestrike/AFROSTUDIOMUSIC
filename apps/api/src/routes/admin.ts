@@ -22,6 +22,11 @@ import { isInternalMode, requireAuth } from '../middleware/auth';
 import { sessionCookie, signSession, validAdminGrant } from '../lib/session';
 import { GENRES, isFirstPartyWorkspace, resolveEngineForWorkspace, TRAINING_LICENSE_CLAUSE, TRAINING_LICENSE_VERSION } from '@afrohit/shared';
 import { hashTrainingLicense, resolveWorkspaceTrainingConsent } from '../lib/training-license';
+import {
+  listMusicTrainingCandidates,
+  rollbackActiveMusicModel,
+  submitMusicTrainingEvaluation,
+} from '../lib/training-evaluation';
 import { createQueuedProviderJob, scopedRequestKey } from '../lib/queued-job';
 import { operationErrorBody, runIdempotentOperation } from '../lib/idempotent-operation';
 import { assertOwnedKey, assertWorkspaceAsset, publicUrlFor } from '../lib/storage';
@@ -241,6 +246,109 @@ export default async function admin(app: FastifyInstance) {
       data: { revokedAt: new Date() },
     });
     return reply.send({ ok: true, revoked: updated.count });
+  });
+
+  /**
+   * THE EVALUATION SEAM (owner order 2026-07-19 night). The completed training
+   * run produced a candidate that sat at "awaiting evaluation" FOREVER — the
+   * worker's submit function had no route, no UI, no caller. These three routes
+   * close the loop: list candidates, score one (strict receipt + the SAME
+   * promotion gate the nightly flywheel runs, single-sourced in @afrohit/ai),
+   * and roll the active model back. Admin surface = real errors (the consent
+   * route's law): failures name themselves instead of hiding as internal_error.
+   */
+  app.get('/training/candidates', async (req, reply) => {
+    await requireAdmin(req);
+    try {
+      return reply.send(await listMusicTrainingCandidates());
+    } catch (err) {
+      const e = err as Error & { code?: string };
+      req.log.error({ err }, 'training candidate list failed');
+      return reply.code(500).send({
+        error: 'training_candidates_failed',
+        code: e.code ?? null,
+        message: (e.message ?? 'unknown').slice(0, 300),
+      });
+    }
+  });
+
+  const evaluationSchema = z.object({
+    providerJobId: z.string().min(1).max(200),
+    candidateScore: z.number().finite().min(0).max(100),
+    evaluator: z.string().trim().min(1).max(200),
+    measuredAt: z.string().datetime().optional(),
+    minGain: z.number().finite().min(0).max(100).optional(),
+  });
+  app.post('/training/evaluation', { schema: { body: evaluationSchema } }, async (req, reply) => {
+    await requireAdmin(req);
+    const { userId } = requireAuth(req);
+    const body = evaluationSchema.parse(req.body);
+    // AUDIT FIRST: who scored what, with which number, is on the record even if
+    // the gate then holds the incumbent or the write fails.
+    req.log.warn(
+      {
+        adminUserId: userId,
+        providerJobId: body.providerJobId,
+        candidateScore: body.candidateScore,
+        evaluator: body.evaluator,
+        minGain: body.minGain ?? null,
+      },
+      '[admin] MUSIC TRAINING EVALUATION submitted'
+    );
+    try {
+      const result = await submitMusicTrainingEvaluation(body);
+      req.log.warn(
+        {
+          adminUserId: userId,
+          providerJobId: body.providerJobId,
+          promoted: result.promoted,
+          reason: result.reason,
+          activeModelRef: result.activeModelRef,
+        },
+        result.promoted
+          ? '[admin] MUSIC MODEL PROMOTED via evaluation seam'
+          : '[admin] music candidate held — incumbent stays active'
+      );
+      return reply.send({ ok: true, ...result });
+    } catch (err) {
+      const e = err as Error & { statusCode?: number; code?: string };
+      req.log.error({ err, providerJobId: body.providerJobId }, 'training evaluation failed');
+      const status = e.statusCode && e.statusCode >= 400 && e.statusCode < 600 ? e.statusCode : 500;
+      return reply.code(status).send({
+        error: 'training_evaluation_failed',
+        code: e.code ?? null,
+        message: (e.message ?? 'unknown').slice(0, 300),
+      });
+    }
+  });
+
+  const rollbackSchema = z.object({ reason: z.string().trim().min(1).max(300) });
+  app.post('/training/rollback', { schema: { body: rollbackSchema } }, async (req, reply) => {
+    await requireAdmin(req);
+    const { userId } = requireAuth(req);
+    const { reason } = rollbackSchema.parse(req.body);
+    req.log.warn({ adminUserId: userId, reason }, '[admin] MUSIC MODEL ROLLBACK requested');
+    try {
+      const result = await rollbackActiveMusicModel(reason);
+      if (!result.rolledBack) {
+        // Honest refusal: nothing to restore is a 409, not a fake success.
+        return reply.code(409).send({ error: 'rollback_unavailable', ...result });
+      }
+      req.log.warn(
+        { adminUserId: userId, activeModelRef: result.activeModelRef, previousModelRef: result.previousModelRef },
+        '[admin] MUSIC MODEL ROLLED BACK'
+      );
+      return reply.send({ ok: true, ...result });
+    } catch (err) {
+      const e = err as Error & { statusCode?: number; code?: string };
+      req.log.error({ err }, 'training rollback failed');
+      const status = e.statusCode && e.statusCode >= 400 && e.statusCode < 600 ? e.statusCode : 500;
+      return reply.code(status).send({
+        error: 'training_rollback_failed',
+        code: e.code ?? null,
+        message: (e.message ?? 'unknown').slice(0, 300),
+      });
+    }
   });
 
   // One-tap compounding: run the lake jobs NOW instead of waiting for tonight.

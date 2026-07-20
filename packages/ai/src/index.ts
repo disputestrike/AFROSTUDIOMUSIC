@@ -34,3 +34,4 @@ export * from './agents/ar-scorer';
 export * from './agents/concept-director';
 export * from './agents/producer-brain';
 export * from "./music-trainer";
+export * from "./music-training-evaluation";
