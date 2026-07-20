@@ -257,6 +257,7 @@ export async function persistNativeStemBuses(
         workspaceId: input.workspaceId,
         kind: "stems",
         bytes,
+        qualityPolicy: "native_stem",
         contentType:
           bus.contentType ?? (format === "wav" ? "audio/wav" : "audio/mpeg"),
         ext: format,
@@ -314,6 +315,7 @@ export function audioCertificationReceipt(audio: CertifiedAudio) {
     url: audio.url,
     contentHash: audio.contentHash,
     qualityState: audio.qualityState,
+    qualityPolicy: audio.qualityPolicy,
     verifiedAt: audio.verifiedAt.toISOString(),
     durationS: audio.qc.durationS,
     qc: audio.qc,

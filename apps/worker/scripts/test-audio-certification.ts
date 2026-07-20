@@ -92,6 +92,29 @@ async function main(): Promise<void> {
     () => assertCertifiableAudioQuality(finiteWeak),
     /audio_qc_failed/
   );
+  const flatNativeStem = {
+    ...measured,
+    verdict: "weak",
+    ok: true,
+    flags: ["flat"],
+  } as AudioQuality;
+  assert.throws(
+    () => assertCertifiableAudioQuality(flatNativeStem),
+    /audio_qc_failed/,
+    "finished-program certification must remain strict"
+  );
+  assert.doesNotThrow(
+    () => assertCertifiableAudioQuality(flatNativeStem, "stem", "native_stem"),
+    "a repetitive isolated bus may be low-dynamic-range without being broken"
+  );
+  for (const flags of [["too_quiet"], ["clipping"], ["short"], ["unmeasured"]]) {
+    const brokenStem = { ...measured, verdict: "fail", ok: false, flags } as AudioQuality;
+    assert.throws(
+      () => assertCertifiableAudioQuality(brokenStem, "stem", "native_stem"),
+      /audio_qc_failed/,
+      `native stem certification must reject ${flags[0]}`
+    );
+  }
 
   const original = Buffer.from("certified-audio-bytes");
   const originalHash = sha256Bytes(original);

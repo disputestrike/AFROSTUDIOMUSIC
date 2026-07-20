@@ -33,7 +33,13 @@ export function assertStoredContentHash(
   return actualHash;
 }
 
-export function assertCertifiableAudioQuality(qc: AudioQuality, context = 'audio'): void {
+export type AudioCertificationPolicy = 'program' | 'native_stem';
+
+export function assertCertifiableAudioQuality(
+  qc: AudioQuality,
+  context = 'audio',
+  policy: AudioCertificationPolicy = 'program',
+): void {
   const missing = REQUIRED_DECODED_METRICS.filter((metric) => {
     const value = qc[metric];
     return typeof value !== 'number' || !Number.isFinite(value) || (metric === 'durationS' && value <= 0);
@@ -41,7 +47,12 @@ export function assertCertifiableAudioQuality(qc: AudioQuality, context = 'audio
   if (missing.length) {
     throw new Error(`audio_qc_failed: ${context}: missing finite decoded metrics: ${missing.join(', ')}`);
   }
-  if (qc.verdict !== 'pass') {
+  const nativeStemWeakOnly =
+    policy === 'native_stem' &&
+    qc.verdict === 'weak' &&
+    qc.flags.length > 0 &&
+    qc.flags.every(flag => flag === 'flat' || flag === 'squashed');
+  if (qc.verdict !== 'pass' && !nativeStemWeakOnly) {
     throw new Error(`audio_qc_failed: ${context}: ${qc.flags.join(', ') || qc.verdict}`);
   }
 }
@@ -51,6 +62,7 @@ export interface CertifiedAudio {
   contentHash: string;
   verifiedAt: Date;
   qualityState: 'passed';
+  qualityPolicy: AudioCertificationPolicy;
   qc: AudioQuality;
 }
 
@@ -60,10 +72,12 @@ export async function certifyAudioBytes(options: {
   bytes: Buffer;
   contentType?: string;
   ext?: string;
+  qualityPolicy?: AudioCertificationPolicy;
 }): Promise<CertifiedAudio> {
   const contentHash = sha256Bytes(options.bytes);
   const qc = await measureAudioBufferQuality(options.bytes);
-  assertCertifiableAudioQuality(qc);
+  const qualityPolicy = options.qualityPolicy ?? 'program';
+  assertCertifiableAudioQuality(qc, options.kind, qualityPolicy);
   const url = await uploadBytes({
     workspaceId: options.workspaceId,
     kind: options.kind,
@@ -82,6 +96,7 @@ export async function certifyAudioBytes(options: {
       contentHash,
       verifiedAt: new Date(),
       qualityState: 'passed',
+      qualityPolicy,
       qc,
     };
   } catch (error) {

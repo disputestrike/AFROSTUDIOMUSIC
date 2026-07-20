@@ -272,6 +272,10 @@ function testProcessorWiring(): void {
   assert.match(stems, /materializeStemAudio/);
   assert.match(stems, /format:\s*(?:s|stem)\.format/);
   assert.match(stems, /export async function persistNativeStemBuses/);
+  assert.match(
+    stems,
+    /persistNativeStemBuses[\s\S]*qualityPolicy:\s*"native_stem"/,
+  );
   assert.match(stems, /if \(p\.nativeBuses\?\.length\)/);
   assert.match(stems, /source: "native"/);
   assert.match(stems, /origin:\s*"native"/);
