@@ -80,7 +80,7 @@ import { renderMelodyGuide, renderMelodyLead, leadVoiceFor } from "../lib/melody
 import { overlayFills } from "../lib/fills";
 import { resolveActiveMusicModelRef } from "../lib/training-flywheel";
 import { measureAudio, dspAvailable } from "../lib/dsp";
-import { markRunning, markSucceeded, markFailed } from "../lib/jobs";
+import { markRunning, markSucceeded, markFailed, emitJobEvent } from "../lib/jobs";
 import { assessLaneCompliance } from "../lib/lane-assess";
 import { processSynthMaterial } from "./synth-material";
 import { processAssembleBeat, processForgeMaterial } from "./material";
@@ -1218,6 +1218,16 @@ export async function processOwnEngine(p: OwnEnginePayload): Promise<void> {
     notes.push(
       `rhythm: assembled ${picks.map(x => x.role).join("+")} across ${sections.length} sections`
     );
+
+    // BED-FIRST STREAMING (the handoff the streaming build waits for): the
+    // instrumental bed is a certified playable asset RIGHT HERE, minutes before
+    // the vocal/master finish. Emit it so the player streams it immediately and
+    // hot-swaps to the master when the job completes. Fail-soft — emitJobEvent
+    // never throws into the render.
+    await emitJobEvent(p.jobId, "bed_ready", {
+      url: out.url,
+      beatId: out.beatId,
+    });
 
     // P2 FEEDBACK LOOP (write side): the plan + its measured outcome live on
     // the beat, so the NEXT render's Producer Brain reads what this one
