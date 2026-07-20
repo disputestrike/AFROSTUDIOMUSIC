@@ -37,6 +37,7 @@ import {
   buildMixBuffersGraph,
   SECTION_CROSSFADE_S,
 } from '../src/lib/ffmpeg';
+import { measuredAssemblyTrimDb } from '../src/processors/material';
 
 let failures = 0;
 const fail = (m: string) => { console.error(`FAIL: ${m}`); failures++; };
@@ -191,6 +192,19 @@ const fail = (m: string) => { console.error(`FAIL: ${m}`); failures++; };
   };
   walk(srcRoot);
   if (offenders.length) fail(`amix without normalize=0 (silent 1/n level drop): ${offenders.join(', ')}`);
+}
+
+// ---- 5b: measured full-bus clipping correction ---------------------------
+{
+  const trimDb = measuredAssemblyTrimDb({ flags: ['clipping'], truePeakDb: 2.5 });
+  if (trimDb !== -4.5) fail(`measured trim: expected -4.5 dB, got ${trimDb}`);
+  if (measuredAssemblyTrimDb({ flags: ['flat'], truePeakDb: 2.5 }) !== null) {
+    fail('measured trim: a non-clipping flag must not alter the bus');
+  }
+  const missingPeakTrim = measuredAssemblyTrimDb({ flags: ['clipping'], truePeakDb: null });
+  if (missingPeakTrim !== -2.5) {
+    fail(`measured trim: missing peak must use the conservative -2.5 dB fallback, got ${missingPeakTrim}`);
+  }
 }
 
 // ---- 6: QC SHIP CONTRACT (weak ships flagged; hard flags die) -------------

@@ -2017,7 +2017,16 @@ export async function buildSnippet(opts: {
  *  (0.5–1.5, pitch-preserving via atempo); semitones shifts pitch (−6..+6)
  *  using asetrate + a compensating atempo so DURATION follows only `tempo`.
  *  Output: 44.1k stereo WAV (master-grade, ready to re-master). */
-export async function transformAudio(input: Buffer, opts: { tempo?: number; semitones?: number }): Promise<Buffer> {
+export interface TransformAudioOptions {
+  tempo?: number;
+  semitones?: number;
+  /** Measured corrective gain on the complete bus, after all layer/fill balance. */
+  gainDb?: number;
+  /** Linear peak limiter ceiling; omitted for transforms that do not need it. */
+  peakLimit?: number;
+}
+
+export async function transformAudio(input: Buffer, opts: TransformAudioOptions): Promise<Buffer> {
   const tempo = Math.min(1.5, Math.max(0.5, opts.tempo ?? 1));
   const semis = Math.min(6, Math.max(-6, opts.semitones ?? 0));
   const dir = await mkdtemp(join(tmpdir(), 'xform-'));
@@ -2035,6 +2044,12 @@ export async function transformAudio(input: Buffer, opts: { tempo?: number; semi
     while (net < 0.5) { filters.push('atempo=0.5'); net /= 0.5; }
     while (net > 2.0) { filters.push('atempo=2.0'); net /= 2.0; }
     if (Math.abs(net - 1) > 0.001) filters.push(`atempo=${net.toFixed(4)}`);
+    const gainDb = Math.min(12, Math.max(-24, opts.gainDb ?? 0));
+    if (Math.abs(gainDb) > 0.01) filters.push(`volume=${gainDb.toFixed(2)}dB`);
+    if (opts.peakLimit !== undefined) {
+      const limit = Math.min(1, Math.max(0.1, opts.peakLimit));
+      filters.push(`alimiter=level=false:limit=${limit.toFixed(3)}:attack=2:release=80`);
+    }
     const af = filters.length ? filters.join(',') : 'anull';
     await runFfmpeg(['-i', inPath, '-af', af, '-ac', '2', '-ar', String(sr), outPath]);
     return await readFile(outPath);
