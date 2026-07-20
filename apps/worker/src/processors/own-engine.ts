@@ -36,6 +36,7 @@ import {
   materialCoverage,
   materialGenreMatches,
   estimateComposedMelodyDurationS,
+  fitMelodySectionsToDuration,
   melodyScoreDurationS,
   planAutoForge,
   type SongBlueprint,
@@ -1056,22 +1057,39 @@ export async function processOwnEngine(p: OwnEnginePayload): Promise<void> {
     // ~148s vs 185-200s lane targets, and nothing ever passed a duration).
     const requestedLaneDurationS =
       p.durationS ?? genreSignature(p.genre).durationS ?? 180;
+    const parsedSingingSections = p.withVocals && p.lyrics?.trim()
+      ? parseLyricSections(p.lyrics)
+          .filter(section => section.lines.length > 0)
+          .map(section => ({
+            name: section.name,
+            kind: section.kind,
+            lines: section.lines,
+          }))
+      : [];
+    const unfittedSingingDurationS = parsedSingingSections.length
+      ? estimateComposedMelodyDurationS({ bpm, sections: parsedSingingSections })
+      : 0;
+    const fittedSingingSections = parsedSingingSections.length
+      ? fitMelodySectionsToDuration(
+          { bpm, sections: parsedSingingSections },
+          240
+        )
+      : [];
     const singingDurationFloorS = p.withVocals
       ? p.melodyScore
         ? melodyScoreDurationS(p.melodyScore)
-        : p.lyrics?.trim()
+        : fittedSingingSections.length
           ? estimateComposedMelodyDurationS({
               bpm,
-              sections: parseLyricSections(p.lyrics)
-                .filter(section => section.lines.length > 0)
-                .map(section => ({
-                  name: section.name,
-                  kind: section.kind,
-                  lines: section.lines,
-                })),
+              sections: fittedSingingSections,
             })
           : 0
       : 0;
+    if (unfittedSingingDurationS > singingDurationFloorS) {
+      notes.push(
+        `singing fit: preserved all lyric sections and reduced bar padding from ${Math.ceil(unfittedSingingDurationS)}s to ${Math.ceil(singingDurationFloorS)}s`
+      );
+    }
     if (singingDurationFloorS > 240) {
       throw new Error(
         `own-engine singing lyrics require ${Math.ceil(singingDurationFloorS)}s; the verified singer supports up to 240s`
@@ -1289,9 +1307,24 @@ export async function processOwnEngine(p: OwnEnginePayload): Promise<void> {
           where: { songId: p.songId },
         });
         const lyricBody = p.lyrics?.trim() || draft?.body?.trim() || "";
-        const lyricSections = lyricBody
+        const parsedLyricSections = lyricBody
           ? parseLyricSections(lyricBody).filter(s => s.lines.length > 0)
           : [];
+        const lyricSections = p.lyrics?.trim() === lyricBody && fittedSingingSections.length
+          ? fittedSingingSections
+          : parsedLyricSections.length
+            ? fitMelodySectionsToDuration(
+                {
+                  bpm,
+                  sections: parsedLyricSections.map(s => ({
+                    name: s.name || s.kind,
+                    kind: s.kind,
+                    lines: s.lines,
+                  })),
+                },
+                240
+              )
+            : [];
         if (!lyricSections.length) {
           notes.push("melody score skipped: no lyric draft for this song");
         } else {
