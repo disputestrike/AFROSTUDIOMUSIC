@@ -34,6 +34,7 @@ import {
   selectMaterialRows,
   materialCoverage,
   materialGenreMatches,
+  planAutoForge,
   type SongBlueprint,
   type AfroOneDirection,
   type AfroOneRenderSpecification,
@@ -52,6 +53,7 @@ import {
   createAfroOneSingingManifest,
   melodyBrain,
   getSoundDNA,
+  musicAdapter,
   planProduction,
   type RenderOutcome,
 } from "@afrohit/ai";
@@ -717,6 +719,131 @@ export async function processOwnEngine(p: OwnEnginePayload): Promise<void> {
         p.lockedMaterialIds ?? []
       );
     }
+    let coverage = materialCoverage(picks);
+    // AUTO-FORGE (owner order 2026-07-19 night): when a user picks AfroOne on a
+    // shelf BELOW the material floor, the engine FORGES the missing starter
+    // material first, then assembles — the new-user path becomes slow-but-real
+    // instead of synthesizing from nothing and dying with "assembled take
+    // failed QC (flat)". Bounded: only the roles needed to reach the floor
+    // (planAutoForge, hard cap 8 loops), reusing the SAME kit-driven forge the
+    // shelf already trusts (processForgeMaterial: QC'd, downbeat-trimmed,
+    // loudness-normalized, rights stamped exactly as every forged loop —
+    // source 'forged', rightsBasis 'provider-generated'; no classifier is
+    // touched). Candidates come from forgeKitFor(genre, 12) — the SAME list
+    // pickKit selects with — so every landed loop is re-selectable. The loops
+    // PERSIST on the shelf (once per lane, not per render), and the USER is
+    // never charged: these provider jobs carry no _charge/chargeLedgerId, the
+    // own engine stays free by owner order. Kill switch: OWN_ENGINE_AUTOFORGE=0.
+    // Disabled, replay-locked, no engine connected, or every forge failing →
+    // the existing honest thin-shelf path below (fb9bb78) stays the fallback.
+    const autoForgedRoles: string[] = [];
+    if (
+      !coverage.ready &&
+      !replayLocked &&
+      process.env.OWN_ENGINE_AUTOFORGE !== "0"
+    ) {
+      const forgeTargets = planAutoForge({
+        coverage,
+        coveredRoles: picks.map(pick => pick.role),
+        // Rich kit first, then the coarse synth-kit roles as fallback — the
+        // SAME tonal guarantee synthKitFor gives the $0 synth pass (a lane
+        // whose top-12 rich kit has no harmony/melody, e.g. gqom, still gets
+        // a forgeable 'chords' bed). Both lists are inside pickKit's role
+        // selection, so every landed loop is re-selectable.
+        candidateRoles: [
+          ...forgeKitFor(p.genre, 12),
+          ...synthKitFor(p.genre),
+        ].filter(role => Boolean(forgePromptFor(role, p.genre, bpm, homeKey))),
+      });
+      if (forgeTargets.length) {
+        // Pre-flight the SAME engine resolution processForgeMaterial uses, so
+        // a disconnected studio skips cleanly instead of filing N dead jobs.
+        const forgeWs = await prisma.workspace.findUnique({
+          where: { id: p.workspaceId },
+          select: { musicProvider: true, musicApiKey: true },
+        });
+        const forgeAdapter = musicAdapter(
+          forgeWs?.musicProvider ?? undefined,
+          openSecret(forgeWs?.musicApiKey)
+        );
+        if (forgeAdapter.name === "unavailable") {
+          notes.push(
+            `auto-forge unavailable: ${forgeTargets.length} starter loop(s) needed but no music engine is connected — upload a kit or connect an engine, then create again`
+          );
+        } else {
+          const attempted: string[] = [];
+          for (const role of forgeTargets) {
+            attempted.push(role);
+            try {
+              const forgeJob = await prisma.providerJob.create({
+                data: {
+                  workspaceId: p.workspaceId,
+                  kind: "material",
+                  provider: "workspace-music",
+                  status: "QUEUED",
+                  inputJson: {
+                    genre: p.genre,
+                    role,
+                    bpm,
+                    keySignature: homeKey,
+                    auto: "own-engine-autoforge",
+                  } as never,
+                },
+                select: { id: true },
+              });
+              await processForgeMaterial({
+                jobId: forgeJob.id,
+                workspaceId: p.workspaceId,
+                genre: p.genre,
+                role,
+                bpm,
+                keySignature: homeKey,
+              });
+              // processForgeMaterial marks its own job and never rethrows —
+              // read the receipt to know whether the loop actually landed.
+              const forged = await prisma.providerJob.findUnique({
+                where: { id: forgeJob.id },
+                select: { status: true },
+              });
+              if (forged?.status === "SUCCEEDED") autoForgedRoles.push(role);
+            } catch (err) {
+              // One failed loop never kills the pass — the floor re-check
+              // below decides whether we reached real coverage.
+              console.warn(
+                `[own-engine] auto-forge skipped for ${role}:`,
+                (err as Error)?.message
+              );
+            }
+          }
+          if (autoForgedRoles.length) {
+            picks = await pickKit(
+              p.workspaceId,
+              p.genre,
+              bpm,
+              homeKey,
+              varietySeed,
+              requestedRoles,
+              p.lockedMaterialIds ?? []
+            );
+            coverage = materialCoverage(picks);
+            notes.push(
+              `auto-forge: shelf was below the floor — forged ${autoForgedRoles.length} starter loop(s) for ${p.genre} first (${autoForgedRoles.join("+")}) — upload your own kit to make it yours${
+                attempted.length > autoForgedRoles.length
+                  ? ` (${attempted.length - autoForgedRoles.length} of ${attempted.length} forge(s) did not land)`
+                  : ""
+              }`
+            );
+          } else {
+            notes.push(
+              `auto-forge failed: ${attempted.length} starter loop(s) attempted for ${p.genre}, none landed — falling back to the thin-shelf path`
+            );
+          }
+        }
+      }
+    }
+    // Requested-role strip/disclose runs on the FINAL picks (after any
+    // auto-forge landed), so a role the rescue just forged is never wrongly
+    // disclosed as "rendered without".
     const missingRequestedRoles = missingExactRequestedMaterialRoles(
       picks,
       requestedRoles
@@ -742,7 +869,6 @@ export async function processOwnEngine(p: OwnEnginePayload): Promise<void> {
         `requested roles: ${provenRequestedRoles.join("+")} (exact evidence)`
       );
     }
-    const coverage = materialCoverage(picks);
     if (!coverage.ready) {
       // OWNER DOCTRINE (2026-07-19, live kill #3: "verified shelf is incomplete
       // (beds=1, rhythm=1, low-end=0, tonal=0)" died the whole paid render): a
@@ -1194,6 +1320,16 @@ export async function processOwnEngine(p: OwnEnginePayload): Promise<void> {
           ownEngine: {
             v: 3,
             layers: notes,
+            // AUTO-FORGE disclosure rides the beat's permanent record, not
+            // just the render notes: which starter loops this lane forged.
+            ...(autoForgedRoles.length
+              ? {
+                  autoForge: {
+                    roles: autoForgedRoles,
+                    disclosure: `forged ${autoForgedRoles.length} starter loop(s) for ${p.genre} first — upload your own kit to make it yours`,
+                  },
+                }
+              : {}),
             blueprintMatch,
             withVocals: p.withVocals === true,
             voiceProfileId: p.voiceProfileId ?? null,
@@ -1366,6 +1502,14 @@ export async function processOwnEngine(p: OwnEnginePayload): Promise<void> {
       blueprintMatch,
       laneAssessment,
       layers: notes,
+      ...(autoForgedRoles.length
+        ? {
+            autoForge: {
+              roles: autoForgedRoles,
+              disclosure: `forged ${autoForgedRoles.length} starter loop(s) for ${p.genre} first — upload your own kit to make it yours`,
+            },
+          }
+        : {}),
       renderSpec:
         p.renderSpec ?? {
           version: AFROONE_RENDER_SPEC_VERSION,

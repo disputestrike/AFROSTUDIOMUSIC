@@ -386,3 +386,78 @@ export function materialCoverage(picks: Array<{ role: string }>) {
     ready: beds.length >= minBeds && rhythm >= 2 && lowEnd >= 1 && tonal >= 1,
   };
 }
+
+/** Hard cap on loops one AUTO-FORGE pass may render: starter material is a
+ * bounded rescue, never an open-ended shelf-stocking spend. */
+export const AUTO_FORGE_LOOP_CAP = 8;
+
+/**
+ * AUTO-FORGE PLANNER (owner order 2026-07-19 night): when a lane's shelf sits
+ * BELOW the material floor, the own engine FORGES the missing starter material
+ * first, then assembles — slow-but-real — instead of synthesizing from nothing
+ * and dying with "assembled take failed QC (flat)".
+ *
+ * Pure and deterministic: given the measured coverage, the roles the shelf
+ * already covers, and the genre's forge-kit candidates IN KIT PRIORITY ORDER
+ * (signature roles first), it returns ONLY the roles needed to reach the floor:
+ *   pass 1 — the floor's named job deficits (rhythm>=2, low-end>=1, tonal>=1);
+ *   pass 2 — bed depth up to minBeds, kit-priority order.
+ * Hard-capped at AUTO_FORGE_LOOP_CAP so one render can never spend the night
+ * forging. 'fill' is never planned (a fill is a transition, not a bed), and a
+ * role the shelf already covers is never re-planned (a second loop of the same
+ * role adds nothing to coverage). At or above the floor the plan is empty.
+ */
+export function planAutoForge(input: {
+  coverage: ReturnType<typeof materialCoverage>;
+  coveredRoles: string[];
+  /** Forgeable candidates in kit priority order (e.g. forgeKitFor(genre, 12)
+   *  filtered to roles with a real forge prompt). MUST match the role list the
+   *  caller re-selects with, or a forged loop can never be picked back up. */
+  candidateRoles: string[];
+  cap?: number;
+}): string[] {
+  const { coverage } = input;
+  if (coverage.ready) return [];
+  const requestedCap = Math.floor(input.cap ?? AUTO_FORGE_LOOP_CAP);
+  const cap = Math.max(
+    1,
+    Math.min(AUTO_FORGE_LOOP_CAP, requestedCap || AUTO_FORGE_LOOP_CAP)
+  );
+  const covered = new Set(input.coveredRoles);
+  const seen = new Set<string>();
+  const candidates = input.candidateRoles.filter(role => {
+    if (role === "fill" || covered.has(role) || seen.has(role)) return false;
+    seen.add(role);
+    return true;
+  });
+  let needRhythm = Math.max(0, 2 - coverage.rhythm);
+  let needLowEnd = Math.max(0, 1 - coverage.lowEnd);
+  let needTonal = Math.max(0, 1 - coverage.tonal);
+  let needBeds = Math.max(0, coverage.minBeds - coverage.beds);
+  const planned: string[] = [];
+  const take = (role: string) => {
+    planned.push(role);
+    needBeds = Math.max(0, needBeds - 1);
+  };
+  // Pass 1 — the floor's named gaps, filled in kit priority order.
+  for (const role of candidates) {
+    if (planned.length >= cap) break;
+    const job = selectionJobOf(role);
+    if (job === "rhythm" && needRhythm > 0) {
+      needRhythm -= 1;
+      take(role);
+    } else if (job === "low_end" && needLowEnd > 0) {
+      needLowEnd -= 1;
+      take(role);
+    } else if ((job === "harmony" || job === "melody") && needTonal > 0) {
+      needTonal -= 1;
+      take(role);
+    }
+  }
+  // Pass 2 — bed depth: top up to minBeds from what the kit values next.
+  for (const role of candidates) {
+    if (planned.length >= cap || needBeds <= 0) break;
+    if (!planned.includes(role)) take(role);
+  }
+  return planned;
+}
