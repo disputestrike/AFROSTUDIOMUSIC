@@ -901,8 +901,16 @@ export async function processAssembleBeat(p: AssemblePayload) {
       );
     }
     if (qc.verdict !== "pass") {
+      // ACTIONABLE SHELF ERROR (owner, live kill 2026-07-19 evening: a new
+      // studio picking AfroOne died on "failed QC (flat)" — a wall, not a
+      // direction). When the shelf was too thin to build from, the failure
+      // must tell the artist the ONE move that fixes it. A rich shelf that
+      // still fails QC keeps the technical reason — that's a real defect.
+      const flags = (qc.flags ?? []).join(", ") || "broken audio";
       throw new Error(
-        `assembled take failed QC (${(qc.flags ?? []).join(", ") || "broken audio"}) — nothing shipped`
+        !cov.ready
+          ? `assembled take failed QC (${flags}) — your shelf is too thin to build from: upload a kit or forge starter material for this genre, then create again`
+          : `assembled take failed QC (${flags}) — nothing shipped`
       );
     }
     for (const staleUrl of attemptedUrls.filter(

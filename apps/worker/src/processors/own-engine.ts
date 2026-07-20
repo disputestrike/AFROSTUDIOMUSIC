@@ -907,9 +907,18 @@ export async function processOwnEngine(p: OwnEnginePayload): Promise<void> {
       // synth render fail…) instead of a blind "see child job", so the next
       // failure names its own cause.
       const childErr = (done?.errorJson as { message?: string } | null)?.message;
-      throw new Error(
-        `own-engine: grid assembly failed${childErr ? ` — ${childErr}` : " (see child job)"}`
-      );
+      const message = `own-engine: grid assembly failed${childErr ? ` — ${childErr}` : " (see child job)"}`;
+      // NO WASTED RETRIES (live 2026-07-19 evening: an empty-shelf failure was
+      // re-queued twice and failed identically each time — the shelf cannot
+      // change between attempts). A SHELF-CLASS failure is deterministic:
+      // mark it failed terminally instead of throwing into the retry loop.
+      // Every other failure class keeps the existing throw-and-retry behavior.
+      const shelfClass = /shelf is too thin|no bed material|no material picked|forge (drums|some loops|starter material)/i;
+      if (childErr && shelfClass.test(childErr)) {
+        await markFailed(p.jobId, `own_engine_failed: ${message}`);
+        return;
+      }
+      throw new Error(message);
     }
     notes.push(
       `rhythm: assembled ${picks.map(x => x.role).join("+")} across ${sections.length} sections`
