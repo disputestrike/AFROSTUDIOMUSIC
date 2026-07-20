@@ -645,10 +645,13 @@ export const presignUploadSchema = z
     // Enumerated rather than allowing video/* wholesale, so this stays an audio
     // ingest and doesn't quietly become a video one. The real content check is
     // the magic-byte sniff at upload time — this only screens the claim.
+    // Accept the browser's codec parameter ('audio/webm;codecs=opus') and
+    // normalize to the base type — a base-only regex 400'd every recorded clip.
     contentType: z
       .string()
-      .regex(/^(audio\/[a-z0-9.+-]+|video\/(x-)?mpe?g)$/i)
-      .max(120),
+      .regex(/^(audio\/[a-z0-9.+-]+|video\/(x-)?mpe?g)(\s*;\s*[\w.+=*"'-]+)*$/i)
+      .max(120)
+      .transform((s) => s.split(";")[0]!.trim().toLowerCase()),
     ext: z.enum(AUDIO_FORMATS),
     sizeBytes: z.number().int().min(1_000).max(MAX_PRESIGNED_UPLOAD_BYTES),
   })
@@ -864,10 +867,16 @@ export const dropBatchSchema = z.object({
 
 export const audioUploadSchema = z.object({
   kind: z.enum(UPLOAD_KINDS).default("reference"),
+  // The browser MediaRecorder reports its MIME WITH a codec parameter —
+  // 'audio/webm;codecs=opus', 'audio/mp4;codecs=mp4a.40.2' — so a base-type-only
+  // regex rejected EVERY recorded clip (live: Zap "contentType: Invalid", 2026-
+  // 07-20). Accept the optional ';param=value' suffix, then normalize to the
+  // base type so downstream ext/mapping still matches exactly.
   contentType: z
     .string()
-    .regex(/^audio\/[a-z0-9.+-]+$/i)
-    .max(60)
+    .regex(/^audio\/[a-z0-9.+-]+(\s*;\s*[\w.+=*"'-]+)*$/i)
+    .max(120)
+    .transform((s) => s.split(";")[0]!.trim().toLowerCase())
     .default("audio/webm"),
   ext: z.enum(AUDIO_FORMATS).default("webm"),
   dataBase64: z
