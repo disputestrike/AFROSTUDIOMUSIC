@@ -129,7 +129,7 @@ jobs:
         run: node scripts/ci-preflight.mjs --finalize
       - name: Upload machine-readable CI evidence
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ci-evidence-${{ github.run_id }}-${{ github.run_attempt }}
           path: artifacts/ci/ci-evidence.json
