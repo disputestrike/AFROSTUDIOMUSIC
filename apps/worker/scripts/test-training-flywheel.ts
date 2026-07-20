@@ -117,6 +117,8 @@ assert(flywheel.includes('musicTrainerEnabled()') && flywheel.includes('kickoffM
 assert(flywheel.includes("kind: \"music-training\""), 'every kickoff/refusal files an auditable receipt');
 assert(flywheel.includes('manifestFromCatalog'), 'flywheel classifies with the SHARED rights law');
 assert(flywheel.includes('consentedWorkspaceIds') && flywheel.includes('resolveTrainingConsent'), 'flywheel resolves PER-WORKSPACE recorded grants (the consent door)');
+assert(flywheel.includes('trainingConsentSnapshot') && flywheel.includes('consentSnapshotHash'), 'training receipts bind current consent records to the exact dataset');
+assert(flywheel.includes('unboundUserAssets'), 'user-original assets without a persisted current grant fail closed');
 
 // cleanup env
 delete process.env.MUSIC_TRAINER_ENABLED;

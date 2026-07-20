@@ -67,6 +67,7 @@ import albums from "./routes/albums";
 import materials from "./routes/materials";
 import producerKits from "./routes/producer-kits";
 import producerEvidence from "./routes/producer-evidence";
+import singingEvidence from "./routes/singing-evidence";
 import instrumentals from "./routes/instrumentals";
 import lexicon from "./routes/lexicon";
 import zap from "./routes/zap";
@@ -544,6 +545,7 @@ async function bootstrap() {
       await api.register(materials, { prefix: "/materials" });
       await api.register(producerKits, { prefix: "/producer-kits" });
       await api.register(producerEvidence, { prefix: "/producer-evidence" });
+      await api.register(singingEvidence, { prefix: "/singing-evidence" });
       await api.register(benchmark, { prefix: "/benchmark" });
       await api.register(authRoutes, { prefix: "/auth" });
       await api.register(instrumentals, { prefix: "/instrumentals" });
