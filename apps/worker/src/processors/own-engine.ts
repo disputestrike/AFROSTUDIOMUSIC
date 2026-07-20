@@ -834,46 +834,65 @@ export async function processOwnEngine(p: OwnEnginePayload): Promise<void> {
       }
       notes.push(`replay: locked ${p.lockedMaterialIds!.length} material receipt(s)`);
     }
-    const haveRoles = new Set(picks.map(x => x.role));
-    // MATERIALS FROM THE RICH FORGE FIRST, synth only as the floor (owner,
-    // 2026-07-17: "use all African instruments — not a stand-in"). Two tiers,
-    // same as the nightly kit-forge:
-    //   Tier 1 (REAL): every missing REQUESTED role that has a real forge
-    //     prompt (the 105-role African vocabulary) is rendered on the
-    //     connected engine — a real shekere/djembe/talking-drum, not math.
-    //   Tier 2 (FLOOR): base primitives + any role the real forge can't do
-    //     are synth-forged (family-mapped so they never hard-fail).
-    // On-demand real forging is bounded so one song can't spend the night;
-    // the nightly kit-forge grows each lane so this rarely fires twice.
-    // COST GUARD (owner order 2026-07-19: "using our own engine we don't wanna
-    // pay a DIME"): each real-forge render is a PAID Replicate call — up to
-    // forgeCap per song — and the house token used to count as "connected", so
-    // every fresh-shelf render silently billed the operator (the receipts the
-    // owner saw). The paid on-demand forge now runs ONLY when (a) the WORKSPACE
-    // brought its own Replicate key (their bill), or (b) the operator opts in
-    // via OWN_ENGINE_REAL_FORGE=1 (a deliberate shelf-stocking spend). Default:
-    // the $0 synth floor covers every missing role (family-mapped, never
-    // hard-fails); the operator-budgeted NIGHTLY forge remains the deliberate
-    // way to stock shelves with real instruments.
+    let haveRoles = new Set(picks.map(x => x.role));
+    // REAL-INSTRUMENT FORGING IS THE AUTOMATIC DEFAULT NOW (owner order
+    // 2026-07-20, explicit + emphatic: "Turn on the forging. Let it forge
+    // always automatically ... Make REAL-INSTRUMENT forging the AUTOMATIC
+    // DEFAULT"). The old gate was OPT-IN (OWN_ENGINE_REAL_FORGE=1 required) and
+    // only forged missing REQUESTED roles, so the $0 synth backfill filled the
+    // shelf FIRST — coverage went ready before any forge stage ran and every
+    // render shipped 4 synth primitives ("one sound"). Now: whenever a forge
+    // engine is REACHABLE — the house Replicate token (replicateToken(), the
+    // owner HAS it) OR a workspace's own Replicate key — the engine forges the
+    // LANE'S CORE REAL KIT (forgeKitFor: talking drum / shekere / bass guitar /
+    // rhodes / …) up to a per-render cap BEFORE the synth backfill, so real
+    // MusicGen loops become the instrument floor and synth only fills the JOBS
+    // forging could not land. This is the SAME forgeLoopAdapter/MusicGen route
+    // processForgeMaterial already uses (house token or workspace key), so a
+    // reachable check here never files a dead job.
+    //
+    // GATING: default ON — disable real forging with OWN_ENGINE_REAL_FORGE=0
+    // (inverts the old opt-in), or kill ALL forging with the master switch
+    // OWN_ENGINE_AUTOFORGE=0. Replay-locked renders NEVER forge (reproduce
+    // exactly). COST SHAPE: forged loops PERSIST per lane (once per lane, not
+    // per render — a role already on the shelf is never re-forged), so a lane
+    // pays its forge cost ONCE then reuses; the SPEND is the operator's
+    // authorized Replicate credits and the USER is charged $0 (own engine free
+    // by owner order — these provider jobs carry no _charge). Fail-open: a
+    // failed/unreachable forge falls to the synth floor with an honest note.
+    const workspaceForgeKey = await (async () => {
+      const ws = await prisma.workspace.findUnique({
+        where: { id: p.workspaceId },
+        select: { musicProvider: true, musicApiKey: true },
+      });
+      return ws?.musicProvider === "replicate"
+        ? openSecret(ws.musicApiKey) || undefined
+        : undefined;
+    })();
+    // A forge engine is reachable when forgeLoopAdapter can route to MusicGen:
+    // the operator's house token OR the workspace's own Replicate key.
+    const forgeReachable = Boolean(replicateToken()) || Boolean(workspaceForgeKey);
     const engineConnected =
       !replayLocked &&
-      (process.env.OWN_ENGINE_REAL_FORGE === "1" && Boolean(replicateToken())) ||
-      (!replayLocked && await (async () => {
-        const ws = await prisma.workspace.findUnique({
-          where: { id: p.workspaceId },
-          select: { musicProvider: true, musicApiKey: true },
-        });
-        return (
-          ws?.musicProvider === "replicate" && Boolean(openSecret(ws.musicApiKey))
-        );
-      })());
+      process.env.OWN_ENGINE_AUTOFORGE !== "0" &&
+      process.env.OWN_ENGINE_REAL_FORGE !== "0" &&
+      forgeReachable;
     const forgeCap = Math.max(
       0,
-      Number(process.env.OWN_ENGINE_ONDEMAND_FORGE ?? 6) || 6
+      Number(process.env.OWN_ENGINE_ONDEMAND_FORGE ?? 8) || 8
     );
     const realForged: string[] = [];
     if (engineConnected && forgeCap > 0) {
-      const richMissing = requestedRoles
+      // THE LANE'S CORE REAL KIT — requested roles first (an explicit ask leads),
+      // then forgeKitFor priority (signature instruments before extra
+      // percussion). Only beds the shelf does NOT already hold (no double-forge —
+      // persisted loops are reused), only forgeable roles, 'fill' excluded (a
+      // transition the synth floor still makes), capped per render. This is the
+      // SAME candidate list pickKit re-selects with, so every landed loop is
+      // immediately pickable.
+      const richMissing = [...requestedRoles, ...forgeKitFor(p.genre, 12)]
+        .filter((role, i, arr) => arr.indexOf(role) === i)
+        .filter(r => r !== "fill")
         .filter(r => !haveRoles.has(r))
         .filter(r => Boolean(forgePromptFor(r, p.genre, bpm, homeKey)))
         .slice(0, forgeCap);
@@ -909,8 +928,19 @@ export async function processOwnEngine(p: OwnEnginePayload): Promise<void> {
             bpm,
             keySignature: homeKey,
           });
-          realForgedSet.add(role);
-          haveRoles.add(role);
+          // RECEIPTS, NOT VIBES: processForgeMaterial marks its own job and
+          // never rethrows (a QC/role-purity/tempo rejection is a soft fail), so
+          // read the job row to know whether the loop actually LANDED — only a
+          // SUCCEEDED forge counts as a real instrument on the shelf (keeps the
+          // cost-visibility note honest).
+          const forged = await prisma.providerJob.findUnique({
+            where: { id: forgeJob.id },
+            select: { status: true },
+          });
+          if (forged?.status === "SUCCEEDED") {
+            realForgedSet.add(role);
+            haveRoles.add(role);
+          }
         } catch (err) {
           // Real forge unavailable/throttled/failed for this role → it falls
           // to the synth floor below. Never fatal.
@@ -923,14 +953,64 @@ export async function processOwnEngine(p: OwnEnginePayload): Promise<void> {
       realForged.push(...richMissing.filter(role => realForgedSet.has(role)));
       if (realForged.length) notes.push(`kit: forged real ${realForged.join("+")}`);
     }
-    // The synth FLOOR: base primitives + any requested role the real forge
-    // didn't cover. Family-mapped so it never hard-fails.
+    // RE-PICK AFTER THE REAL FORGE so the synth backfill sees what LANDED and
+    // fills only the gaps (job-aware, below). A no-op when nothing forged.
+    if (realForged.length) {
+      picks = await pickKit(
+        p.workspaceId,
+        p.genre,
+        bpm,
+        homeKey,
+        varietySeed,
+        requestedRoles,
+        p.lockedMaterialIds ?? []
+      );
+      haveRoles = new Set(picks.map(x => x.role));
+    }
+    // THE SYNTH FLOOR IS THE GAP-FILLER NOW, NOT THE DEFAULT (owner order
+    // 2026-07-20). The coarse synth roles (drums/percussion/bass/chords) are a
+    // DIFFERENT namespace than the fine forged/collected roles (talking_drum/
+    // shekere/bass_guitar/rhodes), so a plain role match would re-add a synth
+    // primitive on top of every real loop — exactly the "one sound" the owner
+    // heard. Suppress synth per JOB: a coarse target is synth-forged only when
+    // the REAL shelf is still BELOW the floor for that job (rhythm<2 / low-end<1
+    // / harmony<1) — real instruments carry the bed, synth tops up only what
+    // forging could not land. A requested role that never landed is still
+    // floored by its exact role (it was explicitly asked for). 'fill' is a
+    // job-less transition and always kept. When forge was disabled/unreachable
+    // or landed nothing, EVERY job reads below the floor → the full $0 synth
+    // floor runs exactly as before (never ships thinner than the baseline).
+    const realCoverage = materialCoverage(picks);
+    const coarseJobOf = (role: string): string | null =>
+      isMaterialRole(role)
+        ? jobOf(role)
+        : (
+            {
+              drums: "rhythm",
+              percussion: "rhythm",
+              bass: "low_end",
+              log_drum: "low_end",
+              chords: "harmony",
+            } as Record<string, string>
+          )[role] ?? null;
+    const jobBelowFloor = (job: string | null): boolean => {
+      if (job === "rhythm") return realCoverage.rhythm < 2;
+      if (job === "low_end") return realCoverage.lowEnd < 1;
+      if (job === "harmony" || job === "melody") return realCoverage.tonal < 1;
+      return true; // job-less / unknown → keep (never drop a floor the gate needs)
+    };
+    const requestedSet = new Set<string>(requestedRoles);
     const synthTargets = [
       ...new Set([...synthKitFor(p.genre), ...requestedRoles]),
     ];
     const missing = replayLocked
       ? []
-      : synthTargets.filter(r => !haveRoles.has(r));
+      : synthTargets.filter(role => {
+          if (haveRoles.has(role)) return false; // already on the shelf (forged/collected)
+          if (role === "fill") return true; // transition floor — always
+          if (requestedSet.has(role)) return true; // explicit ask → exact-role floor
+          return jobBelowFloor(coarseJobOf(role)); // real shelf short in this job
+        });
     if (missing.length) {
       notes.push(`kit: synth-forged ${missing.join("+")}`);
       await processSynthMaterial({
@@ -940,8 +1020,6 @@ export async function processOwnEngine(p: OwnEnginePayload): Promise<void> {
         keySignature: homeKey,
         roles: missing,
       });
-    }
-    if (missing.length || realForged.length) {
       picks = await pickKit(
         p.workspaceId,
         p.genre,
@@ -952,6 +1030,27 @@ export async function processOwnEngine(p: OwnEnginePayload): Promise<void> {
         p.lockedMaterialIds ?? []
       );
     }
+    // COST VISIBILITY (owner order 2026-07-20 item 6): the operator sees, on
+    // every render, how many REAL instrument loops were forged vs synth
+    // gap-fillers — and why real forging did or did not run.
+    const forgeOffReason =
+      process.env.OWN_ENGINE_AUTOFORGE === "0"
+        ? "all forging disabled (OWN_ENGINE_AUTOFORGE=0)"
+        : process.env.OWN_ENGINE_REAL_FORGE === "0"
+          ? "real forge disabled (OWN_ENGINE_REAL_FORGE=0)"
+          : replayLocked
+            ? "replay-locked (renders reproduce exactly, never forge)"
+            : !forgeReachable
+              ? "no Replicate token reachable — set REPLICATE_API_TOKEN to forge real instruments"
+              : null;
+    notes.push(
+      `forge floor: ${realForged.length} real instrument loop(s) forged + ${missing.length} synth gap-filler(s)` +
+        (engineConnected
+          ? " — real-instrument forging is the automatic default (operator Replicate spend; user charged $0)"
+          : forgeOffReason
+            ? ` — ${forgeOffReason}`
+            : "")
+    );
     let coverage = materialCoverage(picks);
     // AUTO-FORGE (owner order 2026-07-19 night): when a user picks AfroOne on a
     // shelf BELOW the material floor, the engine FORGES the missing starter

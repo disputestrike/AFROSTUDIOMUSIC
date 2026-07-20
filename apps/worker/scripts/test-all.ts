@@ -355,6 +355,7 @@ async function runOfflineTests(): Promise<void> {
     ["SOUNDCORE (lead+forge-route+fan-out+conform+sample-seam)", "test-soundcore.ts"],
     ["SOUNDWAVE3 (trained tempo + Learn/Zap wiring)", "test-soundwave3.ts"],
     ["Own-engine auto-forge (floor rescue)", "test-own-engine-autoforge.ts"],
+    ["FORGEON (real forge = automatic default)", "test-forgeon.ts"],
     ["Material provenance + usage laws", "test-material-provenance.ts"],
     ["Training isolation (lane/pin/zap)", "test-training-isolation.ts"],
     ["Singing brain (sung-form laws)", "test-singing-brain.ts"],
