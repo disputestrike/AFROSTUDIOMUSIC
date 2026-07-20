@@ -24,6 +24,8 @@ prisma/.env
 storage/
 tmp/
 artifacts/acceptance/
+.playwright-cli/
+output/playwright/
 .idea
 .vscode/*
 !.vscode/settings.json

@@ -60,9 +60,18 @@ type JsonRecord = Record<string, unknown>;
 interface TrainingSource {
   id: string;
   origin: TrainingOrigin;
+  workspaceId: string | null;
   url: string;
   contentFingerprint: string;
   createdAt: Date;
+}
+
+interface TrainingConsentSnapshot {
+  id: string;
+  workspaceId: string;
+  consentVersion: string;
+  consentTextHash: string;
+  signedAt: string;
 }
 
 interface TrainingJobRow {
@@ -261,13 +270,14 @@ export async function submitMusicTrainingEvaluation(input: {
 }
 
 /** Workspaces holding a current, unrevoked, hash-bound training grant. */
-async function consentedWorkspaceIds(): Promise<Set<string>> {
+async function consentedWorkspaceIds(): Promise<Map<string, TrainingConsentSnapshot>> {
   const expectedHash = createHash("sha256")
     .update(TRAINING_LICENSE_CLAUSE, "utf8")
     .digest("hex");
   const rows = await prisma.trainingConsent.findMany({
     where: { revokedAt: null },
     select: {
+      id: true,
       workspaceId: true,
       consentVersion: true,
       signedAt: true,
@@ -277,7 +287,7 @@ async function consentedWorkspaceIds(): Promise<Set<string>> {
     orderBy: { signedAt: "desc" },
     take: 10_000,
   });
-  const granted = new Set<string>();
+  const granted = new Map<string, TrainingConsentSnapshot>();
   for (const row of rows) {
     if (granted.has(row.workspaceId)) continue;
     const verdict = resolveTrainingConsent(
@@ -289,7 +299,20 @@ async function consentedWorkspaceIds(): Promise<Set<string>> {
       },
       { expectedHash }
     );
-    if (verdict.granted && verdict.current) granted.add(row.workspaceId);
+    if (
+      verdict.granted &&
+      verdict.current &&
+      typeof row.consentTextHash === "string" &&
+      /^[a-f0-9]{64}$/i.test(row.consentTextHash)
+    ) {
+      granted.set(row.workspaceId, {
+        id: row.id,
+        workspaceId: row.workspaceId,
+        consentVersion: row.consentVersion,
+        consentTextHash: row.consentTextHash,
+        signedAt: row.signedAt.toISOString(),
+      });
+    }
   }
   return granted;
 }
@@ -313,6 +336,7 @@ function mergeManifests(a: TrainingManifest, b: TrainingManifest): TrainingManif
 async function liveManifest(): Promise<{
   manifest: TrainingManifest;
   sources: Map<string, Omit<TrainingSource, "id" | "origin">>;
+  consents: Map<string, TrainingConsentSnapshot>;
 }> {
   const take = 5_000;
   // Keep this scan sequential. The flywheel runs off-peak and reliability is
@@ -409,6 +433,7 @@ async function liveManifest(): Promise<{
   const sources = new Map<string, Omit<TrainingSource, "id" | "origin">>();
   for (const row of materials) {
     sources.set(`material:${row.id}`, {
+      workspaceId: row.workspaceId,
       url: row.url,
       contentFingerprint: row.contentHash?.trim() || row.url,
       createdAt: row.createdAt,
@@ -416,6 +441,7 @@ async function liveManifest(): Promise<{
   }
   for (const row of beats) {
     sources.set(`beat:${row.id}`, {
+      workspaceId: row.project?.workspaceId ?? null,
       url: row.url,
       contentFingerprint: row.contentHash?.trim() || row.url,
       createdAt: row.createdAt,
@@ -423,6 +449,7 @@ async function liveManifest(): Promise<{
   }
   for (const row of vocals) {
     sources.set(`vocal:${row.id}`, {
+      workspaceId: row.project?.workspaceId ?? null,
       url: row.url,
       contentFingerprint: row.contentHash?.trim() || row.url,
       createdAt: row.createdAt,
@@ -431,7 +458,7 @@ async function liveManifest(): Promise<{
   console.log(
     `[flywheel] consent door: ${granted.size} workspace(s) granted; eligible ${manifest.eligible.length} of ${manifest.counts.total}`
   );
-  return { manifest, sources };
+  return { manifest, sources, consents: granted };
 }
 
 function manifestForAssets(
@@ -988,7 +1015,7 @@ export async function runTrainingFlywheel(): Promise<FlywheelResult> {
   }
   await ensureTrainingWorkspace();
 
-  const { manifest, sources } = await liveManifest();
+  const { manifest, sources, consents } = await liveManifest();
   const selected: TrainingSource[] = manifest.eligible
     .map(asset => {
       const source = sources.get(asset.id);
@@ -1070,7 +1097,12 @@ export async function runTrainingFlywheel(): Promise<FlywheelResult> {
     };
   }
 
-  const trainingAssets = zippedAssets.map(asset => ({ id: asset.id, origin: asset.origin }));
+  const trainingAssets = zippedAssets.map(asset => ({
+    id: asset.id,
+    origin: asset.origin,
+    workspaceId: asset.workspaceId,
+    contentHash: asset.audioHash,
+  }));
   const trainingManifest = manifestForAssets(trainingAssets);
   buildTrainerDataset(trainingManifest);
   const datasetHash = trainingDatasetHash(
@@ -1081,6 +1113,31 @@ export async function runTrainingFlywheel(): Promise<FlywheelResult> {
     }))
   );
   const idempotencyKey = `dataset:${datasetHash}`;
+  const trainingConsentSnapshot = [...new Set(
+    trainingAssets
+      .filter(asset => asset.origin === "user-original")
+      .map(asset => asset.workspaceId)
+      .filter((workspaceId): workspaceId is string => Boolean(workspaceId))
+  )]
+    .map(workspaceId => consents.get(workspaceId))
+    .filter((receipt): receipt is TrainingConsentSnapshot => Boolean(receipt))
+    .sort((left, right) => left.workspaceId.localeCompare(right.workspaceId));
+  const consentedUserWorkspaces = new Set(
+    trainingConsentSnapshot.map(receipt => receipt.workspaceId)
+  );
+  const unboundUserAssets = trainingAssets.filter(
+    asset =>
+      asset.origin === "user-original" &&
+      (!asset.workspaceId || !consentedUserWorkspaces.has(asset.workspaceId))
+  );
+  if (unboundUserAssets.length > 0) {
+    throw new Error(
+      `refusing to train: ${unboundUserAssets.length} user-original asset(s) lack a current consent receipt`
+    );
+  }
+  const consentSnapshotHash = createHash("sha256")
+    .update(JSON.stringify(trainingConsentSnapshot), "utf8")
+    .digest("hex");
   const duplicate = await prisma.providerJob.findFirst({
     where: {
       workspaceId: TRAINING_WORKSPACE_ID,
@@ -1152,6 +1209,8 @@ export async function runTrainingFlywheel(): Promise<FlywheelResult> {
           eligible: manifest.eligible.length,
           zipped: zippedAssets.length,
           trainingAssets,
+          trainingConsentSnapshot,
+          consentSnapshotHash,
           byOrigin: trainingManifest.counts.byOrigin,
           trainerModel: config?.model,
           trainerVersion: config?.version,

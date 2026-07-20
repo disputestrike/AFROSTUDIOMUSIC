@@ -54,3 +54,4 @@ export * from "./training-capture";
 export * from "./genre-canon";
 export * from "./afroone-render";
 export * from "./producer-evidence";
+export * from "./singing-evidence";

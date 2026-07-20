@@ -3,9 +3,9 @@ import { genreSignature } from '@afrohit/shared';
 
 /**
  * The front door — THREE CREATOR DOORS (owner spec, 2026-07-16):
- *   🎤 Make a song        — today's full flow, untouched (hooks → A&R → lyrics → sung song)
- *   🎹 Make an instrumental — the beat path only (withVocals:false), producer-to-producer
- *   🎬 Sounds for film & creators — scene-first sound design riding the SAME
+ *   Make a song - today's full flow (hooks, A&R, lyrics, and sung song)
+ *   Make an instrumental - the beat path only (withVocals:false)
+ *   Sounds for film and creators - scene-first sound design riding the same
  *      instrumental machinery (scene + sound type lead the render's vibe prompt;
  *      no hooks/lyrics/A&R anywhere near it)
  * Each creator walks into their own room and never sees the other rooms'
@@ -14,6 +14,30 @@ import { genreSignature } from '@afrohit/shared';
  */
 
 import { useEffect, useRef, useState } from 'react';
+import type { LucideIcon } from 'lucide-react';
+import {
+  ArrowRight,
+  AudioLines,
+  BadgeCheck,
+  Check,
+  CircleAlert,
+  Clock3,
+  Download,
+  Film,
+  Gauge,
+  Headphones,
+  LibraryBig,
+  LoaderCircle,
+  Mic2,
+  Music2,
+  Piano,
+  Play,
+  RotateCcw,
+  ShieldCheck,
+  SlidersHorizontal,
+  Video,
+  X,
+} from 'lucide-react';
 import { BringYourOwn } from '@/components/BringYourOwn';
 import { MumbleBooth } from '@/components/MumbleBooth';
 import WorkspaceLibrary from '@/components/WorkspaceLibrary';
@@ -83,15 +107,16 @@ const FILM_STEPS = ['Setting up your session', 'Scoring the scene', 'Rendering &
 // THE THREE DOORS (owner spec 2026-07-16): "creators and movie creators create
 // SOUNDS, not songs… and people who just wanna create INSTRUMENTS. Three things."
 type Door = 'song' | 'instrumental' | 'film' | 'video';
+type RenderAction = 'song' | 'lyrics' | 'instrumental' | 'film';
 const DOOR_KEY = 'afrohit.create.door.v1';
-const DOORS: Array<{ id: Door; emoji: string; title: string; sub: string }> = [
-  { id: 'song', emoji: '🎤', title: 'Make a song', sub: 'The full record — hooks, lyrics, vocals' },
-  { id: 'instrumental', emoji: '🎹', title: 'Make an instrumental', sub: 'A beat, a bed, a groove — no vocals' },
-  { id: 'film', emoji: '🎬', title: 'Sounds for film & creators', sub: 'Score beds, risers, stingers for your scenes' },
+const DOORS: Array<{ id: Door; icon: LucideIcon; title: string; sub: string }> = [
+  { id: 'song', icon: Mic2, title: 'Make a song', sub: 'Hooks, lyrics, vocals, and production' },
+  { id: 'instrumental', icon: Piano, title: 'Make an instrumental', sub: 'A beat, bed, or groove without vocals' },
+  { id: 'film', icon: Film, title: 'Score a scene', sub: 'Beds, risers, stingers, and transitions' },
   // THE VERTICAL'S FRONT DOOR (owner, 2026-07-17: "somebody with a song,
   // fully developed, can come in — we make the video for that song exactly
   // as it is"). Suno owns songs; this door is how we own music videos.
-  { id: 'video', emoji: '🎞', title: 'Make a music video', sub: 'Bring your finished song — leave with the video' },
+  { id: 'video', icon: Video, title: 'Make a music video', sub: 'Bring a finished song and build its visual' },
 ];
 
 // FILM SOUND TYPES — each rides the EXISTING instrumental machinery. A genre is
@@ -111,6 +136,7 @@ type FilmTypeId = (typeof FILM_TYPES)[number]['id'];
 const FILM_DURATIONS = [15, 30, 60] as const;
 const FILM_MOODS = ['tense', 'warm', 'epic', 'playful', 'eerie', 'triumphant'];
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+const formatElapsed = (seconds: number) => `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`;
 
 function isExplicitPaymentRequired(error: unknown): boolean {
   return error instanceof Error && /^402(?:\s|$)/.test(error.message);
@@ -173,7 +199,7 @@ export default function CreatePage() {
       if (phase === 'producing' && q.get('produce') !== '1') setPhase('form');
       return;
     }
-    setPhase('producing'); setStepIdx(saved.renderJobId ? 3 : 1);
+    setRenderStartedAt(saved.at ?? Date.now()); setPhase('producing'); setStepIdx(saved.renderJobId ? 3 : 1);
     void (async () => {
       const dropJobId = saved!.dropJobId; let renderJobId = saved!.renderJobId; let projectId = saved!.projectId;
       let hook = saved!.hook ?? ''; let score = saved!.score ?? null; let title = saved!.title ?? 'Your song';
@@ -261,11 +287,12 @@ export default function CreatePage() {
   useEffect(() => {
     try {
       const d = localStorage.getItem(DOOR_KEY);
-      if (d === 'instrumental' || d === 'film') setDoor(d);
+      if (d === 'song' || d === 'instrumental' || d === 'film' || d === 'video') setDoor(d);
     } catch { /* storage unavailable — stay on the song door */ }
   }, []);
   const pickDoor = (d: Door) => {
     setDoor(d);
+    setPendingAction(null);
     try { localStorage.setItem(DOOR_KEY, d); } catch { /* noop */ }
   };
 
@@ -286,12 +313,25 @@ export default function CreatePage() {
   });
   const [stepIdx, setStepIdx] = useState(0);
   const [err, setErr] = useState('');
+  const [firstRun, setFirstRun] = useState(false);
+  const [pendingAction, setPendingAction] = useState<RenderAction | null>(null);
+  const [lastAction, setLastAction] = useState<RenderAction>('song');
+  const [renderStartedAt, setRenderStartedAt] = useState<number | null>(null);
+  const [elapsedSeconds, setElapsedSeconds] = useState(0);
   const [song, setSong] = useState<{ title: string; hook?: string; score: number | null; url: string; projectId: string } | null>(null);
   // CONSOLE PLAYER (T2): what's playing on the left half under the Create
   // button. New renders land here; library rows play here.
   const [nowPlaying, setNowPlaying] = useState<{ title: string; url: string } | null>(null);
   const [libRefresh, setLibRefresh] = useState(0);
   const playerRef = useRef<HTMLAudioElement | null>(null);
+
+  useEffect(() => {
+    if (phase !== 'producing' || renderStartedAt === null) return;
+    const updateElapsed = () => setElapsedSeconds(Math.max(0, Math.floor((Date.now() - renderStartedAt) / 1000)));
+    updateElapsed();
+    const timer = window.setInterval(updateElapsed, 1000);
+    return () => window.clearInterval(timer);
+  }, [phase, renderStartedAt]);
 
   // Prefill from links like /create?genre=...&mood=...&bpm=...&vibe=...&produce=1
   // e.g. "Make a song that outdoes this" after learning a lyric on /listen.
@@ -308,6 +348,7 @@ export default function CreatePage() {
     if (b >= 60 && b <= 180) { setBpm(Math.round(b)); bpmTouched.current = true; }
     const v = q.get('vibe');
     if (v) setVibe(v.slice(0, 300));
+    if (q.get('onboarding') === 'brief') setFirstRun(true);
     const inf = q.get('influence');
     const pin = q.get('pin');
     if (pin) setPinnedRef(pin);
@@ -383,9 +424,9 @@ export default function CreatePage() {
   const FeelRow = () => (
     <div className="mt-2 flex gap-2">
       {[
-        { label: '🐢 Slow', delta: -16 },
-        { label: '🎯 Just right', delta: 0 },
-        { label: '⚡ Fast', delta: 16 },
+        { label: 'Slow', delta: -16 },
+        { label: 'Natural', delta: 0 },
+        { label: 'Fast', delta: 16 },
       ].map((f) => (
         <button
           key={f.label}
@@ -416,6 +457,8 @@ export default function CreatePage() {
   const genreLabel = genres.map((g) => GENRES.find((x) => x.value === g)?.label ?? g).join(' × ');
 
   async function createSong() {
+    setLastAction('song');
+    setRenderStartedAt(Date.now());
     setErr('');
     if (!hasMusicRoute) {
       setErr('No music engine is connected. Ask an owner to connect one in Settings.');
@@ -471,7 +514,7 @@ export default function CreatePage() {
       saveProduce({ dropJobId: started.jobId, renderJobId: undefined });
       let item: { jobId?: string; hookText?: string; score: number | null; error?: string } | undefined;
       // Hooks + lyrics run on Claude and can be slow under load — wait up to ~8 min.
-      // RESILIENT POLL: a single fetch that fails (phone backgrounded the tab, wifi↔
+      // RESILIENT POLL: a single fetch that fails (phone backgrounded the tab, wifi-to-
       // cellular switch, brief network blip) must NOT kill the whole thing — the work
       // keeps running server-side. Retry; only give up after ~2 min of solid failures.
       let dropFailed = false;
@@ -570,7 +613,7 @@ export default function CreatePage() {
       let pid = typeof localStorage !== 'undefined' ? localStorage.getItem(KEY) : null;
       if (pid) { try { await api.get(`/projects/${pid}`); } catch { pid = null; } }
       if (!pid) {
-        const p = await api.post<{ id: string }>('/projects', { title: '📝 From my lyrics', genre: 'afrobeats', bpm: 103 });
+      const p = await api.post<{ id: string }>('/projects', { title: 'From my lyrics', genre: 'afrobeats', bpm: 103 });
         pid = p.id;
         localStorage.setItem(KEY, pid);
       }
@@ -603,6 +646,8 @@ export default function CreatePage() {
     // Sing needs LYRICS, not a successful deconstruct — the analyze step can fail
     // (daily cap, malformed JSON) and used to leave this (and the button) dead.
     if (lyricsText.trim().length < 20) return;
+    setLastAction('lyrics');
+    setRenderStartedAt(Date.now());
     setErr('');
     if (!hasMusicRoute) {
       setErr('No music engine is connected. Ask an owner to connect one in Settings.');
@@ -718,6 +763,8 @@ export default function CreatePage() {
   /** DOOR 2 — the instrumental room. The EXISTING beat path with
    *  withVocals:false: no hooks, no lyrics, no A&R, no vocal machinery. */
   async function createInstrumental() {
+    setLastAction('instrumental');
+    setRenderStartedAt(Date.now());
     setErr('');
     const own = engine === 'own';
     // Our Engine assembles from the workspace's own + synthesized material — it
@@ -790,6 +837,8 @@ export default function CreatePage() {
    *  lane; no hooks/lyrics/A&R involvement. Lands in the Catalog honestly
    *  labeled — the title IS the scene. */
   async function createFilmSound() {
+    setLastAction('film');
+    setRenderStartedAt(Date.now());
     setErr('');
     const scene = filmScene.trim();
     if (scene.length < 5) return;
@@ -854,6 +903,26 @@ export default function CreatePage() {
     }
   }
 
+  function requestRender(action: RenderAction) {
+    setErr('');
+    setLastAction(action);
+    setPendingAction(action);
+  }
+
+  function confirmRender() {
+    const action = pendingAction;
+    setPendingAction(null);
+    if (action === 'song') void createSong();
+    if (action === 'lyrics') void createFromLyrics();
+    if (action === 'instrumental') void createInstrumental();
+    if (action === 'film') void createFilmSound();
+  }
+
+  function retryLastBrief() {
+    setPhase('form');
+    setPendingAction(lastAction);
+  }
+
   async function openStudio() {
     const title = songName.trim().slice(0, 80) || vibe.trim().slice(0, 60) || `${genreLabel} ${mood}`;
     const project = await api.post<{ id: string }>('/projects', { title, genre, bpm });
@@ -869,78 +938,118 @@ export default function CreatePage() {
     const steps = door === 'instrumental' ? BEAT_STEPS : door === 'film' ? FILM_STEPS : STEPS;
     const cur = Math.min(stepIdx, steps.length - 1);
     const headline = door === 'instrumental'
-      ? `Cooking your ${genreLabel} instrumental…`
+      ? `Building your ${genreLabel} instrumental`
       : door === 'film'
-        ? 'Designing your scene’s sound…'
-        : `Creating your ${genreLabel} song…`;
+        ? 'Designing the sound for your scene'
+        : `Creating your ${genreLabel} song`;
+    const progress = Math.round(((cur + 1) / steps.length) * 100);
     return (
-      <div className="mx-auto max-w-lg px-6 py-16 text-center">
-        <div className="animate-pulse font-display text-3xl text-gradient">{headline}</div>
-        <p className="mt-2 text-sm text-slate-400">This takes about a minute or two. Stay here — it’s making it now.</p>
-        <ul className="mx-auto mt-8 max-w-sm space-y-3 text-left">
+      <main className="mx-auto max-w-2xl px-5 py-12 sm:px-6" aria-labelledby="render-status-title">
+        <section className="studio-status-panel" role="status" aria-live="polite">
+          <div className="flex items-start justify-between gap-4">
+            <div>
+              <div className="studio-section-kicker"><LoaderCircle className="animate-spin" aria-hidden="true" /> Render in progress</div>
+              <h1 id="render-status-title" className="mt-3 font-display text-3xl text-white">{headline}</h1>
+              <p className="mt-2 text-sm leading-6 text-slate-400">
+                Full songs usually take 3-12 minutes. Instrumentals and scene sounds are often faster. The work continues on the server if this tab is backgrounded.
+              </p>
+            </div>
+            <div className="rounded-lg border border-white/10 bg-black/20 px-3 py-2 text-right">
+              <span className="block text-[10px] font-semibold uppercase text-slate-500">Elapsed</span>
+              <span className="font-mono text-sm tabular-nums text-slate-200">{formatElapsed(elapsedSeconds)}</span>
+            </div>
+          </div>
+
+          <div className="mt-7 h-2 overflow-hidden rounded-full bg-white/10" role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={progress}>
+            <div className="h-full rounded-full bg-brand-gradient transition-[width] duration-500" style={{ width: `${progress}%` }} />
+          </div>
+
+          <ol className="mt-6 space-y-2 text-left">
           {steps.map((s, i) => (
-            <li key={s} className="flex items-center gap-3 text-sm">
-              <span className={`flex h-6 w-6 items-center justify-center rounded-full text-xs ${i < cur ? 'bg-emerald-500/25 text-emerald-300' : i === cur ? 'bg-brand-gradient text-ink' : 'bg-white/5 text-slate-500'}`}>
-                {i < cur ? '✓' : i === cur ? '●' : i + 1}
+            <li key={s} className={`flex items-center gap-3 rounded-lg border px-3 py-3 text-sm ${i === cur ? 'border-orange-400/30 bg-orange-400/5' : 'border-transparent'}`}>
+              <span className={`flex h-7 w-7 items-center justify-center rounded-full text-xs ${i < cur ? 'bg-emerald-500/15 text-emerald-300' : i === cur ? 'bg-orange-400 text-ink' : 'bg-white/5 text-slate-500'}`}>
+                {i < cur ? <Check className="h-3.5 w-3.5" aria-hidden="true" /> : i === cur ? <LoaderCircle className="h-3.5 w-3.5 animate-spin" aria-hidden="true" /> : i + 1}
               </span>
               <span className={i <= cur ? 'text-slate-200' : 'text-slate-500'}>{s}</span>
             </li>
           ))}
-        </ul>
-      </div>
+          </ol>
+
+          <div className="mt-7 flex flex-col gap-3 border-t border-white/10 pt-5 sm:flex-row sm:items-center sm:justify-between">
+            <p className="flex items-start gap-2 text-xs leading-5 text-slate-500">
+              <ShieldCheck className="mt-0.5 h-3.5 w-3.5 shrink-0 text-sage" aria-hidden="true" />
+              Refreshing will resume this status instead of starting another paid render.
+            </p>
+            <button type="button" onClick={() => router.push('/catalog')} className="studio-secondary-button shrink-0">
+              <LibraryBig aria-hidden="true" /> Open Catalog
+            </button>
+          </div>
+        </section>
+      </main>
     );
   }
 
   // ---- Done ----
   if (phase === 'done' && song) {
     return (
-      <div className="mx-auto max-w-lg px-6 py-14 text-center">
-        <div className="rounded-3xl border-gradient glass p-6 shadow-card">
-          <div className="mx-auto flex aspect-square w-full max-w-xs items-center justify-center rounded-2xl bg-brand-gradient text-ink shadow-glow">
-            <span className="font-display text-5xl">♪</span>
+      <main className="mx-auto max-w-2xl px-5 py-12 sm:px-6">
+        <section className="studio-status-panel">
+          <div className="flex h-12 w-12 items-center justify-center rounded-lg border border-emerald-400/30 bg-emerald-400/10 text-emerald-300">
+            <BadgeCheck className="h-6 w-6" aria-hidden="true" />
           </div>
-          <h1 className="mt-5 font-display text-3xl">{song.title}</h1>
-          {song.hook && <p className="mt-1 text-sm text-slate-400">“{song.hook.replace(/\(response:.*/i, '').trim()}”</p>}
-          {song.score != null && <div className="mt-1 text-xs text-afrobrand-300">A&R score {song.score.toFixed(1)}</div>}
+          <h1 className="mt-5 font-display text-3xl text-white">{song.title}</h1>
+          {song.hook && <p className="mt-1 text-sm text-slate-400">&quot;{song.hook.replace(/\(response:.*/i, '').trim()}&quot;</p>}
+          {song.score != null && <div className="mt-2 text-xs text-orange-300">A&amp;R score {song.score.toFixed(1)}</div>}
           <audio controls autoPlay className="mt-5 w-full" src={song.url} />
-          <div className="mt-6 flex flex-wrap justify-center gap-3">
-            <button onClick={() => { setSong(null); setPhase('form'); }} className="rounded-full bg-brand-gradient px-5 py-2.5 text-sm font-medium text-ink shadow-glow">
-              ✨ Make another
+
+          <div className="mt-6 rounded-lg border border-emerald-400/20 bg-emerald-400/5 p-4">
+            <div className="flex items-start gap-3">
+              <Download className="mt-0.5 h-5 w-5 shrink-0 text-emerald-300" aria-hidden="true" />
+              <div>
+                <p className="text-sm font-medium text-slate-100">Ready for your DAW</p>
+                <p className="mt-1 text-xs leading-5 text-slate-400">Open the project to separate stems, download production files, and continue in FL Studio, Ableton, Logic, or your preferred DAW.</p>
+              </div>
+            </div>
+          </div>
+
+          <div className="mt-6 flex flex-col gap-3 sm:flex-row">
+            <button type="button" onClick={() => router.push(song.projectId ? `/projects/${song.projectId}` : '/catalog')} className="studio-primary-button">
+              <SlidersHorizontal aria-hidden="true" /> Open project and export stems <ArrowRight aria-hidden="true" />
             </button>
-            <button onClick={() => router.push(`/projects/${song.projectId}`)} className="rounded-full border border-white/15 bg-white/5 px-5 py-2.5 text-sm hover:bg-white/10">
-              🎬 Cover, mix, clip &amp; release →
+            <button type="button" onClick={() => { setSong(null); setPhase('form'); }} className="studio-secondary-button">
+              <RotateCcw aria-hidden="true" /> Make another
             </button>
           </div>
-        </div>
-      </div>
+        </section>
+      </main>
     );
   }
 
   // ---- Still finishing (render outran our wait, but it IS being made) ----
   if (phase === 'finishing' && song) {
     return (
-      <div className="mx-auto max-w-lg px-6 py-14 text-center">
-        <div className="rounded-3xl border-gradient glass p-6 shadow-card">
-          <div className="mx-auto flex aspect-square w-full max-w-xs items-center justify-center rounded-2xl bg-brand-gradient text-ink shadow-glow">
-            <span className="font-display text-5xl animate-pulse">♪</span>
-          </div>
-          <h1 className="mt-5 font-display text-2xl">“{song.title}” is still cooking</h1>
-          <p className="mt-2 text-sm text-slate-400">
-            The {door === 'instrumental' ? 'instrumental' : door === 'film' ? 'sound' : 'song'} is taking a little longer to render. It’s not lost — it finishes in the background and lands in your Catalog in a minute or two, fully mastered.
+      <main className="mx-auto max-w-2xl px-5 py-12 sm:px-6">
+        <section className="studio-status-panel">
+          <div className="studio-section-kicker"><Clock3 aria-hidden="true" /> Finishing in the background</div>
+          <h1 className="mt-4 font-display text-3xl text-white">{song.title}</h1>
+          <p className="mt-2 text-sm leading-6 text-slate-400">
+            The {door === 'instrumental' ? 'instrumental' : door === 'film' ? 'scene sound' : 'song'} exceeded the live wait window, but the server is still working. It will appear in Catalog when it is ready; starting another brief will not cancel it.
           </p>
-          <div className="mt-6 flex flex-wrap justify-center gap-3">
-            <button onClick={() => router.push('/catalog')} className="rounded-full bg-brand-gradient px-5 py-2.5 text-sm font-medium text-ink shadow-glow">
-              🎧 See it in my Catalog →
+          <div className="mt-6 flex flex-col gap-3 sm:flex-row">
+            <button type="button" onClick={() => router.push('/catalog')} className="studio-primary-button">
+              <LibraryBig aria-hidden="true" /> Watch in Catalog <ArrowRight aria-hidden="true" />
             </button>
-            <button onClick={() => router.push(`/projects/${song.projectId}`)} className="rounded-full border border-white/15 bg-white/5 px-5 py-2.5 text-sm hover:bg-white/10">
-              Open this project
-            </button>
-            <button onClick={() => { setSong(null); setPhase('form'); }} className="rounded-full border border-white/15 bg-white/5 px-5 py-2.5 text-sm hover:bg-white/10">
-              ✨ Make another
+            {song.projectId && (
+              <button type="button" onClick={() => router.push(`/projects/${song.projectId}`)} className="studio-secondary-button">
+                <SlidersHorizontal aria-hidden="true" /> Open project
+              </button>
+            )}
+            <button type="button" onClick={() => { setSong(null); setPhase('form'); }} className="studio-secondary-button">
+              <RotateCcw aria-hidden="true" /> New brief
             </button>
           </div>
-        </div>
-      </div>
+        </section>
+      </main>
     );
   }
 
@@ -954,11 +1063,15 @@ export default function CreatePage() {
     const isCredits = !isCap && /insufficient_credits/i.test(err);
     const isLimit = isCap || isCredits;
     return (
-      <div className="mx-auto max-w-lg px-6 py-16 text-center">
-        <div className="font-display text-2xl">
-          {isCap ? 'You’ve hit today’s limit' : isCredits ? 'Out of credits' : 'Couldn’t finish that one'}
+      <main className="mx-auto max-w-2xl px-5 py-12 sm:px-6">
+        <section className="studio-status-panel" aria-labelledby="render-error-title">
+        <div className="flex h-11 w-11 items-center justify-center rounded-lg border border-red-400/30 bg-red-400/10 text-red-300">
+          <CircleAlert className="h-5 w-5" aria-hidden="true" />
         </div>
-        <p className="mt-2 text-sm text-red-400">
+        <h1 id="render-error-title" className="mt-4 font-display text-3xl text-white">
+          {isCap ? 'You’ve hit today’s limit' : isCredits ? 'Out of credits' : 'Couldn’t finish that one'}
+        </h1>
+        <p className="mt-2 text-sm leading-6 text-slate-400">
           {isCap
             ? 'The daily generation cap protects your budget. It resets at midnight UTC — or top up / raise the cap.'
             : isCredits
@@ -968,72 +1081,114 @@ export default function CreatePage() {
         {/* SELF-EXPLAINING 402s: the billing engine reports exactly which
             rule produced this block — no more screenshot-and-guess loops. */}
         {isLimit && <BillingDiagnosisLine />}
-        <div className="mt-6 flex flex-wrap justify-center gap-3">
+        <div className="mt-6 flex flex-col gap-3 sm:flex-row sm:flex-wrap">
           {isLimit ? (
             <>
-              <button onClick={() => router.push('/billing')} className="rounded-full bg-brand-gradient px-5 py-2.5 text-sm font-medium text-ink shadow-glow">See plans &amp; credits →</button>
-              <button onClick={() => router.push('/catalog')} className="rounded-full border border-white/15 bg-white/5 px-5 py-2.5 text-sm hover:bg-white/10">Work on existing songs</button>
+              <button type="button" onClick={() => router.push('/billing')} className="studio-primary-button">See plans and credits <ArrowRight aria-hidden="true" /></button>
+              <button type="button" onClick={() => router.push('/catalog')} className="studio-secondary-button"><LibraryBig aria-hidden="true" /> Work on existing songs</button>
             </>
           ) : (
-            <button onClick={() => setPhase('form')} className="rounded-full bg-brand-gradient px-5 py-2.5 text-sm font-medium text-ink shadow-glow">Try again</button>
+            <>
+              <button type="button" onClick={retryLastBrief} className="studio-primary-button"><RotateCcw aria-hidden="true" /> Review and retry</button>
+              <button type="button" onClick={() => { setPendingAction(null); setPhase('form'); }} className="studio-secondary-button">Edit the brief</button>
+              <button type="button" onClick={() => router.push('/catalog')} className="studio-secondary-button"><LibraryBig aria-hidden="true" /> Check Catalog</button>
+            </>
           )}
         </div>
-      </div>
+        <p className="mt-5 flex items-start gap-2 border-t border-white/10 pt-4 text-xs leading-5 text-slate-500">
+          <ShieldCheck className="mt-0.5 h-3.5 w-3.5 shrink-0 text-sage" aria-hidden="true" />
+          Retrying returns to a confirmation step. It never spends credits automatically.
+        </p>
+        </section>
+      </main>
     );
   }
 
   // ---- The CONSOLE (T2, console layout): create panel LEFT with the player under
   // the Create button; workspace library RIGHT. Stacks on mobile. ----
   return (
-    <div className="mx-auto max-w-6xl px-6 py-10 lg:grid lg:grid-cols-[minmax(0,1fr)_340px] lg:items-start lg:gap-8">
+    <div className="mx-auto max-w-6xl px-5 py-8 sm:px-6 lg:grid lg:grid-cols-[minmax(0,1fr)_340px] lg:items-start lg:gap-8">
     <div className="min-w-0">
+      {firstRun && (
+        <section className="studio-first-run mb-6" aria-labelledby="first-run-title">
+          <div className="flex min-w-0 items-start gap-3">
+            <div className="studio-choice-icon"><LibraryBig aria-hidden="true" /></div>
+            <div className="min-w-0">
+              <p className="text-xs font-semibold uppercase text-slate-500">First session</p>
+              <h1 id="first-run-title" className="mt-1 font-display text-2xl text-white">Start with a clear brief</h1>
+              <p className="mt-1 text-sm leading-6 text-slate-400">
+                Your saved idea is ready below. Review every setting before the confirmation step; nothing starts or spends credits on its own.
+              </p>
+            </div>
+          </div>
+          <div className="flex shrink-0 flex-col gap-2 sm:flex-row">
+            <button type="button" onClick={() => router.push('/listen?onboarding=sound')} className="studio-secondary-button">
+              <AudioLines aria-hidden="true" /> Teach my sound instead
+            </button>
+            <button type="button" onClick={() => setFirstRun(false)} aria-label="Dismiss first-session guidance" className="studio-icon-button">
+              <X aria-hidden="true" />
+            </button>
+          </div>
+        </section>
+      )}
+
       {/* THE THREE DOORS — big, obvious, remembered on this device. Each creator
           walks into their own room and never sees the other rooms' complexity. */}
       {/* All FOUR doors on one line (owner 2026-07-18): 2-up on mobile, 4-up
           from sm so "Make a music video" no longer drops to its own row. */}
       <div className="mb-6 grid grid-cols-2 gap-2 sm:grid-cols-4">
-        {DOORS.map((d) => (
-          <button
-            key={d.id}
-            onClick={() => pickDoor(d.id)}
-            className={`rounded-2xl border p-4 text-left transition ${door === d.id ? 'border-transparent bg-brand-gradient text-ink shadow-glow' : 'border-white/10 bg-white/5 text-slate-300 hover:bg-white/10'}`}
-          >
-            <div className="text-2xl">{d.emoji}</div>
-            <div className="mt-1 font-display text-lg leading-tight">{d.title}</div>
-            <div className={`mt-0.5 text-xs ${door === d.id ? 'text-ink/70' : 'text-slate-500'}`}>{d.sub}</div>
-          </button>
-        ))}
+        {DOORS.map((item) => {
+          const Icon = item.icon;
+          const selected = door === item.id;
+          return (
+            <button
+              key={item.id}
+              type="button"
+              onClick={() => pickDoor(item.id)}
+              aria-pressed={selected}
+              className={`studio-door-button ${selected ? 'is-selected' : ''}`}
+            >
+              <Icon className="h-5 w-5" aria-hidden="true" />
+              <span className="mt-3 block font-display text-base leading-tight">{item.title}</span>
+              <span className="mt-1 block text-xs leading-5">{item.sub}</span>
+            </button>
+          );
+        })}
       </div>
 
       {/* ═══ DOOR 1 — MAKE A SONG: today's flow EXACTLY as-is ═══ */}
       {door === 'song' && (<>
       <div className="flex items-start justify-between gap-3">
         <div>
-          <h1 className="font-display text-5xl">Make a song</h1>
-          <p className="mt-2 text-sm text-slate-400">Pick your sound and hit create — it makes the whole song right here.</p>
+          <div className="studio-section-kicker"><Mic2 aria-hidden="true" /> Song workspace</div>
+          <h1 className="mt-2 font-display text-3xl text-white">Make a song</h1>
+          <p className="mt-2 text-sm text-slate-400">Shape the brief, review the expected work, then start the render.</p>
         </div>
         <button
           onClick={() => router.push('/listen')}
           title="Play a track — the AI listens and makes it (or a better version) in that vibe"
           className="mt-1 flex shrink-0 items-center gap-2 rounded-full border border-white/15 bg-white/5 px-3.5 py-2 text-sm hover:bg-white/10"
         >
-          🎧 <span className="hidden sm:inline">Listen &amp; recreate</span>
+          <Headphones className="h-4 w-4" aria-hidden="true" /> <span className="hidden sm:inline">Listen and recreate</span>
         </button>
       </div>
 
       {/* THREE WAYS IN */}
       <div className="mt-6 flex flex-wrap gap-2">
         {([
-          { id: 'song' as const, label: '✨ Describe it' },
-          { id: 'lyrics' as const, label: '📝 Start from my lyrics' },
-          { id: 'mumble' as const, label: '🎤 Hum it (mumble first)' },
-        ]).map((t) => (
-          <button key={t.id} onClick={() => setPath(t.id)} className={`rounded-full px-4 py-2 text-sm font-medium ${path === t.id ? 'bg-white/15 text-white shadow-[inset_0_0_0_1px_rgba(249,115,22,.5)]' : 'border border-white/10 text-slate-400 hover:bg-white/5'}`}>
-            {t.label}
-          </button>
-        ))}
+          { id: 'song' as const, label: 'Describe it', icon: LibraryBig },
+          { id: 'lyrics' as const, label: 'Start from my lyrics', icon: Music2 },
+          { id: 'mumble' as const, label: 'Hum a melody', icon: Mic2 },
+        ]).map((entry) => {
+          const EntryIcon = entry.icon;
+          return (
+            <button key={entry.id} type="button" onClick={() => setPath(entry.id)} aria-pressed={path === entry.id} className={`studio-mode-button ${path === entry.id ? 'is-selected' : ''}`}>
+              <EntryIcon aria-hidden="true" /> {entry.label}
+            </button>
+          );
+        })}
         <button onClick={() => router.push('/listen')} className="rounded-full border border-white/10 px-4 py-2 text-sm font-medium text-slate-400 hover:bg-white/5">
-          🎧 Listen &amp; recreate
+          <Headphones className="mr-1 inline h-4 w-4" aria-hidden="true" /> Listen and recreate
         </button>
       </div>
 
@@ -1068,7 +1223,7 @@ export default function CreatePage() {
               disabled={deconBusy || lyricsText.trim().length < 20}
               className="mt-3 rounded-full bg-brand-gradient px-5 py-2.5 text-sm font-medium text-ink shadow-glow disabled:opacity-50"
             >
-              {deconBusy ? '🔍 Reading your lyrics…' : '🔍 Deconstruct my lyrics'}
+              {deconBusy ? 'Reading your lyrics...' : 'Deconstruct my lyrics'}
             </button>
           ) : (
             <div className="mt-4 rounded-xl border border-white/10 bg-black/20 p-3">
@@ -1080,7 +1235,7 @@ export default function CreatePage() {
                 <div className="sm:col-span-2"><span className="text-slate-500">Structure:</span> <span className="text-slate-200">{decon.structure.join(' → ')}</span></div>
                 {decon.hookLine && <div className="sm:col-span-2"><span className="text-slate-500">The hook:</span> <span className="text-slate-200">“{decon.hookLine}”</span></div>}
                 <div className="sm:col-span-2"><span className="text-slate-500">Vocal direction:</span> <span className="text-slate-200">{decon.vocalDirection}</span></div>
-                {decon.notes && <div className="sm:col-span-2 text-slate-400">💡 {decon.notes}</div>}
+                {decon.notes && <div className="sm:col-span-2 text-slate-400">{decon.notes}</div>}
               </div>
               <div className="mt-3">
                 <div className="mb-1 text-xs text-slate-500">Title</div>
@@ -1195,25 +1350,27 @@ export default function CreatePage() {
       <div className="mt-8 flex flex-wrap gap-3">
         {path === 'song' ? (
           <button
-            onClick={() => void createSong()}
+            type="button"
+            onClick={() => requestRender('song')}
             disabled={!hasMusicRoute}
             title={!hasMusicRoute ? 'Connect a music engine in Settings first' : undefined}
             className="rounded-full bg-brand-gradient px-6 py-3 font-medium text-ink shadow-glow disabled:cursor-not-allowed disabled:opacity-50"
           >
-            ⚡ Create the song
+            <Play className="mr-2 inline h-4 w-4" aria-hidden="true" /> Review and create
           </button>
         ) : (
           <button
-            onClick={() => void createFromLyrics()}
+            type="button"
+            onClick={() => requestRender('lyrics')}
             disabled={lyricsText.trim().length < 20 || !hasMusicRoute}
             title={!hasMusicRoute ? 'Connect a music engine in Settings first' : !decon ? 'Deconstruct your lyrics first' : undefined}
             className="rounded-full bg-brand-gradient px-6 py-3 font-medium text-ink shadow-glow disabled:cursor-not-allowed disabled:opacity-50"
           >
-            🎤 Sing MY lyrics — make the song
+            <Mic2 className="mr-2 inline h-4 w-4" aria-hidden="true" /> Review and sing my lyrics
           </button>
         )}
         <button onClick={() => void openStudio()} className="rounded-full border border-white/15 bg-white/5 px-6 py-3 font-medium hover:bg-white/10">
-          🎛️ I’ll bring my own beat / voice
+          <SlidersHorizontal className="mr-2 inline h-4 w-4" aria-hidden="true" /> I will bring my own beat or voice
         </button>
       </div>
       <p className="mt-3 text-xs text-slate-500">
@@ -1227,7 +1384,8 @@ export default function CreatePage() {
       {/* ═══ DOOR 2 — MAKE AN INSTRUMENTAL: the beat path, withVocals:false ═══ */}
       {door === 'instrumental' && (<>
       <div>
-        <h1 className="font-display text-5xl">Make an instrumental</h1>
+        <div className="studio-section-kicker"><Piano aria-hidden="true" /> Instrumental workspace</div>
+        <h1 className="mt-2 font-display text-3xl text-white">Make an instrumental</h1>
         <p className="mt-2 text-sm text-slate-400">A beat, a bed, a groove — yours. No lyrics, no vocals, no song machinery: pick the lane, set the pocket, hit cook.</p>
       </div>
 
@@ -1300,12 +1458,13 @@ export default function CreatePage() {
 
       <div className="mt-8 flex flex-wrap gap-3">
         <button
-          onClick={() => void createInstrumental()}
+          type="button"
+          onClick={() => requestRender('instrumental')}
           disabled={engine !== 'own' && !hasMusicRoute}
           title={engine !== 'own' && !hasMusicRoute ? 'Pick Our Engine, or connect a provider engine in Settings' : undefined}
           className="rounded-full bg-brand-gradient px-6 py-3 font-medium text-ink shadow-glow disabled:cursor-not-allowed disabled:opacity-50"
         >
-          🎹 Cook the instrumental
+          <Play className="mr-2 inline h-4 w-4" aria-hidden="true" /> Review and create instrumental
         </button>
       </div>
       <p className="mt-3 text-xs text-slate-500">
@@ -1317,7 +1476,8 @@ export default function CreatePage() {
           the same instrumental machinery (scene + type ride the vibe prompt) ═══ */}
       {door === 'film' && (<>
       <div>
-        <h1 className="font-display text-5xl">Sounds for film &amp; creators</h1>
+        <div className="studio-section-kicker"><Film aria-hidden="true" /> Scene sound workspace</div>
+        <h1 className="mt-2 font-display text-3xl text-white">Sounds for film and creators</h1>
         <p className="mt-2 text-sm text-slate-400">Describe the scene — get the sound. Score beds, textures, risers, stingers and transitions, rendered for your cut.</p>
       </div>
 
@@ -1371,12 +1531,13 @@ export default function CreatePage() {
 
       <div className="mt-8 flex flex-wrap gap-3">
         <button
-          onClick={() => void createFilmSound()}
+          type="button"
+          onClick={() => requestRender('film')}
           disabled={filmScene.trim().length < 5 || !hasMusicRoute}
           title={!hasMusicRoute ? 'Connect a music engine in Settings first' : filmScene.trim().length < 5 ? 'Describe the scene first' : undefined}
           className="rounded-full bg-brand-gradient px-6 py-3 font-medium text-ink shadow-glow disabled:cursor-not-allowed disabled:opacity-50"
         >
-          🎬 Create the sound
+          <Play className="mr-2 inline h-4 w-4" aria-hidden="true" /> Review and create sound
         </button>
       </div>
       <p className="mt-3 text-xs text-slate-500">
@@ -1387,11 +1548,42 @@ export default function CreatePage() {
       )}
       </>)}
 
+      {pendingAction && (
+        <section className="studio-confirm-panel mt-7" aria-labelledby="confirm-render-title" aria-live="polite">
+          <div className="flex items-start gap-3">
+            <div className="studio-choice-icon"><Gauge aria-hidden="true" /></div>
+            <div className="min-w-0 flex-1">
+              <p className="text-xs font-semibold uppercase text-slate-500">Final review</p>
+              <h2 id="confirm-render-title" className="mt-1 font-display text-xl text-white">
+                {pendingAction === 'film' ? 'Confirm one scene-sound render' : `Confirm ${takes} ${takes === 1 ? 'direction' : 'directions'}`}
+              </h2>
+              <dl className="mt-4 grid gap-3 text-xs sm:grid-cols-2">
+                <div><dt className="text-slate-500">Output</dt><dd className="mt-1 text-slate-200">{pendingAction === 'song' || pendingAction === 'lyrics' ? 'Full song with vocals' : pendingAction === 'instrumental' ? 'Instrumental without vocals' : `${filmDuration}-second scene sound`}</dd></div>
+                <div><dt className="text-slate-500">Engine</dt><dd className="mt-1 text-slate-200">{pendingAction === 'film' ? 'Best connected route' : engine === 'auto' ? 'Best available route' : engine === 'own' ? 'Our Engine' : 'Selected engine class'}</dd></div>
+                <div><dt className="text-slate-500">Lane</dt><dd className="mt-1 text-slate-200">{pendingAction === 'film' ? FILM_TYPES.find((item) => item.id === filmType)?.label : genreLabel}</dd></div>
+                <div><dt className="text-slate-500">Billing</dt><dd className="mt-1 text-slate-200">Your plan rate applies after confirmation</dd></div>
+              </dl>
+              <p className="mt-4 flex items-start gap-2 text-xs leading-5 text-slate-500">
+                <ShieldCheck className="mt-0.5 h-3.5 w-3.5 shrink-0 text-sage" aria-hidden="true" />
+                No work has started yet. Confirming runs the existing balance and daily-cap preflight before any render is accepted.
+              </p>
+            </div>
+          </div>
+          <div className="mt-5 flex flex-col-reverse gap-2 border-t border-white/10 pt-4 sm:flex-row sm:justify-end">
+            <button type="button" onClick={() => setPendingAction(null)} className="studio-secondary-button">Cancel</button>
+            <button type="button" onClick={() => router.push('/billing')} className="studio-secondary-button">Review billing</button>
+            <button type="button" onClick={confirmRender} className="studio-primary-button">
+              <Play aria-hidden="true" /> Confirm and start
+            </button>
+          </div>
+        </section>
+      )}
+
       {/* THE CONSOLE PLAYER — on the left half, right under the Create button
           (the console layout). New songs auto-play here; library rows
           play here too. */}
       {nowPlaying && (
-        <div className="mt-5 rounded-2xl border-gradient glass p-4">
+        <div className="mt-5 rounded-lg border border-white/10 bg-white/[0.04] p-4">
           <div className="flex items-center justify-between">
             <div className="min-w-0">
               <div className="text-xs text-slate-500">Now playing</div>
@@ -1399,12 +1591,17 @@ export default function CreatePage() {
             </div>
             <button
               onClick={() => { playerRef.current?.pause(); setNowPlaying(null); }}
-              className="ml-3 shrink-0 rounded-full border border-white/15 px-3 py-1 text-xs text-slate-300 hover:bg-white/10"
+              title="Stop playback"
+              aria-label="Stop playback"
+              className="studio-icon-button ml-3 shrink-0"
             >
-              ⏹ Stop
+              <X aria-hidden="true" />
             </button>
           </div>
           <audio ref={playerRef} controls autoPlay src={nowPlaying.url} className="mt-3 w-full" />
+          <button type="button" onClick={() => router.push('/catalog')} className="studio-secondary-button mt-4 w-full justify-center">
+            <Download aria-hidden="true" /> Open Catalog for stems and DAW export
+          </button>
         </div>
       )}
 
@@ -1500,7 +1697,7 @@ function BillingDiagnosisLine() {
 /**
  * DOOR 4 — MAKE A MUSIC VIDEO (the vertical's front door, owner 2026-07-17):
  * an artist with a FINISHED song walks in, attests it is theirs, uploads it,
- * and lands on its catalog card — where 🎬 Video writes the treatment and
+ * and lands on its catalog card, where Video writes the treatment and
  * "Make the full video" does the rest. The song is used EXACTLY as brought
  * (verbatim-upload law) and auto-mastered to streaming loudness ("make it
  * perfect"). LEARNING BOUNDARY (owner's own law): we learn from the VIDEO we
@@ -1542,22 +1739,27 @@ function VideoDoorPanel() {
   }
 
   return (
-    <div className="glass mx-auto max-w-xl rounded-3xl p-6">
-      <h2 className="font-display text-2xl">🎞 Make a music video</h2>
-      <p className="mt-1 text-sm text-slate-400">
-        Bring your finished song — from anywhere. We use it exactly as it is,
-        polish the loudness for streaming, and turn it into a full music video
-        with your treatment, your cast, your credits.
+    <section className="studio-upload-panel mx-auto max-w-xl" aria-labelledby="video-upload-title">
+      <div className="studio-section-kicker"><Video aria-hidden="true" /> Music video workspace</div>
+      <h2 id="video-upload-title" className="mt-2 font-display text-3xl text-white">Bring a finished song</h2>
+      <p className="mt-2 text-sm leading-6 text-slate-400">
+        Upload the final song you want to visualize. The recording stays verbatim while the project prepares treatment, scenes, credits, and the finished video workflow.
       </p>
+      <label htmlFor="video-song-title" className="studio-field-label mt-5">Song title <span>Optional</span></label>
       <input
+        id="video-song-title"
         value={title}
         onChange={e => setTitle(e.target.value)}
         maxLength={120}
         placeholder="Song title (or we use the filename)"
-        className="mt-4 w-full rounded-lg border border-white/10 bg-black/30 p-2.5 text-sm text-slate-200 placeholder:text-slate-600"
+        className="w-full rounded-lg border border-white/10 bg-black/30 p-2.5 text-sm text-slate-200 placeholder:text-slate-600"
       />
-      <label className="mt-3 block cursor-pointer rounded-lg border border-dashed border-white/20 bg-black/20 p-4 text-center text-sm text-slate-400 hover:bg-black/30">
-        {file ? `🎵 ${file.name}` : 'Choose your song file (MP3/WAV/M4A)'}
+      <label className="studio-upload-target mt-4 flex cursor-pointer">
+        <span className="studio-choice-icon"><AudioLines aria-hidden="true" /></span>
+        <span className="min-w-0 text-left">
+          <strong className="truncate">{file ? file.name : 'Choose the finished song'}</strong>
+          <small>MP3, WAV, M4A, or another supported audio file</small>
+        </span>
         <input
           type="file"
           accept="audio/*"
@@ -1565,36 +1767,38 @@ function VideoDoorPanel() {
           onChange={e => setFile(e.target.files?.[0] ?? null)}
         />
       </label>
-      <label className="mt-3 flex items-start gap-2 text-xs text-slate-400">
+      <label className="mt-4 flex items-start gap-3 rounded-lg border border-white/10 bg-black/20 p-4 text-xs text-slate-400">
         <input
           type="checkbox"
           checked={attested}
           onChange={e => setAttested(e.target.checked)}
-          className="mt-0.5"
+          className="mt-0.5 h-4 w-4 shrink-0 accent-emerald-500"
         />
         <span>
-          I own this recording (or hold the rights to it) and I authorize
-          AfroHit Studio to master it and create a music video from it. It is
-          not ripped from a streaming platform.
+          <strong className="block font-medium text-slate-200">I own or control this recording</strong>
+          <span className="mt-1 block leading-5">I authorize the studio to master it and create a music video from it. It is not taken from a streaming platform, and this upload does not opt the recording into sound learning.</span>
         </span>
       </label>
       {busy && (
-        <div className="mt-3 h-1.5 w-full overflow-hidden rounded-full bg-white/10">
-          <div className="h-full rounded-full bg-brand-gradient transition-all" style={{ width: `${pct}%` }} />
+        <div className="mt-4" aria-live="polite">
+          <div className="flex justify-between text-xs text-slate-500"><span>Uploading</span><span className="tabular-nums">{pct}%</span></div>
+          <div className="mt-2 h-1.5 w-full overflow-hidden rounded-full bg-white/10" role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={pct}>
+            <div className="h-full rounded-full bg-brand-gradient transition-all" style={{ width: `${pct}%` }} />
+          </div>
         </div>
       )}
-      {error && <div className="mt-2 text-xs text-red-300">{error}</div>}
+      {error && <div className="studio-error-callout mt-3" role="alert"><CircleAlert aria-hidden="true" /><span>{error}</span></div>}
       <button
         disabled={!file || !attested || busy}
         onClick={() => void submit()}
-        className="mt-4 w-full rounded-full bg-brand-gradient px-4 py-2.5 text-sm font-semibold text-ink shadow-glow disabled:opacity-40"
+        className="studio-primary-button mt-4 w-full justify-center"
       >
-        {busy ? `Uploading… ${pct}%` : 'Upload my song → make the video'}
+        {busy ? <><LoaderCircle className="animate-spin" aria-hidden="true" /> Uploading {pct}%</> : <><Video aria-hidden="true" /> Continue to video treatment <ArrowRight aria-hidden="true" /></>}
       </button>
-      <p className="mt-2 text-center text-[11px] text-slate-600">
-        Next: your song appears in Catalog — open its 🎬 Video panel, paste
-        your idea if you have one, and press Make the full video.
+      <p className="mt-3 flex items-start gap-2 text-xs leading-5 text-slate-500">
+        <ArrowRight className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+        Next, open the song in Catalog to review the treatment and explicitly approve any paid scene renders.
       </p>
-    </div>
+    </section>
   );
 }

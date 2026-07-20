@@ -6,6 +6,7 @@ import {
   musicCandidateModelRef,
   pollMusicTraining,
 } from "@afrohit/ai";
+import { prisma } from "@afrohit/db";
 import { parseMusicTrainingEvaluation } from "../src/lib/training-flywheel";
 
 async function main() {
@@ -111,7 +112,11 @@ async function main() {
   console.log("training lifecycle: polling, score binding, dedupe, candidate receipt, promotion, and rollback passed.");
 }
 
-main().catch(error => {
-  console.error(error);
-  process.exitCode = 1;
-});
+main()
+  .catch(error => {
+    console.error(error);
+    process.exitCode = 1;
+  })
+  .finally(async () => {
+    await prisma.$disconnect();
+  });

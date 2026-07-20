@@ -1,25 +1,28 @@
 'use client';
 
-/**
- * LEARN MY SOUND — the onboarding wedge.
- *
- * Drop 3–10 of YOUR OWN songs (you must own or license them). The studio
- * deep-listens to each (drums, groove, bass, vocal, arrangement), stores every
- * one as a SoundReference, and from then on every generated song pulls toward
- * YOUR sound. The Sound Profile card shows exactly what it has learned so far —
- * proof, not promises. Files are analyzed sequentially so provider load stays
- * gentle; each file's status is visible the whole way.
- */
-
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { useApi } from '@/lib/api';
-import { Loader2, Check, X, UploadCloud, Brain } from 'lucide-react';
+import {
+  AudioLines,
+  Check,
+  CheckCircle2,
+  CircleAlert,
+  Clock3,
+  LoaderCircle,
+  RotateCcw,
+  ShieldCheck,
+  Upload,
+  X,
+} from 'lucide-react';
 import { OWNED_AUDIO_RIGHTS_CONFIRMATION_VERSION } from '@afrohit/shared';
+import { useApi } from '@/lib/api';
+
+type QueueStatus = 'waiting' | 'uploading' | 'listening' | 'learned' | 'failed';
 
 interface QueueItem {
+  id: string;
   name: string;
   file: File;
-  status: 'waiting' | 'uploading' | 'listening' | 'learned' | 'failed';
+  status: QueueStatus;
   note?: string;
 }
 
@@ -30,6 +33,18 @@ interface SoundProfile {
   lastLearnedAt: string | null;
 }
 
+const STARTER_REFERENCE_TARGET = 3;
+const MAX_FILES_PER_BATCH = 10;
+const AUDIO_FILE_PATTERN = /\.(wav|mp3|m4a|ogg|flac|mpeg|mpg)$/i;
+
+function statusLabel(status: QueueStatus): string {
+  if (status === 'uploading') return 'Uploading';
+  if (status === 'listening') return 'Analyzing';
+  if (status === 'learned') return 'Added';
+  if (status === 'failed') return 'Needs attention';
+  return 'Waiting';
+}
+
 export function LearnMySound({ projectId }: { projectId: string }) {
   const api = useApi();
   const fileRef = useRef<HTMLInputElement>(null);
@@ -37,40 +52,42 @@ export function LearnMySound({ projectId }: { projectId: string }) {
   const [running, setRunning] = useState(false);
   const [profile, setProfile] = useState<SoundProfile | null>(null);
   const [rightsConfirmed, setRightsConfirmed] = useState(false);
+  const [selectionError, setSelectionError] = useState('');
 
   const loadProfile = useCallback(async () => {
     try {
       setProfile(await api.get<SoundProfile>('/taste/sound-profile'));
     } catch {
-      /* profile is best-effort */
+      // Profile display is best-effort. Upload authorization remains explicit.
     }
-
-  }, []);
+  }, [api]);
 
   useEffect(() => { void loadProfile(); }, [loadProfile]);
 
-  function setItem(i: number, patch: Partial<QueueItem>) {
-    setQueue((q) => q.map((it, idx) => (idx === i ? { ...it, ...patch } : it)));
+  function updateItem(id: string, patch: Partial<QueueItem>) {
+    setQueue((current) => current.map((item) => (item.id === id ? { ...item, ...patch } : item)));
   }
 
   async function pollJob(jobId: string): Promise<void> {
-    for (let i = 0; i < 72; i++) {
-      await new Promise((r) => setTimeout(r, 5000));
+    for (let attempt = 0; attempt < 72; attempt++) {
+      await new Promise((resolve) => setTimeout(resolve, 5000));
       const job = await api.get<{ status: string; errorJson?: unknown }>(`/jobs/${jobId}`);
       if (job.status === 'SUCCEEDED') return;
-      if (job.status === 'FAILED') throw new Error(typeof job.errorJson === 'string' ? job.errorJson : 'listen failed');
+      if (job.status === 'FAILED') {
+        throw new Error(typeof job.errorJson === 'string' ? job.errorJson : 'Analysis did not complete.');
+      }
     }
-    throw new Error('timed out — the model is warming up; this file can be retried');
+    throw new Error('Analysis is taking longer than expected. Retry this file in a few minutes.');
   }
 
   async function runQueue(items: QueueItem[]) {
-    if (!rightsConfirmed) return;
+    if (!rightsConfirmed || running || items.length === 0) return;
     setRunning(true);
-    for (let i = 0; i < items.length; i++) {
+    for (const item of items) {
       try {
-        setItem(i, { status: 'uploading' });
-        const { publicUrl } = await api.uploadAudioDirect(items[i]!.file, 'reference');
-        setItem(i, { status: 'listening' });
+        updateItem(item.id, { status: 'uploading', note: undefined });
+        const { publicUrl } = await api.uploadAudioDirect(item.file, 'reference');
+        updateItem(item.id, { status: 'listening' });
         const { jobId } = await api.post<{ jobId: string }>(`/projects/${projectId}/analyze`, {
           url: publicUrl,
           rightsConfirmation: {
@@ -79,96 +96,180 @@ export function LearnMySound({ projectId }: { projectId: string }) {
           },
         });
         await pollJob(jobId);
-        setItem(i, { status: 'learned' });
-        void loadProfile(); // profile grows live as each song lands
-      } catch (e) {
-        setItem(i, { status: 'failed', note: (e as Error).message.slice(0, 140) });
+        updateItem(item.id, { status: 'learned' });
+        await loadProfile();
+      } catch (cause) {
+        updateItem(item.id, {
+          status: 'failed',
+          note: ((cause as Error).message || 'Upload or analysis failed.').slice(0, 160),
+        });
       }
     }
     setRunning(false);
-    void loadProfile();
+    await loadProfile();
   }
 
   function onFiles(list: FileList | null) {
-    if (!list?.length || running || !rightsConfirmed) return;
-    const items: QueueItem[] = [...list].slice(0, 10).map((f) => ({ name: f.name, file: f, status: 'waiting' }));
-    setQueue(items);
-    void runQueue(items);
+    if (!list?.length || running) return;
+    setSelectionError('');
+    if (!rightsConfirmed) {
+      setSelectionError('Confirm the rights statement before choosing recordings.');
+      return;
+    }
+
+    const selected = [...list].slice(0, MAX_FILES_PER_BATCH);
+    const invalid = selected.filter((file) => !file.type.startsWith('audio/') && !AUDIO_FILE_PATTERN.test(file.name));
+    if (invalid.length > 0) {
+      setSelectionError(`Remove unsupported files: ${invalid.map((file) => file.name).join(', ')}`);
+      return;
+    }
+
+    const batch = selected.map((file, index): QueueItem => ({
+      id: `${Date.now()}-${index}-${file.name}`,
+      name: file.name,
+      file,
+      status: 'waiting',
+    }));
+    setQueue(batch);
+    void runQueue(batch);
   }
 
+  function retryFailed() {
+    if (running || !rightsConfirmed) return;
+    const failed = queue.filter((item) => item.status === 'failed').map((item) => ({ ...item, status: 'waiting' as const, note: undefined }));
+    if (failed.length === 0) return;
+    const failedIds = new Set(failed.map((item) => item.id));
+    setQueue((current) => current.map((item) => failedIds.has(item.id) ? { ...item, status: 'waiting', note: undefined } : item));
+    void runQueue(failed);
+  }
+
+  const referenceCount = profile?.totalReferences ?? 0;
+  const starterProgress = Math.min(100, Math.round((referenceCount / STARTER_REFERENCE_TARGET) * 100));
+  const completedCount = queue.filter((item) => item.status === 'learned').length;
+  const failedCount = queue.filter((item) => item.status === 'failed').length;
+  const activeItem = queue.find((item) => item.status === 'uploading' || item.status === 'listening');
+
   return (
-    <section className="mt-10">
-      <h2 className="flex items-center gap-2 font-display text-2xl">
-        <Brain className="h-6 w-6 text-afrobrand-400" /> Learn <span className="text-gradient">my</span> sound
-      </h2>
-      <p className="mt-1 max-w-xl text-sm text-slate-400">
-        Drop 3–10 of <span className="text-slate-200">your own songs</span> (yours or licensed — never someone else&apos;s).
-        The studio deep-listens to each one — drums, groove, bass, vocal, arrangement — and from then on,
-        <span className="text-slate-200"> every new song pulls toward your sound</span>. It compounds: the more you feed it, the more it sounds like you.
-      </p>
+    <section className="studio-learning-section" aria-labelledby="learn-my-sound-title">
+      <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+        <div className="max-w-2xl">
+          <div className="studio-section-kicker"><AudioLines aria-hidden="true" /> Personal sound profile</div>
+          <h2 id="learn-my-sound-title" className="mt-2 font-display text-3xl text-white">Teach the studio your sound</h2>
+          <p className="mt-2 text-sm leading-6 text-slate-400">
+            Add recordings you own or are licensed to use. The studio analyzes groove, instrumentation, vocals, and arrangement so future briefs can draw from your approved references.
+          </p>
+        </div>
+        <div className="studio-readiness-meter" aria-label={`${referenceCount} sound references added`}>
+          <div className="flex items-center justify-between gap-4 text-xs">
+            <span className="font-semibold text-slate-200">Shelf readiness</span>
+            <span className="tabular-nums text-slate-400">{referenceCount} reference{referenceCount === 1 ? '' : 's'}</span>
+          </div>
+          <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-white/10" role="progressbar" aria-valuemin={0} aria-valuemax={STARTER_REFERENCE_TARGET} aria-valuenow={Math.min(referenceCount, STARTER_REFERENCE_TARGET)}>
+            <div className="h-full rounded-full bg-emerald-400 transition-[width]" style={{ width: `${starterProgress}%` }} />
+          </div>
+          <p className="mt-2 text-xs text-slate-500">
+            {referenceCount >= STARTER_REFERENCE_TARGET ? 'Starter profile ready. Add more variety whenever you choose.' : `${STARTER_REFERENCE_TARGET - referenceCount} more to reach a starter profile.`}
+          </p>
+        </div>
+      </div>
 
-      <div className="mt-4 rounded-2xl glass p-4">
-        <input ref={fileRef} type="file" multiple accept="audio/*,audio/mpeg,.wav,.mp3,.m4a,.ogg,.flac,.mpeg,.mpg" className="hidden" onChange={(e) => onFiles(e.target.files)} />
-        <label className="mb-3 flex items-start gap-2 text-xs text-slate-300">
-          <input
-            type="checkbox"
-            checked={rightsConfirmed}
-            disabled={running}
-            onChange={(event) => setRightsConfirmed(event.target.checked)}
-            className="mt-0.5 h-4 w-4 shrink-0 accent-emerald-500"
-          />
-          <span>
-            I confirm I own or control the rights needed to use every selected recording for sound learning (confirmation v{OWNED_AUDIO_RIGHTS_CONFIRMATION_VERSION}).
-          </span>
-        </label>
-        <button
-          onClick={() => fileRef.current?.click()}
-          disabled={running || !rightsConfirmed}
-          className="flex items-center gap-2 rounded-full bg-brand-gradient px-5 py-2.5 text-sm font-medium text-ink shadow-glow disabled:opacity-50"
-        >
-          <UploadCloud className="h-4 w-4" /> {running ? 'Learning…' : 'Upload my songs'}
-        </button>
+      <div className="mt-6 grid gap-5 lg:grid-cols-[minmax(0,1fr)_280px]">
+        <div className="studio-upload-panel">
+          <input ref={fileRef} type="file" multiple accept="audio/*,.wav,.mp3,.m4a,.ogg,.flac,.mpeg,.mpg" className="sr-only" onChange={(event) => { onFiles(event.target.files); event.currentTarget.value = ''; }} />
 
-        {queue.length > 0 && (
-          <ul className="mt-4 space-y-1.5">
-            {queue.map((it, i) => (
-              <li key={i} className="flex items-center gap-2 rounded-lg border border-white/10 bg-black/20 px-3 py-2 text-xs">
-                {it.status === 'learned' ? <Check className="h-3.5 w-3.5 shrink-0 text-emerald-400" />
-                  : it.status === 'failed' ? <X className="h-3.5 w-3.5 shrink-0 text-red-400" />
-                  : it.status === 'waiting' ? <span className="h-3.5 w-3.5 shrink-0 rounded-full border border-slate-600" />
-                  : <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-afrobrand-400" />}
-                <span className="truncate text-slate-300">{it.name}</span>
-                <span className="ml-auto shrink-0 text-slate-500">
-                  {it.status === 'uploading' ? 'uploading…' : it.status === 'listening' ? '🎧 listening…' : it.status === 'learned' ? 'learned ✓' : it.status === 'failed' ? (it.note || 'failed') : 'queued'}
+          <div className="rounded-lg border border-white/10 bg-black/20 p-4">
+            <label className="flex cursor-pointer items-start gap-3 text-sm text-slate-300">
+              <input type="checkbox" checked={rightsConfirmed} disabled={running} onChange={(event) => { setRightsConfirmed(event.target.checked); setSelectionError(''); }} className="mt-0.5 h-4 w-4 shrink-0 accent-emerald-500" />
+              <span>
+                <strong className="block font-medium text-white">I own or control the required rights</strong>
+                <span className="mt-1 block text-xs leading-5 text-slate-500">
+                  This authorizes sound-learning analysis for my workspace under confirmation v{OWNED_AUDIO_RIGHTS_CONFIRMATION_VERSION}. I will not upload music taken from streaming services or music I cannot authorize.
                 </span>
-              </li>
-            ))}
-          </ul>
-        )}
+              </span>
+            </label>
+          </div>
 
-        {/* The proof: what it knows about YOUR sound so far. */}
-        {profile && profile.totalReferences > 0 && (
-          <div className="mt-5 border-t border-white/5 pt-4">
-            <div className="text-xs font-medium uppercase tracking-widest text-slate-500">Your sound profile</div>
-            <div className="mt-2 flex flex-wrap gap-1.5">
-              <span className="rounded-full bg-afrobrand-500/15 px-2.5 py-1 text-xs text-afrobrand-300">{profile.totalReferences} song{profile.totalReferences === 1 ? '' : 's'} learned</span>
-              {profile.genres.slice(0, 6).map((g) => (
-                <span key={g.genre} className="rounded-full border border-white/10 bg-white/5 px-2.5 py-1 text-xs text-slate-300">{g.genre.replace(/_/g, ' ')} × {g.count}</span>
-              ))}
-            </div>
-            {profile.traits.length > 0 && (
-              <ul className="mt-3 space-y-1.5">
-                {profile.traits.slice(0, 4).map((t, i) => (
-                  <li key={i} className="rounded-lg border border-white/10 bg-black/20 p-2.5 text-xs text-slate-300">
-                    <span className="mr-1.5 rounded bg-slate-800 px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-slate-400">{t.genre.replace(/_/g, ' ')}</span>
-                    {t.trait}
+          <button type="button" onClick={() => rightsConfirmed ? fileRef.current?.click() : setSelectionError('Confirm the rights statement before choosing recordings.')} disabled={running} className="studio-upload-target mt-4 w-full" aria-describedby="upload-timing">
+            <span className="studio-choice-icon"><Upload aria-hidden="true" /></span>
+            <span className="text-left">
+              <strong>{running ? 'Processing your recordings' : 'Choose audio files'}</strong>
+              <small>WAV, MP3, M4A, OGG, or FLAC. Up to 10 at a time.</small>
+            </span>
+          </button>
+
+          <p id="upload-timing" className="mt-3 flex items-start gap-2 text-xs leading-5 text-slate-500">
+            <Clock3 className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+            Files are processed one at a time. Most tracks take 2-6 minutes each; you can leave this page after an upload has been accepted.
+          </p>
+          <p className="mt-2 flex items-start gap-2 text-xs leading-5 text-slate-500">
+            <ShieldCheck className="mt-0.5 h-3.5 w-3.5 shrink-0 text-sage" aria-hidden="true" />
+            Uploading is optional. You can create with the studio library without contributing recordings.
+          </p>
+
+          {selectionError && (
+            <div className="studio-error-callout mt-4" role="alert"><CircleAlert aria-hidden="true" /><span>{selectionError}</span></div>
+          )}
+
+          {queue.length > 0 && (
+            <div className="mt-5" aria-live="polite">
+              <div className="flex items-center justify-between gap-3">
+                <p className="text-sm font-medium text-slate-200">Upload queue</p>
+                <p className="text-xs tabular-nums text-slate-500">{completedCount} of {queue.length} added</p>
+              </div>
+              <ul className="mt-2 divide-y divide-white/5 rounded-lg border border-white/10 bg-black/20">
+                {queue.map((item) => (
+                  <li key={item.id} className="flex min-w-0 items-start gap-3 px-3 py-3 text-xs">
+                    <span className="mt-0.5">
+                      {item.status === 'learned' ? <CheckCircle2 className="h-4 w-4 text-emerald-400" aria-hidden="true" />
+                        : item.status === 'failed' ? <X className="h-4 w-4 text-red-400" aria-hidden="true" />
+                        : item.status === 'waiting' ? <span className="block h-4 w-4 rounded-full border border-slate-600" aria-hidden="true" />
+                        : <LoaderCircle className="h-4 w-4 animate-spin text-orange-400" aria-hidden="true" />}
+                    </span>
+                    <span className="min-w-0 flex-1">
+                      <span className="block truncate text-slate-300">{item.name}</span>
+                      {item.note && <span className="mt-1 block break-words text-red-300">{item.note}</span>}
+                    </span>
+                    <span className="shrink-0 text-slate-500">{statusLabel(item.status)}</span>
                   </li>
                 ))}
               </ul>
-            )}
-            <p className="mt-2 text-[11px] text-slate-500">Every generation now blends these learned traits into the beat, lyrics and vocal arrangement.</p>
-          </div>
-        )}
+              {failedCount > 0 && (
+                <button type="button" onClick={retryFailed} disabled={running || !rightsConfirmed} className="studio-secondary-button mt-3">
+                  <RotateCcw aria-hidden="true" /> Retry {failedCount} failed
+                </button>
+              )}
+              {activeItem && <p className="mt-3 text-xs text-slate-500">Working on {activeItem.name}. The next file starts automatically.</p>}
+            </div>
+          )}
+        </div>
+
+        <aside className="studio-profile-panel" aria-label="Current sound profile">
+          <p className="text-xs font-semibold uppercase text-slate-500">What the studio knows</p>
+          {profile && profile.totalReferences > 0 ? (
+            <>
+              <div className="mt-3 flex flex-wrap gap-1.5">
+                {profile.genres.slice(0, 6).map((genre) => (
+                  <span key={genre.genre} className="studio-tag">{genre.genre.replace(/_/g, ' ')} <span>{genre.count}</span></span>
+                ))}
+              </div>
+              {profile.traits.length > 0 && (
+                <ul className="mt-4 space-y-2">
+                  {profile.traits.slice(0, 4).map((trait, index) => (
+                    <li key={`${trait.learnedAt}-${index}`} className="rounded-lg border border-white/5 bg-black/20 p-2.5 text-xs leading-5 text-slate-300">
+                      <span className="mb-1 block text-[10px] font-semibold uppercase text-slate-500">{trait.genre.replace(/_/g, ' ')}</span>
+                      {trait.trait}
+                    </li>
+                  ))}
+                </ul>
+              )}
+              <p className="mt-4 flex items-center gap-1.5 text-xs text-emerald-300"><Check className="h-3.5 w-3.5" aria-hidden="true" /> Available to future briefs</p>
+            </>
+          ) : (
+            <div className="mt-5 text-sm leading-6 text-slate-500">
+              No approved references yet. Your first completed analysis will appear here.
+            </div>
+          )}
+        </aside>
       </div>
     </section>
   );

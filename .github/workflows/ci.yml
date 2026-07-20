@@ -18,6 +18,7 @@ jobs:
     timeout-minutes: 30
     env:
       CI: "true"
+      CI_EVIDENCE_PATH: artifacts/ci/ci-evidence.json
       DATABASE_URL: postgresql://postgres:postgres@localhost:5432/afrohit_ci
       REDIS_URL: redis://localhost:6379
       REQUIRE_DSP: "1"
@@ -46,38 +47,53 @@ jobs:
           --health-retries 12
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
       - uses: pnpm/action-setup@v4
         with:
           version: 9.12.0
           run_install: false
-      - uses: actions/setup-node@v7
+      - uses: actions/setup-node@v4
         with:
           node-version: 20.19.0
           cache: pnpm
-      - run: pnpm install --frozen-lockfile
+      - name: Verify repository CI contract
+        id: preflight
+        run: |
+          node --test scripts/ci-preflight.test.mjs
+          node scripts/ci-preflight.mjs
+      - name: Install locked dependencies
+        id: install
+        run: pnpm install --frozen-lockfile
       - name: Install media and DSP proof stack
+        id: dsp_stack
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends ffmpeg
           python -m pip install numpy==1.26.4 scipy==1.13.1 soundfile==0.12.1 librosa==0.10.2.post1 pyloudnorm==0.1.1
       - name: Build integration test dependencies
+        id: integration_dependencies
         run: |
           pnpm --filter @afrohit/shared build
           pnpm --filter @afrohit/db build
       - name: Apply all database migrations
+        id: migrations
         run: pnpm --filter @afrohit/db migrate:safe
       - name: Verify migration state
+        id: migration_state
         run: pnpm --filter @afrohit/db exec prisma migrate status
       - name: Verify zero schema drift
+        id: schema_drift
         run: pnpm --filter @afrohit/db exec prisma migrate diff --from-url "$DATABASE_URL" --to-schema-datamodel prisma/schema.prisma --exit-code
       - name: Verify signed distribution lifecycle
+        id: distribution_lifecycle
         run: pnpm --filter @afrohit/api test:distribution-lifecycle
       - name: Verify concurrent spend caps
+        id: spend_caps
         run: pnpm --filter @afrohit/api test:credit-caps
       - name: Verify payment and media integrity
+        id: payment_media_integrity
         run: |
           pnpm --filter @afrohit/api test:payment-lifecycle
           pnpm --filter @afrohit/api test:drop-terminal-integrity
@@ -93,7 +109,29 @@ jobs:
           pnpm --filter @afrohit/web test:create-payment-cleanup
           pnpm --filter @afrohit/db test:orphan-charge-recovery
           pnpm --filter @afrohit/worker test:release-lineage-integrity
-      - run: pnpm run lint
-      - run: pnpm run verify
-      - run: pnpm run build
-      - run: pnpm run security:audit
+      - name: Lint
+        id: lint
+        run: pnpm run lint
+      - name: Verify product contracts
+        id: verify
+        run: pnpm run verify
+      - name: Build all packages
+        id: build
+        run: pnpm run build
+      - name: Audit production dependencies
+        id: security_audit
+        run: pnpm run security:audit
+      - name: Finalize CI evidence and job summary
+        if: always()
+        env:
+          CI_GATE_RESULTS_JSON: >-
+            {"preflight":"${{ steps.preflight.outcome }}","install":"${{ steps.install.outcome }}","dsp_stack":"${{ steps.dsp_stack.outcome }}","integration_dependencies":"${{ steps.integration_dependencies.outcome }}","migrations":"${{ steps.migrations.outcome }}","migration_state":"${{ steps.migration_state.outcome }}","schema_drift":"${{ steps.schema_drift.outcome }}","distribution_lifecycle":"${{ steps.distribution_lifecycle.outcome }}","spend_caps":"${{ steps.spend_caps.outcome }}","payment_media_integrity":"${{ steps.payment_media_integrity.outcome }}","lint":"${{ steps.lint.outcome }}","verify":"${{ steps.verify.outcome }}","build":"${{ steps.build.outcome }}","security_audit":"${{ steps.security_audit.outcome }}"}
+        run: node scripts/ci-preflight.mjs --finalize
+      - name: Upload machine-readable CI evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-evidence-${{ github.run_id }}-${{ github.run_attempt }}
+          path: artifacts/ci/ci-evidence.json
+          if-no-files-found: error
+          retention-days: 30
