@@ -1,3 +1,5 @@
+import { likenessProviderConfigurationStatus } from "@afrohit/shared";
+
 type Environment = Record<string, string | undefined>;
 
 export interface WorkerFeatureReadiness {
@@ -12,10 +14,9 @@ function has(value: string | undefined): boolean {
   return Boolean(value?.trim());
 }
 
-function veoReadiness(env: Environment): Pick<
-  WorkerFeatureReadiness,
-  "ready" | "missing" | "issues"
-> {
+function veoReadiness(
+  env: Environment
+): Pick<WorkerFeatureReadiness, "ready" | "missing" | "issues"> {
   const encoded = env.GCP_SERVICE_ACCOUNT_JSON_B64?.trim();
   const missing: string[] = [];
   const issues: string[] = [];
@@ -27,11 +28,14 @@ function veoReadiness(env: Environment): Pick<
       const parsed = JSON.parse(
         Buffer.from(encoded, "base64").toString("utf8")
       ) as Record<string, unknown>;
-      const email = typeof parsed.client_email === "string" ? parsed.client_email : "";
-      const key = typeof parsed.private_key === "string" ? parsed.private_key : "";
+      const email =
+        typeof parsed.client_email === "string" ? parsed.client_email : "";
+      const key =
+        typeof parsed.private_key === "string" ? parsed.private_key : "";
       accountProject =
         typeof parsed.project_id === "string" ? parsed.project_id.trim() : "";
-      if (!email.includes("@")) issues.push("GCP service account email is invalid");
+      if (!email.includes("@"))
+        issues.push("GCP service account email is invalid");
       if (!key.includes("BEGIN PRIVATE KEY"))
         issues.push("GCP service account private key is invalid");
     } catch {
@@ -96,32 +100,24 @@ export function workerVideoProviderReadiness(options: {
   return { ready, liveSafe, provider, missing, issues };
 }
 
-export function workerRuntimeReadiness(
-  env: Environment = process.env
-): {
+export function workerRuntimeReadiness(env: Environment = process.env): {
   video: WorkerFeatureReadiness;
   likenessTraining: WorkerFeatureReadiness;
 } {
-  const provider = has(env.REPLICATE_API_TOKEN) || has(env.REPLICATE_TOKEN)
-    ? "hailuo"
-    : (env.VIDEO_PROVIDER ?? "unavailable").trim().toLowerCase();
+  const provider =
+    has(env.REPLICATE_API_TOKEN) || has(env.REPLICATE_TOKEN)
+      ? "hailuo"
+      : (env.VIDEO_PROVIDER ?? "unavailable").trim().toLowerCase();
   const video = workerVideoProviderReadiness({ provider, env });
-  const likenessMissing: string[] = [];
-  if (env.LIKENESS_TRAINING_ENABLED !== "1")
-    likenessMissing.push("LIKENESS_TRAINING_ENABLED=1");
-  if (!has(env.REPLICATE_API_TOKEN) && !has(env.REPLICATE_TOKEN))
-    likenessMissing.push("REPLICATE_API_TOKEN");
-  if (!has(env.LIKENESS_LORA_DESTINATION) && !has(env.REPLICATE_USERNAME))
-    likenessMissing.push("LIKENESS_LORA_DESTINATION or REPLICATE_USERNAME");
-  const likenessReady = likenessMissing.length === 0;
+  const likeness = likenessProviderConfigurationStatus(env);
   return {
     video,
     likenessTraining: {
-      ready: likenessReady,
-      liveSafe: likenessReady,
+      ready: likeness.ready,
+      liveSafe: likeness.ready,
       provider: "replicate",
-      missing: likenessMissing,
-      issues: [],
+      missing: likeness.missing,
+      issues: likeness.issues,
     },
   };
 }

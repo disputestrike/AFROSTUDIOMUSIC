@@ -15,11 +15,13 @@ import {
   LIKENESS_CONSENT_VERSION,
   LIKENESS_RIGHTS_BASIS,
   MIN_LIKENESS_TRAINING_PHOTOS,
+  likenessProviderConfigurationStatus,
   likenessTrainingGate,
   nextLikenessStatus,
 } from "@afrohit/shared";
 import {
   likenessKeyframeRequest,
+  likenessDestinationModelIssue,
   likenessTrainerConfig,
   likenessTrainingRequest,
   trainedModelRefFromOutput,
@@ -42,6 +44,7 @@ const allGreen = {
   consentRecorded: true,
   consentRevoked: false,
   replicateConfigured: true,
+  destinationConfigured: true,
 };
 
 check("all gates green → training allowed, zero reasons", () => {
@@ -62,18 +65,21 @@ check("CONSENT GATE: revoked consent = training refuses", () => {
   assert.ok(gate.reasons.some(r => /revoked/i.test(r)));
 });
 
-check(`PHOTO-COUNT GATE: ${MIN_LIKENESS_TRAINING_PHOTOS - 1} photos = refuses with the count`, () => {
-  const gate = likenessTrainingGate({
-    ...allGreen,
-    photoCount: MIN_LIKENESS_TRAINING_PHOTOS - 1,
-  });
-  assert.equal(gate.ok, false);
-  assert.ok(
-    gate.reasons.some(r =>
-      r.includes(`at least ${MIN_LIKENESS_TRAINING_PHOTOS} photos`)
-    )
-  );
-});
+check(
+  `PHOTO-COUNT GATE: ${MIN_LIKENESS_TRAINING_PHOTOS - 1} photos = refuses with the count`,
+  () => {
+    const gate = likenessTrainingGate({
+      ...allGreen,
+      photoCount: MIN_LIKENESS_TRAINING_PHOTOS - 1,
+    });
+    assert.equal(gate.ok, false);
+    assert.ok(
+      gate.reasons.some(r =>
+        r.includes(`at least ${MIN_LIKENESS_TRAINING_PHOTOS} photos`)
+      )
+    );
+  }
+);
 
 check("OPERATOR FLAG: LIKENESS_TRAINING_ENABLED off = refuses honestly", () => {
   const gate = likenessTrainingGate({ ...allGreen, trainingEnabled: false });
@@ -82,7 +88,10 @@ check("OPERATOR FLAG: LIKENESS_TRAINING_ENABLED off = refuses honestly", () => {
 });
 
 check("PROVIDER KEY: no key = refuses (never a stub run)", () => {
-  const gate = likenessTrainingGate({ ...allGreen, replicateConfigured: false });
+  const gate = likenessTrainingGate({
+    ...allGreen,
+    replicateConfigured: false,
+  });
   assert.equal(gate.ok, false);
   assert.ok(gate.reasons.some(r => /key/i.test(r)));
 });
@@ -94,9 +103,31 @@ check("gates COMPOUND: everything wrong = every reason listed", () => {
     consentRecorded: false,
     consentRevoked: false,
     replicateConfigured: false,
+    destinationConfigured: false,
   });
   assert.equal(gate.ok, false);
-  assert.equal(gate.reasons.length, 4);
+  assert.equal(gate.reasons.length, 5);
+});
+
+check("DESTINATION GATE: no private model destination = refuses", () => {
+  const gate = likenessTrainingGate({
+    ...allGreen,
+    destinationConfigured: false,
+  });
+  assert.equal(gate.ok, false);
+  assert.ok(gate.reasons.some(r => /destination/i.test(r)));
+});
+
+check("READINESS: malformed destination and trainer never report green", () => {
+  const status = likenessProviderConfigurationStatus({
+    LIKENESS_TRAINING_ENABLED: "1",
+    REPLICATE_API_TOKEN: "configured",
+    LIKENESS_LORA_DESTINATION: "public/or/extra",
+    LIKENESS_TRAINER_MODEL: "bad-model",
+  });
+  assert.equal(status.ready, false);
+  assert.equal(status.destinationConfigured, false);
+  assert.equal(status.issues.length, 2);
 });
 
 // ---- Status transitions ----------------------------------------------------
@@ -153,7 +184,10 @@ check("training → failed carries through; illegal moves are null", () => {
     nextLikenessStatus("trained", { type: "training_failed", reason: "x" }),
     null
   );
-  assert.equal(nextLikenessStatus("training", { type: "training_started" }), null);
+  assert.equal(
+    nextLikenessStatus("training", { type: "training_started" }),
+    null
+  );
 });
 
 // ---- Consent record shape ---------------------------------------------------
@@ -162,7 +196,9 @@ check("consent text is versioned, own-face framed, and revocable", () => {
   assert.ok(LIKENESS_CONSENT_VERSION.length > 0);
   assert.ok(/I am the person shown/i.test(LIKENESS_CONSENT_TEXT));
   assert.ok(/revoke/i.test(LIKENESS_CONSENT_TEXT));
-  assert.ok(/not upload images of any other person/i.test(LIKENESS_CONSENT_TEXT));
+  assert.ok(
+    /not upload images of any other person/i.test(LIKENESS_CONSENT_TEXT)
+  );
   assert.equal(LIKENESS_RIGHTS_BASIS, "user-attested-likeness");
 });
 
@@ -206,20 +242,57 @@ check("trainer config defaults to fast-flux-trainer, env overrides win", () => {
 
 // ---- Trained-artifact honesty -------------------------------------------------
 
-check("trainedModelRefFromOutput accepts version refs and weights URLs ONLY", () => {
+check(
+  "trainedModelRefFromOutput accepts version refs and weights URLs ONLY",
+  () => {
+    assert.equal(
+      trainedModelRefFromOutput({
+        version: "afrohit/likeness-bxp:abcdef123456",
+      }),
+      "afrohit/likeness-bxp:abcdef123456"
+    );
+    assert.equal(
+      trainedModelRefFromOutput({
+        weights: "https://replicate.delivery/w.tar",
+      }),
+      "https://replicate.delivery/w.tar"
+    );
+    // A "succeeded" run with no artifact must NOT become a trained likeness.
+    assert.equal(trainedModelRefFromOutput({}), null);
+    assert.equal(trainedModelRefFromOutput(null), null);
+    assert.equal(trainedModelRefFromOutput({ version: "not-a-ref" }), null);
+    assert.equal(
+      trainedModelRefFromOutput({ weights: "file:///etc/passwd" }),
+      null
+    );
+  }
+);
+
+check("destination metadata must match and remain private", () => {
   assert.equal(
-    trainedModelRefFromOutput({ version: "afrohit/likeness-bxp:abcdef123456" }),
-    "afrohit/likeness-bxp:abcdef123456"
+    likenessDestinationModelIssue("afrohit/likeness-bxp", {
+      owner: "afrohit",
+      name: "likeness-bxp",
+      visibility: "private",
+    }),
+    null
   );
-  assert.equal(
-    trainedModelRefFromOutput({ weights: "https://replicate.delivery/w.tar" }),
-    "https://replicate.delivery/w.tar"
+  assert.match(
+    likenessDestinationModelIssue("afrohit/likeness-bxp", {
+      owner: "afrohit",
+      name: "likeness-bxp",
+      visibility: "public",
+    }) ?? "",
+    /private/
   );
-  // A "succeeded" run with no artifact must NOT become a trained likeness.
-  assert.equal(trainedModelRefFromOutput({}), null);
-  assert.equal(trainedModelRefFromOutput(null), null);
-  assert.equal(trainedModelRefFromOutput({ version: "not-a-ref" }), null);
-  assert.equal(trainedModelRefFromOutput({ weights: "file:///etc/passwd" }), null);
+  assert.match(
+    likenessDestinationModelIssue("afrohit/likeness-bxp", {
+      owner: "someone-else",
+      name: "likeness-bxp",
+      visibility: "private",
+    }) ?? "",
+    /different/
+  );
 });
 
 // ---- Keyframe request ----------------------------------------------------------

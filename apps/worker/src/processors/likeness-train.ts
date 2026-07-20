@@ -12,6 +12,7 @@ import {
 import {
   LIKENESS_RIGHTS_BASIS,
   MIN_LIKENESS_TRAINING_PHOTOS,
+  isValidLikenessModelSlug,
   likenessTrainingGate,
   nextLikenessStatus,
   type LikenessStatus,
@@ -153,6 +154,7 @@ export async function processLikenessTrain(p: LikenessTrainPayload) {
       replicateConfigured: Boolean(
         apiKey || process.env.REPLICATE_API_TOKEN || process.env.REPLICATE_TOKEN
       ),
+      destinationConfigured: isValidLikenessModelSlug(p.destination),
     });
     if (!gate.ok) {
       await markFailed(p.jobId, `likeness_training_refused: ${gate.reasons.join(" ")}`);

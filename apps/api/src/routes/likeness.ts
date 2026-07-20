@@ -9,8 +9,10 @@ import {
   likenessConsentInputSchema,
   likenessPhotoAttachSchema,
   likenessPhotoPresignSchema,
+  likenessProviderConfigurationStatus,
   likenessTrainInputSchema,
   likenessTrainingGate,
+  isValidLikenessModelSlug,
 } from "@afrohit/shared";
 import { requireAuth, requireRole } from "../middleware/auth";
 import { createQueuedProviderJob, scopedRequestKey } from "../lib/queued-job";
@@ -60,14 +62,34 @@ async function workspaceReplicateKey(
 
 function replicateConfigured(workspaceKey: string | undefined): boolean {
   return Boolean(
-    workspaceKey || process.env.REPLICATE_API_TOKEN || process.env.REPLICATE_TOKEN
+    workspaceKey ||
+    process.env.REPLICATE_API_TOKEN ||
+    process.env.REPLICATE_TOKEN
   );
+}
+
+function likenessDestination(
+  artistId: string,
+  requested?: string
+): string | undefined {
+  const explicit =
+    requested?.trim() || process.env.LIKENESS_LORA_DESTINATION?.trim();
+  if (explicit) {
+    return isValidLikenessModelSlug(explicit) ? explicit : undefined;
+  }
+  const username = process.env.REPLICATE_USERNAME?.trim();
+  if (!username) return undefined;
+  const derived = `${username}/afrohit-likeness-${artistId.slice(-8).toLowerCase()}`;
+  return isValidLikenessModelSlug(derived) ? derived : undefined;
 }
 
 /** The token that summons this face in prompts — deterministic from the stage
  *  name (e.g. "BXP"), never user-supplied free text into a provider payload. */
 export function likenessTriggerWord(stageName: string): string {
-  const cleaned = stageName.toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 16);
+  const cleaned = stageName
+    .toUpperCase()
+    .replace(/[^A-Z0-9]/g, "")
+    .slice(0, 16);
   return cleaned || "AFROHITFACE";
 }
 
@@ -288,7 +310,7 @@ export default async function likeness(app: FastifyInstance) {
     const { workspaceId } = requireAuth(req);
     const artistId =
       typeof (req.query as { artistId?: unknown }).artistId === "string"
-        ? ((req.query as { artistId: string }).artistId)
+        ? (req.query as { artistId: string }).artistId
         : undefined;
 
     const rows = (await prisma.artistLikeness.findMany({
@@ -345,19 +367,26 @@ export default async function likeness(app: FastifyInstance) {
       },
       orderBy: { createdAt: "desc" },
       select: { trainedModelRef: true, meta: true, artistId: true },
-    })) as
-      | { trainedModelRef: string | null; meta: unknown; artistId: string }
-      | null;
+    })) as {
+      trainedModelRef: string | null;
+      meta: unknown;
+      artistId: string;
+    } | null;
     const trainedMeta = metaObject(trainedRow?.meta);
 
     const workspaceKey = await workspaceReplicateKey(workspaceId);
     const eligiblePhotoCount = photos.length;
+    const providerConfiguration = likenessProviderConfigurationStatus(
+      process.env,
+      { replicateConfigured: replicateConfigured(workspaceKey) }
+    );
     const gate = likenessTrainingGate({
       trainingEnabled: likenessTrainingEnabled(),
       photoCount: eligiblePhotoCount,
       consentRecorded: !!consent,
       consentRevoked: !!consent?.revokedAt,
       replicateConfigured: replicateConfigured(workspaceKey),
+      destinationConfigured: providerConfiguration.destinationConfigured,
     });
 
     return {
@@ -439,12 +468,24 @@ export default async function likeness(app: FastifyInstance) {
       })) as Array<{ id: string }>;
 
       const workspaceKey = await workspaceReplicateKey(workspaceId);
+      const destination = likenessDestination(
+        input.artistId,
+        input.destination
+      );
+      const providerConfiguration = likenessProviderConfigurationStatus(
+        process.env,
+        {
+          replicateConfigured: replicateConfigured(workspaceKey),
+          destination,
+        }
+      );
       const gate = likenessTrainingGate({
         trainingEnabled: likenessTrainingEnabled(),
         photoCount: photos.length,
         consentRecorded: !!consent,
         consentRevoked: false,
         replicateConfigured: replicateConfigured(workspaceKey),
+        destinationConfigured: providerConfiguration.destinationConfigured,
       });
       if (!consent) {
         return reply.code(409).send({
@@ -459,17 +500,14 @@ export default async function likeness(app: FastifyInstance) {
         });
       }
 
-      // Destination model for the trained weights (private, operator account).
-      const destination =
-        input.destination ??
-        process.env.LIKENESS_LORA_DESTINATION?.trim() ??
-        (process.env.REPLICATE_USERNAME?.trim()
-          ? `${process.env.REPLICATE_USERNAME.trim()}/afrohit-likeness-${input.artistId.slice(-8).toLowerCase()}`
-          : undefined);
       if (!destination) {
-        return reply.code(400).send({
-          error: "likeness_destination_required",
-          note: 'Set LIKENESS_LORA_DESTINATION ("user/model" in the operator\'s Replicate account) or REPLICATE_USERNAME, or pass destination in the request. Trained weights land there — keep it private.',
+        return reply.code(409).send({
+          error: "likeness_training_gate_failed",
+          reasons: providerConfiguration.issues.length
+            ? providerConfiguration.issues
+            : [
+                'Set LIKENESS_LORA_DESTINATION ("user/model" in the operator\'s Replicate account) or REPLICATE_USERNAME.',
+              ],
         });
       }
 

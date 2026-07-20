@@ -7,6 +7,8 @@
  * bound score receipt, and every active pointer keeps one-click rollback state.
  */
 import { createHash } from "node:crypto";
+import { readFile } from "node:fs/promises";
+import { resolve } from "node:path";
 import { isOutsideRenderLearningEnabled, Prisma, prisma } from "@afrohit/db";
 import JSZip from "jszip";
 import {
@@ -39,6 +41,10 @@ import {
   resolveAssetForProvider,
   uploadBytes,
 } from "./storage";
+import {
+  earHoldoutExclusions,
+  type EarHoldoutExclusions,
+} from "./ear-corpus";
 
 const TRAINING_WORKSPACE_ID = "training";
 export const ACTIVE_MUSIC_MODEL_SETTING_KEY = "music.training.activeModel.v1";
@@ -63,6 +69,7 @@ interface TrainingSource {
   workspaceId: string | null;
   url: string;
   contentFingerprint: string;
+  sourceFamilyId: string;
   createdAt: Date;
 }
 
@@ -118,6 +125,66 @@ function record(value: unknown): JsonRecord {
   return value && typeof value === "object" && !Array.isArray(value)
     ? value as JsonRecord
     : {};
+}
+
+function stableSourceFamilyId(input: {
+  kind: "material" | "beat" | "vocal";
+  id: string;
+  songId?: string | null;
+  meta?: unknown;
+}): string {
+  if (input.songId) return `song:${input.songId}`;
+  const meta = record(input.meta);
+  const explicit = meta.sourceFamilyId;
+  if (
+    typeof explicit === "string" &&
+    /^[a-z][a-z0-9_-]*:[A-Za-z0-9._-]+$/.test(explicit)
+  )
+    return explicit;
+  for (const [field, prefix] of [
+    ["originSongId", "song"],
+    ["songId", "song"],
+    ["originBeatId", "beat"],
+    ["beatId", "beat"],
+  ] as const) {
+    const value = meta[field];
+    if (typeof value === "string" && /^[A-Za-z0-9._-]+$/.test(value))
+      return `${prefix}:${value}`;
+  }
+  return `${input.kind}:${input.id}`;
+}
+
+function emptyHoldoutExclusions(): EarHoldoutExclusions {
+  return {
+    sourceAssetIds: new Set(),
+    sourceFamilyIds: new Set(),
+    contentHashes: new Set(),
+  };
+}
+
+async function loadEarHoldoutPolicy(): Promise<{
+  exclusions: EarHoldoutExclusions;
+  manifestHash: string | null;
+}> {
+  const required = process.env.EAR_HOLDOUT_REQUIRED === "1";
+  const path = resolve(
+    process.env.EAR_HOLDOUT_MANIFEST_PATH ??
+      resolve(__dirname, "..", "..", "py", "fixtures", "manifest.json")
+  );
+  try {
+    const bytes = await readFile(path);
+    const exclusions = earHoldoutExclusions(JSON.parse(bytes.toString("utf8")));
+    return {
+      exclusions,
+      manifestHash: createHash("sha256").update(bytes).digest("hex"),
+    };
+  } catch (error) {
+    if (required)
+      throw new Error(
+        `EAR_HOLDOUT_REQUIRED=1 but the frozen holdout is unavailable or invalid: ${(error as Error).message}`
+      );
+    return { exclusions: emptyHoldoutExclusions(), manifestHash: null };
+  }
 }
 
 function jsonRecord(raw: string | null | undefined): JsonRecord {
@@ -350,6 +417,7 @@ async function liveManifest(): Promise<{
         rightsBasis: true,
         url: true,
         contentHash: true,
+        meta: true,
         workspaceId: true,
         createdAt: true,
       },
@@ -363,6 +431,7 @@ async function liveManifest(): Promise<{
         meta: true,
         url: true,
         contentHash: true,
+        songId: true,
         createdAt: true,
         project: { select: { workspaceId: true } },
       },
@@ -375,6 +444,7 @@ async function liveManifest(): Promise<{
         performanceSource: true,
         url: true,
         contentHash: true,
+        songId: true,
         createdAt: true,
         project: { select: { workspaceId: true } },
       },
@@ -436,6 +506,11 @@ async function liveManifest(): Promise<{
       workspaceId: row.workspaceId,
       url: row.url,
       contentFingerprint: row.contentHash?.trim() || row.url,
+      sourceFamilyId: stableSourceFamilyId({
+        kind: "material",
+        id: row.id,
+        meta: row.meta,
+      }),
       createdAt: row.createdAt,
     });
   }
@@ -444,6 +519,12 @@ async function liveManifest(): Promise<{
       workspaceId: row.project?.workspaceId ?? null,
       url: row.url,
       contentFingerprint: row.contentHash?.trim() || row.url,
+      sourceFamilyId: stableSourceFamilyId({
+        kind: "beat",
+        id: row.id,
+        songId: row.songId,
+        meta: row.meta,
+      }),
       createdAt: row.createdAt,
     });
   }
@@ -452,6 +533,11 @@ async function liveManifest(): Promise<{
       workspaceId: row.project?.workspaceId ?? null,
       url: row.url,
       contentFingerprint: row.contentHash?.trim() || row.url,
+      sourceFamilyId: stableSourceFamilyId({
+        kind: "vocal",
+        id: row.id,
+        songId: row.songId,
+      }),
       createdAt: row.createdAt,
     });
   }
@@ -1016,12 +1102,18 @@ export async function runTrainingFlywheel(): Promise<FlywheelResult> {
   await ensureTrainingWorkspace();
 
   const { manifest, sources, consents } = await liveManifest();
+  const holdout = await loadEarHoldoutPolicy();
+  const heldOut = (asset: TrainingSource): boolean =>
+    holdout.exclusions.sourceAssetIds.has(asset.id.toLowerCase()) ||
+    holdout.exclusions.sourceFamilyIds.has(asset.sourceFamilyId.toLowerCase()) ||
+    holdout.exclusions.contentHashes.has(asset.contentFingerprint.toLowerCase());
   const selected: TrainingSource[] = manifest.eligible
     .map(asset => {
       const source = sources.get(asset.id);
       return source ? { ...asset, ...source } : null;
     })
     .filter((asset): asset is TrainingSource => !!asset)
+    .filter(asset => !heldOut(asset))
     .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime() || a.id.localeCompare(b.id))
     .slice(0, MAX_DATASET_ASSETS);
 
@@ -1082,6 +1174,10 @@ export async function runTrainingFlywheel(): Promise<FlywheelResult> {
     try {
       const bytes = await downloadToBuffer(asset.url);
       const audioHash = createHash("sha256").update(bytes).digest("hex");
+      if (holdout.exclusions.contentHashes.has(audioHash)) {
+        console.warn(`[flywheel] excluded frozen holdout bytes from ${asset.id}`);
+        continue;
+      }
       zip.file(`dataset/${asset.id.replace(/[^a-zA-Z0-9_-]+/g, "_")}.wav`, bytes);
       zippedAssets.push({ ...asset, audioHash });
     } catch (error) {
@@ -1102,6 +1198,7 @@ export async function runTrainingFlywheel(): Promise<FlywheelResult> {
     origin: asset.origin,
     workspaceId: asset.workspaceId,
     contentHash: asset.audioHash,
+    sourceFamilyId: asset.sourceFamilyId,
   }));
   const trainingManifest = manifestForAssets(trainingAssets);
   buildTrainerDataset(trainingManifest);
@@ -1209,6 +1306,7 @@ export async function runTrainingFlywheel(): Promise<FlywheelResult> {
           eligible: manifest.eligible.length,
           zipped: zippedAssets.length,
           trainingAssets,
+          holdoutManifestHash: holdout.manifestHash,
           trainingConsentSnapshot,
           consentSnapshotHash,
           byOrigin: trainingManifest.counts.byOrigin,

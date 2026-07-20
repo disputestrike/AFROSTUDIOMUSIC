@@ -37,8 +37,8 @@ const expected =
 const signature = distributionSignature(secret, timestamp, body);
 
 const configured = distributionConfigurationStatus({
-  DISTRIBUTOR: "partner",
-  DISTRIBUTOR_WEBHOOK_URL: "https://distribution.example/releases",
+  DISTRIBUTOR: "approved_partner",
+  DISTRIBUTOR_SUBMIT_URL: "https://distribution.test/releases",
   DISTRIBUTOR_WEBHOOK_SECRET: secret,
 });
 check(
@@ -46,11 +46,50 @@ check(
   "distribution readiness accepts signed HTTPS configuration"
 );
 check(
+  configured.endpointSource === "DISTRIBUTOR_SUBMIT_URL",
+  "distribution readiness identifies the preferred submission URL source"
+);
+const legacyConfigured = distributionConfigurationStatus({
+  DISTRIBUTOR: "approved_partner",
+  DISTRIBUTOR_WEBHOOK_URL: "https://distribution.test/releases",
+  DISTRIBUTOR_WEBHOOK_SECRET: secret,
+});
+check(
+  legacyConfigured.ready &&
+    legacyConfigured.endpointSource === "DISTRIBUTOR_WEBHOOK_URL",
+  "legacy submission URL remains compatible and is diagnosed explicitly"
+);
+check(
   !distributionConfigurationStatus({
+    DISTRIBUTOR: "approved_partner",
     DISTRIBUTOR_WEBHOOK_URL: "http://localhost/releases",
     DISTRIBUTOR_WEBHOOK_SECRET: "short",
   }).ready,
   "distribution readiness rejects weak or non-HTTPS configuration"
+);
+check(
+  distributionConfigurationStatus({
+    DISTRIBUTOR_SUBMIT_URL: "https://distribution.test/releases",
+    DISTRIBUTOR_WEBHOOK_SECRET: secret,
+  }).missing.includes("DISTRIBUTOR"),
+  "distribution readiness requires an explicit approved provider"
+);
+check(
+  !distributionConfigurationStatus({
+    DISTRIBUTOR: "partner-name",
+    DISTRIBUTOR_SUBMIT_URL: "https://distribution-partner.example/releases",
+    DISTRIBUTOR_WEBHOOK_SECRET: secret,
+  }).ready,
+  "distribution readiness rejects documentation placeholders"
+);
+check(
+  !distributionConfigurationStatus({
+    DISTRIBUTOR: "approved_partner",
+    DISTRIBUTOR_SUBMIT_URL: "https://one.test/releases",
+    DISTRIBUTOR_WEBHOOK_URL: "https://two.test/releases",
+    DISTRIBUTOR_WEBHOOK_SECRET: secret,
+  }).ready,
+  "distribution readiness rejects conflicting preferred and legacy endpoints"
 );
 const lifecycle = distributionLifecycleDiagnostics(
   {

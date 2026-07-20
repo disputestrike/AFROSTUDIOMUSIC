@@ -158,6 +158,9 @@ async function main() {
     schemaVersion: LOGDRUM_CALIBRATION_SCHEMA_VERSION,
     manifestSchemaVersion: EAR_CORPUS_SCHEMA_VERSION,
     corpusHash: corpus.corpusHash,
+    trainingSnapshotHash: corpus.trainingSnapshotHash,
+    holdoutFrozenAt: corpus.frozenAt,
+    leakageVerified: corpus.leakageVerified,
     trackCount: corpus.tracks.length,
     trackIds: corpus.tracks.map(track => track.id).sort(),
     genreCounts: corpus.genreCounts,
@@ -186,6 +189,7 @@ async function main() {
           gatesPassed: false,
           provenance: "failed-real-evaluation",
           rightsVerified: true,
+          leakageVerified: true,
           failures: {
             tempo: tempoFailures.map(result => result.row.id),
             fourOnFloor: fourOnFloorFailures.map(result => result.row.id),
@@ -208,6 +212,7 @@ async function main() {
       gatesPassed: true,
       provenance: "real-9track",
       rightsVerified: true,
+      leakageVerified: true,
       calibratedOn: "rights-clean-9track",
     },
     signingKey

@@ -139,14 +139,17 @@ def _calibration_status(path, key):
 def _truth_gate_regression(directory):
     key = "synthetic-test-signing-key-32-bytes-minimum"
     artifact = {
-        "schemaVersion": 4,
-        "manifestSchemaVersion": 1,
+        "schemaVersion": 5,
+        "manifestSchemaVersion": 2,
         "gatesPassed": True,
         "provenance": "real-9track",
         "rightsVerified": True,
+        "leakageVerified": True,
         "trackCount": 9,
         "trackIds": [f"track-{index:02d}" for index in range(9)],
         "corpusHash": "a" * 64,
+        "trainingSnapshotHash": "b" * 64,
+        "holdoutFrozenAt": "2026-07-19T00:00:00.000Z",
         "genreCounts": {"amapiano": 3, "afrobeats": 3, "house": 3},
         "rightsBasisCounts": {"owned-master": 9, "licensed-evaluation": 0},
         "separationMargin": 0.2,
@@ -209,7 +212,7 @@ def main():
         if ok:
             import datetime
             artifact = {
-                "schemaVersion": 4,
+                "schemaVersion": 5,
                 "gatesPassed": True,
                 "separationMargin": round(float(separation), 3),
                 "fittedOn": datetime.date.today().isoformat(),
@@ -217,6 +220,7 @@ def main():
                 "trackCount": 3,
                 "provenance": "synthetic",
                 "rightsVerified": False,
+                "leakageVerified": False,
                 "manifestSchemaVersion": None,
                 "corpusHash": None,
                 "genreCounts": {"amapiano": 1, "afrobeats": 1, "house": 1},

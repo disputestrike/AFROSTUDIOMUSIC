@@ -18,6 +18,7 @@
  */
 
 import { replicateToken } from "./music";
+import { isValidLikenessModelSlug } from "@afrohit/shared";
 
 const REPLICATE_API = "https://api.replicate.com/v1";
 const REQUEST_TIMEOUT_MS = 30_000;
@@ -174,6 +175,44 @@ export async function getLikenessTraining(
   return (await res.json()) as LikenessTrainingState;
 }
 
+export interface LikenessDestinationModel {
+  owner?: string;
+  name?: string;
+  visibility?: string;
+}
+
+/** Fail closed if a provider destination is not exactly the requested private model. */
+export function likenessDestinationModelIssue(
+  destination: string,
+  model: LikenessDestinationModel
+): string | null {
+  if (!isValidLikenessModelSlug(destination)) {
+    return 'destination must be a valid "owner/model" slug';
+  }
+  const [owner, name] = destination.split("/");
+  if (model.owner !== owner || model.name !== name) {
+    return "provider returned a different destination model";
+  }
+  if (model.visibility !== "private") {
+    return "likeness destination model must be private";
+  }
+  return null;
+}
+
+async function assertPrivateDestinationResponse(
+  destination: string,
+  response: Response
+): Promise<void> {
+  let model: LikenessDestinationModel;
+  try {
+    model = (await response.json()) as LikenessDestinationModel;
+  } catch {
+    throw new Error("likeness destination returned unreadable metadata");
+  }
+  const issue = likenessDestinationModelIssue(destination, model);
+  if (issue) throw new Error(`unsafe likeness destination: ${issue}`);
+}
+
 /**
  * Ensure the destination model exists on Replicate (trainings refuse an
  * unknown destination). Idempotent: 409/already-exists is success. Private
@@ -185,14 +224,19 @@ export async function ensureDestinationModel(
 ): Promise<void> {
   const token = apiKey || replicateToken();
   if (!token) throw new Error("REPLICATE_API_TOKEN missing");
-  const [owner, name] = destination.split("/");
-  if (!owner || !name) throw new Error('destination must be "user/model"');
+  if (!isValidLikenessModelSlug(destination)) {
+    throw new Error('destination must be a valid "owner/model" slug');
+  }
+  const [owner, name] = destination.split("/") as [string, string];
 
   const existing = await fetch(`${REPLICATE_API}/models/${destination}`, {
     signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
     headers: { authorization: `Bearer ${token}` },
   });
-  if (existing.ok) return;
+  if (existing.ok) {
+    await assertPrivateDestinationResponse(destination, existing);
+    return;
+  }
   if (existing.status !== 404) {
     throw new Error(`likeness destination lookup ${existing.status}`);
   }
@@ -208,14 +252,30 @@ export async function ensureDestinationModel(
       name,
       visibility: "private",
       hardware: "cpu",
-      description: "AfroHit Studio own-face likeness LoRA (user-attested-likeness)",
+      description:
+        "AfroHit Studio own-face likeness LoRA (user-attested-likeness)",
     }),
   });
-  if (!created.ok && created.status !== 409) {
+  if (created.ok) {
+    await assertPrivateDestinationResponse(destination, created);
+    return;
+  }
+  if (created.status !== 409) {
     throw new Error(
       `likeness destination create ${created.status}: ${(await created.text()).slice(0, 160)}`
     );
   }
+
+  // A concurrent request may have created it. Re-read and still enforce
+  // private visibility instead of treating every conflict as safe.
+  const raced = await fetch(`${REPLICATE_API}/models/${destination}`, {
+    signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+    headers: { authorization: `Bearer ${token}` },
+  });
+  if (!raced.ok) {
+    throw new Error(`likeness destination recheck ${raced.status}`);
+  }
+  await assertPrivateDestinationResponse(destination, raced);
 }
 
 // ---------------------------------------------------------------------------
@@ -310,15 +370,21 @@ export async function generateLikenessKeyframe(
     const maxAttempts = Math.max(1, opts.maxPollAttempts ?? 60);
     for (
       let attempt = 0;
-      (prediction.status === "starting" || prediction.status === "processing") &&
+      (prediction.status === "starting" ||
+        prediction.status === "processing") &&
       attempt < maxAttempts;
       attempt++
     ) {
-      await new Promise(resolve => setTimeout(resolve, opts.pollDelayMs ?? 5_000));
-      const poll = await fetch(`${REPLICATE_API}/predictions/${prediction.id}`, {
-        signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
-        headers: { authorization: `Bearer ${token}` },
-      });
+      await new Promise(resolve =>
+        setTimeout(resolve, opts.pollDelayMs ?? 5_000)
+      );
+      const poll = await fetch(
+        `${REPLICATE_API}/predictions/${prediction.id}`,
+        {
+          signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+          headers: { authorization: `Bearer ${token}` },
+        }
+      );
       if (!poll.ok) {
         return {
           status: "failed",
@@ -334,7 +400,8 @@ export async function generateLikenessKeyframe(
         externalId: prediction.id,
         error:
           prediction.error?.slice(0, 200) ||
-          (prediction.status === "processing" || prediction.status === "starting"
+          (prediction.status === "processing" ||
+          prediction.status === "starting"
             ? "keyframe generation timed out before completion"
             : `keyframe ${prediction.status}`),
       };
