@@ -37,6 +37,14 @@ export type TrainingOrigin =
 
 /** Engines whose OUTPUT we may train on because we own/synthesize it. */
 const OWN_ENGINES = new Set(['own', 'own_engine', 'afrohit-own', 'lora', 'forged', 'synth']);
+
+/** Is this engine id one of OUR OWN engines ('lora' = our trained model's
+ *  output — own-origin trainable fuel)? Exposed so the melody-topping law in
+ *  training-capture.ts can distinguish an own-model topping (never downgrades a
+ *  bed, never launders one either) from a third-party topping (dispositive). */
+export function isOwnEngineId(engine: string | null | undefined): boolean {
+  return OWN_ENGINES.has((engine ?? '').trim().toLowerCase());
+}
 /** Engines whose output is a third party's — ToS forbids training on it. */
 const THIRD_PARTY_ENGINES = new Set([
   'minimax',

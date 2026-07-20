@@ -364,6 +364,7 @@ async function runOfflineTests(): Promise<void> {
     ["Producer Brain (plan referee + wiring)", "test-producer-plan.ts"],
     ["Training flywheel (P3: gates+rights+wiring)", "test-training-flywheel.ts"],
     ["Training lifecycle (poll/dedupe/promote/rollback)", "test-training-lifecycle.ts"],
+    ["Trained layer (training in the sound)", "test-trained-layer.ts"],
     ["Genre canon (the 4/12 -> 11/12 flip)", "test-genre-canon.ts"],
     ["Aggregate harness timeout/progress", "test-harness-timeout.ts"],
     ["Security boundaries", "test-security-boundaries.ts"],

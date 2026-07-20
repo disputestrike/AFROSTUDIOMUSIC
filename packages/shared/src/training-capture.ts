@@ -9,6 +9,7 @@
  */
 import {
   buildTrainingManifest,
+  isOwnEngineId,
   type AssetProvenance,
   type TrainingManifest,
   type TrainingPolicy,
@@ -49,7 +50,16 @@ export function beatToProvenance(row: {
   const layer = meta?.melodyLayer && typeof meta.melodyLayer === 'object'
     ? (meta.melodyLayer as Record<string, unknown>)
     : null;
-  const layerEngine = typeof layer?.engine === 'string' && layer.engine.trim() ? layer.engine : null;
+  const layerEngineRaw = typeof layer?.engine === 'string' && layer.engine.trim() ? layer.engine : null;
+  // OWN-MODEL TOPPING (trained-layer wave 2026-07-20): a topping rendered by OUR
+  // OWN trained model (engine 'lora' — output of the promoted fine-tune, our
+  // weights, our audio) is own-origin. It never DOWNGRADES the bed — but it
+  // never LAUNDERS one either: classification falls through to the ingredient
+  // law / ownership vouch / provider exactly as if the topping were absent, so
+  // the most-restrictive-origin doctrine still decides. Only a THIRD-PARTY
+  // layer engine (musicgen/minimax/...) remains dispositive, and an unknown
+  // layer engine string still fails the bed closed (not own → dispositive).
+  const layerEngine = layerEngineRaw && !isOwnEngineId(layerEngineRaw) ? layerEngineRaw : null;
   // INGREDIENT LAW (most restrictive wins, after the melody-topping check):
   if (!layerEngine && row.ingredientRights?.length) {
     const rights = row.ingredientRights.map(r => (r ?? '').trim().toLowerCase());

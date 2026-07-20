@@ -55,6 +55,9 @@ import {
   getSoundDNA,
   musicAdapter,
   planProduction,
+  renderTrainedMusicLayer,
+  trainedLayerDecision,
+  TRAINED_MUSIC_LAYER_COST_USD,
   type RenderOutcome,
 } from "@afrohit/ai";
 import {
@@ -67,6 +70,8 @@ import { measureAudioBufferQuality, mixBuffers } from "../lib/ffmpeg";
 import { certifyAudioBytes } from "../lib/certified-assets";
 import { deleteUnreferencedAssetRefs } from "./asset-cleanup";
 import { renderMelodyGuide } from "../lib/melody-guide";
+import { overlayFills } from "../lib/fills";
+import { resolveActiveMusicModelRef } from "../lib/training-flywheel";
 import { measureAudio, dspAvailable } from "../lib/dsp";
 import { markRunning, markSucceeded, markFailed } from "../lib/jobs";
 import { assessLaneCompliance } from "../lib/lane-assess";
@@ -164,6 +169,13 @@ async function pickKit(
  *  can be 12+ roles; twelve loops at once is a wall of sound no producer would
  *  print — density comes from the ARRANGEMENT, not from stacking everything. */
 const SECTION_ROLE_CAP = 7;
+
+/** Trained-layer mix level: TEXTURE, never the groove anchor. The lane-material
+ *  gain doctrine keeps rhythm/low-end at the top of the bus (drums 1.0) and
+ *  colour under it (chords ~0.7); the fills ride at 0.5. The trained topping is
+ *  melody colour — 0.6 sits it audibly IN the record without burying anchors,
+ *  below the 0.85 the stock musicgen mix used. */
+const TRAINED_LAYER_GAIN = 0.6;
 
 function sectionsFrom(
   blueprint: SongBlueprint | null | undefined,
@@ -1162,7 +1174,178 @@ export async function processOwnEngine(p: OwnEnginePayload): Promise<void> {
     const totalS =
       p.blueprint?.totalDurationS ??
       sections.reduce((a, s) => a + s.bars, 0) * (240 / bpm);
-    if (p.melody === true && totalS <= 30) {
+
+    // L2-TRAINED — THE TRAINING IN THE SOUND (owner order 2026-07-20: "where is
+    // all the training? we trained — where is it?"). Promotion used to write a
+    // pointer NOTHING read — training was invisible in the sound by
+    // construction. Now: when a candidate has been PROMOTED (measured win,
+    // music.training.activeModel.v1) this render carries ONE topping layer from
+    // OUR trained model — our weights (the fine-tune lives in the owner's
+    // Replicate account, trained ONLY on the rights-clean corpus), stamped
+    // engine 'lora' so the topped bed stays OWN-ORIGIN trainable fuel (stock
+    // musicgen toppings keep their 'musicgen' stamp and stay third-party).
+    // Flag OWN_ENGINE_TRAINED_LAYER: default ON when a ref exists; '0' kills
+    // it. COST HONESTY: this is a PAID Replicate call (~$0.08/render) on the
+    // house token — the promoted model is private to our account, a workspace
+    // key cannot run it — so the receipt (estimatedCostUsd) rides the take AND
+    // the job row. FAIL-OPEN THROUGHOUT: any failure leaves an honest "trained
+    // layer skipped: <reason>" note and the render proceeds exactly as today.
+    let trainedLayerReceipt: {
+      trainedModelRef: string;
+      layerRole: string;
+      estimatedCostUsd: number;
+    } | null = null;
+    {
+      const activeModelRef = await resolveActiveMusicModelRef().catch(
+        () => null
+      );
+      const trainedDecision = trainedLayerDecision({
+        modelRef: activeModelRef,
+        flag: process.env.OWN_ENGINE_TRAINED_LAYER ?? null,
+      });
+      if (!trainedDecision.attempt) {
+        notes.push(`trained layer skipped: ${trainedDecision.reason}`);
+      } else {
+        const trainedModelRef = activeModelRef!;
+        const layerRole = "melody-topping";
+        // Conditioned on THIS render: the caller's melody prompt (or the
+        // lane's), the genre, the grid tempo, and the home key.
+        const trainedPrompt = [
+          p.melodyPrompt?.trim() || genreSignature(p.genre).melodyPrompt,
+          `${p.genre} melodic topping over a locked groove`,
+          `${bpm} BPM`,
+          `in ${homeKey}`,
+        ].join(", ");
+        const layer = await renderTrainedMusicLayer({
+          modelRef: trainedModelRef,
+          prompt: trainedPrompt,
+          durationS: totalS,
+        });
+        if (!layer.url) notes.push(layer.note);
+        if (layer.url) {
+          let certifiedUrl: string | null = null;
+          try {
+            const [bed, lead] = await Promise.all([
+              downloadToBuffer(out.url),
+              downloadToBuffer(layer.url),
+            ]);
+            // SAME HONESTY GATE as the stock topping: a fine-tune is still a
+            // generative model — measure tempo/key against the grid BEFORE the
+            // bed can be touched. A hard mismatch throws into the fail-open
+            // catch below; the measured reason rides the record.
+            const grid = await verifyMelodyAgainstGrid(lead, bpm, homeKey);
+            if (!grid.ok) throw new Error(grid.note);
+            notes.push(grid.note);
+            // PLACEMENT (fill-overlay pattern): the topping lands at the first
+            // hook/chorus/drop arrival — where melody colour belongs — at a
+            // modest UNDER-the-bed gain, peak-limited by the same graph the
+            // section fills use, so the groove anchors are never buried. No
+            // hook in the plan (or a hook past the topping window) → placed at
+            // 0: the whole take is the window.
+            const barSec = 240 / bpm;
+            let placementS = 0;
+            let cursorS = 0;
+            for (const s of sections) {
+              if (/hook|chorus|drop/i.test(s.name)) {
+                placementS = cursorS;
+                break;
+              }
+              cursorS += s.bars * barSec;
+            }
+            if (placementS >= Math.max(0, totalS - 8)) placementS = 0;
+            const mixed = await overlayFills(bed, lead, [placementS], {
+              fillGain: TRAINED_LAYER_GAIN,
+            });
+            const certified = await certifyAudioBytes({
+              workspaceId: p.workspaceId,
+              kind: "beats",
+              bytes: mixed,
+              contentType: "audio/wav",
+              ext: "wav",
+            });
+            certifiedUrl = certified.url;
+
+            const assembled = await prisma.beatAsset.findUnique({
+              where: { id: finalBeatId },
+              select: { url: true, meta: true },
+            });
+            if (!assembled || assembled.url !== out.url) {
+              throw new Error(
+                "assembled beat changed before trained-layer certification"
+              );
+            }
+            const estimatedCostUsd =
+              layer.estimatedCostUsd ?? TRAINED_MUSIC_LAYER_COST_USD;
+            const updated = await prisma.beatAsset.updateMany({
+              where: { id: finalBeatId, url: out.url },
+              data: {
+                url: certified.url,
+                provider: "afrohit-own",
+                duration: certified.qc.durationS,
+                qualityState: certified.qualityState,
+                contentHash: certified.contentHash,
+                verifiedAt: certified.verifiedAt,
+                meta: {
+                  ...((assembled.meta ?? {}) as Record<string, unknown>),
+                  // PROVENANCE STAMP: 'lora' is in OWN_ENGINES
+                  // (training-corpus.ts) — output of OUR OWN trained model is
+                  // own-origin trainable fuel, and beatToProvenance lets an
+                  // own-engine topping fall through to the ingredient law
+                  // (never a downgrade, never a launder).
+                  melodyLayer: {
+                    engine: "lora",
+                    trainedModelRef,
+                    layerRole,
+                    estimatedCostUsd,
+                    placementS,
+                    sourceUrl: out.url,
+                    qc: certified.qc,
+                    contentHash: certified.contentHash,
+                    verifiedAt: certified.verifiedAt.toISOString(),
+                  },
+                } as never,
+              },
+            });
+            if (updated.count !== 1) {
+              throw new Error(
+                "assembled beat changed during trained-layer certification"
+              );
+            }
+
+            finalUrl = certified.url;
+            certifiedUrl = null;
+            trainedLayerReceipt = { trainedModelRef, layerRole, estimatedCostUsd };
+            notes.push(
+              `trained layer mixed: ${trainedModelRef} rendered this take's ${layerRole} at ${TRAINED_LAYER_GAIN} gain (placed ${Math.round(placementS)}s, ~$${estimatedCostUsd.toFixed(2)})`
+            );
+            try {
+              await deleteUnreferencedAssetRefs(p.workspaceId, [out.url]);
+            } catch (retireError) {
+              notes.push(
+                `old trained-layer bed retained for cleanup: ${(retireError as Error)?.message?.slice(0, 80)}`
+              );
+            }
+          } catch (err) {
+            if (certifiedUrl) {
+              await deleteObjectByUrl(certifiedUrl).catch(() => {});
+            }
+            notes.push(
+              `trained layer skipped: ${(err as Error)?.message?.slice(0, 120)}`
+            );
+          }
+        }
+      }
+    }
+
+    if (trainedLayerReceipt) {
+      // ONE topping per take: the promoted OWN model already rendered it — the
+      // stock third-party musicgen call never runs on a trained take.
+      if (p.melody === true) {
+        notes.push(
+          "provider melody superseded: the trained layer is this take's topping"
+        );
+      }
+    } else if (p.melody === true && totalS <= 30) {
       const workspace = await prisma.workspace.findUnique({
         where: { id: p.workspaceId },
         select: { musicProvider: true, musicApiKey: true },
@@ -1320,6 +1503,9 @@ export async function processOwnEngine(p: OwnEnginePayload): Promise<void> {
           ownEngine: {
             v: 3,
             layers: notes,
+            // TRAINED-MODEL RECEIPT: "training in the sound" is provable per
+            // render — which promoted model, what role, what it cost.
+            ...(trainedLayerReceipt ? { trainedLayer: trainedLayerReceipt } : {}),
             // AUTO-FORGE disclosure rides the beat's permanent record, not
             // just the render notes: which starter loops this lane forged.
             ...(autoForgedRoles.length
@@ -1502,6 +1688,7 @@ export async function processOwnEngine(p: OwnEnginePayload): Promise<void> {
       blueprintMatch,
       laneAssessment,
       layers: notes,
+      ...(trainedLayerReceipt ? { trainedLayer: trainedLayerReceipt } : {}),
       ...(autoForgedRoles.length
         ? {
             autoForge: {
@@ -1549,7 +1736,11 @@ export async function processOwnEngine(p: OwnEnginePayload): Promise<void> {
                 ? "AfroOne can sing this: create with vocals on (it writes the lyrics), or paste your own and it sings them verbatim. You can also upload your own lead."
                 : "record/upload a sung lead, or convert an existing performance with POST /voices/:voiceId/sing",
           }),
-    });
+    },
+    // COST EVIDENCE: the trained topping is the only PAID call this processor
+    // makes on the house token — when it rendered, its estimate rides the job
+    // row like every other adapter's estimatedCostUsd.
+    trainedLayerReceipt ? trainedLayerReceipt.estimatedCostUsd : undefined);
     console.log(
       `[own-engine] ${p.genre} done — ${notes.join(" | ")}${blueprintMatch != null ? ` | skeleton ${Math.round(blueprintMatch * 100)}%` : ""}`
     );

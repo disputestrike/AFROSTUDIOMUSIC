@@ -1,5 +1,6 @@
 export * from './types';
 export * from './music';
+export * from './trained-music';
 export * from './voice';
 export * from './video';
 export * from './video-replicate';
