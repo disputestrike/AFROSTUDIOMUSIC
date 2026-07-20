@@ -1426,23 +1426,16 @@ export default function CreatePage() {
             // advertises genuine singing ONLY when the singing path is armed
             // and reachable — the honest-hint law of 2026-07-16 still holds,
             // the capability just moved from hardcoded to measured.
-            // EQUAL-CONFIDENCE COPY (owner 2026-07-20: "look at the other
-            // engines — three words. What's the purpose of all this talk?").
-            // The house engine speaks with the MOST confidence on the page,
-            // not the least. No pipeline jargon ("approved lyrics" read as
-            // "bring your lyrics" — it never meant that; the engine writes
-            // its own). Capability truth still holds via the flag.
-            {
-              value: 'own',
-              label: 'AfroOne — Our Engine',
-              hint: musicRoutes?.afrooneSinging === true
-                ? 'Writes it, builds it, sings it — your sound'
-                : 'Beats from your sound',
-              available: true,
-            },
+            // JUST THE NAME (owner 2026-07-20 final word: "Just offer AfroOne
+            // Engine. That's it. You don't have to write all this confusing" —
+            // any qualifier on the house engine reads as a condition. The
+            // engine does everything the others do; the name alone says so.
+            // Honesty lives where it belongs: the render note still discloses
+            // if singing is unarmed on a given studio.)
+            { value: 'own', label: 'AfroOne Engine', hint: '', available: true },
           ] as const).filter((e) => e.available).map((e) => (
             <button key={e.value} onClick={() => setEngine(e.value)} className={`rounded-full px-4 py-2 text-sm ${engine === e.value ? 'bg-brand-gradient text-ink shadow-glow' : 'border border-white/10 bg-white/5 text-slate-300 hover:bg-white/10'}`}>
-              {e.label} <span className="opacity-60">· {e.hint}</span>
+              {e.label}{e.hint ? <span className="opacity-60"> · {e.hint}</span> : null}
             </button>
           ))}
         </div>
@@ -1540,7 +1533,7 @@ export default function CreatePage() {
             // OUR ENGINE FIRST — this door is its home turf: instrumental beds
             // assembled from YOUR OWN + synthesized material are exactly what it
             // does. External engines stay in CLASS language (§1.11 THE WALL).
-            { value: 'own', label: 'AfroOne — Our Engine', hint: 'Assembled from YOUR material — the studio’s own instrumental engine', available: true },
+            { value: 'own', label: 'AfroOne Engine', hint: '', available: true },
             { value: 'auto', label: 'Auto', hint: 'Best engine available', available: hasMusicRoute },
             { value: 'suno', label: 'Flagship', hint: 'Best quality (first-party releases)', available: musicRoutes?.flagship === true },
             { value: 'eleven', label: 'Advanced', hint: 'Section-controlled, high realism', available: musicRoutes?.advanced === true },
@@ -1548,12 +1541,12 @@ export default function CreatePage() {
             { value: 'ace_step', label: 'Standard B', hint: 'Fast draft', available: musicRoutes?.standard === true || musicRoutes?.falAvailable === true },
           ] as const).filter((e) => e.available).map((e) => (
             <button key={e.value} onClick={() => setEngine(e.value)} className={`rounded-full px-4 py-2 text-sm ${engine === e.value ? 'bg-brand-gradient text-ink shadow-glow' : 'border border-white/10 bg-white/5 text-slate-300 hover:bg-white/10'}`}>
-              {e.label} <span className="opacity-60">· {e.hint}</span>
+              {e.label}{e.hint ? <span className="opacity-60"> · {e.hint}</span> : null}
             </button>
           ))}
         </div>
         {engine === 'own' && (
-          <p className="mt-2 text-xs text-amber-300/90">Our Engine builds from your own + synthesized material. Three directions are intentional: commercial-safe, spacious, and hook-forward.</p>
+          <p className="mt-2 text-xs text-amber-300/90">Three directions are intentional: commercial-safe, spacious, and hook-forward.</p>
         )}
         {musicRoutes && !hasMusicRoute && engine !== 'own' && (
           <p className="mt-2 text-sm text-amber-300">No provider engine is connected. Our Engine still works — or ask an owner to connect one in Settings.</p>
