@@ -1389,6 +1389,25 @@ async function createBeatJob(
             select: { id: true },
           })
         : null;
+    // AFROONE SINGS ON THE DROP PATH (owner, 2026-07-20: the "not wired yet"
+    // note below outlived reality — live proof "Forged From Nothing" shipped
+    // as a bed while the armed singing pipeline sat unused, because this
+    // payload never passed withVocals/lyrics). Capability-driven like the
+    // create page: when the singing route is armed and the drop's fresh song
+    // carries approved lyrics, the own-engine job rides with withVocals +
+    // lyrics and the parent does the rest (composes the melody score, runs
+    // the approval-gated singing ladder, mixes over the owned bed). No
+    // capability or no lyrics → the honest bed-only path, exactly as before.
+    const ownCaps = await musicRouteCapabilities(ctx.workspaceId);
+    let ownLyrics: string | undefined;
+    if (a.withVocals && ownCaps.afrooneSinging && ownSong?.id) {
+      const ownDraft = await prisma.lyricDraft.findUnique({
+        where: { songId: ownSong.id },
+        select: { body: true },
+      });
+      ownLyrics = ownDraft?.body?.trim() || undefined;
+    }
+    const ownSings = !!(a.withVocals && ownCaps.afrooneSinging && ownLyrics);
     const ownJob = await createQueuedProviderJob({
       app: ctx.app,
       queue: ctx.app.queues.music,
@@ -1401,6 +1420,7 @@ async function createBeatJob(
         ownEngine: true,
         genre: a.genre,
         bpm: ownBpm,
+        ...(ownSings ? { withVocals: true } : {}),
         ...(autoOwnRoles ? { autoOwn: true } : {}),
         ...(roleRequest.provenance.instruments.length
           ? {
@@ -1421,6 +1441,15 @@ async function createBeatJob(
         // LENGTH CONTRACT: the lane's full-song target (a.durationS wins if set).
         durationS: a.durationS ?? genreSignature(a.genre).durationS,
         melodyPrompt: genreSignature(a.genre).melodyPrompt,
+        ...(ownSings
+          ? {
+              withVocals: true,
+              lyrics: ownLyrics,
+              ...(Array.isArray(a.languages) && typeof a.languages[0] === "string"
+                ? { language: a.languages[0] }
+                : {}),
+            }
+          : {}),
         ...(roleRequest.provenance.instruments.length
           ? {
               requestedRoles: roleRequest.requestedRoles,
@@ -1441,7 +1470,9 @@ async function createBeatJob(
         ? { materialSource: `own-shelf (${autoOwnRoles} roles)` }
         : {}),
       note: a.withVocals
-        ? "Our engine builds the INSTRUMENTAL bed from your own + synthesized material — sung vocals are not wired to it yet. Add a vocal by upload, or pick a standard engine for a fully sung take."
+        ? ownSings
+          ? "AfroOne builds the bed from YOUR material and SINGS the approved lyrics — the vocal is verified against the words before it ships."
+          : "Our engine builds the INSTRUMENTAL bed from your own + synthesized material — sung vocals need the singing route armed and written lyrics. Add a vocal by upload, or pick a standard engine for a fully sung take."
         : autoOwnRoles
           ? `The shelf is stocked — own-shelf (${autoOwnRoles} roles) of your own material — so this beat is assembled from YOUR OWN material instead of renting a provider. Poll the job.`
           : "Building the beat from your own + synthesized material (owned engine). Poll the job.",
