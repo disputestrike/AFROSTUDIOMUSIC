@@ -20,19 +20,24 @@ import {
   type TrainingOrigin,
 } from "@afrohit/shared";
 import {
+  ACTIVE_MUSIC_MODEL_SETTING_KEY,
+  MUSIC_TRAINING_EVALUATION_PREFIX,
+  MUSIC_TRAINING_WORKSPACE_ID,
+  buildMusicTrainingEvaluationReceipt,
   buildTrainerDataset,
-  evaluateAndPromote,
+  decideMusicCandidatePromotion,
   musicCandidateModelRef,
   musicTrainerConfig,
   musicTrainerEnabled,
   minCorpusSize,
   parseMusicModelRoute,
+  parseMusicTrainingEvaluation,
   pollMusicTraining,
-  promoteMusicModelRoute,
   rollbackMusicModelRoute,
   trainingDatasetHash,
   type MusicModelRouteState,
   type MusicTrainerConfig,
+  type MusicTrainingEvaluationReceipt,
 } from "@afrohit/ai";
 import { kickoffMusicTraining } from "@afrohit/ai";
 import {
@@ -46,10 +51,14 @@ import {
   type EarHoldoutExclusions,
 } from "./ear-corpus";
 
-const TRAINING_WORKSPACE_ID = "training";
-export const ACTIVE_MUSIC_MODEL_SETTING_KEY = "music.training.activeModel.v1";
+/** EVALUATION SEAM (2026-07-19 night): the receipt shape, strict parser, key
+ * constants, and the promotion decision are single-sourced in @afrohit/ai
+ * (music-training-evaluation.ts) so the API admin seam and this flywheel can
+ * never drift. Re-exported here so existing worker imports keep working. */
+const TRAINING_WORKSPACE_ID = MUSIC_TRAINING_WORKSPACE_ID;
+export { ACTIVE_MUSIC_MODEL_SETTING_KEY, MUSIC_TRAINING_EVALUATION_PREFIX, parseMusicTrainingEvaluation };
+export type { MusicTrainingEvaluationReceipt };
 export const LAST_MUSIC_DATASET_SETTING_KEY = "music.training.lastDataset.v1";
-export const MUSIC_TRAINING_EVALUATION_PREFIX = "music.training.evaluation.v1.";
 
 /** Cap one dataset so a nightly run cannot consume unbounded disk or egress. */
 const MAX_DATASET_ASSETS = Math.max(
@@ -97,15 +106,6 @@ export interface FlywheelResult {
   trainingId?: string;
   datasetHash?: string;
   candidateModelRef?: string;
-}
-
-export interface MusicTrainingEvaluationReceipt {
-  candidateModelRef: string;
-  datasetHash: string;
-  candidateScore: number;
-  evaluator: string;
-  measuredAt: string;
-  minGain?: number;
 }
 
 async function ensureTrainingWorkspace(): Promise<void> {
@@ -196,42 +196,6 @@ function jsonRecord(raw: string | null | undefined): JsonRecord {
   }
 }
 
-function finiteScore(value: unknown): number | null {
-  return typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= 100
-    ? value
-    : null;
-}
-
-/** Strict parser: an evaluation cannot promote a different artifact or corpus. */
-export function parseMusicTrainingEvaluation(
-  raw: string | null | undefined
-): MusicTrainingEvaluationReceipt | null {
-  if (!raw) return null;
-  try {
-    const value = JSON.parse(raw) as JsonRecord;
-    const candidateScore = finiteScore(value.candidateScore);
-    const minGain = value.minGain == null ? undefined : finiteScore(value.minGain);
-    if (
-      typeof value.candidateModelRef !== "string" || !value.candidateModelRef.trim() ||
-      typeof value.datasetHash !== "string" || !/^[a-f0-9]{64}$/.test(value.datasetHash) ||
-      candidateScore == null ||
-      typeof value.evaluator !== "string" || !value.evaluator.trim() ||
-      typeof value.measuredAt !== "string" || !Number.isFinite(Date.parse(value.measuredAt)) ||
-      (value.minGain != null && minGain == null)
-    ) return null;
-    return {
-      candidateModelRef: value.candidateModelRef.trim(),
-      datasetHash: value.datasetHash,
-      candidateScore,
-      evaluator: value.evaluator.trim(),
-      measuredAt: value.measuredAt,
-      ...(minGain == null ? {} : { minGain }),
-    };
-  } catch {
-    return null;
-  }
-}
-
 export async function readActiveMusicModelRoute(): Promise<MusicModelRouteState> {
   const row = await prisma.systemSetting.findUnique({
     where: { key: ACTIVE_MUSIC_MODEL_SETTING_KEY },
@@ -282,13 +246,6 @@ export async function submitMusicTrainingEvaluation(input: {
   reason: string;
   candidateModelRef?: string;
 }> {
-  const score = finiteScore(input.candidateScore);
-  const minGain = input.minGain == null ? undefined : finiteScore(input.minGain);
-  if (score == null) throw new Error("music training score must be between 0 and 100");
-  if (input.minGain != null && minGain == null) {
-    throw new Error("music training minimum gain must be between 0 and 100");
-  }
-  if (!input.evaluator.trim()) throw new Error("music training evaluation requires an evaluator");
   const job = await prisma.providerJob.findFirst({
     where: {
       id: input.providerJobId,
@@ -309,23 +266,16 @@ export async function submitMusicTrainingEvaluation(input: {
   }
   const output = record(job.outputJson);
   const jobInput = record(job.inputJson);
-  if (
-    typeof output.candidateModelRef !== "string" ||
-    typeof jobInput.datasetHash !== "string"
-  ) {
-    throw new Error("music training candidate receipt is incomplete");
-  }
-  const receipt: MusicTrainingEvaluationReceipt = {
+  // The shared builder is the ONLY receipt constructor (score 0-100, evaluator
+  // required, binding by construction, strict re-parse) — same code as the API.
+  const receipt = buildMusicTrainingEvaluationReceipt({
     candidateModelRef: output.candidateModelRef,
     datasetHash: jobInput.datasetHash,
-    candidateScore: score,
-    evaluator: input.evaluator.trim(),
-    measuredAt: input.measuredAt ?? new Date().toISOString(),
-    ...(minGain == null ? {} : { minGain }),
-  };
-  if (!parseMusicTrainingEvaluation(JSON.stringify(receipt))) {
-    throw new Error("music training evaluation receipt is invalid");
-  }
+    candidateScore: input.candidateScore,
+    evaluator: input.evaluator,
+    measuredAt: input.measuredAt,
+    minGain: input.minGain,
+  });
   const key = `${MUSIC_TRAINING_EVALUATION_PREFIX}${job.id}`;
   await prisma.systemSetting.upsert({
     where: { key },
@@ -807,53 +757,28 @@ async function evaluateCandidateJob(job: TrainingJobRow): Promise<{
   }
 
   const current = await readActiveMusicModelRoute();
-  const configuredGain = Number(process.env.MUSIC_TRAINER_PROMOTION_MIN_GAIN ?? "1");
-  const minGain = evaluation.minGain ?? (
-    Number.isFinite(configuredGain) && configuredGain >= 0 ? configuredGain : 1
-  );
-  const decision = evaluateAndPromote({
-    candidateScore: evaluation.candidateScore,
-    incumbentScore: current.active?.score ?? null,
-    minGain,
+  // SHARED GATE (single source of truth in @afrohit/ai): minGain resolution,
+  // the win-by-minGain rule, the already-active hold, and route construction
+  // are decided by the same pure code the API admin seam runs.
+  const decision = decideMusicCandidatePromotion({
+    candidate: { providerJobId: job.id, candidateModelRef, trainingId, datasetHash },
+    evaluation,
+    currentRoute: current,
   });
-  const evaluatedOutput = {
-    ...output,
-    evaluation: {
-      ...evaluation,
-      incumbentModelRef: current.active?.modelRef ?? null,
-      incumbentScore: current.active?.score ?? null,
-      minGain,
-      promote: decision.promote,
-      reason: decision.reason,
-    },
-  };
+  const evaluatedOutput = { ...output, evaluation: decision.evaluationSummary };
 
-  if (!decision.promote || current.active?.modelRef === candidateModelRef) {
-    const reason = current.active?.modelRef === candidateModelRef
-      ? "candidate is already the active model"
-      : decision.reason;
+  if (decision.verdict !== "promoted" || !decision.route) {
     await prisma.providerJob.update({
       where: { id: job.id },
       data: {
-        outputJson: { ...evaluatedOutput, phase: "rejected", decision: reason } as never,
+        outputJson: { ...evaluatedOutput, phase: "rejected", decision: decision.reason } as never,
         finishedAt: new Date(),
       },
     });
-    return { pending: false, reason, candidateModelRef };
+    return { pending: false, reason: decision.reason, candidateModelRef };
   }
 
-  const route = promoteMusicModelRoute({
-    current,
-    candidate: {
-      modelRef: candidateModelRef,
-      providerJobId: job.id,
-      trainingId,
-      datasetHash,
-      score: evaluation.candidateScore,
-      evaluatedAt: evaluation.measuredAt,
-    },
-    reason: decision.reason,
-  });
+  const route = decision.route;
   await prisma.$transaction([
     prisma.systemSetting.upsert({
       where: { key: ACTIVE_MUSIC_MODEL_SETTING_KEY },

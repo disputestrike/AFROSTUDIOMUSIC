@@ -190,6 +190,7 @@ function AdminPageInner() {
 
       <AutonomyCard />
       <TrainingConsentCard />
+      <TrainingCandidatesCard />
       <LakeJobs />
 
       <WriterAb />
@@ -395,6 +396,182 @@ function TrainingConsentCard() {
       </div>
       {err && <div className="mt-3 rounded-lg border border-red-500/40 bg-red-500/10 p-3 text-xs text-red-300">{err}</div>}
       <p className="mt-3 text-[11px] text-slate-500">Granting records the exact license text (hashed) under your admin identity. The nightly flywheel then counts this workspace&apos;s own uploads, masters and vocals as training fuel. The outside-render switch is yours: OFF keeps the rights-clean line (their ToS forbid training on their output); ON admits those renders as fuel, every flip is logged, and manifests always label their origin honestly. A later OFF stops new fuel but trained weights don&apos;t forget.</p>
+    </section>
+  );
+}
+
+/**
+ * TRAINING CANDIDATES (the evaluation seam, owner order 2026-07-19 night) —
+ * the missing half of the flywheel: a finished candidate model sat at
+ * "awaiting evaluation" forever because no surface could score it. This card
+ * lists every trained candidate, takes the operator's measured score, runs the
+ * SAME promotion gate the nightly worker runs (single-sourced in @afrohit/ai),
+ * shows the verdict honestly, and offers one-click rollback with a reason.
+ */
+interface CandidateEvaluation { candidateScore: number; evaluator: string; measuredAt: string; minGain?: number }
+interface CandidateRow {
+  providerJobId: string;
+  candidateModelRef: string;
+  datasetHash: string;
+  trainingId: string;
+  createdAt: string;
+  phase: string | null;
+  active: boolean;
+  evaluation: CandidateEvaluation | null;
+  evaluationError: string | null;
+}
+interface RouteEntry { modelRef: string; score: number; activatedAt: string }
+interface CandidatesReport {
+  candidates: CandidateRow[];
+  activeModelRef: string | null;
+  active: RouteEntry | null;
+  previous: RouteEntry | null;
+}
+
+function TrainingCandidatesCard() {
+  const api = useApi();
+  const [report, setReport] = useState<CandidatesReport | null>(null);
+  const [score, setScore] = useState<Record<string, string>>({});
+  const [evaluator, setEvaluator] = useState('');
+  const [busy, setBusy] = useState('');
+  const [verdict, setVerdict] = useState('');
+  const [err, setErr] = useState('');
+
+  const load = useCallback(async () => {
+    try {
+      setReport(await api.get<CandidatesReport>('/admin/training/candidates'));
+      setErr('');
+    } catch (e) {
+      const m = String((e as Error)?.message ?? e);
+      setErr(`couldn't load candidates: ${m.slice(0, 140)}${/^40[13]\b/.test(m) ? ' — set the admin key above first' : ''}`);
+    }
+  }, []);
+  useEffect(() => { void load(); }, [load]);
+
+  async function submitScore(row: CandidateRow) {
+    const raw = score[row.providerJobId]?.trim() ?? '';
+    const value = Number(raw);
+    if (!raw || !Number.isFinite(value) || value < 0 || value > 100) {
+      setErr('Score must be a number from 0 to 100.');
+      return;
+    }
+    if (!evaluator.trim()) {
+      setErr('Name the evaluator — the receipt records WHO measured this.');
+      return;
+    }
+    if (!confirm(`Submit score ${value} for candidate ${row.candidateModelRef}?\n\nThe promotion gate runs immediately: it promotes only a measured win, otherwise the current model stays active.`)) return;
+    setBusy(row.providerJobId); setErr(''); setVerdict('');
+    try {
+      const r = await api.post<{ promoted: boolean; reason: string; activeModelRef: string | null }>(
+        '/admin/training/evaluation',
+        { providerJobId: row.providerJobId, candidateScore: value, evaluator: evaluator.trim() }
+      );
+      setVerdict(r.promoted
+        ? `PROMOTED — ${r.reason}. Active model: ${r.activeModelRef ?? '—'}`
+        : `HELD — ${r.reason}. Active model unchanged (${r.activeModelRef ?? 'none'}).`);
+      await load();
+    } catch (e) {
+      setErr(`score failed: ${String((e as Error)?.message ?? e).slice(0, 200)}`);
+    } finally {
+      setBusy('');
+    }
+  }
+
+  async function rollback() {
+    if (!report?.previous) return;
+    if (!confirm(`Roll back the active model?\n\nActive:  ${report.activeModelRef ?? '—'}\nRestore: ${report.previous.modelRef}\n\nThe current active is kept as the new "previous", so this is reversible.`)) return;
+    const reason = prompt('Rollback reason (recorded in route history):', 'operator rollback — candidate underperformed in production');
+    if (!reason?.trim()) return;
+    setBusy('rollback'); setErr(''); setVerdict('');
+    try {
+      const r = await api.post<{ rolledBack: boolean; activeModelRef: string | null }>('/admin/training/rollback', { reason: reason.trim() });
+      setVerdict(`ROLLED BACK — active model is now ${r.activeModelRef ?? '—'}`);
+      await load();
+    } catch (e) {
+      setErr(`rollback failed: ${String((e as Error)?.message ?? e).slice(0, 200)}`);
+    } finally {
+      setBusy('');
+    }
+  }
+
+  const stateChip = (row: CandidateRow) => {
+    if (row.active) return <span className="rounded-full bg-emerald-500/15 px-2 py-0.5 text-xs text-emerald-300">ACTIVE</span>;
+    if (row.phase === 'promoted') return <span className="rounded-full bg-emerald-500/10 px-2 py-0.5 text-xs text-emerald-300/70">promoted</span>;
+    if (row.phase === 'rejected') return <span className="rounded-full bg-slate-500/15 px-2 py-0.5 text-xs text-slate-400">held</span>;
+    return <span className="rounded-full bg-amber-500/15 px-2 py-0.5 text-xs text-amber-300">awaiting score</span>;
+  };
+
+  return (
+    <section className="mt-10 rounded-2xl border border-slate-800 bg-slate-900/40 p-5">
+      <h2 className="font-display text-2xl">Training candidates <span className="text-sm font-normal text-slate-500">— score a finished candidate; the gate promotes only a measured win. Never vibes.</span></h2>
+      <div className="mt-3 flex flex-wrap items-center gap-3 text-sm">
+        <span className="text-slate-400">Active model: <span className="text-slate-200">{report ? (report.activeModelRef ?? 'none — the first scored candidate becomes the baseline') : '…'}</span></span>
+        {report?.active && <span className="text-xs text-slate-500">score {report.active.score} · since {new Date(report.active.activatedAt).toLocaleDateString()}</span>}
+        {report?.previous && (
+          <button onClick={() => void rollback()} disabled={busy === 'rollback'}
+            className="rounded-full border border-amber-700 px-3 py-1 text-xs text-amber-300 hover:bg-amber-500/10 disabled:opacity-50">
+            {busy === 'rollback' ? 'Rolling back…' : `Roll back to ${report.previous.modelRef.slice(0, 40)}${report.previous.modelRef.length > 40 ? '…' : ''}`}
+          </button>
+        )}
+      </div>
+      {verdict && <div className="mt-3 rounded-lg border border-emerald-500/40 bg-emerald-500/10 p-3 text-xs text-emerald-300">{verdict}</div>}
+      {err && <div className="mt-3 rounded-lg border border-red-500/40 bg-red-500/10 p-3 text-xs text-red-300">{err}</div>}
+      {!report && !err && <div className="mt-3 text-xs text-slate-500">Loading…</div>}
+      {report && report.candidates.length === 0 && (
+        <div className="mt-3 text-xs text-slate-600">No trained candidates yet — the nightly flywheel files one here when a training run succeeds.</div>
+      )}
+      {report && report.candidates.length > 0 && (
+        <>
+          <div className="mt-4 flex flex-wrap items-center gap-2 text-xs text-slate-400">
+            <span>Evaluator (recorded on every receipt):</span>
+            <input value={evaluator} onChange={(e) => setEvaluator(e.target.value)} placeholder="e.g. benjamin-ear / producer-panel-v1"
+              className="w-64 rounded border border-slate-700 bg-slate-900 px-2 py-1 text-sm text-slate-200" />
+          </div>
+          <table className="mt-3 w-full text-left text-sm">
+            <thead className="text-xs uppercase tracking-widest text-slate-400">
+              <tr><th className="py-2">Candidate</th><th>Dataset</th><th>Trained</th><th>State</th><th>Score</th><th>Actions</th></tr>
+            </thead>
+            <tbody>
+              {report.candidates.map((row) => (
+                <tr key={row.providerJobId} className="border-t border-slate-800 align-top">
+                  <td className="py-2 max-w-[260px]">
+                    <div className="truncate text-slate-200" title={row.candidateModelRef}>{row.candidateModelRef}</div>
+                    <div className="text-[11px] text-slate-600">job {row.providerJobId.slice(0, 12)}…</div>
+                    {row.evaluationError && <div className="mt-0.5 text-[11px] text-amber-400">{row.evaluationError}</div>}
+                  </td>
+                  <td className="text-[11px] text-slate-500" title={row.datasetHash}>{row.datasetHash.slice(0, 12)}…</td>
+                  <td className="text-xs text-slate-400">{row.createdAt ? new Date(row.createdAt).toLocaleDateString() : '—'}</td>
+                  <td>{stateChip(row)}</td>
+                  <td className="text-xs">
+                    {row.evaluation
+                      ? <span className="text-slate-200">{row.evaluation.candidateScore} <span className="text-slate-500">by {row.evaluation.evaluator}</span></span>
+                      : <span className="text-slate-600">unscored</span>}
+                  </td>
+                  <td>
+                    {row.phase === 'candidate_ready' ? (
+                      <div className="flex items-center gap-2">
+                        <input
+                          value={score[row.providerJobId] ?? ''}
+                          onChange={(e) => setScore((s) => ({ ...s, [row.providerJobId]: e.target.value }))}
+                          placeholder="0–100" inputMode="decimal"
+                          className="w-20 rounded border border-slate-700 bg-slate-900 px-2 py-1 text-sm text-slate-200"
+                        />
+                        <button disabled={busy === row.providerJobId} onClick={() => void submitScore(row)}
+                          className="rounded-full bg-brand-gradient px-3 py-1 text-xs font-medium text-ink disabled:opacity-50">
+                          {busy === row.providerJobId ? 'Scoring…' : 'Submit score'}
+                        </button>
+                      </div>
+                    ) : (
+                      <span className="text-[11px] text-slate-600">{row.phase === 'promoted' || row.active ? 'gate passed' : 'gate held the incumbent'}</span>
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </>
+      )}
+      <p className="mt-3 text-[11px] text-slate-500">The score receipt is bound to the exact candidate artifact AND dataset hash — a mismatched receipt can never promote. Promotion needs a measured win over the incumbent by the minimum gain (default 1); ties and regressions hold. Every promotion keeps a one-click rollback pointer.</p>
     </section>
   );
 }
