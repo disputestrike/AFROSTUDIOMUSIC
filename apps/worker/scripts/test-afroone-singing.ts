@@ -305,6 +305,68 @@ async function main(): Promise<void> {
   );
   assert.equal(falRender.cost.synthesisUsd, 0.006);
   assert.equal(falRender.cost.totalUsd, 0.006);
+
+  const verifiedEngines: string[] = [];
+  const verifiedFallback = await renderAfroOneSinging(first, {
+    env: {
+      AFROONE_SINGING_ENABLED: '1',
+      AFROONE_SINGING_ENGINE_ORDER: 'local-score-singer,fal-ace-step',
+      AFROONE_SINGING_LOCAL_URL: 'https://singer.internal/render',
+      FAL_KEY: 'test-key',
+    },
+    fetch: (async (url: string | URL | Request) => {
+      const value = String(url);
+      if (value === 'https://singer.internal/render') {
+        return jsonResponse({
+          performanceKind: 'sung_vocal',
+          engine: 'diffsinger-local',
+          scoreInputConsumed: true,
+          scoreHash: first.scoreHash,
+          lyricsHash: first.lyricsHash,
+          alignmentHash: first.alignmentHash,
+          seed: first.seed,
+          audioUrl: 'https://audio.internal/rejected.wav',
+          outputKind: 'isolated_vocal',
+          costUsd: 0.002,
+          costFinal: true,
+        });
+      }
+      if (value === 'https://queue.fal.run/fal-ai/ace-step') {
+        return jsonResponse({ request_id: 'fal-verified' });
+      }
+      if (value.endsWith('/status')) {
+        return jsonResponse({ status: 'COMPLETED' });
+      }
+      return jsonResponse({
+        audio: { url: 'https://audio.example/verified.wav' },
+        seed: first.seed,
+      });
+    }) as typeof fetch,
+    sleep: async () => undefined,
+    verifyCandidate: async candidate => {
+      verifiedEngines.push(candidate.engine);
+      if (candidate.engine === 'local-score-singer') {
+        throw new Error('lyric_alignment_failed');
+      }
+    },
+  });
+  assert.equal(verifiedFallback.engine, 'fal-ace-step');
+  assert.deepEqual(verifiedEngines, ['local-score-singer', 'fal-ace-step']);
+  assert.deepEqual(
+    verifiedFallback.attempts.map(attempt => ({
+      engine: attempt.engine,
+      outcome: attempt.outcome,
+      cost: attempt.estimatedCostUsd,
+    })),
+    [
+      { engine: 'local-score-singer', outcome: 'failed', cost: 0.002 },
+      { engine: 'fal-ace-step', outcome: 'succeeded', cost: 0.006 },
+    ],
+  );
+  assert.match(verifiedFallback.attempts[0]!.reason ?? '', /verification:lyric_alignment_failed/);
+  assert.equal(verifiedFallback.cost.synthesisUsd, 0.008);
+  assert.equal(verifiedFallback.cost.totalUsd, 0.008);
+
   const replicateCalls: string[] = [];
   const replicateRender = await renderAfroOneSinging(first, {
     env: {
