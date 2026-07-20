@@ -66,6 +66,7 @@ import {
   inspectMaterialAudio,
   measureLoopCutPoint,
   normalizeLoopLoudness,
+  preMasterQcGateDecision,
   qcGateDecision,
   resolveForgeCutTempo,
 } from "../lib/material-inspection";
@@ -978,25 +979,21 @@ export async function processAssembleBeat(p: AssemblePayload) {
         "[assemble] take clipped — tactical correction: retrying with layer gains ×0.6"
       );
     }
-    // WO-1 SAFETY RAIL: assembled output passes the SAME QC gate as provider
-    // output — a broken render (near-silence/clipping) is rejected with the real
-    // reason, never approved. 'weak' ships flagged; unmeasured ships disclosed.
+    // WO-1 SAFETY RAIL: measure the raw assembly before mastering. Low level is
+    // correctable here because the bus intentionally keeps mastering headroom;
+    // clipping, short, and unmeasured audio still stop before the master.
     if (!qc) {
       throw new Error(
         "assembled take could not be technically measured — nothing shipped"
       );
     }
-    // QC SHIP CONTRACT (SOUNDWAVE1 fix 6): the code's own doctrine — "'weak'
-    // ships flagged" — is now enforced instead of contradicted. Hard flags
-    // (too_quiet/clipping/short/unmeasured → verdict 'fail' or an unmeasured
-    // capture) still die with the actionable message; a 'flat'/'squashed'
-    // weak-but-real take SHIPS with qualityState + an honest note (the known
-    // empty-shelf "failed QC (flat)" kill). The shelf-class terminal-failure
-    // message is preserved for the truly-broken cases.
-    let qcShipNote: string | null = null;
+    // PRE-MASTER CONTRACT: a quiet raw sum advances to the master whose job is
+    // to correct level. Everything that ships is re-measured by the strict
+    // final gate below, so this changes ordering, not the release quality bar.
+    let rawQcNote: string | null = null;
     {
       const flags = (qc.flags ?? []).join(", ") || "broken audio";
-      const decision = qcGateDecision(qc);
+      const decision = preMasterQcGateDecision(qc);
       if (decision === "hard_fail") {
         // ACTIONABLE SHELF ERROR (owner, live kill 2026-07-19 evening: a new
         // studio picking AfroOne died on "failed QC (flat)" — a wall, not a
@@ -1010,10 +1007,8 @@ export async function processAssembleBeat(p: AssemblePayload) {
         );
       }
       if (decision === "ship_flagged") {
-        qcShipNote = !cov.ready
-          ? `weak take shipped flagged (${flags}) — your shelf is thin: upload a kit or forge starter material for this genre, then re-render for a fuller bed`
-          : `weak take shipped flagged (${flags})`;
-        console.warn(`[assemble] ${qcShipNote}`);
+        rawQcNote = `pre-master assembly flagged (${flags}); advancing to corrective mastering`;
+        console.warn(`[assemble] ${rawQcNote}`);
       }
     }
     for (const staleUrl of attemptedUrls.filter(
@@ -1058,7 +1053,8 @@ export async function processAssembleBeat(p: AssemblePayload) {
         `assembled master failed QC (${(masterQc?.flags ?? []).join(", ") || "unmeasured"}) — nothing shipped`
       );
     }
-    if (masterQc.verdict !== "pass" && !qcShipNote) {
+    let qcShipNote: string | null = null;
+    if (masterQc.verdict !== "pass") {
       qcShipNote = `weak master shipped flagged (${(masterQc.flags ?? []).join(", ")})`;
       console.warn(`[assemble] ${qcShipNote}`);
     }
@@ -1143,7 +1139,7 @@ export async function processAssembleBeat(p: AssemblePayload) {
             // the raw bus sum and its measurement stay as audit evidence.
             qc,
             masterReport,
-            audit: { rawSumUrl, rawSumQc },
+            audit: { rawSumUrl, rawSumQc, ...(rawQcNote ? { rawQcNote } : {}) },
           } as never,
         },
       });

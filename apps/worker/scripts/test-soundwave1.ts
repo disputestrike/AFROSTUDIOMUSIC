@@ -28,6 +28,7 @@ import {
 import { forgePromptFor } from '../src/lib/forge-prompts';
 import {
   FORGE_TEMPO_TOLERANCE,
+  preMasterQcGateDecision,
   qcGateDecision,
   resolveForgeCutTempo,
 } from '../src/lib/material-inspection';
@@ -208,6 +209,20 @@ const fail = (m: string) => { console.error(`FAIL: ${m}`); failures++; };
   for (const [qc, expected] of cases) {
     const got = qcGateDecision(qc);
     if (got !== expected) fail(`qc contract: ${qc.verdict}/[${(qc.flags ?? []).join(',')}] must be ${expected}, got ${got}`);
+  }
+
+  const preMasterCases: Array<[{ verdict: 'pass' | 'weak' | 'fail'; flags?: string[] }, string]> = [
+    [{ verdict: 'fail', flags: ['too_quiet'] }, 'ship_flagged'],
+    [{ verdict: 'fail', flags: ['too_quiet', 'flat'] }, 'ship_flagged'],
+    [{ verdict: 'fail', flags: ['too_quiet', 'clipping'] }, 'hard_fail'],
+    [{ verdict: 'fail', flags: ['short'] }, 'hard_fail'],
+    [{ verdict: 'weak', flags: ['unmeasured'] }, 'hard_fail'],
+    [{ verdict: 'weak', flags: ['flat'] }, 'ship_flagged'],
+    [{ verdict: 'pass', flags: [] }, 'ship'],
+  ];
+  for (const [qc, expected] of preMasterCases) {
+    const got = preMasterQcGateDecision(qc);
+    if (got !== expected) fail(`pre-master qc: ${qc.verdict}/[${(qc.flags ?? []).join(',')}] must be ${expected}, got ${got}`);
   }
 }
 
