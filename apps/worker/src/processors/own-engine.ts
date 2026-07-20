@@ -1757,7 +1757,7 @@ export async function processOwnEngine(p: OwnEnginePayload): Promise<void> {
             // stays as the alternative, never the only option.
             voice:
               process.env.AFROONE_SINGING_ENABLED === "1"
-                ? "AfroOne can sing this: create with vocals on (it writes the lyrics), or paste your own and it sings them verbatim. You can also upload your own lead."
+                ? "AfroOne sings: create with vocals on and it writes AND sings the song; paste lyrics and it sings them word-for-word. Or upload your own lead."
                 : "record/upload a sung lead, or convert an existing performance with POST /voices/:voiceId/sing",
           }),
     },

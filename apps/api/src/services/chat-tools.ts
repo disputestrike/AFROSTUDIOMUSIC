@@ -1471,8 +1471,8 @@ async function createBeatJob(
         : {}),
       note: a.withVocals
         ? ownSings
-          ? "AfroOne builds the bed from YOUR material and SINGS the approved lyrics — the vocal is verified against the words before it ships."
-          : "Our engine builds the INSTRUMENTAL bed from your own + synthesized material — sung vocals need the singing route armed and written lyrics. Add a vocal by upload, or pick a standard engine for a fully sung take."
+          ? "AfroOne wrote it, built it, and is singing it — every word checked against the written lyrics before it ships."
+          : "AfroOne is building the beat from your sound. Singing isn't armed on this studio yet — add a vocal by upload, or pick a standard engine for a fully sung take."
         : autoOwnRoles
           ? `The shelf is stocked — own-shelf (${autoOwnRoles} roles) of your own material — so this beat is assembled from YOUR OWN material instead of renting a provider. Poll the job.`
           : "Building the beat from your own + synthesized material (owned engine). Poll the job.",

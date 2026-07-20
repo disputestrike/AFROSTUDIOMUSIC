@@ -1426,12 +1426,18 @@ export default function CreatePage() {
             // advertises genuine singing ONLY when the singing path is armed
             // and reachable — the honest-hint law of 2026-07-16 still holds,
             // the capability just moved from hardcoded to measured.
+            // EQUAL-CONFIDENCE COPY (owner 2026-07-20: "look at the other
+            // engines — three words. What's the purpose of all this talk?").
+            // The house engine speaks with the MOST confidence on the page,
+            // not the least. No pipeline jargon ("approved lyrics" read as
+            // "bring your lyrics" — it never meant that; the engine writes
+            // its own). Capability truth still holds via the flag.
             {
               value: 'own',
               label: 'AfroOne — Our Engine',
               hint: musicRoutes?.afrooneSinging === true
-                ? 'Builds the record from YOUR material and sings the approved lyrics'
-                : 'Instrumental bed from YOUR material — add vocals by upload or re-sing',
+                ? 'Writes it, builds it, sings it — your sound'
+                : 'Beats from your sound',
               available: true,
             },
           ] as const).filter((e) => e.available).map((e) => (
