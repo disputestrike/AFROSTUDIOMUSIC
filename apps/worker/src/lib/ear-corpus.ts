@@ -1,17 +1,24 @@
 import { createHash, createHmac, timingSafeEqual } from "node:crypto";
 import { createReadStream } from "node:fs";
-import { lstat, realpath } from "node:fs/promises";
+import { lstat, open, readFile, realpath } from "node:fs/promises";
 import { extname, isAbsolute, relative, resolve } from "node:path";
 import { canonicalJson } from "@afrohit/shared";
 
-export const EAR_CORPUS_SCHEMA_VERSION = 1;
-export const LOGDRUM_CALIBRATION_SCHEMA_VERSION = 4;
+export const EAR_CORPUS_SCHEMA_VERSION = 2;
+export const EAR_TRAINING_SNAPSHOT_SCHEMA_VERSION = 1;
+export const LOGDRUM_CALIBRATION_SCHEMA_VERSION = 5;
 export const EAR_GENRES = ["amapiano", "afrobeats", "house"] as const;
 export const EAR_STEMS = ["bass", "drums", "other", "vocals"] as const;
+export const EAR_RECORDING_TYPES = [
+  "human-produced-master",
+  "licensed-reference-recording",
+] as const;
+export const EAR_HOLDOUT_PURPOSE = "logdrum-dsp-evaluation-v1";
 
 export type EarGenre = (typeof EAR_GENRES)[number];
 export type EarStem = (typeof EAR_STEMS)[number];
 export type EarRightsBasis = "owned-master" | "licensed-evaluation";
+export type EarRecordingType = (typeof EAR_RECORDING_TYPES)[number];
 
 export interface EarCorpusFile {
   path: string;
@@ -21,6 +28,9 @@ export interface EarCorpusFile {
 export interface EarCorpusTrack extends EarCorpusFile {
   id: string;
   genre: EarGenre;
+  sourceAssetIds: string[];
+  sourceFamilyId: string;
+  recordingType: EarRecordingType;
   expectTempoBpm: number;
   fourOnFloor: boolean;
   stems: Record<EarStem, EarCorpusFile>;
@@ -34,7 +44,27 @@ export interface EarCorpusTrack extends EarCorpusFile {
 
 export interface EarCorpusManifest {
   schemaVersion: typeof EAR_CORPUS_SCHEMA_VERSION;
+  freeze: {
+    purpose: typeof EAR_HOLDOUT_PURPOSE;
+    frozenAt: string;
+    frozenBy: string;
+    selectionMethod: "rights-cleared-stratified-holdout";
+    trainingSnapshot: EarCorpusFile;
+  };
   tracks: EarCorpusTrack[];
+}
+
+export interface EarTrainingSnapshotAsset {
+  id: string;
+  contentHash: string;
+  sourceFamilyId: string;
+}
+
+export interface EarTrainingSnapshot {
+  schemaVersion: typeof EAR_TRAINING_SNAPSHOT_SCHEMA_VERSION;
+  generatedAt: string;
+  datasetHash: string;
+  assets: EarTrainingSnapshotAsset[];
 }
 
 export interface ValidatedEarCorpusTrack extends EarCorpusTrack {
@@ -44,10 +74,20 @@ export interface ValidatedEarCorpusTrack extends EarCorpusTrack {
 
 export interface ValidatedEarCorpus {
   manifest: EarCorpusManifest;
+  trainingSnapshot: EarTrainingSnapshot;
   tracks: ValidatedEarCorpusTrack[];
   corpusHash: string;
+  trainingSnapshotHash: string;
+  frozenAt: string;
+  leakageVerified: true;
   genreCounts: Record<EarGenre, number>;
   rightsBasisCounts: Record<EarRightsBasis, number>;
+}
+
+export interface EarHoldoutExclusions {
+  sourceAssetIds: Set<string>;
+  sourceFamilyIds: Set<string>;
+  contentHashes: Set<string>;
 }
 
 export class EarCorpusValidationError extends Error {
@@ -107,6 +147,45 @@ function hashField(value: unknown, label: string, issues: string[]): string {
   });
 }
 
+function utcTimestampField(
+  value: unknown,
+  label: string,
+  issues: string[]
+): string {
+  const timestamp = stringField(value, label, issues, {
+    min: 20,
+    max: 35,
+    pattern: /^\d{4}-\d{2}-\d{2}T.*Z$/,
+  });
+  const timestampMs = Date.parse(timestamp);
+  if (!Number.isFinite(timestampMs))
+    issues.push(`${label} must be a valid UTC timestamp`);
+  else if (timestampMs > Date.now() + 5 * 60_000)
+    issues.push(`${label} cannot be in the future`);
+  return timestamp;
+}
+
+function identifierList(
+  value: unknown,
+  label: string,
+  issues: string[]
+): string[] {
+  if (!Array.isArray(value) || value.length === 0) {
+    issues.push(`${label} must contain at least one source identity`);
+    return [];
+  }
+  const rows = value.map((entry, index) =>
+    stringField(entry, `${label}[${index}]`, issues, {
+      min: 3,
+      max: 160,
+      pattern: /^[a-z][a-z0-9_-]*:[A-Za-z0-9._-]+$/,
+    })
+  );
+  if (new Set(rows.map(row => row.toLowerCase())).size !== rows.length)
+    issues.push(`${label} must not contain duplicate identities`);
+  return rows;
+}
+
 function parseFile(
   value: unknown,
   label: string,
@@ -138,6 +217,9 @@ function parseTrack(
       path: "",
       sha256: "",
       genre: "afrobeats",
+      sourceAssetIds: [],
+      sourceFamilyId: "",
+      recordingType: "human-produced-master",
       expectTempoBpm: 0,
       fourOnFloor: false,
       stems: Object.fromEntries(
@@ -158,6 +240,9 @@ function parseTrack(
       "path",
       "sha256",
       "genre",
+      "sourceAssetIds",
+      "sourceFamilyId",
+      "recordingType",
       "expectTempoBpm",
       "fourOnFloor",
       "stems",
@@ -179,6 +264,30 @@ function parseTrack(
     : "afrobeats";
   if (!EAR_GENRES.includes(row.genre as EarGenre))
     issues.push(`${label}.genre must be amapiano, afrobeats, or house`);
+  const sourceAssetIds = identifierList(
+    row.sourceAssetIds,
+    `${label}.sourceAssetIds`,
+    issues
+  );
+  const sourceFamilyId = stringField(
+    row.sourceFamilyId,
+    `${label}.sourceFamilyId`,
+    issues,
+    {
+      min: 3,
+      max: 160,
+      pattern: /^[a-z][a-z0-9_-]*:[A-Za-z0-9._-]+$/,
+    }
+  );
+  const recordingType = EAR_RECORDING_TYPES.includes(
+    row.recordingType as EarRecordingType
+  )
+    ? (row.recordingType as EarRecordingType)
+    : "human-produced-master";
+  if (!EAR_RECORDING_TYPES.includes(row.recordingType as EarRecordingType))
+    issues.push(
+      `${label}.recordingType must identify a human-produced master or licensed reference recording`
+    );
   const expectTempoBpm =
     typeof row.expectTempoBpm === "number" &&
     Number.isFinite(row.expectTempoBpm) &&
@@ -235,23 +344,20 @@ function parseTrack(
     issues,
     { min: 2, max: 200 }
   );
-  const attestedAt = stringField(
+  const attestedAt = utcTimestampField(
     rightsRecord?.attestedAt,
     `${label}.rights.attestedAt`,
-    issues,
-    { min: 20, max: 35, pattern: /^\d{4}-\d{2}-\d{2}T.*Z$/ }
+    issues
   );
-  const attestedMs = Date.parse(attestedAt);
-  if (!Number.isFinite(attestedMs))
-    issues.push(`${label}.rights.attestedAt must be a valid UTC timestamp`);
-  else if (attestedMs > Date.now() + 5 * 60_000)
-    issues.push(`${label}.rights.attestedAt cannot be in the future`);
 
   return {
     id,
     path,
     sha256,
     genre,
+    sourceAssetIds,
+    sourceFamilyId,
+    recordingType,
     expectTempoBpm,
     fourOnFloor: row.fourOnFloor === true,
     stems,
@@ -264,9 +370,42 @@ export function parseEarCorpusManifest(value: unknown): EarCorpusManifest {
   const root = record(value);
   if (!root)
     throw new EarCorpusValidationError(["manifest must be a JSON object"]);
-  rejectUnknownKeys(root, ["schemaVersion", "tracks"], "manifest", issues);
+  rejectUnknownKeys(root, ["schemaVersion", "freeze", "tracks"], "manifest", issues);
   if (root.schemaVersion !== EAR_CORPUS_SCHEMA_VERSION)
     issues.push(`manifest.schemaVersion must be ${EAR_CORPUS_SCHEMA_VERSION}`);
+  const freezeRecord = record(root.freeze);
+  if (!freezeRecord) issues.push("manifest.freeze must be an object");
+  else
+    rejectUnknownKeys(
+      freezeRecord,
+      ["purpose", "frozenAt", "frozenBy", "selectionMethod", "trainingSnapshot"],
+      "manifest.freeze",
+      issues
+    );
+  const purpose = freezeRecord?.purpose;
+  if (purpose !== EAR_HOLDOUT_PURPOSE)
+    issues.push(`manifest.freeze.purpose must be ${EAR_HOLDOUT_PURPOSE}`);
+  const frozenAt = utcTimestampField(
+    freezeRecord?.frozenAt,
+    "manifest.freeze.frozenAt",
+    issues
+  );
+  const frozenBy = stringField(
+    freezeRecord?.frozenBy,
+    "manifest.freeze.frozenBy",
+    issues,
+    { min: 2, max: 200 }
+  );
+  const selectionMethod = freezeRecord?.selectionMethod;
+  if (selectionMethod !== "rights-cleared-stratified-holdout")
+    issues.push(
+      "manifest.freeze.selectionMethod must be rights-cleared-stratified-holdout"
+    );
+  const trainingSnapshot = parseFile(
+    freezeRecord?.trainingSnapshot,
+    "manifest.freeze.trainingSnapshot",
+    issues
+  );
   if (!Array.isArray(root.tracks))
     issues.push("manifest.tracks must be an array");
   const rows = Array.isArray(root.tracks) ? root.tracks : [];
@@ -275,6 +414,8 @@ export function parseEarCorpusManifest(value: unknown): EarCorpusManifest {
   const tracks = rows.map((row, index) => parseTrack(row, index, issues));
 
   const ids = new Set<string>();
+  const sourceAssetIds = new Set<string>();
+  const sourceFamilyIds = new Set<string>();
   const genreCounts: Record<EarGenre, number> = {
     amapiano: 0,
     afrobeats: 0,
@@ -284,6 +425,18 @@ export function parseEarCorpusManifest(value: unknown): EarCorpusManifest {
     const key = track.id.toLowerCase();
     if (ids.has(key)) issues.push(`duplicate track id: ${track.id}`);
     ids.add(key);
+    for (const sourceAssetId of track.sourceAssetIds) {
+      const sourceKey = sourceAssetId.toLowerCase();
+      if (sourceAssetIds.has(sourceKey))
+        issues.push(`source asset is reused across holdout tracks: ${sourceAssetId}`);
+      sourceAssetIds.add(sourceKey);
+    }
+    const familyKey = track.sourceFamilyId.toLowerCase();
+    if (sourceFamilyIds.has(familyKey))
+      issues.push(
+        `source family is reused across holdout tracks: ${track.sourceFamilyId}`
+      );
+    sourceFamilyIds.add(familyKey);
     genreCounts[track.genre]++;
   }
   for (const genre of EAR_GENRES) {
@@ -293,7 +446,92 @@ export function parseEarCorpusManifest(value: unknown): EarCorpusManifest {
   if (issues.length) throw new EarCorpusValidationError(issues);
   return {
     schemaVersion: EAR_CORPUS_SCHEMA_VERSION,
+    freeze: {
+      purpose: EAR_HOLDOUT_PURPOSE,
+      frozenAt,
+      frozenBy,
+      selectionMethod: "rights-cleared-stratified-holdout",
+      trainingSnapshot,
+    },
     tracks,
+  };
+}
+
+export function parseEarTrainingSnapshot(value: unknown): EarTrainingSnapshot {
+  const issues: string[] = [];
+  const root = record(value);
+  if (!root)
+    throw new EarCorpusValidationError([
+      "training snapshot must be a JSON object",
+    ]);
+  rejectUnknownKeys(
+    root,
+    ["schemaVersion", "generatedAt", "datasetHash", "assets"],
+    "trainingSnapshot",
+    issues
+  );
+  if (root.schemaVersion !== EAR_TRAINING_SNAPSHOT_SCHEMA_VERSION)
+    issues.push(
+      `trainingSnapshot.schemaVersion must be ${EAR_TRAINING_SNAPSHOT_SCHEMA_VERSION}`
+    );
+  const generatedAt = utcTimestampField(
+    root.generatedAt,
+    "trainingSnapshot.generatedAt",
+    issues
+  );
+  const datasetHash = hashField(
+    root.datasetHash,
+    "trainingSnapshot.datasetHash",
+    issues
+  );
+  if (!Array.isArray(root.assets) || root.assets.length === 0)
+    issues.push("trainingSnapshot.assets must contain the active training corpus");
+  const assets = (Array.isArray(root.assets) ? root.assets : []).map(
+    (value, index): EarTrainingSnapshotAsset => {
+      const label = `trainingSnapshot.assets[${index}]`;
+      const row = record(value);
+      if (!row) {
+        issues.push(`${label} must be an object`);
+        return { id: "", contentHash: "", sourceFamilyId: "" };
+      }
+      rejectUnknownKeys(row, ["id", "contentHash", "sourceFamilyId"], label, issues);
+      return {
+        id: stringField(row.id, `${label}.id`, issues, {
+          min: 3,
+          max: 160,
+          pattern: /^[a-z][a-z0-9_-]*:[A-Za-z0-9._-]+$/,
+        }),
+        contentHash: hashField(
+          row.contentHash,
+          `${label}.contentHash`,
+          issues
+        ),
+        sourceFamilyId: stringField(
+          row.sourceFamilyId,
+          `${label}.sourceFamilyId`,
+          issues,
+          {
+            min: 3,
+            max: 160,
+            pattern: /^[a-z][a-z0-9_-]*:[A-Za-z0-9._-]+$/,
+          }
+        ),
+      };
+    }
+  );
+  for (const [field, values] of [
+    ["id", assets.map(asset => asset.id.toLowerCase())],
+    ["contentHash", assets.map(asset => asset.contentHash)],
+  ] as const) {
+    if (new Set(values).size !== values.length)
+      issues.push(`trainingSnapshot.assets contains duplicate ${field} values`);
+  }
+  if (issues.length) throw new EarCorpusValidationError(issues);
+  return {
+    schemaVersion: EAR_TRAINING_SNAPSHOT_SCHEMA_VERSION,
+    generatedAt,
+    datasetHash,
+    assets,
   };
 }
 
@@ -301,6 +539,58 @@ async function hashFile(path: string): Promise<string> {
   const hash = createHash("sha256");
   for await (const chunk of createReadStream(path)) hash.update(chunk);
   return hash.digest("hex");
+}
+
+type EarAudioFormat =
+  | "wav"
+  | "mp3"
+  | "flac"
+  | "aiff"
+  | "m4a"
+  | "ogg"
+  | "webm";
+
+async function sniffAudio(path: string): Promise<EarAudioFormat | null> {
+  const handle = await open(path, "r");
+  try {
+    const buffer = Buffer.alloc(64);
+    const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
+    const bytes = buffer.subarray(0, bytesRead);
+    const text = (start: number, end: number) =>
+      bytes.subarray(start, end).toString("ascii");
+    if (
+      ["RIFF", "RF64"].includes(text(0, 4)) &&
+      text(8, 12) === "WAVE"
+    )
+      return "wav";
+    if (
+      text(0, 3) === "ID3" ||
+      (bytes[0] === 0xff && ((bytes[1] ?? 0) & 0xe0) === 0xe0)
+    )
+      return "mp3";
+    if (text(0, 4) === "fLaC") return "flac";
+    if (text(0, 4) === "OggS") return "ogg";
+    if (
+      bytes[0] === 0x1a &&
+      bytes[1] === 0x45 &&
+      bytes[2] === 0xdf &&
+      bytes[3] === 0xa3
+    )
+      return "webm";
+    if (text(4, 8) === "ftyp") return "m4a";
+    if (text(0, 4) === "FORM" && ["AIFF", "AIFC"].includes(text(8, 12)))
+      return "aiff";
+    return null;
+  } finally {
+    await handle.close();
+  }
+}
+
+function normalizedAudioExtension(path: string): EarAudioFormat | null {
+  const extension = extname(path).toLowerCase();
+  if (extension === ".aif") return "aiff";
+  const format = extension.slice(1) as EarAudioFormat;
+  return AUDIO_EXTENSIONS.has(extension) ? format : null;
 }
 
 const AUDIO_EXTENSIONS = new Set([
@@ -337,7 +627,8 @@ async function verifyCorpusFile(
     issues.push(`${label}.path escapes the fixtures directory`);
     return "";
   }
-  if (!AUDIO_EXTENSIONS.has(extname(absolute).toLowerCase()))
+  const extension = normalizedAudioExtension(absolute);
+  if (!extension)
     issues.push(`${label}.path has an unsupported audio extension`);
   const pathKey = absolute.toLowerCase();
   if (seenPaths.has(pathKey))
@@ -366,11 +657,79 @@ async function verifyCorpusFile(
     const actualHash = await hashFile(absolute);
     if (actualHash !== file.sha256)
       issues.push(`${label}.sha256 does not match ${file.path}`);
+    const detected = await sniffAudio(absolute);
+    if (!detected || detected !== extension)
+      issues.push(
+        `${label}.path bytes do not match its audio extension (detected ${String(detected)})`
+      );
   } catch (error) {
     const code = (error as NodeJS.ErrnoException).code ?? "unreadable";
     issues.push(`${label}.path cannot be read (${code})`);
   }
   return absolute;
+}
+
+async function verifyTrainingSnapshotFile(
+  fixturesDir: string,
+  file: EarCorpusFile,
+  issues: string[]
+): Promise<{ absolutePath: string; actualHash: string | null }> {
+  if (!file.path || isAbsolute(file.path) || extname(file.path).toLowerCase() !== ".json") {
+    issues.push(
+      "manifest.freeze.trainingSnapshot.path must be a relative JSON path"
+    );
+    return { absolutePath: "", actualHash: null };
+  }
+  const absolutePath = resolve(fixturesDir, file.path);
+  const relativePath = relative(fixturesDir, absolutePath);
+  if (
+    !relativePath ||
+    relativePath === ".." ||
+    relativePath.startsWith(`..\\`) ||
+    relativePath.startsWith("../") ||
+    isAbsolute(relativePath)
+  ) {
+    issues.push("manifest.freeze.trainingSnapshot.path escapes the fixtures directory");
+    return { absolutePath, actualHash: null };
+  }
+  try {
+    const info = await lstat(absolutePath);
+    if (!info.isFile() || info.isSymbolicLink()) {
+      issues.push(
+        "manifest.freeze.trainingSnapshot.path must be a regular file, not a link"
+      );
+      return { absolutePath, actualHash: null };
+    }
+    if (info.size < 100 || info.size > 50 * 1024 * 1024)
+      issues.push(
+        "manifest.freeze.trainingSnapshot.path size is outside 100 B to 50 MB"
+      );
+    const real = await realpath(absolutePath);
+    const realRelative = relative(await realpath(fixturesDir), real);
+    if (
+      realRelative === ".." ||
+      realRelative.startsWith(`..\\`) ||
+      realRelative.startsWith("../") ||
+      isAbsolute(realRelative)
+    ) {
+      issues.push(
+        "manifest.freeze.trainingSnapshot.path resolves outside the fixtures directory"
+      );
+      return { absolutePath, actualHash: null };
+    }
+    const actualHash = await hashFile(absolutePath);
+    if (actualHash !== file.sha256)
+      issues.push(
+        "manifest.freeze.trainingSnapshot.sha256 does not match the snapshot bytes"
+      );
+    return { absolutePath, actualHash };
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code ?? "unreadable";
+    issues.push(
+      `manifest.freeze.trainingSnapshot.path cannot be read (${code})`
+    );
+    return { absolutePath, actualHash: null };
+  }
 }
 
 export async function validateEarCorpusManifest(
@@ -379,6 +738,25 @@ export async function validateEarCorpusManifest(
 ): Promise<ValidatedEarCorpus> {
   const manifest = parseEarCorpusManifest(value);
   const issues: string[] = [];
+  const snapshotFile = await verifyTrainingSnapshotFile(
+    fixturesDir,
+    manifest.freeze.trainingSnapshot,
+    issues
+  );
+  let trainingSnapshot: EarTrainingSnapshot | null = null;
+  if (snapshotFile.actualHash) {
+    try {
+      trainingSnapshot = parseEarTrainingSnapshot(
+        JSON.parse(await readFile(snapshotFile.absolutePath, "utf8"))
+      );
+    } catch (error) {
+      if (error instanceof EarCorpusValidationError) issues.push(...error.issues);
+      else
+        issues.push(
+          `training snapshot is unreadable JSON (${error instanceof Error ? error.message : "unknown error"})`
+        );
+    }
+  }
   const seenPaths = new Set<string>();
   const tracks: ValidatedEarCorpusTrack[] = [];
   for (const [index, track] of manifest.tracks.entries()) {
@@ -408,7 +786,51 @@ export async function validateEarCorpusManifest(
       absoluteStems: Object.fromEntries(stemEntries) as Record<EarStem, string>,
     });
   }
+  if (trainingSnapshot) {
+    const frozenMs = Date.parse(manifest.freeze.frozenAt);
+    const snapshotMs = Date.parse(trainingSnapshot.generatedAt);
+    if (Number.isFinite(frozenMs) && Number.isFinite(snapshotMs) && frozenMs < snapshotMs)
+      issues.push(
+        "manifest.freeze.frozenAt must be at or after the training snapshot timestamp"
+      );
+
+    const trainingIds = new Set(
+      trainingSnapshot.assets.map(asset => asset.id.toLowerCase())
+    );
+    const trainingFamilies = new Set(
+      trainingSnapshot.assets.map(asset => asset.sourceFamilyId.toLowerCase())
+    );
+    const trainingHashes = new Set(
+      trainingSnapshot.assets.map(asset => asset.contentHash.toLowerCase())
+    );
+    for (const [index, track] of manifest.tracks.entries()) {
+      const sharedIds = track.sourceAssetIds.filter(id =>
+        trainingIds.has(id.toLowerCase())
+      );
+      if (sharedIds.length)
+        issues.push(
+          `tracks[${index}] leaks source asset(s) from training: ${sharedIds.join(", ")}`
+        );
+      if (trainingFamilies.has(track.sourceFamilyId.toLowerCase()))
+        issues.push(
+          `tracks[${index}].sourceFamilyId is present in the training snapshot`
+        );
+      const audioHashes = [
+        track.sha256,
+        ...EAR_STEMS.map(stem => track.stems[stem].sha256),
+      ];
+      if (audioHashes.some(hash => trainingHashes.has(hash.toLowerCase())))
+        issues.push(
+          `tracks[${index}] contains audio bytes present in the training snapshot`
+        );
+    }
+  }
   if (issues.length) throw new EarCorpusValidationError(issues);
+
+  if (!trainingSnapshot || !snapshotFile.actualHash)
+    throw new EarCorpusValidationError([
+      "training snapshot validation did not complete",
+    ]);
 
   const genreCounts: Record<EarGenre, number> = {
     amapiano: 0,
@@ -425,12 +847,48 @@ export async function validateEarCorpusManifest(
   }
   const canonicalManifest: EarCorpusManifest = {
     schemaVersion: manifest.schemaVersion,
+    freeze: manifest.freeze,
     tracks: [...manifest.tracks].sort((a, b) => a.id.localeCompare(b.id)),
   };
   const corpusHash = createHash("sha256")
     .update(canonicalJson(canonicalManifest))
     .digest("hex");
-  return { manifest, tracks, corpusHash, genreCounts, rightsBasisCounts };
+  return {
+    manifest,
+    trainingSnapshot,
+    tracks,
+    corpusHash,
+    trainingSnapshotHash: snapshotFile.actualHash,
+    frozenAt: manifest.freeze.frozenAt,
+    leakageVerified: true,
+    genreCounts,
+    rightsBasisCounts,
+  };
+}
+
+/**
+ * Extract the frozen identities that every future trainer pass must exclude.
+ * This parses the complete manifest contract, so a malformed or partial
+ * holdout can never silently become a weak exclusion list.
+ */
+export function earHoldoutExclusions(value: unknown): EarHoldoutExclusions {
+  const manifest = parseEarCorpusManifest(value);
+  return {
+    sourceAssetIds: new Set(
+      manifest.tracks.flatMap(track =>
+        track.sourceAssetIds.map(id => id.toLowerCase())
+      )
+    ),
+    sourceFamilyIds: new Set(
+      manifest.tracks.map(track => track.sourceFamilyId.toLowerCase())
+    ),
+    contentHashes: new Set(
+      manifest.tracks.flatMap(track => [
+        track.sha256.toLowerCase(),
+        ...EAR_STEMS.map(stem => track.stems[stem].sha256.toLowerCase()),
+      ])
+    ),
+  };
 }
 
 export function calibrationSigningKey(value: string | undefined): string {
@@ -521,6 +979,8 @@ export function calibrationGateStatus(
     return { open: false, reason: "synthetic-calibration" };
   if (artifact.rightsVerified !== true)
     return { open: false, reason: "rights-not-verified" };
+  if (artifact.leakageVerified !== true)
+    return { open: false, reason: "training-leakage-unverified" };
   if (artifact.manifestSchemaVersion !== EAR_CORPUS_SCHEMA_VERSION)
     return { open: false, reason: "invalid-manifest-schema" };
   if (artifact.trackCount !== 9)
@@ -541,6 +1001,16 @@ export function calibrationGateStatus(
     !/^[a-f0-9]{64}$/.test(artifact.corpusHash)
   )
     return { open: false, reason: "missing-corpus-hash" };
+  if (
+    typeof artifact.trainingSnapshotHash !== "string" ||
+    !/^[a-f0-9]{64}$/.test(artifact.trainingSnapshotHash)
+  )
+    return { open: false, reason: "missing-training-snapshot-hash" };
+  if (
+    typeof artifact.holdoutFrozenAt !== "string" ||
+    !Number.isFinite(Date.parse(artifact.holdoutFrozenAt))
+  )
+    return { open: false, reason: "missing-holdout-freeze" };
   const gates = record(artifact.gates);
   if (
     !gates ||

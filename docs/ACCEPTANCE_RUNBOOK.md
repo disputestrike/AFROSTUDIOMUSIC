@@ -23,7 +23,9 @@ credential-dependent result is not green.
 
 The DSP calibration manifest is
 apps/worker/py/fixtures/manifest.json. It must contain exactly nine tracks:
-three afrobeats, three amapiano, and three house.
+three afrobeats, three amapiano, and three house. The committed repository does
+not contain those recordings; the private bytes and training snapshot remain
+under the fixture directory's deny-by-default `.gitignore`.
 
 Every track must provide:
 
@@ -32,18 +34,49 @@ Every track must provide:
 - Relative bass, drums, other, and vocals stem paths plus SHA-256.
 - Rights basis owned-master or licensed-evaluation.
 - A concrete rights reference, attester, and UTC attestation timestamp.
+- A real-recording classification: human-produced master or licensed reference.
+- Stable source asset IDs and one source-family ID (normally the parent song).
+- A frozen, hash-pinned snapshot of the exact active training dataset.
 
 Symlinks, path traversal, duplicate IDs, missing files, unexpected fields,
-wrong hashes, unbalanced genres, and unsupported audio formats fail validation.
+wrong hashes, mislabeled/non-audio bytes, unbalanced genres, and unsupported
+audio formats fail validation. Any overlap with training by source ID,
+source-family ID, mix hash, or stem hash also fails.
+
+First deploy the lineage-aware trainer and complete one legitimate training run.
+Then export the active training receipt without exposing database credentials:
+
+```powershell
+pnpm --filter @afrohit/worker run ear:training-snapshot -- --output "C:\acceptance\ear-training-snapshot.json"
+```
+
+Create `C:\acceptance\ear-candidates.json` with schema version 1, `frozenBy`,
+and exactly nine tracks. Each track has the final manifest fields except hashes:
+`id`, `genre`, `sourceAssetIds`, `sourceFamilyId`, `recordingType`,
+`expectTempoBpm`, `fourOnFloor`, relative `path`, four relative stem paths, and
+the rights block. Candidate paths are relative to one private source root.
+
+Validate without writing, then freeze. `--replace` is intentionally required
+to refreeze an existing holdout:
+
+```powershell
+pnpm --filter @afrohit/worker run ear:freeze -- --draft "C:\acceptance\ear-candidates.json" --source-root "C:\acceptance\audio" --training-snapshot "C:\acceptance\ear-training-snapshot.json" --dry-run
+pnpm --filter @afrohit/worker run ear:freeze -- --draft "C:\acceptance\ear-candidates.json" --source-root "C:\acceptance\audio" --training-snapshot "C:\acceptance\ear-training-snapshot.json"
+```
+
+Review and commit only `manifest.json`. Never force-add `ear-holdout-v1/`.
+After the frozen manifest is deployed, set `EAR_HOLDOUT_REQUIRED=1` on every
+training worker. That converts a missing or malformed holdout into a hard stop
+instead of allowing a future training run to contaminate evaluation.
 
 Generate a secret outside Git and use the same secret in every worker runtime
 that consumes the calibration:
 
 ```bash
-LOGDRUM_CALIBRATION_SIGNING_KEY="<32-or-more-byte-secret>" pnpm --filter @afrohit/worker exec tsx scripts/eval-ear.ts
+LOGDRUM_CALIBRATION_SIGNING_KEY="<32-or-more-byte-secret>" pnpm --filter @afrohit/worker run ear:evaluate
 ```
 
-A passing run writes schema-4 HMAC evidence to
+A passing run writes schema-5 HMAC evidence to
 apps/worker/py/fixtures/logdrum_calibration.json. A failed or synthetic run
 cannot overwrite that truth artifact. Verify the deployed worker with:
 
@@ -51,8 +84,9 @@ cannot overwrite that truth artifact. Verify the deployed worker with:
 python apps/worker/analyze_dsp.py --calibration-status
 ```
 
-calibrated must be true and the reported corpus hash, track count, rights
-status, signature key ID, and schema must match the signed artifact.
+calibrated must be true and the reported corpus hash, training snapshot hash,
+freeze timestamp, track count, rights/leakage status, signature key ID, and
+schema must match the signed artifact.
 
 ## 3. Live Provider Acceptance
 

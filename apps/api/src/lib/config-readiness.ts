@@ -1,4 +1,5 @@
 import { distributionConfigurationStatus } from "./distribution";
+import { likenessProviderConfigurationStatus } from "@afrohit/shared";
 
 export type VideoEngineClass = "draft" | "standard" | "flagship";
 
@@ -72,9 +73,7 @@ function decodeVeoServiceAccount(env: Environment): {
   }
 }
 
-function legacyVideoProviderReadiness(
-  env: Environment
-): FeatureReadiness {
+function legacyVideoProviderReadiness(env: Environment): FeatureReadiness {
   const selected = (env.VIDEO_PROVIDER ?? "unavailable").trim().toLowerCase();
   if (selected === "sora") {
     const missing = configured(env.OPENAI_API_KEY) ? [] : ["OPENAI_API_KEY"];
@@ -137,9 +136,10 @@ function legacyVideoProviderReadiness(
     selected: selected || "unavailable",
     source: "none",
     missing: ["VIDEO_PROVIDER and its credentials"],
-    issues: selected && selected !== "unavailable"
-      ? [`unsupported VIDEO_PROVIDER: ${selected}`]
-      : [],
+    issues:
+      selected && selected !== "unavailable"
+        ? [`unsupported VIDEO_PROVIDER: ${selected}`]
+        : [],
   };
 }
 
@@ -183,7 +183,10 @@ export function resolveVideoProviderReadiness(options: {
       ...legacy,
       ready: false,
       liveSafe: false,
-      missing: [...legacy.missing, "REPLICATE_API_TOKEN or workspace Replicate key"],
+      missing: [
+        ...legacy.missing,
+        "REPLICATE_API_TOKEN or workspace Replicate key",
+      ],
       issues: [
         ...legacy.issues,
         "likeness video requires an image-to-video engine; Veo/Sora legacy adapters are text-to-video only",
@@ -193,6 +196,35 @@ export function resolveVideoProviderReadiness(options: {
   return legacy;
 }
 
+export function resolveLikenessTrainingReadiness(
+  options: {
+    workspaceReplicateKey?: string;
+    destination?: string;
+    env?: Environment;
+  } = {}
+): FeatureReadiness {
+  const env = options.env ?? process.env;
+  const workspaceToken = options.workspaceReplicateKey?.trim();
+  const environmentToken =
+    env.REPLICATE_API_TOKEN?.trim() || env.REPLICATE_TOKEN?.trim();
+  const status = likenessProviderConfigurationStatus(env, {
+    replicateConfigured: Boolean(workspaceToken || environmentToken),
+    destination: options.destination,
+  });
+  return {
+    ready: status.ready,
+    liveSafe: status.ready,
+    selected: "replicate",
+    source: status.ready
+      ? workspaceToken
+        ? "workspace"
+        : "environment"
+      : "none",
+    missing: status.missing,
+    issues: status.issues,
+  };
+}
+
 export function runtimeReadinessReport(
   env: Environment = process.env
 ): RuntimeReadinessReport {
@@ -200,28 +232,13 @@ export function runtimeReadinessReport(
     engineClass: "standard",
     env,
   });
-  const likenessMissing: string[] = [];
-  const likenessIssues: string[] = [];
-  if (env.LIKENESS_TRAINING_ENABLED !== "1")
-    likenessMissing.push("LIKENESS_TRAINING_ENABLED=1");
-  if (!configured(env.REPLICATE_API_TOKEN) && !configured(env.REPLICATE_TOKEN))
-    likenessMissing.push("REPLICATE_API_TOKEN");
-  if (!configured(env.LIKENESS_LORA_DESTINATION) && !configured(env.REPLICATE_USERNAME))
-    likenessMissing.push("LIKENESS_LORA_DESTINATION or REPLICATE_USERNAME");
-  const likenessReady = likenessMissing.length === 0 && likenessIssues.length === 0;
+  const likenessTraining = resolveLikenessTrainingReadiness({ env });
   const distribution = distributionConfigurationStatus(env);
 
   return {
     checkedAt: new Date().toISOString(),
     video,
-    likenessTraining: {
-      ready: likenessReady,
-      liveSafe: likenessReady,
-      selected: "replicate",
-      source: likenessReady ? "environment" : "none",
-      missing: likenessMissing,
-      issues: likenessIssues,
-    },
+    likenessTraining,
     distribution: {
       ready: distribution.ready,
       liveSafe: distribution.ready && distribution.inboundWebhookReady,
@@ -238,7 +255,6 @@ export function publicRuntimeReadiness(report: RuntimeReadinessReport) {
     video: report.video.ready && report.video.liveSafe,
     likenessTraining:
       report.likenessTraining.ready && report.likenessTraining.liveSafe,
-    distribution:
-      report.distribution.ready && report.distribution.liveSafe,
+    distribution: report.distribution.ready && report.distribution.liveSafe,
   };
 }

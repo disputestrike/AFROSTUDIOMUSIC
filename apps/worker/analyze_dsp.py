@@ -78,8 +78,8 @@ _NOTES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"]
 # to py/fixtures/logdrum_calibration.json. Absent/stale/failed artifact => the field
 # ships 'inferred' (carrying a machine-readable reason) and is excluded from every
 # compliance score. The gate opens when the DATA says it may, not when a human says so.
-LOGDRUM_SCHEMA = 4  # schema 4 adds rights, corpus-hash, and HMAC evidence
-EAR_CORPUS_SCHEMA = 1
+LOGDRUM_SCHEMA = 5  # schema 5 adds a frozen training snapshot + leakage proof
+EAR_CORPUS_SCHEMA = 2
 _LOGDRUM_DEFAULTS = dict(
     r0=0.45, s=0.12,            # P_sub sigmoid center/width on E(40-100)/E(20-300)
     w1=1.2, w2=0.15,            # P_glide = saturate(w1*glideFraction + w2*glideRate)
@@ -146,6 +146,8 @@ def _load_logdrum_calibration():
             return {**d, **(c.get("params") or {}), "calibrated": False, "reason": "synthetic-calibration", "separationMargin": c.get("separationMargin"), "provenance": c.get("provenance") or "synthetic"}
         if c.get("rightsVerified") is not True:
             return {**d, "calibrated": False, "reason": "rights-not-verified", "separationMargin": None}
+        if c.get("leakageVerified") is not True:
+            return {**d, "calibrated": False, "reason": "training-leakage-unverified", "separationMargin": None}
         if c.get("manifestSchemaVersion") != EAR_CORPUS_SCHEMA:
             return {**d, "calibrated": False, "reason": "invalid-manifest-schema", "separationMargin": None}
         if c.get("trackCount") != 9:
@@ -158,6 +160,10 @@ def _load_logdrum_calibration():
             return {**d, "calibrated": False, "reason": "invalid-rights-summary", "separationMargin": None}
         if not isinstance(c.get("corpusHash"), str) or not re.fullmatch(r"[a-f0-9]{64}", c["corpusHash"]):
             return {**d, "calibrated": False, "reason": "missing-corpus-hash", "separationMargin": None}
+        if not isinstance(c.get("trainingSnapshotHash"), str) or not re.fullmatch(r"[a-f0-9]{64}", c["trainingSnapshotHash"]):
+            return {**d, "calibrated": False, "reason": "missing-training-snapshot-hash", "separationMargin": None}
+        if not isinstance(c.get("holdoutFrozenAt"), str) or not c["holdoutFrozenAt"].endswith("Z"):
+            return {**d, "calibrated": False, "reason": "missing-holdout-freeze", "separationMargin": None}
         gates = c.get("gates")
         if not isinstance(gates, dict) or not all(gates.get(name) is True for name in ("tempo", "fourOnFloor", "logDrumSeparation")):
             return {**d, "calibrated": False, "reason": "incomplete-gates", "separationMargin": None}
@@ -175,8 +181,11 @@ def _load_logdrum_calibration():
             "calibratedOn": c.get("calibratedOn") or "rights-clean-9track",
             "provenance": "real-9track",
             "rightsVerified": True,
+            "leakageVerified": True,
             "trackCount": 9,
             "corpusHash": c["corpusHash"],
+            "trainingSnapshotHash": c["trainingSnapshotHash"],
+            "holdoutFrozenAt": c["holdoutFrozenAt"],
             "signatureKeyId": c.get("signatureKeyId"),
         }
     except FileNotFoundError:
@@ -912,8 +921,11 @@ def main():
             "calibratedOn": LOGDRUM.get("calibratedOn"),
             "provenance": LOGDRUM.get("provenance"),
             "rightsVerified": bool(LOGDRUM.get("rightsVerified")),
+            "leakageVerified": bool(LOGDRUM.get("leakageVerified")),
             "trackCount": LOGDRUM.get("trackCount"),
             "corpusHash": LOGDRUM.get("corpusHash"),
+            "trainingSnapshotHash": LOGDRUM.get("trainingSnapshotHash"),
+            "holdoutFrozenAt": LOGDRUM.get("holdoutFrozenAt"),
             "signatureKeyId": LOGDRUM.get("signatureKeyId"),
             "schema": LOGDRUM_SCHEMA,
         }))

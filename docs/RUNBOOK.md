@@ -5,13 +5,13 @@ migration history, rights records, or release status with ad hoc SQL writes.
 
 ## Health Interpretation
 
-| Endpoint or signal | Meaning |
-|---|---|
-| API `/health` | Process liveness only |
-| API `/health/ready` | Database, Redis, worker heartbeat, and outbox snapshot |
-| Web `/api/health` | Web process and configured API reachability |
-| `SystemSetting` keys `worker:heartbeat:*` | Per-replica worker heartbeat |
-| Provider and queue dashboards | External and transport state |
+| Endpoint or signal                        | Meaning                                                |
+| ----------------------------------------- | ------------------------------------------------------ |
+| API `/health`                             | Process liveness only                                  |
+| API `/health/ready`                       | Database, Redis, worker heartbeat, and outbox snapshot |
+| Web `/api/health`                         | Web process and configured API reachability            |
+| `SystemSetting` keys `worker:heartbeat:*` | Per-replica worker heartbeat                           |
+| Provider and queue dashboards             | External and transport state                           |
 
 The API readiness body has two top-level booleans:
 
@@ -105,7 +105,25 @@ For voice training, verify a current consent record, signer identity, consent
 hash, private immutable dataset, segment/duration evidence, and pinned trainer
 configuration. External datasets remain blocked unless explicitly allowed.
 
+If `/health/ready` reports `likenessTraining: false`, inspect the owner/admin
+runtime-readiness report. The API and worker services both require
+`LIKENESS_TRAINING_ENABLED=1`, a live `REPLICATE_API_TOKEN` (unless that
+workspace has its own connected key), and either a valid private
+`LIKENESS_LORA_DESTINATION` or `REPLICATE_USERNAME`. Configure the same
+kill-switch and destination policy on both services. Existing destination models
+must be private; the worker refuses a public or mismatched model before uploading
+the consented training archive. Never turn the switch on to hide a missing key,
+destination, consent, or photo-count gate.
+
 ## Release And Distribution
+
+If `/health/ready` reports `features.api.distribution: false`, open the
+owner/admin runtime-readiness report and inspect its secret-safe `missing` and
+`issues` arrays. Production requires an explicit `DISTRIBUTOR`, a real HTTPS
+`DISTRIBUTOR_SUBMIT_URL` (or the legacy `DISTRIBUTOR_WEBHOOK_URL` alias), and a
+shared `DISTRIBUTOR_WEBHOOK_SECRET` of at least 32 bytes. The repository cannot
+manufacture the partner URL or secret; obtain them from the approved partner,
+set them on the API service, and redeploy before attempting a release.
 
 When release certification is blocked, inspect each failed gate rather than
 changing status:

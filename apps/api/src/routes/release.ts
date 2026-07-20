@@ -1018,6 +1018,7 @@ export default async function release(app: FastifyInstance) {
             provider: distributionConfiguration.provider,
             endpointConfigured:
               distributionConfiguration.endpointConfigured,
+            endpointSource: distributionConfiguration.endpointSource,
             signingSecretConfigured:
               distributionConfiguration.signingSecretConfigured,
             signingSecretStrong:

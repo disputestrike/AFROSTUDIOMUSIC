@@ -108,8 +108,13 @@ The application hands a certified release bundle to an approved HTTPS partner
 endpoint. Set:
 
 - `DISTRIBUTOR`
-- `DISTRIBUTOR_WEBHOOK_URL`
+- `DISTRIBUTOR_SUBMIT_URL`
 - `DISTRIBUTOR_WEBHOOK_SECRET` with at least 32 bytes
+
+`DISTRIBUTOR_WEBHOOK_URL` remains a deprecated outbound URL alias for existing
+deployments. Do not set both URL variables to different values. Readiness fails
+closed when the provider name is absent, either URL is a documentation
+placeholder, or the preferred and legacy URLs conflict.
 
 The outbound request carries `x-afrohit-timestamp`, an HMAC-SHA256
 `x-afrohit-signature`, and an `idempotency-key`. The partner must return JSON with

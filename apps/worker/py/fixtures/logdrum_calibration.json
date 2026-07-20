@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 4,
+  "schemaVersion": 5,
   "gatesPassed": true,
   "separationMargin": 0.485,
   "fittedOn": "2026-07-10",
@@ -15,8 +15,11 @@
   },
   "provenance": "synthetic",
   "rightsVerified": false,
+  "leakageVerified": false,
   "manifestSchemaVersion": null,
   "corpusHash": null,
+  "trainingSnapshotHash": null,
+  "holdoutFrozenAt": null,
   "genreCounts": {
     "amapiano": 1,
     "afrobeats": 1,

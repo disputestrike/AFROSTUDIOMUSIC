@@ -50,4 +50,16 @@ const report = workerRuntimeReadiness({
 assert.equal(report.video.ready, true);
 assert.equal(report.likenessTraining.ready, true);
 
+const malformed = workerRuntimeReadiness({
+  LIKENESS_TRAINING_ENABLED: "1",
+  REPLICATE_API_TOKEN: "configured",
+  LIKENESS_LORA_DESTINATION: "not/a/valid/slug",
+});
+assert.equal(malformed.likenessTraining.ready, false);
+assert.ok(
+  malformed.likenessTraining.issues.some(item =>
+    item.toLowerCase().includes("destination")
+  )
+);
+
 console.log("worker runtime readiness tests passed");

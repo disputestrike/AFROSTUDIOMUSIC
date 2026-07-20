@@ -136,6 +136,10 @@ export interface DistributionConfigurationStatus {
   provider: string;
   endpointConfigured: boolean;
   endpointHost: string | null;
+  endpointSource:
+    | "DISTRIBUTOR_SUBMIT_URL"
+    | "DISTRIBUTOR_WEBHOOK_URL"
+    | null;
   signingSecretConfigured: boolean;
   signingSecretStrong: boolean;
   inboundWebhookReady: boolean;
@@ -146,14 +150,36 @@ export interface DistributionConfigurationStatus {
 export function distributionConfigurationStatus(
   env: Environment = process.env
 ): DistributionConfigurationStatus {
-  const provider = (env.DISTRIBUTOR ?? "partner").trim().toLowerCase();
-  const endpoint = env.DISTRIBUTOR_WEBHOOK_URL?.trim() ?? "";
+  const configuredProvider = env.DISTRIBUTOR?.trim().toLowerCase() ?? "";
+  const provider = configuredProvider || "unconfigured";
+  const preferredEndpoint = env.DISTRIBUTOR_SUBMIT_URL?.trim() ?? "";
+  const legacyEndpoint = env.DISTRIBUTOR_WEBHOOK_URL?.trim() ?? "";
+  const endpoint = preferredEndpoint || legacyEndpoint;
+  const endpointSource = preferredEndpoint
+    ? "DISTRIBUTOR_SUBMIT_URL"
+    : legacyEndpoint
+      ? "DISTRIBUTOR_WEBHOOK_URL"
+      : null;
   const secret = env.DISTRIBUTOR_WEBHOOK_SECRET ?? "";
   const missing: string[] = [];
   const issues: string[] = [];
   let endpointHost: string | null = null;
+  if (!configuredProvider) {
+    missing.push("DISTRIBUTOR");
+  } else if (!/^[a-z0-9][a-z0-9_-]{0,39}$/.test(configuredProvider)) {
+    issues.push("DISTRIBUTOR contains an invalid provider label");
+  } else if (new Set(["partner", "partner-name", "unconfigured"]).has(configuredProvider)) {
+    issues.push("DISTRIBUTOR must name the approved production partner");
+  }
+  if (preferredEndpoint && legacyEndpoint && preferredEndpoint !== legacyEndpoint) {
+    issues.push(
+      "DISTRIBUTOR_SUBMIT_URL conflicts with legacy DISTRIBUTOR_WEBHOOK_URL"
+    );
+  }
   if (!endpoint) {
-    missing.push("DISTRIBUTOR_WEBHOOK_URL");
+    missing.push(
+      "DISTRIBUTOR_SUBMIT_URL (or legacy DISTRIBUTOR_WEBHOOK_URL)"
+    );
   } else {
     try {
       const parsed = new URL(endpoint);
@@ -165,6 +191,14 @@ export function distributionConfigurationStatus(
       ) {
         issues.push("distributor endpoint must be credential-free HTTPS");
       }
+      const hostnameLabels = parsed.hostname.split(".");
+      const documentationHost = ["example", "com"].join(".");
+      if (
+        parsed.hostname === documentationHost ||
+        hostnameLabels.at(-1) === "example"
+      ) {
+        issues.push("distributor endpoint uses a documentation-only host");
+      }
     } catch {
       issues.push("distributor endpoint is not a valid URL");
     }
@@ -174,14 +208,13 @@ export function distributionConfigurationStatus(
   if (!signingSecretConfigured) missing.push("DISTRIBUTOR_WEBHOOK_SECRET");
   else if (!signingSecretStrong)
     issues.push("distributor signing secret must contain at least 32 bytes");
-  if (!/^[a-z0-9][a-z0-9_-]{0,39}$/.test(provider))
-    issues.push("DISTRIBUTOR contains an invalid provider label");
   const ready = missing.length === 0 && issues.length === 0;
   return {
     ready,
     provider,
     endpointConfigured: Boolean(endpoint),
     endpointHost,
+    endpointSource,
     signingSecretConfigured,
     signingSecretStrong,
     inboundWebhookReady: signingSecretStrong,
@@ -286,7 +319,9 @@ export async function distributeRelease(
 ): Promise<DistributeResult> {
   const configuration = distributionConfigurationStatus();
   const provider = configuration.provider;
-  const endpoint = process.env.DISTRIBUTOR_WEBHOOK_URL?.trim();
+  const endpoint =
+    process.env.DISTRIBUTOR_SUBMIT_URL?.trim() ||
+    process.env.DISTRIBUTOR_WEBHOOK_URL?.trim();
   const secret = process.env.DISTRIBUTOR_WEBHOOK_SECRET ?? "";
 
   if (!configuration.ready) {

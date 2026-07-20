@@ -4,6 +4,7 @@ import { integrationsInputSchema } from '@afrohit/shared';
 import { requireAuth, requireRole } from '../middleware/auth';
 import { musicRouteCapabilities, musicRoutePolicy } from '../lib/music-capabilities';
 import {
+  resolveLikenessTrainingReadiness,
   resolveVideoProviderReadiness,
   runtimeReadinessReport,
 } from '../lib/config-readiness';
@@ -50,6 +51,9 @@ export default async function settings(app: FastifyInstance) {
       api: runtimeReadinessReport(),
       workspace: {
         replicateConnected: Boolean(workspaceKey),
+        likenessTraining: resolveLikenessTrainingReadiness({
+          workspaceReplicateKey: workspaceKey,
+        }),
         video: {
           draft: resolveVideoProviderReadiness({
             engineClass: 'draft',

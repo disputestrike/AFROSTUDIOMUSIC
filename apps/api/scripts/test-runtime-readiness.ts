@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import {
   publicRuntimeReadiness,
+  resolveLikenessTrainingReadiness,
   resolveVideoProviderReadiness,
   runtimeReadinessReport,
 } from "../src/lib/config-readiness";
@@ -54,16 +55,42 @@ const productionStub = resolveVideoProviderReadiness({
 assert.equal(productionStub.ready, false);
 assert.equal(productionStub.liveSafe, false);
 
+const workspaceLikeness = resolveLikenessTrainingReadiness({
+  workspaceReplicateKey: "workspace-token",
+  env: {
+    LIKENESS_TRAINING_ENABLED: "1",
+    REPLICATE_USERNAME: "afrohit",
+  },
+});
+assert.equal(workspaceLikeness.ready, true);
+assert.equal(workspaceLikeness.source, "workspace");
+
+const unsafeLikenessDestination = resolveLikenessTrainingReadiness({
+  env: {
+    LIKENESS_TRAINING_ENABLED: "1",
+    REPLICATE_API_TOKEN: "configured",
+    LIKENESS_LORA_DESTINATION: "not/a/valid/slug",
+  },
+});
+assert.equal(unsafeLikenessDestination.ready, false);
+assert.ok(
+  unsafeLikenessDestination.issues.some(issue =>
+    issue.toLowerCase().includes("destination")
+  )
+);
+
 const distribution = distributionConfigurationStatus({
-  DISTRIBUTOR: "partner",
-  DISTRIBUTOR_WEBHOOK_URL: "https://distribution.example/v1/releases",
+  DISTRIBUTOR: "approved_partner",
+  DISTRIBUTOR_SUBMIT_URL: "https://distribution.test/v1/releases",
   DISTRIBUTOR_WEBHOOK_SECRET: "s".repeat(32),
 });
 assert.equal(distribution.ready, true);
-assert.equal(distribution.endpointHost, "distribution.example");
+assert.equal(distribution.endpointHost, "distribution.test");
+assert.equal(distribution.endpointSource, "DISTRIBUTOR_SUBMIT_URL");
 assert.equal(distribution.inboundWebhookReady, true);
 
 const weakDistribution = distributionConfigurationStatus({
+  DISTRIBUTOR: "approved_partner",
   DISTRIBUTOR_WEBHOOK_URL: "http://localhost/distribute",
   DISTRIBUTOR_WEBHOOK_SECRET: "short",
 });
@@ -89,7 +116,8 @@ const report = runtimeReadinessReport({
   LIKENESS_TRAINING_ENABLED: "1",
   REPLICATE_API_TOKEN: "configured",
   REPLICATE_USERNAME: "afrohit",
-  DISTRIBUTOR_WEBHOOK_URL: "https://distribution.example/v1/releases",
+  DISTRIBUTOR: "approved_partner",
+  DISTRIBUTOR_SUBMIT_URL: "https://distribution.test/v1/releases",
   DISTRIBUTOR_WEBHOOK_SECRET: "s".repeat(32),
 });
 assert.deepEqual(publicRuntimeReadiness(report), {
