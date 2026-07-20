@@ -35,6 +35,8 @@ import {
   selectMaterialRows,
   materialCoverage,
   materialGenreMatches,
+  estimateComposedMelodyDurationS,
+  melodyScoreDurationS,
   planAutoForge,
   type SongBlueprint,
   type AfroOneDirection,
@@ -1052,8 +1054,35 @@ export async function processOwnEngine(p: OwnEnginePayload): Promise<void> {
     // the assembler executes it EXACTLY. Kill switch: OWN_ENGINE_PRODUCER_BRAIN=0.
     // LENGTH IS A CONTRACT (audit 2026-07-19: the 64-bar template rendered
     // ~148s vs 185-200s lane targets, and nothing ever passed a duration).
-    const laneDurationS =
+    const requestedLaneDurationS =
       p.durationS ?? genreSignature(p.genre).durationS ?? 180;
+    const singingDurationFloorS = p.withVocals
+      ? p.melodyScore
+        ? melodyScoreDurationS(p.melodyScore)
+        : p.lyrics?.trim()
+          ? estimateComposedMelodyDurationS({
+              bpm,
+              sections: parseLyricSections(p.lyrics)
+                .filter(section => section.lines.length > 0)
+                .map(section => ({
+                  name: section.name,
+                  kind: section.kind,
+                  lines: section.lines,
+                })),
+            })
+          : 0
+      : 0;
+    if (singingDurationFloorS > 240) {
+      throw new Error(
+        `own-engine singing lyrics require ${Math.ceil(singingDurationFloorS)}s; the verified singer supports up to 240s`
+      );
+    }
+    const laneDurationS = Math.max(requestedLaneDurationS, singingDurationFloorS);
+    if (p.withVocals && laneDurationS > 240) {
+      throw new Error(
+        `own-engine singing target is ${Math.ceil(laneDurationS)}s; the verified singer supports up to 240s`
+      );
+    }
     const targetBars = Math.max(
       24,
       Math.min(160, Math.round((laneDurationS * bpm) / 240))
@@ -1820,12 +1849,16 @@ export async function processOwnEngine(p: OwnEnginePayload): Promise<void> {
       if (!melodyScore) {
         throw new Error("own-engine singing requested without a valid melody score");
       }
+      const singingTargetDurationS = Math.max(
+        totalS,
+        melodyScoreDurationS(melodyScore)
+      );
       const manifest = createAfroOneSingingManifest({
         lyrics: lyricBody,
         melodyScore,
         genre: p.genre,
         language: p.language,
-        targetDurationS: laneDurationS,
+        targetDurationS: singingTargetDurationS,
       });
       const singingContract = afroOneSingingJobContract(
         manifest,
@@ -1857,7 +1890,7 @@ export async function processOwnEngine(p: OwnEnginePayload): Promise<void> {
         melodyScore,
         genre: p.genre,
         language: p.language,
-        targetDurationS: laneDurationS,
+        targetDurationS: singingTargetDurationS,
         instrumentalBeatId: finalBeatId,
         instrumentalUrl: finalUrl,
       });

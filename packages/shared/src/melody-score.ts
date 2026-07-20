@@ -314,6 +314,28 @@ const DENSITY_DURS: Record<MelodyDensity, number[]> = {
 };
 
 const clamp = (x: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, x));
+
+/** Exact duration of the deterministic composer before notes are emitted. */
+export function estimateComposedMelodyDurationS(
+  input: Pick<ComposeMelodyOpts, 'bpm' | 'sections'>,
+): number {
+  if (!Number.isFinite(input.bpm) || input.bpm <= 0) {
+    throw new Error('melody_score_invalid_bpm');
+  }
+  const bars = input.sections.reduce((total, section) => {
+    const lineCount = section.lines.map(line => line.trim()).filter(Boolean).length;
+    return total + Math.round(clamp(section.bars ?? lineCount * 2, 2, 32));
+  }, 0);
+  return Math.round(((bars * 240) / input.bpm) * 1_000_000) / 1_000_000;
+}
+
+export function melodyScoreDurationS(score: Pick<MelodyScore, 'bpm' | 'sections'>): number {
+  if (!Number.isFinite(score.bpm) || score.bpm <= 0) {
+    throw new Error('melody_score_invalid_bpm');
+  }
+  const bars = score.sections.reduce((total, section) => total + section.bars, 0);
+  return Math.round(((bars * 240) / score.bpm) * 1_000_000) / 1_000_000;
+}
 const r4 = (x: number) => Math.round(x * 10_000) / 10_000;
 
 // ---------------------------------------------------------------------------
