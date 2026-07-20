@@ -117,6 +117,10 @@ export interface AfroOneSingingDependencies {
   env?: Environment;
   fetch?: FetchLike;
   sleep?: (ms: number) => Promise<void>;
+  /** Reject a rendered candidate before the ladder accepts it (for measured lyric/QC gates). */
+  verifyCandidate?: (
+    render: Omit<AfroOneSingingRender, 'attempts'>
+  ) => Promise<void>;
 }
 
 function money(value: number): number {
@@ -701,6 +705,7 @@ export async function renderAfroOneSinging(
   const fetcher = dependencies.fetch ?? fetch;
   const sleep = dependencies.sleep ?? ((ms: number) => new Promise((resolve) => setTimeout(resolve, ms)));
   const attempts: AfroOneSingingAttempt[] = [];
+  let incurredSynthesisUsd = 0;
   for (const engine of configuredOrder(env)) {
     try {
       const rendered = engine === 'local-score-singer'
@@ -708,12 +713,43 @@ export async function renderAfroOneSinging(
         : engine === 'fal-ace-step'
           ? await renderFalAceStep(manifest, env, fetcher, sleep)
           : await renderReplicateAceStep(manifest, env, fetcher, sleep);
+      if (dependencies.verifyCandidate) {
+        try {
+          await dependencies.verifyCandidate(rendered);
+        } catch (error) {
+          incurredSynthesisUsd = money(
+            incurredSynthesisUsd + rendered.cost.synthesisUsd
+          );
+          attempts.push({
+            engine,
+            outcome: 'failed',
+            estimatedCostUsd: rendered.cost.synthesisUsd,
+            reason: `verification:${(error as Error).message || 'failed'}`,
+          });
+          continue;
+        }
+      }
       attempts.push({
         engine,
         outcome: 'succeeded',
         estimatedCostUsd: rendered.cost.synthesisUsd,
       });
-      return { ...rendered, attempts };
+      const synthesisUsd = money(
+        incurredSynthesisUsd + rendered.cost.synthesisUsd
+      );
+      return {
+        ...rendered,
+        attempts,
+        cost: {
+          ...rendered.cost,
+          synthesisUsd,
+          totalUsd: money(
+            synthesisUsd +
+              rendered.cost.voiceConversionUsd +
+              rendered.cost.verificationUsd
+          ),
+        },
+      };
     } catch (error) {
       const reason = (error as Error).message || 'failed';
       attempts.push({
