@@ -8,7 +8,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { grooveOffsetMs, isMaterialRole, jobOf, parseStorageUri } from '@afrohit/shared';
+import { grooveOffsetMs, isMaterialRole, jobOf, parseStorageUri, sectionEnergyGainDb } from '@afrohit/shared';
 import { downloadToBuffer } from './storage';
 
 export const NATIVE_AUDIO_LIMITS = Object.freeze({
@@ -683,6 +683,10 @@ export interface AssemblySection {
   bars: number;
   /** indexes into the layers array — which material plays in this section */
   layerIdx: number[];
+  /** 0..1 — the arrangement's energy arc (Producer Brain / direction profiles).
+   * Scales this section's bus gain via sectionEnergyGainDb (-2.5..+1.5 dB) so
+   * hooks audibly lift and intros sit back. Absent → 0 dB (legacy behavior). */
+  energy?: number;
 }
 
 /** The musical job a layer's role serves — the SAME mapping the arranger and
@@ -703,10 +707,35 @@ function layerJobOf(role: string | undefined): string | null {
   )[role] ?? null;
 }
 
+/** SECTION CROSSFADE (SOUNDWAVE1 fix 4): sections used to be independent files
+ *  butt-spliced with the concat demuxer — an audible splice at every boundary
+ *  (beds cut mid-ring, phrases hard-reset). Each non-final section now renders
+ *  CROSSFADE_S longer (the extra tail is the next loop repetition continuing
+ *  naturally — the loops are seamless by construction) and acrossfade overlaps
+ *  exactly that extra tail, so every boundary stays ON the bar grid and the
+ *  total duration is exactly the sum of the section lengths. */
+export const SECTION_CROSSFADE_S = 0.03;
+
+/** Pure builder for the section-join filtergraph (exported for the offline
+ *  gate suite): chains n-1 acrossfades (tri/tri = constant-amplitude linear,
+ *  correct for correlated loop material) into [a]. n must be >= 2. */
+export function buildCrossfadeJoinGraph(n: number, fadeS = SECTION_CROSSFADE_S): string {
+  if (!Number.isInteger(n) || n < 2) throw new Error(`crossfade join needs >=2 inputs (got ${n})`);
+  const parts: string[] = [];
+  let prev = '[0:a]';
+  for (let i = 1; i < n; i++) {
+    const label = i === n - 1 ? '[a]' : `[x${i}]`;
+    parts.push(`${prev}[${i}:a]acrossfade=d=${fadeS}:c1=tri:c2=tri${label}`);
+    prev = label;
+  }
+  return parts.join(';');
+}
+
 /**
  * Assemble a full beat from real material: each section loops its layers to the
  * section length (time-stretched to the target BPM), mixes them, then sections
- * concat into one continuous WAV. Deterministic — the exact beat, every time.
+ * join with short crossfades into one continuous WAV. Deterministic — the exact
+ * beat, every time.
  */
 export async function assembleBeat(opts: {
   layers: AssemblyLayer[];
@@ -718,9 +747,15 @@ export async function assembleBeat(opts: {
   const dir = await mkdtemp(join(tmpdir(), 'assemble-'));
   try {
     const sectionFiles: string[] = [];
+    // Exact musical length of the record (sum of included section lengths).
+    // Every section file carries a SECTION_CROSSFADE_S pad tail; each join
+    // consumes one pad, and the final -t trim drops the last — boundaries land
+    // exactly on the bar grid and the bookkeeping stays honest.
+    let totalDurS = 0;
     for (let s = 0; s < opts.sections.length; s++) {
       const sec = opts.sections[s]!;
       const secDur = (60 / opts.targetBpm) * 4 * sec.bars;
+      const renderDur = secDur + SECTION_CROSSFADE_S;
       const active = sec.layerIdx.map((i) => opts.layers[i]).filter(Boolean) as AssemblyLayer[];
       if (!active.length) {
         if (!opts.preserveEmptySections) continue;
@@ -728,12 +763,13 @@ export async function assembleBeat(opts: {
         await runFfmpeg([
           '-f', 'lavfi',
           '-i', 'anullsrc=r=44100:cl=stereo',
-          '-t', secDur.toFixed(3),
+          '-t', renderDur.toFixed(3),
           '-ar', '44100',
           '-ac', '2',
           outPath,
         ]);
         sectionFiles.push(outPath);
+        totalDurS += secDur;
         continue;
       }
       const inputs: string[] = [];
@@ -784,20 +820,40 @@ export async function assembleBeat(opts: {
       // peaks; the master downstream restores loudness. Deterministic ffmpeg —
       // no brain, no credit, no excuse.
       const busTrim = Math.min(1, 1 / Math.sqrt(Math.max(1, active.length / 3)));
-      const safety = `,volume=${busTrim.toFixed(3)},alimiter=level=false:limit=0.891:attack=2:release=80`;
+      // HOOK LIFT (SOUNDWAVE1 fix 3): the equal-power busTrim makes N·gain²
+      // constant, so layer-count dynamics cancel and every section lands at the
+      // same RMS. The planned energy arc (0..1) now scales the section bus by a
+      // bounded curve (-2.5 dB at 0 → +1.5 dB at 1) ON TOP of the density trim;
+      // the alimiter below keeps true-peak safety. No energy → 0 dB, exactly
+      // the old bus.
+      const energyGain = Math.pow(10, sectionEnergyGainDb(sec.energy) / 20);
+      const sectionGain = busTrim * energyGain;
+      const safety = `,volume=${sectionGain.toFixed(3)},alimiter=level=false:limit=0.891:attack=2:release=80`;
       const filter =
         active.length === 1
           ? chains[0]!.replace(/\[l0\]$/, `${safety}[out]`)
           : `${chains.join(';')};${labels.join('')}amix=inputs=${active.length}:duration=longest:normalize=0${safety}[out]`;
-      await runFfmpeg([...inputs, '-filter_complex', filter, '-map', '[out]', '-t', secDur.toFixed(3), '-ar', '44100', '-ac', '2', outPath]);
+      await runFfmpeg([...inputs, '-filter_complex', filter, '-map', '[out]', '-t', renderDur.toFixed(3), '-ar', '44100', '-ac', '2', outPath]);
       sectionFiles.push(outPath);
+      totalDurS += secDur;
     }
     if (!sectionFiles.length) throw new Error('assembly produced no sections');
-    // Concat the sections into the full beat.
-    const listPath = join(dir, 'list.txt');
-    await writeFile(listPath, sectionFiles.map((f) => `file '${f.replace(/\\/g, '/')}'`).join('\n'));
+    // Join the sections into the full beat with short crossfades (fix 4) —
+    // never the concat demuxer's butt-splice. The final -t trims the last
+    // section's pad tail so the record is exactly its planned length.
     const outPath = join(dir, 'beat.wav');
-    await runFfmpeg(['-f', 'concat', '-safe', '0', '-i', listPath, '-ar', '44100', '-ac', '2', outPath]);
+    if (sectionFiles.length === 1) {
+      await runFfmpeg(['-i', sectionFiles[0]!, '-t', totalDurS.toFixed(3), '-ar', '44100', '-ac', '2', outPath]);
+    } else {
+      const joinInputs = sectionFiles.flatMap((f) => ['-i', f]);
+      await runFfmpeg([
+        ...joinInputs,
+        '-filter_complex', buildCrossfadeJoinGraph(sectionFiles.length),
+        '-map', '[a]',
+        '-t', totalDurS.toFixed(3),
+        '-ar', '44100', '-ac', '2', outPath,
+      ]);
+    }
     return await readFile(outPath);
   } finally {
     await rm(dir, { recursive: true, force: true }).catch(() => {});
@@ -1791,13 +1847,23 @@ export async function transformAudio(input: Buffer, opts: { tempo?: number; semi
   }
 }
 
+/** Pure filtergraph for mixBuffers (exported for the offline gate suite).
+ *  normalize=0 is LOAD-BEARING (SOUNDWAVE1 fix 5): amix defaults to scaling
+ *  every input by 1/inputs, so mixing the melody/trained layer over the bed
+ *  silently dropped BOTH ~6 dB — the "melody take ships quiet" defect. The
+ *  raw sum is kept honest and the alimiter (level=false, -1 dB ceiling — the
+ *  house bus discipline) catches the summed peaks instead of a blind rescale. */
+export function buildMixBuffersGraph(layerGain: number): string {
+  return `[1:a]volume=${layerGain}[l];[0:a][l]amix=inputs=2:duration=first:dropout_transition=0:normalize=0,alimiter=level=false:limit=0.891:attack=2:release=80[a]`;
+}
+
 /** Mix two audio buffers (bed + layer) into one WAV; layer gain 0-1. */
 export async function mixBuffers(bed: Buffer, layer: Buffer, layerGain = 0.85): Promise<Buffer> {
   const dir = await mkdtemp(join(tmpdir(), 'mix2-'));
   const a = join(dir, 'a'); const b = join(dir, 'b'); const outPath = join(dir, 'out.wav');
   try {
     await writeFile(a, bed); await writeFile(b, layer);
-    await runFfmpeg(['-i', a, '-i', b, '-filter_complex', `[1:a]volume=${layerGain}[l];[0:a][l]amix=inputs=2:duration=first:dropout_transition=0[a]`, '-map', '[a]', '-ac', '2', '-ar', '44100', outPath]);
+    await runFfmpeg(['-i', a, '-i', b, '-filter_complex', buildMixBuffersGraph(layerGain), '-map', '[a]', '-ac', '2', '-ar', '44100', outPath]);
     return await readFile(outPath);
   } finally {
     await rm(dir, { recursive: true, force: true }).catch(() => {});

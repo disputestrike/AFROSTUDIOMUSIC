@@ -102,6 +102,26 @@ export function materialPanFor(role: string): number {
   return 0; // kick/snare/bass/log_drum/pads/legacy roles: center
 }
 
+/** SECTION ENERGY → BUS GAIN (SOUNDWAVE1 fix 3 — the hook lift).
+ *
+ *  The Producer Brain plans a per-section energy arc (0..1) and the AfroOne
+ *  direction profiles compute hookLift/energyBias into it — but the assembler
+ *  used to DISCARD it, and the equal-power density trim (1/sqrt(N/3))
+ *  mathematically cancels layer-count dynamics, so every section landed at the
+ *  same RMS ("flat", the owner's 'no music' verdict). This curve makes the arc
+ *  audible: a bounded lerp of -2.5 dB (energy 0, intros/outros sit back) to
+ *  +1.5 dB (energy 1, hooks lift), applied ON TOP of the density trim; the
+ *  section limiter downstream keeps true-peak safety. energy absent → 0 dB
+ *  (exactly the old behavior — unknown is honorable, never a fabricated ride).
+ */
+export const SECTION_ENERGY_DB_RANGE = { min: -2.5, max: 1.5 } as const;
+export function sectionEnergyGainDb(energy: number | null | undefined): number {
+  if (energy == null || !Number.isFinite(energy)) return 0;
+  const e = Math.max(0, Math.min(1, energy));
+  const { min, max } = SECTION_ENERGY_DB_RANGE;
+  return min + (max - min) * e;
+}
+
 /** GROOVE DOCTRINE (the PDF's "Afrobeats doesn't sit perfectly on the grid"):
  *  the TIMEKEEPERS (kick/snare/claps/low end) hold the grid dead-on; hand
  *  percussion sits a few ms BEHIND it (the laid-back Afro pocket), harmony/

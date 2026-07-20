@@ -11,7 +11,7 @@
  */
 import { GENRE_KIT_KEYS, GENRE_PALETTES, forgeKitFor, getGenreKit, isMaterialRole, familyOf, jobOf, materialGainFor, materialPanFor, measured, unknownAnalysis, type MaterialRole, type MeasuredAnalysis } from '@afrohit/shared';
 import { forgePromptFor, isKeyedRole } from '../src/lib/forge-prompts';
-import { FORGE_TEMPO_TOLERANCE, foldedTempoDelta, forgeBarsWithinCap, materialRolePurity } from '../src/lib/material-inspection';
+import { FORGE_TEMPO_TOLERANCE, foldedTempoDelta, forgeBarsWithinCap, materialRolePurity, resolveForgeCutTempo } from '../src/lib/material-inspection';
 
 let failures = 0;
 const fail = (m: string) => { console.error(`FAIL: ${m}`); failures++; };
@@ -198,6 +198,27 @@ if (foldedTempoDelta(112, 224).delta > 0.001) fail('tempo-fold: a double-tempo d
 if (foldedTempoDelta(112, 111).delta > FORGE_TEMPO_TOLERANCE) fail('tempo-fold: a 1bpm-off detection is within the 4% tolerance');
 if (foldedTempoDelta(112, 100).delta <= FORGE_TEMPO_TOLERANCE) fail('tempo-fold: a 100bpm render of a 112bpm prompt must be OUT of tolerance');
 if (Math.abs(foldedTempoDelta(112, 225).foldedBpm - 112.5) > 0.001) fail('tempo-fold: foldedBpm must report the closest octave interpretation');
+
+// ---- 7b: ONE TEMPO BELIEF (SOUNDWAVE1 fix 2) -------------------------------
+// The bpm the loop file is CUT at IS the bpm the row stores — trim length and
+// stored tempo can never disagree again (the ≤4%-per-cycle layer-drift bug).
+{
+  const und = resolveForgeCutTempo(112, null);
+  if (und.rowBpm !== 112 || und.state !== 'undetected') fail('cut-tempo: undetected must cut+store the prompted grid');
+  const conf = resolveForgeCutTempo(112, 110.4);
+  if (conf.rowBpm !== 110 || conf.state !== 'confirmed') fail('cut-tempo: an accepted measurement becomes BOTH the cut grid and the row bpm');
+  if (resolveForgeCutTempo(112, 224).rowBpm !== 112) fail('cut-tempo: octave detections fold before becoming the grid');
+  const bad = resolveForgeCutTempo(112, 100);
+  if (bad.state !== 'contradicted' || bad.rowBpm !== 112) fail('cut-tempo: a contradicted render is rejected, never relabeled — the receipt bytes stay on the prompted grid');
+  // Structural invariant: a loop cut to N bars at rowBpm and stretched by
+  // targetBpm/rowBpm occupies exactly N bars of the target grid.
+  for (const [prompted, detected, target] of [[112, 110.4, 104], [104, 208, 112], [96, null, 96], [128, 126, 120]] as Array<[number, number | null, number]>) {
+    const res = resolveForgeCutTempo(prompted, detected);
+    const fileDurS = (60 / res.rowBpm) * 4 * 8;
+    const stretched = fileDurS / (target / res.rowBpm);
+    if (Math.abs(stretched - (8 * 240) / target) > 1e-9) fail(`cut-tempo invariant broken for ${prompted}/${detected}/${target}`);
+  }
+}
 
 // ---- 8: ROLE PURITY — the ABSENCE gates (source-truth item 4) --------------
 // Presence-only evidence had an inversion: a 'shaker' hiding a kick+bass full

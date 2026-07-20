@@ -180,6 +180,29 @@ export function seedFrom(...parts: Array<string | number>): number {
   return h >>> 0;
 }
 
+/** SEEDED HOME-KEY PICK (SOUNDWAVE1 fix 7 — key variety).
+ *
+ *  The own engine used to take commonKeys[0] — every afrobeats render was
+ *  B minor forever. This picks deterministically from the lane's common keys
+ *  by the render's STORED renderSpec seed: stable per render (replays and
+ *  deterministicMode reproduce the exact key), varied across renders (each new
+ *  seed can land a different key). The seed is re-hashed with a stable label so
+ *  sequential seeds still spread across the list. Empty/absent key lists fall
+ *  back honestly.
+ */
+export function pickHomeKey(
+  commonKeys: readonly (string | null | undefined)[] | null | undefined,
+  seed: number,
+  fallback = 'A minor'
+): string {
+  const keys = (commonKeys ?? []).filter(
+    (k): k is string => typeof k === 'string' && k.trim().length > 0
+  );
+  if (!keys.length) return fallback;
+  const idx = seedFrom('home-key', seed >>> 0) % keys.length;
+  return keys[idx]!;
+}
+
 // ---------------------------------------------------------------------------
 // Syllabification — naive but CONSISTENT (vowel-group split)
 // ---------------------------------------------------------------------------

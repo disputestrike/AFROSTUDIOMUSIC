@@ -183,6 +183,22 @@ export function composeStyleTags(
   const hasDna = !!input.dnaTags?.length;
   // Humanize the genre enum so the model reads "afro dancehall", not "afro_dancehall".
   const genreLabel = opts.genreLabel ?? (input.genre ?? 'afrobeats').replace(/_/g, ' ');
+  // VERBATIM FORGE MODE (SOUNDWAVE1 fix 1): the isolated-loop forge writes its
+  // own prompt ("solo shaker groove … shaker only, no other instruments") and
+  // it must reach the engine INTACT. The full-band pipeline below truncated it
+  // to 160 chars and buried it behind the genre anchor + signature + engineTags
+  // inside a 700-char budget — on Afro lanes the forge text was dropped
+  // ENTIRELY, so every "isolated loop" rendered as a full mix. In verbatim mode
+  // the prompt is a minimal identity prefix (genre, bpm, key when present) plus
+  // the caller's vibePrompt IN FULL: no anchor, no signature, no engineTags, no
+  // dnaTags, no fallbackLiteral, no slice, no budget — so isolation clauses,
+  // the key, and variant directions ("variation B — a DIFFERENT pattern")
+  // survive to the engine.
+  if (input.promptMode === 'verbatim') {
+    const prefix = `${genreLabel}, ${input.bpm} bpm${input.keySignature ? `, ${opts.keyPrefix ?? 'key '}${input.keySignature}` : ''}`;
+    const verbatim = (input.vibePrompt ?? '').trim();
+    return verbatim ? [prefix, verbatim] : [prefix];
+  }
   // ONE membership test: a genre is Afro iff afroIdentity recognises it. This
   // keeps the anchor, the anti-Latin scrub and the exclusion perfectly in sync —
   // the old separate isAfro regex disagreed with afroIdentity, so a genre could

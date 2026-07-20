@@ -61,6 +61,8 @@ import {
   inspectMaterialAudio,
   measureLoopCutPoint,
   normalizeLoopLoudness,
+  qcGateDecision,
+  resolveForgeCutTempo,
 } from "../lib/material-inspection";
 import { assessLaneCompliance } from "../lib/lane-assess";
 import { persistNativeStemBuses } from "./stems";
@@ -121,12 +123,22 @@ export async function processForgeMaterial(p: ForgePayload) {
     let result: Awaited<ReturnType<typeof adapter.generate>> | null = null;
     for (let tryNo = 0; tryNo < 4; tryNo++) {
       if (tryNo > 0) await new Promise(r => setTimeout(r, 20_000 * tryNo));
+      // VERBATIM FORGE PROMPT (SOUNDWAVE1 fix 1): promptMode 'verbatim' makes
+      // every adapter send THIS prompt in full behind a minimal genre/bpm/key
+      // prefix — no genre anchor/signature/engineTags pipeline, no 160-char
+      // slice. The old path truncated/dropped the "solo X only" isolation text
+      // entirely on Afro lanes, so every "isolated loop" rendered a full mix.
+      // keySignature now rides as a REAL input field too (it only lived inside
+      // the vibe text before, exactly the part that was being cut) so keyed
+      // forges stop rendering in random keys, and variant suffixes survive.
       let r = await adapter.generate({
         genre: p.genre,
         bpm: p.bpm,
+        keySignature: key,
         durationS: Math.min(loopDur, 30),
         withStems: false,
         vibePrompt: prompt,
+        promptMode: "verbatim",
       });
       let attempts = 0;
       while (r.status === "queued" || r.status === "running") {
@@ -165,6 +177,17 @@ export async function processForgeMaterial(p: ForgePayload) {
     // minutes-long provider render. Fails honest: no stable grid / DSP down →
     // the legacy default, and the receipt below SAYS so.
     const cutPoint = await measureLoopCutPoint(raw);
+    // ONE TEMPO BELIEF PER FILE (SOUNDWAVE1 fix 2 — the drift killer): the loop
+    // used to be CUT to bars at the PROMPTED bpm while the row STORED the
+    // measured bpm — the assembler then stretched by the row bpm and every loop
+    // repeat landed off-grid (≤4% drift per cycle, layers flamming apart mid-
+    // section). Tempo verification now runs on the RAW render BEFORE trimming:
+    // the accepted folded bpm becomes BOTH the cut grid and the stored row bpm,
+    // so trim length, bars, bpm and durationS agree by construction. Undetected
+    // stays honorable (cut+store the prompted grid; the post-trim measurement
+    // below remains a receipt, never a relabel).
+    const cutTempo = resolveForgeCutTempo(p.bpm, cutPoint.tempoBpm);
+    const rowBpm = cutTempo.rowBpm;
     // WINDOW GUARD: the cut start (measured downbeat OR the legacy 0.5s) plus
     // the full bar count must fit inside the render, or ffmpeg silently
     // returns FEWER bars than the row claims — the exact fiction this wave
@@ -172,12 +195,12 @@ export async function processForgeMaterial(p: ForgePayload) {
     // 1s guard band) and clamp the start back rather than losing bars; the
     // receipt discloses the clamp.
     const rawDurS = await probeAudioBufferDurationS(raw).catch(() => 0);
-    const barsDurS = (60 / p.bpm) * 4 * bars;
+    const barsDurS = (60 / rowBpm) * 4 * bars;
     const requestedStartS = cutPoint.startS ?? 0.5;
     const maxStartS =
       rawDurS > 0 ? Math.max(0, rawDurS - 1 - barsDurS) : requestedStartS;
     const trimStartS = Math.min(requestedStartS, maxStartS);
-    const trimmed = await trimToLoop(raw, p.bpm, bars, { startS: trimStartS });
+    const trimmed = await trimToLoop(raw, rowBpm, bars, { startS: trimStartS });
     // PER-LOOP LOUDNESS (item 3): providers render at coin-flip levels, which
     // made the fixed role-gain doctrine (drums 1.0, chords 0.7…) meaningless.
     // Normalize the trimmed loop to the shelf level (~-18 LUFS) so every brick
@@ -250,7 +273,8 @@ export async function processForgeMaterial(p: ForgePayload) {
           kind: "loop",
           role: p.role,
           genre,
-          bpm: p.bpm,
+          // the bpm the file was ACTUALLY cut at (fix 2) — receipts never lie
+          bpm: rowBpm,
           keySignature: key ?? null,
           bars,
           durationS: inspection.qc?.durationS ?? null,
@@ -269,6 +293,7 @@ export async function processForgeMaterial(p: ForgePayload) {
             trim: trimReceipt,
             loudness: loudnessReceipt,
             prompt,
+            promptMode: "verbatim",
             engine: adapter.name,
             origin: "forged",
             rightsBasis: "provider-generated",
@@ -308,19 +333,34 @@ export async function processForgeMaterial(p: ForgePayload) {
       );
     }
 
-    // MEASURED TEMPO IS THE RECORD (item 1): the row used to store the PROMPTED
-    // bpm while the detector's number went to meta — the assembler then
-    // time-stretched by a fiction. Detectors are octave-ambiguous, so the
-    // comparison folds (×0.5/×1/×2) first; a >4% miss after folding means the
-    // provider rendered a different groove than requested → rejected, never
-    // relabeled.
-    let rowBpm = p.bpm;
+    // MEASURED TEMPO — RAW-RENDER-FIRST (SOUNDWAVE1 fix 2): the accept/reject
+    // decision and the cut grid were resolved from the RAW render's measurement
+    // ABOVE (resolveForgeCutTempo), so the file was trimmed at the SAME bpm the
+    // row stores. Here the verdict is enforced (a contradicted render is
+    // rejected with its receipt, never relabeled) and, when the raw pass could
+    // not read a tempo, the post-trim inspection still gates — but it can no
+    // longer RELABEL the row: the file was cut at the prompted grid, and
+    // storing a different bpm than the cut was exactly the drift bug.
     let tempoVerification: Record<string, unknown> = {
       promptedBpm: p.bpm,
-      detectedBpm: null,
-      state: "undetected", // unknown is honorable — the prompt stays as declared intent
+      detectedBpm: cutPoint.tempoBpm,
+      state: cutTempo.state, // unknown is honorable — the prompt stays as declared intent
+      source: "raw-render",
+      cutBpm: rowBpm,
+      ...(cutTempo.foldedBpm != null
+        ? { foldedBpm: +cutTempo.foldedBpm.toFixed(1) }
+        : {}),
+      ...(cutTempo.deltaRatio != null
+        ? { deltaRatio: +cutTempo.deltaRatio.toFixed(4) }
+        : {}),
     };
-    if (inspection.detectedBpm != null) {
+    if (cutTempo.state === "contradicted") {
+      await fileRejectedForge("tempo-mismatch", { tempoVerification });
+      throw new Error(
+        `forged ${p.role} loop measured ${cutPoint.tempoBpm}bpm (best octave ${cutTempo.foldedBpm!.toFixed(1)}) vs requested ${p.bpm} — rejected, not relabeled`
+      );
+    }
+    if (cutTempo.state === "undetected" && inspection.detectedBpm != null) {
       const { foldedBpm, delta } = foldedTempoDelta(
         p.bpm,
         inspection.detectedBpm
@@ -331,6 +371,8 @@ export async function processForgeMaterial(p: ForgePayload) {
         foldedBpm: +foldedBpm.toFixed(1),
         deltaRatio: +delta.toFixed(4),
         state: delta > FORGE_TEMPO_TOLERANCE ? "contradicted" : "confirmed",
+        source: "trimmed-loop",
+        cutBpm: rowBpm,
       };
       if (delta > FORGE_TEMPO_TOLERANCE) {
         await fileRejectedForge("tempo-mismatch", { tempoVerification });
@@ -338,7 +380,6 @@ export async function processForgeMaterial(p: ForgePayload) {
           `forged ${p.role} loop measured ${inspection.detectedBpm}bpm (best octave ${foldedBpm.toFixed(1)}) vs requested ${p.bpm} — rejected, not relabeled`
         );
       }
-      rowBpm = Math.round(foldedBpm);
     }
 
     // MEASURED KEY IS THE RECORD (item 1): a keyed role whose detected key HARD
@@ -400,9 +441,12 @@ export async function processForgeMaterial(p: ForgePayload) {
         kind: "loop",
         role: p.role,
         genre,
-        // Measured facts are the record: verified (octave-folded) tempo, the
-        // detected key, the ACTUAL bars after the slow-bpm cap, and the QC'd
-        // duration of the bytes that ship — never the prompt's fiction.
+        // ONE TEMPO BELIEF (fix 2): the row bpm IS the bpm the file was cut at
+        // (raw-measured folded tempo when readable, else the prompted grid) —
+        // trim length, bars, bpm and durationS agree by construction, so the
+        // assembler's stretch ratio and -stream_loop can never disagree again.
+        // Key, ACTUAL bars after the slow-bpm cap, and the QC'd duration of the
+        // shipped bytes stay measured facts.
         bpm: rowBpm,
         keySignature: rowKey,
         bars,
@@ -425,6 +469,7 @@ export async function processForgeMaterial(p: ForgePayload) {
           ...(inspection.purity ? { purity: inspection.purity } : {}),
           ...(bars !== requestedBars ? { requestedBars } : {}),
           prompt,
+          promptMode: "verbatim",
           engine: adapter.name,
           origin: "forged",
           rightsBasis: "provider-generated",
@@ -466,8 +511,10 @@ interface AssemblePayload {
     gain: number;
     pan?: number;
   }>;
-  /** Claude-authored arrangement (API-side, validated); absent → classic template. */
-  sections?: Array<{ name: string; bars: number; roles: string[] }> | null;
+  /** Claude-authored arrangement (API-side, validated); absent → classic template.
+   *  energy (0..1, optional) is the plan's arc — it scales each section's bus
+   *  gain (sectionEnergyGainDb) so hooks lift and intros sit back (fix 3). */
+  sections?: Array<{ name: string; bars: number; roles: string[]; energy?: number }> | null;
   withStems?: boolean;
 }
 
@@ -744,7 +791,16 @@ export async function processAssembleBeat(p: AssemblePayload) {
     // per-material), otherwise the family-aware producer template — strip in,
     // stack the hook, breathe, strip out.
     const planned: AssemblySection[] = (p.sections ?? [])
-      .map(s => ({ name: s.name, bars: s.bars, layerIdx: idx(s.roles) }))
+      .map(s => ({
+        name: s.name,
+        bars: s.bars,
+        layerIdx: idx(s.roles),
+        // HOOK LIFT (fix 3): the plan's energy arc reaches the bus instead of
+        // being validated then discarded.
+        ...(typeof s.energy === "number" && Number.isFinite(s.energy)
+          ? { energy: Math.max(0, Math.min(1, s.energy)) }
+          : {}),
+      }))
       .filter(s => s.layerIdx.length > 0 && s.bars >= 2);
     // OWNER LAW: when a bucket comes up empty the fallback is ALWAYS the full
     // stack (`all`) — a thin one-loop section is never acceptable.
@@ -755,6 +811,8 @@ export async function processAssembleBeat(p: AssemblePayload) {
       (a, s) => a + (Number(s.bars) || 0),
       0
     );
+    // Template energies (fix 3): the classic arc — intro/outro sit back,
+    // verses carry, hooks lift — so even the fallback template breathes.
     const sections: AssemblySection[] =
       planned.length >= 3
         ? planned
@@ -762,6 +820,7 @@ export async function processAssembleBeat(p: AssemblePayload) {
             {
               name: "intro",
               bars: 4,
+              energy: 0.42,
               layerIdx: dedupe([...rhythm.slice(0, 2), ...harmony.slice(0, 1)])
                 .length
                 ? dedupe([...rhythm.slice(0, 2), ...harmony.slice(0, 1)])
@@ -770,22 +829,25 @@ export async function processAssembleBeat(p: AssemblePayload) {
             {
               name: "verse",
               bars: 8,
+              energy: 0.62,
               layerIdx: dedupe([...rhythm, ...lowEnd]).length
                 ? dedupe([...rhythm, ...lowEnd])
                 : all,
             },
-            { name: "hook", bars: 8, layerIdx: all },
+            { name: "hook", bars: 8, energy: 0.85, layerIdx: all },
             {
               name: "verse2",
               bars: 8,
+              energy: 0.68,
               layerIdx: dedupe([...rhythm, ...lowEnd, ...harmony]).length
                 ? dedupe([...rhythm, ...lowEnd, ...harmony])
                 : all,
             },
-            { name: "hook2", bars: 8, layerIdx: all },
+            { name: "hook2", bars: 8, energy: 0.9, layerIdx: all },
             {
               name: "outro",
               bars: 4,
+              energy: 0.38,
               layerIdx: dedupe([...rhythm.slice(0, 2), ...lowEnd.slice(0, 1)])
                 .length
                 ? dedupe([...rhythm.slice(0, 2), ...lowEnd.slice(0, 1)])
@@ -900,18 +962,35 @@ export async function processAssembleBeat(p: AssemblePayload) {
         "assembled take could not be technically measured — nothing shipped"
       );
     }
-    if (qc.verdict !== "pass") {
-      // ACTIONABLE SHELF ERROR (owner, live kill 2026-07-19 evening: a new
-      // studio picking AfroOne died on "failed QC (flat)" — a wall, not a
-      // direction). When the shelf was too thin to build from, the failure
-      // must tell the artist the ONE move that fixes it. A rich shelf that
-      // still fails QC keeps the technical reason — that's a real defect.
+    // QC SHIP CONTRACT (SOUNDWAVE1 fix 6): the code's own doctrine — "'weak'
+    // ships flagged" — is now enforced instead of contradicted. Hard flags
+    // (too_quiet/clipping/short/unmeasured → verdict 'fail' or an unmeasured
+    // capture) still die with the actionable message; a 'flat'/'squashed'
+    // weak-but-real take SHIPS with qualityState + an honest note (the known
+    // empty-shelf "failed QC (flat)" kill). The shelf-class terminal-failure
+    // message is preserved for the truly-broken cases.
+    let qcShipNote: string | null = null;
+    {
       const flags = (qc.flags ?? []).join(", ") || "broken audio";
-      throw new Error(
-        !cov.ready
-          ? `assembled take failed QC (${flags}) — your shelf is too thin to build from: upload a kit or forge starter material for this genre, then create again`
-          : `assembled take failed QC (${flags}) — nothing shipped`
-      );
+      const decision = qcGateDecision(qc);
+      if (decision === "hard_fail") {
+        // ACTIONABLE SHELF ERROR (owner, live kill 2026-07-19 evening: a new
+        // studio picking AfroOne died on "failed QC (flat)" — a wall, not a
+        // direction). When the shelf was too thin to build from, the failure
+        // must tell the artist the ONE move that fixes it. A rich shelf that
+        // still fails QC keeps the technical reason — that's a real defect.
+        throw new Error(
+          !cov.ready
+            ? `assembled take failed QC (${flags}) — your shelf is too thin to build from: upload a kit or forge starter material for this genre, then create again`
+            : `assembled take failed QC (${flags}) — nothing shipped`
+        );
+      }
+      if (decision === "ship_flagged") {
+        qcShipNote = !cov.ready
+          ? `weak take shipped flagged (${flags}) — your shelf is thin: upload a kit or forge starter material for this genre, then re-render for a fuller bed`
+          : `weak take shipped flagged (${flags})`;
+        console.warn(`[assemble] ${qcShipNote}`);
+      }
     }
     for (const staleUrl of attemptedUrls.filter(
       candidate => candidate !== url
@@ -947,12 +1026,17 @@ export async function processAssembleBeat(p: AssemblePayload) {
     });
     attemptedUrls.push(masteredUrl);
     // Certify what actually SHIPS: the mastered artifact passes the same QC
-    // gate; a master that breaks a passing sum fails the job honestly.
+    // contract (fix 6) — hard flags fail honestly, a weak-but-real master
+    // ships flagged with the note.
     const masterQc = await measureAudioQuality(masteredUrl).catch(() => null);
-    if (!masterQc || masterQc.verdict !== "pass") {
+    if (!masterQc || qcGateDecision(masterQc) === "hard_fail") {
       throw new Error(
         `assembled master failed QC (${(masterQc?.flags ?? []).join(", ") || "unmeasured"}) — nothing shipped`
       );
+    }
+    if (masterQc.verdict !== "pass" && !qcShipNote) {
+      qcShipNote = `weak master shipped flagged (${(masterQc.flags ?? []).join(", ")})`;
+      console.warn(`[assemble] ${qcShipNote}`);
     }
     const masterTarget = MASTER_TARGETS[masterPreset]!;
     if (
@@ -1001,7 +1085,8 @@ export async function processAssembleBeat(p: AssemblePayload) {
           duration: qc.durationS,
           provider: "material",
           assetKind: "instrumental",
-          qualityState: "passed",
+          // fix 6: a weak-but-real take ships FLAGGED, never silently "passed"
+          qualityState: qc.verdict === "pass" ? "passed" : "weak",
           contentHash: assembledContentHash,
           verifiedAt: new Date(),
           // Turns green only after the lane-listen receipt below is persisted.
@@ -1014,9 +1099,12 @@ export async function processAssembleBeat(p: AssemblePayload) {
             materialIds: usedPicks.map(pick => pick.id),
             roles: usedPicks.map(pick => pick.role),
             sections: sections.map(
-              section => `${section.name}:${section.bars}`
+              section =>
+                `${section.name}:${section.bars}${section.energy != null ? `@${section.energy}` : ""}`
             ),
             assemblyLog,
+            // fix 6 receipt: why this take shipped flagged (null = clean pass)
+            ...(qcShipNote ? { qcShipNote } : {}),
             // qc = the MASTERED artifact's measured QC (what actually ships);
             // the raw bus sum and its measurement stay as audit evidence.
             qc,

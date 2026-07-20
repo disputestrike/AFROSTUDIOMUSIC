@@ -168,7 +168,10 @@ async function overlayAtTimes(bed: Buffer, hit: Buffer, timesS: number[], gain =
     for (let i = 0; i < times.length; i++) inputs.push('-i', hitP);
     const parts = times.map((t, i) => `[${i + 1}:a]adelay=${Math.round(t * 1000)}|${Math.round(t * 1000)},volume=${gain}[f${i}]`);
     const mixIns = ['[0:a]', ...times.map((_t, i) => `[f${i}]`)].join('');
-    const fc = `${parts.join(';')}${parts.length ? ';' : ''}${mixIns}amix=inputs=${times.length + 1}:duration=first:dropout_transition=0[a]`;
+    // normalize=0 (SOUNDWAVE1 fix 5 sweep): amix's default 1/n input scaling
+    // dropped the whole bed by the fill COUNT (12 hits → bed at ~1/13). Honest
+    // sum + the house -1 dB safety limiter instead.
+    const fc = `${parts.join(';')}${parts.length ? ';' : ''}${mixIns}amix=inputs=${times.length + 1}:duration=first:dropout_transition=0:normalize=0,alimiter=level=false:limit=0.891:attack=2:release=80[a]`;
     await runFfmpeg([...inputs, '-filter_complex', fc, '-map', '[a]', '-ac', '2', '-ar', '44100', out]);
     return await readFile(out);
   } finally { await rm(dir, { recursive: true, force: true }).catch(() => {}); }
@@ -305,7 +308,11 @@ async function stemSurgery(sourceUrl: string, target: 'vocals' | 'drums' | 'bass
     const out = join(dir, 'out.wav');
     await runFfmpeg([
       '-i', paths[0]!, '-i', paths[1]!, '-i', paths[2]!, '-i', paths[3]!,
-      '-filter_complex', '[0:a][1:a][2:a][3:a]amix=inputs=4:duration=longest:dropout_transition=0,volume=1.9[a]',
+      // normalize=0 (SOUNDWAVE1 fix 5 sweep): demucs stems SUM to the original —
+      // the default 1/4 input scaling (partially patched by volume=1.9) shipped
+      // the remix ~6 dB down. The sample-accurate sum reconstructs the record at
+      // its true level; the -1 dB limiter catches peaks when a stem was boosted.
+      '-filter_complex', '[0:a][1:a][2:a][3:a]amix=inputs=4:duration=longest:dropout_transition=0:normalize=0,alimiter=level=false:limit=0.891:attack=2:release=80[a]',
       '-map', '[a]', '-ac', '2', '-ar', '44100', out,
     ]);
     return await readFile(out);

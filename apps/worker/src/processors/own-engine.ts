@@ -30,6 +30,7 @@ import {
   jobOf,
   parseLyricSections,
   laneFeel,
+  pickHomeKey,
   seedFrom,
   selectMaterialRows,
   materialCoverage,
@@ -244,13 +245,24 @@ function sectionsFrom(
     const n = blueprint.sections.length;
     return blueprint.sections.map((s, i) => {
       let sectionRoles = full;
-      if (n >= 3 && (i === 0 || i === n - 1)) sectionRoles = lite;
-      else if (n === 2) sectionRoles = i === 0 ? mid : full;
-      else if (n >= 4 && (i - 1) % 2 === 0) sectionRoles = mid;
+      // Positional energy (fix 3): density and level tell the same story —
+      // sparse open/close sits back, mid sections carry, full stacks lift.
+      let energy = 0.85;
+      if (n >= 3 && (i === 0 || i === n - 1)) {
+        sectionRoles = lite;
+        energy = 0.45;
+      } else if (n === 2) {
+        sectionRoles = i === 0 ? mid : full;
+        energy = i === 0 ? 0.65 : 0.85;
+      } else if (n >= 4 && (i - 1) % 2 === 0) {
+        sectionRoles = mid;
+        energy = 0.65;
+      }
       return {
         name: `S${i + 1}`,
         bars: Math.max(2, s.bars ?? 8),
         roles: sectionRoles,
+        energy,
       };
     });
   }
@@ -260,14 +272,16 @@ function sectionsFrom(
       role => roleJob(role) === "harmony" || roleJob(role) === "melody"
     )
   );
+  // Template energies (fix 3): the arc the arrangement was already SHAPED as —
+  // now it reaches the bus gain instead of only the role lists.
   return [
-    { name: "intro", bars: 4, roles: lite }, // real sparse open — 2 rhythm + 1 harmony
-    { name: "verse", bars: 16, roles: noBassPick.length >= 2 ? noBassPick : full }, // bass held back
-    { name: "hook", bars: 8, roles: full }, // full band arrives
-    { name: "verse2", bars: 16, roles: full }, // fuller than verse 1
-    { name: "bridge", bars: 8, roles: strip.length ? strip : lite }, // energy flip: strip-back
-    { name: "hook2", bars: 8, roles: full },
-    { name: "outro", bars: 4, roles: lite },
+    { name: "intro", bars: 4, roles: lite, energy: 0.42 }, // real sparse open — 2 rhythm + 1 harmony
+    { name: "verse", bars: 16, roles: noBassPick.length >= 2 ? noBassPick : full, energy: 0.62 }, // bass held back
+    { name: "hook", bars: 8, roles: full, energy: 0.85 }, // full band arrives
+    { name: "verse2", bars: 16, roles: full, energy: 0.68 }, // fuller than verse 1
+    { name: "bridge", bars: 8, roles: strip.length ? strip : lite, energy: 0.5 }, // energy flip: strip-back
+    { name: "hook2", bars: 8, roles: full, energy: 0.9 },
+    { name: "outro", bars: 4, roles: lite, energy: 0.38 },
   ];
 }
 
@@ -560,8 +574,15 @@ export async function processOwnEngine(p: OwnEnginePayload): Promise<void> {
   const notes: string[] = [];
   try {
     const bpm = p.bpm ?? genreSignature(p.genre).bpm ?? 112;
-    const homeKey = getSoundDNA(p.genre)?.commonKeys?.[0] ?? "A minor";
     const varietySeed = p.renderSeed ?? seedFrom(p.jobId, bpm);
+    // KEY VARIETY (SOUNDWAVE1 fix 7): commonKeys[0] made every afrobeats render
+    // B minor forever. The home key is now a deterministic seeded pick from the
+    // lane's common keys — seeded by the STORED renderSpec seed (replays and
+    // deterministicMode reproduce the exact key; keySeed === the seed written
+    // into the child renderSpec below), varied across fresh renders.
+    const keySeed = p.renderSpec?.seed ?? varietySeed;
+    const homeKey = pickHomeKey(getSoundDNA(p.genre)?.commonKeys, keySeed);
+    notes.push(`home key: ${homeKey} (seeded pick from ${p.genre} common keys)`);
 
     const rawRequestedRoles = p.requestedRoles ?? [];
     const invalidRequestedRoles = rawRequestedRoles.filter(
@@ -914,7 +935,7 @@ export async function processOwnEngine(p: OwnEnginePayload): Promise<void> {
       24,
       Math.min(160, Math.round((laneDurationS * bpm) / 240))
     );
-    let plannedSections: Array<{ name: string; bars: number; roles: string[] }> | null = null;
+    let plannedSections: Array<{ name: string; bars: number; roles: string[]; energy?: number }> | null = null;
     let productionPlanMeta: Record<string, unknown> | null = null;
     if (
       !p.blueprint?.sections?.length &&
@@ -948,10 +969,13 @@ export async function processOwnEngine(p: OwnEnginePayload): Promise<void> {
         lastOutcomes,
       });
       if (plan) {
+        // HOOK LIFT (SOUNDWAVE1 fix 3): the plan's validated energy used to be
+        // DROPPED right here — the arc now rides through to the assembly bus.
         plannedSections = plan.sections.map(s => ({
           name: s.name,
           bars: s.bars,
           roles: s.roles,
+          energy: s.energy,
         }));
         productionPlanMeta = {
           intent: plan.intent ?? null,

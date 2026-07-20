@@ -64,6 +64,16 @@ export interface MusicGenerationInput {
    * exact (it assembles per-role loops).
    */
   instruments?: string[];
+  /**
+   * VERBATIM FORGE MODE (SOUNDWAVE1 fix 1): when 'verbatim', adapters send the
+   * caller's vibePrompt IN FULL as the prompt body, prefixed only by a minimal
+   * identity line (genre, bpm, key when present). No genre anchor/signature
+   * block, no engineTags, no dnaTags, no fallbackLiteral, no 160-char slice —
+   * the isolated-loop forge writes its own prompt and the engine must receive
+   * it intact (the full-band pipeline was drowning "solo shaker only" prompts
+   * and every forge rendered a full mix). Full-song renders leave this unset.
+   */
+  promptMode?: 'verbatim';
 }
 
 export type StemAudioFormat = "wav" | "mp3" | "flac";

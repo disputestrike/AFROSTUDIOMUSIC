@@ -56,6 +56,69 @@ export function foldedTempoDelta(promptedBpm: number, detectedBpm: number): { fo
  * octave-folding did not render the requested groove. */
 export const FORGE_TEMPO_TOLERANCE = 0.04;
 
+/**
+ * ONE TEMPO BELIEF PER LOOP FILE (SOUNDWAVE1 fix 2 — the drift killer).
+ *
+ * The forge used to CUT the loop to N bars at the PROMPTED bpm, then STORE the
+ * MEASURED bpm (up to 4% away after folding) — and the assembler stretches by
+ * the stored bpm while -stream_loop trusts the file length. A loop cut on a
+ * 112-grid but stored as 111 repeats ~150 ms short of the assembler's grid
+ * every 8 bars; layers walked apart mid-section and snapped back at every
+ * seam — the single biggest groove killer.
+ *
+ * The law now: THE STORED BPM IS THE BPM THE FILE WAS CUT AT. This resolver
+ * runs on the RAW render's measured tempo BEFORE trimming:
+ *  - confirmed  → cut AND store the rounded folded measured bpm (the loop is an
+ *    exact integer number of bars of its own content at its own stored tempo);
+ *  - contradicted → the render is at the wrong tempo; the caller rejects it
+ *    (the trim still runs at the prompted grid only to file the receipt);
+ *  - undetected → unknown is honorable: cut and store the prompted bpm; any
+ *    post-trim detection stays a meta receipt and never relabels the row.
+ */
+export interface ForgeCutTempoResolution {
+  /** the bpm the loop file must be trimmed at AND stored as (always integer) */
+  rowBpm: number;
+  state: 'confirmed' | 'contradicted' | 'undetected';
+  foldedBpm: number | null;
+  deltaRatio: number | null;
+}
+
+export function resolveForgeCutTempo(
+  promptedBpm: number,
+  detectedBpm: number | null | undefined
+): ForgeCutTempoResolution {
+  if (detectedBpm == null || !Number.isFinite(detectedBpm) || detectedBpm <= 0) {
+    return { rowBpm: promptedBpm, state: 'undetected', foldedBpm: null, deltaRatio: null };
+  }
+  const { foldedBpm, delta } = foldedTempoDelta(promptedBpm, detectedBpm);
+  if (delta > FORGE_TEMPO_TOLERANCE) {
+    return { rowBpm: promptedBpm, state: 'contradicted', foldedBpm, deltaRatio: delta };
+  }
+  return { rowBpm: Math.round(foldedBpm), state: 'confirmed', foldedBpm, deltaRatio: delta };
+}
+
+// ---------------------------------------------------------------------------
+// QC SHIP CONTRACT (SOUNDWAVE1 fix 6) — the doctrine the assemble gate follows.
+// ---------------------------------------------------------------------------
+
+/**
+ * "'weak' ships flagged" was the stated contract, but the gate hard-failed
+ * every verdict !== 'pass' — an empty shelf's low-contrast (but real) take died
+ * on "failed QC (flat)". The decision is now explicit and pure:
+ *  - hard_fail:     verdict 'fail' (too_quiet / clipping / <8s) or an
+ *                   'unmeasured' capture — broken or unverifiable audio never
+ *                   ships;
+ *  - ship_flagged:  'weak' (flat / squashed) — a real take with honest defects
+ *                   ships with qualityState + note flagged;
+ *  - ship:          'pass'.
+ */
+export type QcGateDecision = 'ship' | 'ship_flagged' | 'hard_fail';
+export function qcGateDecision(qc: { verdict: 'pass' | 'weak' | 'fail'; flags?: string[] | null }): QcGateDecision {
+  if (qc.verdict === 'fail') return 'hard_fail';
+  if ((qc.flags ?? []).includes('unmeasured')) return 'hard_fail';
+  return qc.verdict === 'weak' ? 'ship_flagged' : 'ship';
+}
+
 // ---------------------------------------------------------------------------
 // ROLE PURITY — absence gates (source-truth wave item 4).
 // ---------------------------------------------------------------------------
@@ -269,6 +332,10 @@ export interface LoopCutPoint {
   startS: number | null;
   confidence: number | null;
   method: string;
+  /** measured tempo of the RAW render (pre-trim) — the number the cut grid and
+   * the stored row bpm are resolved from (resolveForgeCutTempo); null = DSP
+   * down / engine failed / tempo unreadable. */
+  tempoBpm: number | null;
 }
 
 /**
@@ -282,16 +349,20 @@ export interface LoopCutPoint {
  */
 export async function measureLoopCutPoint(bytes: Buffer): Promise<LoopCutPoint> {
   if (!(await dspAvailable().catch(() => false))) {
-    return { startS: null, confidence: null, method: 'dsp-unavailable' };
+    return { startS: null, confidence: null, method: 'dsp-unavailable', tempoBpm: null };
   }
   const measured = await measureAudio(bytes).catch(() => null);
-  if (!measured?.engineOk) return { startS: null, confidence: null, method: 'engine-failed' };
+  if (!measured?.engineOk) return { startS: null, confidence: null, method: 'engine-failed', tempoBpm: null };
+  // The RAW render's tempo rides along from the SAME measurement pass — this is
+  // what resolveForgeCutTempo consumes so the trim grid and the stored bpm can
+  // never disagree (SOUNDWAVE1 fix 2). No extra DSP cost.
+  const tempoBpm = valueOf(measured.tempoBpm);
   const field = measured.firstDownbeatS;
   const value = valueOf(field);
   if (value != null && Number.isFinite(value) && value >= 0) {
-    return { startS: value, confidence: field?.confidence ?? null, method: field?.method ?? 'measured' };
+    return { startS: value, confidence: field?.confidence ?? null, method: field?.method ?? 'measured', tempoBpm };
   }
-  return { startS: null, confidence: null, method: field?.method ?? 'unknown' };
+  return { startS: null, confidence: null, method: field?.method ?? 'unknown', tempoBpm };
 }
 
 // ---------------------------------------------------------------------------
