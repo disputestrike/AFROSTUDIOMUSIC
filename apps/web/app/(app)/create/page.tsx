@@ -112,6 +112,26 @@ const SIMPLE_SUGGESTIONS: Array<{ label: string; vibe: string; genre?: string; m
   { label: 'Summer party', vibe: 'an afrobeats party record for the summer, horns and bounce', genre: 'afrobeats', mood: 'party' },
 ];
 const STEPS = ['Setting up your session', 'Writing hooks + A&R picking the best', 'Writing the lyrics', 'Singing & producing your song'];
+// REAL PROGRESS (kills the fake spinner): map the server's actual pipeline phase
+// (JobEvent tail, surfaced on GET /jobs/:id as {phase, partial}) onto the 4-step
+// display AND a precise live line. Driven by real events; if none have arrived
+// yet the generic step copy still shows (honest fallback, never fabricated).
+const PHASE_STEP: Record<string, number> = {
+  drop_started: 0, brief_ready: 1, hooks_done: 1, lyrics_done: 2,
+  render_queued: 3, running: 3, bed_ready: 3, singing: 3, mastering: 3, render_done: 3,
+};
+const PHASE_LABEL: Record<string, string> = {
+  drop_started: 'Setting up the session',
+  brief_ready: 'Shaping the brief',
+  hooks_done: 'Writing hooks - the A&R is picking the best',
+  lyrics_done: 'Writing and polishing the lyrics',
+  render_queued: 'Building the beat',
+  running: 'Building the beat',
+  bed_ready: 'Beat is ready - singing over it now',
+  singing: 'Singing your song',
+  mastering: 'Mastering the mix',
+  render_done: 'Finishing up',
+};
 // Door 2/3 producing steps — HONEST: no "writing lyrics" line when nothing is
 // being written. Instrumentals and film sounds skip the whole writing pipeline.
 const BEAT_STEPS = ['Setting up your session', 'Building the groove', 'Rendering & mastering'];
@@ -216,11 +236,25 @@ export default function CreatePage() {
     void (async () => {
       const dropJobId = saved!.dropJobId; let renderJobId = saved!.renderJobId; let projectId = saved!.projectId;
       let hook = saved!.hook ?? ''; let score = saved!.score ?? null; let title = saved!.title ?? 'Your song';
+      const bedPlayed = { current: false };
+      let sideWatchStarted = false;
       try {
         for (let i = 0; i < 200; i++) {
           const id = renderJobId ?? dropJobId; if (!id) break;
-          let j: { status: string; error?: string | null; errorJson?: { message?: string } | null; outputJson?: { drop?: Array<{ jobId?: string; projectId?: string; title?: string; hookText?: string; score: number | null }> } };
+          let j: { status: string; phase?: string | null; partial?: unknown; error?: string | null; errorJson?: { message?: string } | null; outputJson?: { drop?: Array<{ jobId?: string; projectId?: string; title?: string; hookText?: string; score: number | null }> } };
           try { j = await api.get(`/jobs/${id}`); } catch { await sleep(6000); continue; }
+          applyPhase(j.phase);
+          playBedIfReady(j.phase, j.partial, title, bedPlayed);
+          // EARLY CHILD ID on resume too: while still watching the drop parent,
+          // start a BACKGROUND child watcher for the bed/early master. The drop
+          // parent stays authoritative (so the auto re-sing is never misread).
+          if (!renderJobId && !sideWatchStarted && j.phase === 'render_queued') {
+            const p = j.partial as { renderJobId?: string; projectId?: string } | null;
+            if (p?.renderJobId) {
+              sideWatchStarted = true;
+              void watchRenderChild(p.renderJobId, p.projectId ?? projectId ?? '', title, bedPlayed);
+            }
+          }
           if (j.status === 'FAILED') { setErr(`That render failed — ${j.errorJson?.message ?? j.error ?? 'no reason recorded'}. Start another take.`); setPhase('error'); clearProduce(); return; }
           if (j.status === 'SUCCEEDED') {
             if (!renderJobId && dropJobId) {
@@ -341,6 +375,9 @@ export default function CreatePage() {
     return q.get('produce') === '1' || q.get('resume') === '1' ? 'producing' : 'form';
   });
   const [stepIdx, setStepIdx] = useState(0);
+  // The real, event-driven live line under the steps (e.g. "Building the beat",
+  // "Beat is ready - singing over it now"). Empty until the first real event.
+  const [liveStatus, setLiveStatus] = useState('');
   const [err, setErr] = useState('');
   const [firstRun, setFirstRun] = useState(false);
   const [pendingAction, setPendingAction] = useState<RenderAction | null>(null);
@@ -472,7 +509,23 @@ export default function CreatePage() {
       ))}
     </div>
   );
-  const toggleGenre = (g: string) =>
+  // ANTICIPATORY PRE-WARM: picking a genre fires a debounced, deduped POST
+  // /prewarm so the lane's own-engine kit is forged/ready before the user clicks
+  // Create. The endpoint is idempotent per (workspace, genre, UTC day) and $0
+  // (own-kit forge only, never a paid provider hook). Pure perceived-speed hint,
+  // so it swallows every error and only fires once per genre per session.
+  const prewarmedRef = useRef<Set<string>>(new Set());
+  const prewarmTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const prewarmLane = (g: string) => {
+    if (!g || prewarmedRef.current.has(g)) return;
+    if (prewarmTimer.current) clearTimeout(prewarmTimer.current);
+    prewarmTimer.current = setTimeout(() => {
+      prewarmedRef.current.add(g);
+      void api.post(`/prewarm?genre=${encodeURIComponent(g)}`, {}).catch(() => { /* speculative — ignore */ });
+    }, 600);
+  };
+  const toggleGenre = (g: string) => {
+    prewarmLane(g); // warm the tapped lane's kit while the user keeps browsing
     setGenres((p) => {
       // The FIRST manual pick REPLACES the default backbone — so you can switch
       // the primary genre freely (the old bug: Afrobeats was stuck because tap
@@ -481,9 +534,74 @@ export default function CreatePage() {
       if (p.includes(g)) return p.length > 1 ? p.filter((x) => x !== g) : p; // keep at least 1
       return p.length >= 2 ? [p[0]!, g] : [...p, g]; // max 2: backbone + fusion
     });
+  };
   const genre = genres[0]!;
   const fusion = genres.slice(1);
   const genreLabel = genres.map((g) => GENRES.find((x) => x.value === g)?.label ?? g).join(' × ');
+
+  // Apply a REAL pipeline phase to the producing UI. Steps only advance (never
+  // rewind on an out-of-order poll). Unknown/absent phase leaves state as-is, so
+  // an old server with no events still shows the honest generic step copy.
+  function applyPhase(phase?: string | null) {
+    if (!phase) return;
+    const step = PHASE_STEP[phase];
+    if (step != null) setStepIdx((prev) => Math.max(prev, step));
+    const label = PHASE_LABEL[phase];
+    if (label) setLiveStatus(label);
+  }
+
+  // BED-FIRST: the render emits 'bed_ready' with a playable instrumental bed URL
+  // minutes before the vocal finishes. Play it immediately; the render's
+  // SUCCEEDED then hot-swaps this to the final master. Idempotent per render.
+  function playBedIfReady(
+    phase: string | null | undefined,
+    partial: unknown,
+    title: string,
+    played: { current: boolean },
+  ) {
+    if (played.current || phase !== 'bed_ready') return;
+    const url = (partial as { url?: string } | null)?.url;
+    if (typeof url === 'string' && url) {
+      played.current = true;
+      setNowPlaying({ title: `${title} (instrumental bed)`, url });
+      setLiveStatus('Beat is ready - playing the bed while the vocal renders');
+    }
+  }
+
+  // BACKGROUND CHILD WATCHER (bed-first, non-authoritative): started the moment
+  // the drop announces the render child id. It plays the instrumental bed on
+  // 'bed_ready' and the final master the instant the child render succeeds —
+  // minutes before the drop parent finishes its A&R/quality gates. It NEVER
+  // surfaces an error: the drop parent stays the source of truth for
+  // success/failure (and the server's auto re-sing fallback), so a child failure
+  // here is silent and the main flow reports the real outcome.
+  async function watchRenderChild(
+    jobId: string,
+    projectId: string,
+    title: string,
+    bedPlayed: { current: boolean },
+  ) {
+    let netFails = 0;
+    for (let i = 0; i < 200; i++) {
+      await sleep(5000);
+      let job: { status: string; phase?: string | null; partial?: unknown };
+      try { job = await api.get(`/jobs/${jobId}`); netFails = 0; }
+      catch { if (++netFails >= 24) return; continue; }
+      applyPhase(job.phase);
+      playBedIfReady(job.phase, job.partial, title, bedPlayed);
+      if (job.status === 'SUCCEEDED') {
+        if (projectId) {
+          try {
+            const beats = await api.get<Array<{ url: string; createdAt: string }>>(`/projects/${projectId}/beats`);
+            const url = beats.sort((a, b) => +new Date(b.createdAt) - +new Date(a.createdAt))[0]?.url;
+            if (url) { setNowPlaying({ title, url }); setLibRefresh((n) => n + 1); }
+          } catch { /* the main flow will fetch the master on drop success */ }
+        }
+        return;
+      }
+      if (job.status === 'FAILED') return; // silent — the drop parent is authoritative
+    }
+  }
 
   async function createSong() {
     setLastAction('song');
@@ -506,6 +624,7 @@ export default function CreatePage() {
     } catch { /* preflight is advisory — if it can't be read, proceed */ }
     setPhase('producing');
     setStepIdx(0);
+    setLiveStatus('');
     try {
       const title = songName.trim().slice(0, 80) || vibe.trim().slice(0, 60) || `${genreLabel} ${mood}`;
       const project = await api.post<{ id: string }>('/projects', { title, genre, bpm });
@@ -555,12 +674,28 @@ export default function CreatePage() {
       // prod while this window was 8 — the screen quit before the writer finished
       // and LIED "couldn't finish". Window now 16 min, and a still-RUNNING job at
       // the end hands off calmly instead of erroring.
+      // EARLY CHILD ID + BED-FIRST: the drop emits 'render_queued' with the render
+      // child's jobId the instant it is enqueued (not after the whole batch is
+      // terminal). We start a BACKGROUND watcher on that child so the bed plays
+      // and the master lands minutes early — but we keep the DROP PARENT as the
+      // authoritative success/failure signal, so the server's auto re-sing
+      // fallback can't be misread as a failure. The bed is shared so it plays once.
+      const bedPlayed = { current: false };
+      let sideWatchStarted = false;
       for (let i = 0; i < 192; i++) {
         await sleep(5000);
-        if (i === 10) setStepIdx(2); // hooks done-ish → writing lyrics
-        let j: { status: string; errorJson?: { message?: string } | null; outputJson?: { drop?: Array<typeof item>; error?: string } };
+        let j: { status: string; phase?: string | null; partial?: unknown; errorJson?: { message?: string } | null; outputJson?: { drop?: Array<typeof item>; error?: string } };
         try { j = await api.get(`/jobs/${started.jobId}`); netFails = 0; }
         catch { if (++netFails >= 24) break; continue; }
+        // Real pipeline phase replaces the old counter-tick step guess.
+        applyPhase(j.phase);
+        if (!sideWatchStarted && j.phase === 'render_queued') {
+          const p = j.partial as { renderJobId?: string; projectId?: string } | null;
+          if (p?.renderJobId) {
+            sideWatchStarted = true;
+            void watchRenderChild(p.renderJobId, p.projectId ?? project.id, title, bedPlayed);
+          }
+        }
         // Top-level error carries WHY when no take rendered (brain down, no hooks).
         lastDropStatus = j.status;
         if (j.status === 'SUCCEEDED') { item = j.outputJson?.drop?.[0]; dropErr = j.outputJson?.error; break; }
@@ -591,15 +726,20 @@ export default function CreatePage() {
       // Poll for the rendered audio. Real sung renders take 3-12 min (best-of-N +
       // the provider's rate limit), so wait up to ~12 min — then hand off calmly to
       // the Catalog rather than showing a scary error for a song that IS finishing.
+      // BED-FIRST: the background watcher above already plays the bed on
+      // 'bed_ready'; this loop confirms the authoritative child and hot-swaps to
+      // the final master (bedPlayed is shared so the bed never double-plays).
       let url: string | null = null;
       let renderFailed = false;
       let lastJobError: string | null = null;
       netFails = 0;
       for (let i = 0; i < 144; i++) {
         await sleep(5000);
-        let job: { status: string; error?: string | null; errorJson?: { message?: string } | null };
+        let job: { status: string; phase?: string | null; partial?: unknown; error?: string | null; errorJson?: { message?: string } | null };
         try { job = await api.get(`/jobs/${item.jobId}`); lastJobError = job.errorJson?.message ?? job.error ?? lastJobError; netFails = 0; }
         catch { if (++netFails >= 24) break; continue; } // network blip → retry, render keeps going
+        applyPhase(job.phase);
+        playBedIfReady(job.phase, job.partial, title, bedPlayed);
         if (job.status === 'SUCCEEDED') {
           try {
             const beats = await api.get<Array<{ url: string; createdAt: string }>>(`/projects/${project.id}/beats`);
@@ -689,6 +829,7 @@ export default function CreatePage() {
     } catch { /* advisory */ }
     setPhase('producing');
     setStepIdx(0);
+    setLiveStatus('');
     try {
       const title = (deconTitle || decon?.title || 'My lyrics').slice(0, 100);
       const project = await api.post<{ id: string }>('/projects', { title, genre, bpm });
@@ -775,9 +916,12 @@ export default function CreatePage() {
     let lastJobError: string | null = null;
     for (let i = 0; i < 144; i++) {
       await sleep(5000);
-      let job: { status: string; error?: string | null; errorJson?: { message?: string } | null };
+      let job: { status: string; phase?: string | null; error?: string | null; errorJson?: { message?: string } | null };
       try { job = await api.get(`/jobs/${jobId}`); lastJobError = job.errorJson?.message ?? job.error ?? lastJobError; netFails = 0; }
       catch { if (++netFails >= 24) break; continue; } // network blip → retry, render keeps going
+      // Honest phase copy for the instrumental/film doors — the beat IS the
+      // deliverable here, so skip the song-only bed/singing lines.
+      if (job.phase && job.phase !== 'bed_ready' && job.phase !== 'singing') applyPhase(job.phase);
       if (job.status === 'SUCCEEDED') {
         try {
           const beats = await api.get<Array<{ url: string; createdAt: string }>>(`/projects/${projectId}/beats`);
@@ -814,6 +958,7 @@ export default function CreatePage() {
     } catch { /* preflight is advisory — if it can't be read, proceed */ }
     setPhase('producing');
     setStepIdx(0);
+    setLiveStatus('');
     try {
       const title = `${genreLabel} ${mood} instrumental`.slice(0, 120);
       const project = await api.post<{ id: string }>('/projects', { title, genre, bpm });
@@ -886,6 +1031,7 @@ export default function CreatePage() {
     } catch { /* advisory */ }
     setPhase('producing');
     setStepIdx(0);
+    setLiveStatus('');
     try {
       const t = FILM_TYPES.find((x) => x.id === filmType) ?? FILM_TYPES[0];
       const title = scene.slice(0, 120); // honest label: the scene names the sound
@@ -979,6 +1125,9 @@ export default function CreatePage() {
             <div>
               <div className="studio-section-kicker"><LoaderCircle className="animate-spin" aria-hidden="true" /> Render in progress</div>
               <h1 id="render-status-title" className="mt-3 font-display text-3xl text-white">{headline}</h1>
+              {liveStatus && (
+                <p className="mt-2 text-sm font-medium text-orange-300" aria-live="polite">{liveStatus}</p>
+              )}
               <p className="mt-2 text-sm leading-6 text-slate-400">
                 Full songs usually take 3-12 minutes. Instrumentals and scene sounds are often faster. The work continues on the server if this tab is backgrounded.
               </p>
@@ -1198,7 +1347,9 @@ export default function CreatePage() {
               <X aria-hidden />
             </button>
           </div>
-          <audio ref={playerRef} controls autoPlay src={nowPlaying.url} className="mt-3 w-full" />
+          {/* key on the URL: when the bed hot-swaps to the final master, React
+              remounts the element so the new source loads and plays cleanly. */}
+          <audio key={nowPlaying.url} ref={playerRef} controls autoPlay src={nowPlaying.url} className="mt-3 w-full" />
           <button type="button" onClick={() => router.push('/catalog')} className="studio-secondary-button mt-4 w-full justify-center">
             <Download aria-hidden /> Open Catalog for stems and DAW export
           </button>

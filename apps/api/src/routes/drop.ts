@@ -6,6 +6,7 @@ import { requireAuth } from '../middleware/auth';
 import { runChatTool } from '../services/chat-tools';
 import { BLOW_TARGET, willItBlowGate } from '../lib/will-it-blow';
 import { createQueuedProviderJob } from '../lib/queued-job';
+import { emitJobEvent } from '../lib/job-events';
 
 /**
  * The Drop Machine — batch song factory.
@@ -552,6 +553,11 @@ async function runDropPipelineInner(app: FastifyInstance, ctx: DropCtx, input: D
   const t0 = Date.now();
   const secs = () => ((Date.now() - t0) / 1000).toFixed(1);
   app.log.info({ dropJobId, count: input.count }, `[drop] start`);
+  // REAL PROGRESS (kills the fake spinner): every stage boundary below emits a
+  // breadcrumb on the PARENT drop job so the Create page shows true stages
+  // (writing hooks -> writing lyrics -> building the beat -> singing) instead of
+  // stage text derived from a poll-loop counter. All emits are fail-soft.
+  await emitJobEvent(dropJobId, 'drop_started', { count: input.count });
   // OUR ENGINE + VOCALS — resolved UP FRONT, before a cent of LLM spend, never
   // as a 422 after the song is written (the 2026-07-16 regression: hooks + A&R
   // + full lyrics were paid for, THEN create_beat_job refused). The own engine
@@ -568,6 +574,7 @@ async function runDropPipelineInner(app: FastifyInstance, ctx: DropCtx, input: D
     const polished = (await runChatTool({ ...ctx, operationKey: `drop:${dropJobId}:brief`, name: 'polish_brief', args: { rawIdea: input.theme } })) as { error?: string } | null;
     if (polished && (polished as { error?: string }).error) throw new Error((polished as { error: string }).error);
     app.log.info({ dropJobId }, `[drop] brief polished @${secs()}s`);
+    await emitJobEvent(dropJobId, 'brief_ready', {});
   } catch (err) {
     app.log.error({ err, dropJobId }, '[drop] polish_brief failed — writing the fallback brief from the structured input');
     await prisma.songBrief
@@ -643,6 +650,7 @@ async function runDropPipelineInner(app: FastifyInstance, ctx: DropCtx, input: D
           }
 
           app.log.info({ dropJobId }, `[drop] take ${i + 1}: hook picked @${secs()}s`);
+          await emitJobEvent(dropJobId, 'hooks_done', { take: i, hook: best.text?.slice(0, 120), score: best.score ?? null });
           const ap = (await runChatTool({ ...ctx, operationKey: `drop:${dropJobId}:take:${i}:approve`, name: 'approve_hook', args: { hookId: best.id } })) as {
             songId?: string;
           };
@@ -665,6 +673,7 @@ async function runDropPipelineInner(app: FastifyInstance, ctx: DropCtx, input: D
             throw new Error(`the writer rejected this concept (${lyricRes.decision ?? 'REJECT_AND_RESTART'}) — try a different theme`);
           }
           app.log.info({ dropJobId }, `[drop] take ${i + 1}: lyrics written (draft+polish) @${secs()}s`);
+          await emitJobEvent(dropJobId, 'lyrics_done', { take: i });
           const beat = (await runChatTool({
             ...ctx,
             operationKey: `drop:${dropJobId}:take:${i}:beat`,
@@ -691,6 +700,23 @@ async function runDropPipelineInner(app: FastifyInstance, ctx: DropCtx, input: D
           }
 
           app.log.info({ dropJobId, jobId: beat?.jobId, err: beat?.error }, `[drop] take ${i + 1}: render ${beat?.jobId ? 'QUEUED' : 'NOT queued'} @${secs()}s`);
+          // BED-FIRST UNBLOCKER (finding #1): surface the render child id THE
+          // MOMENT it is enqueued — not after waitForDropChildren blocks on the
+          // whole batch. The client reads this off the parent's event tail and
+          // starts watching the child immediately, so it can play the bed
+          // (own-engine.ts emits 'bed_ready' with {url}) minutes before the
+          // vocal finishes and hot-swap to the master on the child's SUCCEEDED.
+          if (beat?.jobId) {
+            await emitJobEvent(dropJobId, 'render_queued', {
+              take: i,
+              renderJobId: beat.jobId,
+              songId: producedSongId ?? null,
+              projectId: ctx.projectId,
+              hook: best.text?.slice(0, 160),
+              score: best.score ?? null,
+              title: input.songTitle?.slice(0, 80) ?? null,
+            });
+          }
           drops.push({
             songId: producedSongId,
             hookId: best.id,

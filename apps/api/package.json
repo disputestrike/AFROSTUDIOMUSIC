@@ -48,7 +48,8 @@
     "test:producer-evidence": "tsx scripts/test-producer-evidence.ts",
     "test:economics-readiness": "tsx scripts/test-economics-readiness.ts",
     "test:singing-evidence": "tsx scripts/test-singing-evidence.ts",
-    "test:training-evaluation-seam": "tsx scripts/test-training-evaluation-seam.ts"
+    "test:training-evaluation-seam": "tsx scripts/test-training-evaluation-seam.ts",
+    "test:streaming-events": "tsx scripts/test-streaming-events.ts"
   },
   "dependencies": {
     "@afrohit/ai": "workspace:*",

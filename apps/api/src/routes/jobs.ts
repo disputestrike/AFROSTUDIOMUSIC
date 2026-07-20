@@ -2,6 +2,7 @@ import type { FastifyInstance } from "fastify";
 import { prisma } from "@afrohit/db";
 import { engineClass } from "@afrohit/shared";
 import { requireAuth } from "../middleware/auth";
+import { latestJobEvent, readJobEvents } from "../lib/job-events";
 
 const jobSelect = {
   id: true,
@@ -116,6 +117,38 @@ export default async function jobs(app: FastifyInstance) {
     if (job.kind.startsWith("voice") && !["OWNER", "ADMIN"].includes(role)) {
       return reply.code(403).send({ error: "forbidden" });
     }
-    return publicJob(job as PublicJobInput);
+    // Fold the newest job event into the SAME response the client already polls
+    // every 5s — so real pipeline phase (and any partial, e.g. a bed_ready URL)
+    // arrives for free, no second request. Fail-soft: a telemetry read must
+    // never 500 a status poll.
+    const latest = await latestJobEvent(job.id).catch(() => null);
+    return {
+      ...publicJob(job as PublicJobInput),
+      phase: latest?.phase ?? null,
+      partial: latest?.payload ?? null,
+      eventSeq: latest?.seq ?? null,
+    };
   });
+
+  // The event TAIL for a job, strictly after ?since=<seq>. Cheapest streaming
+  // MVP: the client reuses its existing poll cadence to pull new breadcrumbs
+  // (no SSE needed for v1). Ordered oldest -> newest so appending is trivial.
+  app.get<{ Params: { id: string }; Querystring: { since?: string } }>(
+    "/:id/events",
+    async (req, reply) => {
+      const { workspaceId, role } = requireAuth(req);
+      const job = await prisma.providerJob.findFirst({
+        where: { id: req.params.id, workspaceId },
+        select: { id: true, kind: true, status: true },
+      });
+      if (!job) return reply.code(404).send({ error: "not_found" });
+      if (job.kind.startsWith("voice") && !["OWNER", "ADMIN"].includes(role)) {
+        return reply.code(403).send({ error: "forbidden" });
+      }
+      const since = Number(req.query.since ?? 0);
+      const events = await readJobEvents(job.id, Number.isFinite(since) ? since : 0);
+      const latestSeq = events.length ? events[events.length - 1]!.seq : since || 0;
+      return { status: job.status, events, latestSeq };
+    }
+  );
 }

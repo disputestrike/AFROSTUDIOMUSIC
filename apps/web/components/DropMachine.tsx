@@ -18,6 +18,22 @@ interface DropItem {
   error?: string;
 }
 
+// REAL PROGRESS: the drop emits its actual pipeline phase on the parent job's
+// event tail (surfaced on GET /jobs/:id as {phase}). This maps that to honest
+// status copy — no more stage text derived from a poll-loop counter.
+const DROP_PHASE_LABEL: Record<string, string> = {
+  drop_started: 'Setting up the batch',
+  brief_ready: 'Shaping the brief',
+  hooks_done: 'Writing hooks - the A&R is picking the best',
+  lyrics_done: 'Writing and polishing the lyrics',
+  render_queued: 'Building the beats and queueing the renders',
+  running: 'Rendering the songs',
+  bed_ready: 'Beats are landing',
+  singing: 'Singing the songs',
+  mastering: 'Mastering',
+  render_done: 'Finishing up',
+};
+
 export function DropMachine({ projectId, initialTheme = '' }: { projectId: string; initialTheme?: string }) {
   const api = useApi();
   const router = useRouter();
@@ -67,7 +83,7 @@ export function DropMachine({ projectId, initialTheme = '' }: { projectId: strin
       // calmly; the pipeline keeps going and the songs land in the Catalog.
       for (let i = 0; i < 192; i++) {
         await new Promise((r) => setTimeout(r, 5000));
-        let j: { status: string; errorJson?: { message?: string } | null; outputJson?: { produced?: number; drop?: DropItem[]; error?: string } };
+        let j: { status: string; phase?: string | null; errorJson?: { message?: string } | null; outputJson?: { produced?: number; drop?: DropItem[]; error?: string } };
         // A single failed poll (backgrounded tab, wifi↔cell switch) must not
         // kill a drop that's still running server-side — retry, give up only
         // after ~2 min of solid failures.
@@ -75,13 +91,10 @@ export function DropMachine({ projectId, initialTheme = '' }: { projectId: strin
         catch { if (++netFails >= 24) break; continue; }
         if (j.status === 'SUCCEEDED') { out = j.outputJson; break; }
         if (j.status === 'FAILED') { failMsg = j.errorJson?.message ?? 'the drop failed — try again'; break; }
-        setStatus(
-          i < 24
-            ? `Writing hooks + the A&R pick… (${elapsed()})`
-            : i < 96
-              ? `Writing & polishing the lyrics… (${elapsed()})`
-              : `Ranking the takes & queueing the renders… (${elapsed()})`
-        );
+        // Real pipeline phase when the server has emitted one; an honest generic
+        // line otherwise (never a fabricated stage derived from the counter).
+        const label = j.phase ? DROP_PHASE_LABEL[j.phase] : undefined;
+        setStatus(`${label ?? 'Producing your batch'}… (${elapsed()})`);
       }
       if (failMsg) throw new Error(failMsg);
       if (!out) {
