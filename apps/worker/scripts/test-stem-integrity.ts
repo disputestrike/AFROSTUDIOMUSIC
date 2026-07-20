@@ -280,6 +280,11 @@ function testProcessorWiring(): void {
   assert.match(material, /persistNativeStemBuses/);
   assert.match(material, /preserveEmptySections: true/);
   assert.match(material, /nativeStems/);
+  assert.doesNotMatch(
+    material,
+    /const roleLayers[\s\S]{0,400}gain:[^\n]*tacticalTrim/,
+    'full-bus tactical trim must not double-attenuate isolated native stems',
+  );
   assert.match(ownEngine, /withStems: p\.withStems/);
   assert.match(exportWorker, /certifiedCurrentReleaseStems/);
   assert.match(exportWorker, /assertStoredContentHash\(\s*bytes,\s*stem\.contentHash/);
