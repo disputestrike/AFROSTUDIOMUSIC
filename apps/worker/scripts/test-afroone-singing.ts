@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import {
   composeMelody,
   estimateComposedMelodyDurationS,
+  fitMelodySectionsToDuration,
   melodyScoreDurationS,
   parseLyricSections,
 } from '@afrohit/shared';
@@ -103,6 +104,49 @@ async function main(): Promise<void> {
     genre: 'afrobeats',
     targetDurationS: durationFloor,
   }));
+
+  const ceilingSections = Array.from({ length: 5 }, (_, sectionIndex) => ({
+    name: sectionIndex === 1 ? 'Hook' : `Verse ${sectionIndex + 1}`,
+    kind: sectionIndex === 1 ? 'hook' as const : 'verse' as const,
+    lines: Array.from({ length: 10 }, (_, lineIndex) =>
+      `Complete lyric line ${sectionIndex + 1} ${lineIndex + 1}`
+    ),
+  }));
+  const unfittedDuration = estimateComposedMelodyDurationS({
+    bpm: 98,
+    sections: ceilingSections,
+  });
+  assert.ok(unfittedDuration > 240 && unfittedDuration < 246);
+  const fittedSections = fitMelodySectionsToDuration(
+    { bpm: 98, sections: ceilingSections },
+    240,
+  );
+  assert.deepEqual(
+    fittedSections.map(section => section.lines),
+    ceilingSections.map(section => section.lines),
+    'duration fitting must preserve every lyric line',
+  );
+  assert.equal(
+    fittedSections.reduce((sum, section) => sum + (section.bars ?? 0), 0),
+    98,
+  );
+  assert.equal(
+    estimateComposedMelodyDurationS({ bpm: 98, sections: fittedSections }),
+    240,
+  );
+  assert.deepEqual(
+    fitMelodySectionsToDuration({ bpm: 98, sections: ceilingSections }, 240),
+    fittedSections,
+    'duration fitting must be deterministic',
+  );
+  const fittedScore = composeMelody({
+    genre: 'afrobeats',
+    bpm: 98,
+    key: 'A minor',
+    seed: 99,
+    sections: fittedSections,
+  });
+  assert.equal(melodyScoreDurationS(fittedScore), 240);
 
   // The lyric/melody contract is exact. A stale or tampered syllable cannot be
   // rendered against newly approved lyrics.
