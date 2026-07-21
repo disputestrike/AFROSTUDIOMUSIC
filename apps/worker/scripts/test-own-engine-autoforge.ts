@@ -163,7 +163,10 @@ assert.ok(
 
 // Order: the plan and the forging run BEFORE the assembly child is dispatched.
 const idxPlan = ownEngineSrc.indexOf("planAutoForge({");
-const idxAssemble = ownEngineSrc.indexOf("processAssembleBeat({");
+// lastIndexOf: the MAIN grid-assembly dispatch (the synth-bed-first preview adds
+// an EARLIER, flag-gated processAssembleBeat call for the provisional bed; this
+// ordering check targets the real assembly, which is the last such call).
+const idxAssemble = ownEngineSrc.lastIndexOf("processAssembleBeat({");
 assert.ok(idxPlan > 0, "processOwnEngine calls planAutoForge");
 assert.ok(
   idxAssemble > idxPlan,

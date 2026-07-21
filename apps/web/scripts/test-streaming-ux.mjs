@@ -23,13 +23,19 @@ assert.match(create, /applyPhase\(job\.phase\)/, 'the render poll must drive the
 // The live line is rendered in the producing view.
 assert.match(create, /\{liveStatus &&/);
 
-// ── BED-FIRST: play the bed on bed_ready, hot-swap to the master on success ────
+// ── SYNTH-BED-FIRST: synth preview -> forged bed -> master, glitch-free swap ───
 assert.match(create, /function playBedIfReady\(/);
-assert.match(create, /phase !== 'bed_ready'/, 'bed play is gated on the bed_ready phase');
-assert.match(create, /instrumental bed/, 'the bed is labeled honestly while it plays');
-assert.match(create, /playBedIfReady\(job\.phase, job\.partial, title, bedPlayed\)/);
-// The player remounts on URL change so the bed -> master swap loads cleanly.
-assert.match(create, /key=\{nowPlaying\.url\}/);
+// The stage is DERIVED from the event via the shared helper (synth preview /
+// forged bed / master), not a single hardcoded 'bed_ready' check.
+assert.match(create, /bedStageOfEvent\(phase, partial\)/, 'the bed stage is derived from the event');
+assert.match(create, /instrumental bed/, 'the forged bed is labeled honestly while it plays');
+assert.match(create, /instrumental preview/, 'the synth preview is labeled honestly as provisional');
+assert.match(create, /playBedIfReady\(jobId, job\.phase, job\.partial, title\)/, 'the child watcher drives the jobId-keyed bed stage');
+// The player must NOT remount on URL change (a remount restarts from 0 — the
+// glitch). The hot-swap preserves position + play/pause via the shared handshake.
+assert.doesNotMatch(create, /key=\{nowPlaying\.url\}/, 'the console player must not remount on url change');
+assert.match(create, /planBedSwap\(resume, dur\)/, 'the swap preserves position + play state');
+assert.match(create, /shouldApplyBedStage\(/, 'stage decisions use the shared no-downgrade / stale-guard');
 
 // ── EARLY CHILD ID: watch the render child in the BACKGROUND the moment the drop
 // announces it — the drop parent stays authoritative (so the server's auto

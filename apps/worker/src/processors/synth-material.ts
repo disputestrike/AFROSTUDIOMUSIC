@@ -26,7 +26,22 @@ const PYTHON = process.env.PYTHON_BIN || 'python3';
 // CJS worker (module: CommonJS) — resolve like lib/dsp.ts does: dist/processors -> ../../py
 const SCRIPT = join(__dirname, '..', '..', 'py', 'synth_material.py');
 
-export interface SynthMaterialPayload { jobId?: string; workspaceId: string; genre: string; bpm?: number; keySignature?: string; roles?: string[] }
+export interface SynthMaterialPayload {
+  jobId?: string;
+  workspaceId: string;
+  genre: string;
+  bpm?: number;
+  keySignature?: string;
+  roles?: string[];
+  /**
+   * BED-FIRST STREAMING isolation: mark the synthesized loops `previewOnly` so
+   * they carry the fast synth-only preview bed but are NEVER selectable into the
+   * real forged bed (own-engine pickKit filters them out). Keeps the forged path
+   * byte-identical to today — synth stays a preview bridge, never a layer of
+   * "one sound" under the real instruments. Default false / absent = unchanged.
+   */
+  previewOnly?: boolean;
+}
 
 /** Fallback home key per genre family (only used when none is supplied). */
 function defaultKey(genre: string): string {
@@ -200,6 +215,9 @@ export async function processSynthMaterial(p: SynthMaterialPayload): Promise<voi
               },
               rightsBasis: 'code-generated',
               note: 'synthesized material from studio code; genre and key aware',
+              // BED-FIRST preview isolation (see SynthMaterialPayload.previewOnly):
+              // preview-only loops are excluded from the real forged bed selection.
+              ...(p.previewOnly ? { previewOnly: true } : {}),
             } as never,
           },
         });
