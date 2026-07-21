@@ -97,6 +97,27 @@ model User {
   likenessConsents      LikenessConsent[]
   benchmarkPairsCreated BenchmarkPair[]     @relation("BenchmarkPairCreator")
   benchmarkJudgments    BenchmarkJudgment[] @relation("BenchmarkJudge")
+  passwordResetTokens   PasswordResetToken[]
+}
+
+/// PASSWORD RESET (forgotten-password flow, 2026-07-20). A single-use, expiring
+/// grant to set a new password without knowing the old one. SECURITY: only the
+/// SHA-256 hash of the opaque token is stored (`tokenHash`), never the token
+/// itself — a database leak cannot be replayed. `expiresAt` bounds the window
+/// (~1h); `usedAt` enforces single use. Anti-enumeration lives in the route:
+/// request-reset always answers the same whether or not the email exists.
+model PasswordResetToken {
+  id        String    @id @default(cuid())
+  userId    String
+  tokenHash String    @unique
+  expiresAt DateTime  @db.Timestamptz(6)
+  usedAt    DateTime? @db.Timestamptz(6)
+  createdAt DateTime  @default(now()) @db.Timestamptz(6)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([expiresAt])
 }
 
 model WorkspaceMember {
@@ -500,6 +521,11 @@ model Song {
   workspaceId      String
   projectId        String
   title            String
+  /// PER-SONG DISPLAY ARTIST (owner edit, 2026-07-20). The stage name shown on
+  /// THIS song's card/player. Null falls back to the workspace Artist.stageName
+  /// (via project.artist) — so renaming one song's singer never renames the
+  /// workspace artist or any sibling song. Editing the singer name writes here.
+  displayArtist    String?
   /// CATALOG TYPE (owner: "should I create my catalog based on type?"):
   /// song | instrumental | film_sound — stamped at creation so every door's
   /// output is findable and filterable.

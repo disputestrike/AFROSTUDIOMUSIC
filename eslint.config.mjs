@@ -65,4 +65,15 @@ export default tseslint.config(
       '@typescript-eslint/no-unused-expressions': 'off',
     },
   },
+  {
+    // The app-shell service worker runs in the ServiceWorkerGlobalScope, not
+    // Node — declare its globals (self, caches, clients, fetch, Response, …).
+    files: ['apps/web/public/sw.js'],
+    languageOptions: {
+      globals: {
+        ...globals.serviceworker,
+        ...globals.browser,
+      },
+    },
+  },
 );

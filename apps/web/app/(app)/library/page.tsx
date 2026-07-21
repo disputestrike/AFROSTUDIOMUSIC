@@ -10,9 +10,10 @@
 
 import Link from 'next/link';
 import { useEffect, useState } from 'react';
-import { Disc3, LayoutGrid, Music2, Pause, Play, SlidersHorizontal } from 'lucide-react';
+import { Check, Disc3, DownloadCloud, LayoutGrid, Loader2, Music2, Pause, Play, SlidersHorizontal } from 'lucide-react';
 import { useApi } from '@/lib/api';
 import { usePlayerOptional, type PlayerTrack } from '@/components/consumer/PlayerContext';
+import { listOfflineIds, saveSongOffline, removeOffline } from '@/lib/offline-store';
 
 interface MySong {
   id: string;
@@ -45,6 +46,40 @@ export default function LibraryPage() {
   const [tab, setTab] = useState<'songs' | 'albums'>('songs');
   const [songs, setSongs] = useState<MySong[] | null | 'error'>(null);
   const [albums, setAlbums] = useState<AlbumRow[] | null | 'error'>(null);
+  // OFFLINE — which songs are downloaded for no-internet playback, and which is
+  // downloading right now. Loaded once from the IndexedDB store.
+  const [offlineIds, setOfflineIds] = useState<Set<string>>(new Set());
+  const [savingOffline, setSavingOffline] = useState<string | null>(null);
+
+  useEffect(() => {
+    let active = true;
+    void listOfflineIds().then((ids) => active && setOfflineIds(new Set(ids)));
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  async function toggleOffline(s: MySong) {
+    if (!s.audioUrl || savingOffline) return;
+    if (offlineIds.has(s.id)) {
+      await removeOffline(s.id);
+      setOfflineIds((prev) => {
+        const next = new Set(prev);
+        next.delete(s.id);
+        return next;
+      });
+      return;
+    }
+    setSavingOffline(s.id);
+    try {
+      await saveSongOffline({ id: s.id, url: s.audioUrl, title: s.title, artist: s.artist });
+      setOfflineIds((prev) => new Set(prev).add(s.id));
+    } catch {
+      /* left un-saved; the icon simply stays "not saved" — no false claim */
+    } finally {
+      setSavingOffline(null);
+    }
+  }
 
   useEffect(() => {
     let active = true;
@@ -139,7 +174,6 @@ export default function LibraryPage() {
                   >
                     <div className="h-11 w-11 shrink-0 overflow-hidden rounded-lg border border-white/10 bg-night-800">
                       {s.coverUrl ? (
-                        // eslint-disable-next-line @next/next/no-img-element
                         <img src={s.coverUrl} alt="" loading="lazy" className="h-full w-full object-cover" />
                       ) : (
                         <div className="flex h-full w-full items-center justify-center font-display text-lg text-slate-500">
@@ -148,14 +182,43 @@ export default function LibraryPage() {
                       )}
                     </div>
                     <div className="min-w-0 flex-1">
-                      <div className="truncate text-sm text-slate-200">{s.title}</div>
+                      <div className="flex items-center gap-1.5">
+                        <span className="truncate text-sm text-slate-200">{s.title}</span>
+                        {offlineIds.has(s.id) && (
+                          <span title="Saved for offline — plays with no internet" aria-label="Available offline" className="shrink-0 text-afrobrand-400">
+                            <DownloadCloud className="h-3.5 w-3.5" aria-hidden />
+                          </span>
+                        )}
+                      </div>
                       <div className="truncate text-xs capitalize text-slate-500">
                         {prettyGenre(s.genre)}
                         {s.kind === 'instrumental' ? ' · instrumental' : s.kind === 'film_sound' ? ' · scene sound' : ''}
                         {s.hitScore != null ? ` · ${s.hitScore}/100` : ''}
                         {!s.audioUrl ? ' · still cooking' : ''}
+                        {offlineIds.has(s.id) ? ' · offline' : ''}
                       </div>
                     </div>
+                    {s.audioUrl && (
+                      <button
+                        type="button"
+                        onClick={() => void toggleOffline(s)}
+                        disabled={savingOffline === s.id}
+                        aria-label={offlineIds.has(s.id) ? `Remove ${s.title} from offline` : `Save ${s.title} for offline`}
+                        aria-pressed={offlineIds.has(s.id)}
+                        title={offlineIds.has(s.id) ? 'Saved offline — tap to remove' : 'Save for offline'}
+                        className={`hidden h-8 w-8 shrink-0 items-center justify-center rounded-full transition-colors disabled:opacity-40 sm:inline-flex ${
+                          offlineIds.has(s.id) ? 'text-afrobrand-400' : 'text-slate-500 hover:text-slate-200'
+                        }`}
+                      >
+                        {savingOffline === s.id ? (
+                          <Loader2 className="h-4 w-4 animate-spin" aria-hidden />
+                        ) : offlineIds.has(s.id) ? (
+                          <Check className="h-4 w-4" aria-hidden />
+                        ) : (
+                          <DownloadCloud className="h-4 w-4" aria-hidden />
+                        )}
+                      </button>
+                    )}
                     <Link
                       href={`/projects/${s.projectId}`}
                       title="Open project"

@@ -436,6 +436,11 @@ export default function CatalogGrid({ initial }: { initial: SongRow[] }) {
   const [openId, setOpenId] = useState<string | null>(null);
   const [busy, setBusy] = useState<string>(""); // `${id}:${action}`
   const [toast, setToast] = useState<string>("");
+  // INLINE EDIT (owner, 2026-07-20) — rename the song title or the singer name
+  // right on the card, with a pencil affordance and optimistic save. Title
+  // writes Song.title; artist writes the PER-SONG displayArtist (never the
+  // workspace artist, never a sibling song).
+  const [inlineEdit, setInlineEdit] = useState<{ id: string; field: "title" | "artist"; value: string } | null>(null);
   const [editing, setEditing] = useState<{
     id: string;
     lyricId?: string;
@@ -1016,13 +1021,50 @@ export default function CatalogGrid({ initial }: { initial: SongRow[] }) {
   }
 
   async function rename(s: SongRow) {
-    const title = prompt("Rename song", s.title);
-    if (!title || title === s.title) return;
-    setSongs(arr => arr.map(x => (x.id === s.id ? { ...x, title } : x)));
+    // Quick-rename from the actions menu opens the same inline title editor.
+    setInlineEdit({ id: s.id, field: "title", value: s.title });
+  }
+
+  // Commit an inline title/artist edit — optimistic, workspace-scoped by the
+  // server. Blank title is ignored (a song must keep a name); blank artist is a
+  // valid "reset to the workspace default" and is sent through as such.
+  async function saveInline() {
+    if (!inlineEdit) return;
+    const { id, field, value } = inlineEdit;
+    const trimmed = value.trim();
+    const target = songs.find(x => x.id === id);
+    if (!target) {
+      setInlineEdit(null);
+      return;
+    }
+    if (field === "title" && !trimmed) {
+      setInlineEdit(null);
+      return;
+    }
+    const before = target;
+    if (field === "title") {
+      if (trimmed === target.title) {
+        setInlineEdit(null);
+        return;
+      }
+      setSongs(arr => arr.map(x => (x.id === id ? { ...x, title: trimmed } : x)));
+    } else {
+      if (trimmed === (target.artist ?? "")) {
+        setInlineEdit(null);
+        return;
+      }
+      setSongs(arr => arr.map(x => (x.id === id ? { ...x, artist: trimmed || x.artist } : x)));
+    }
+    setInlineEdit(null);
     try {
-      await api.patch(`/songs/${s.id}`, { title });
+      await api.patch(
+        `/songs/${id}`,
+        field === "title" ? { title: trimmed } : { artistName: trimmed }
+      );
     } catch (e) {
-      flash((e as Error).message || "Rename failed");
+      // Roll the card back on failure — never a silent false rename.
+      setSongs(arr => arr.map(x => (x.id === id ? before : x)));
+      flash((e as Error).message || (field === "title" ? "Rename failed" : "Could not rename the singer"));
     }
   }
 
@@ -1814,13 +1856,38 @@ export default function CatalogGrid({ initial }: { initial: SongRow[] }) {
             </div>
             <div className="p-4">
               <div className="flex items-start justify-between gap-2">
-                <div className="font-display text-lg leading-tight">
-                  {s.title}
-                  {s.versionLabel ? (
-                    <span className="ml-1 text-xs text-slate-500">
-                      · {s.versionLabel}
+                <div className="group/title min-w-0 font-display text-lg leading-tight">
+                  {inlineEdit?.id === s.id && inlineEdit.field === "title" ? (
+                    <input
+                      autoFocus
+                      value={inlineEdit.value}
+                      onChange={e => setInlineEdit({ id: s.id, field: "title", value: e.target.value })}
+                      onBlur={() => void saveInline()}
+                      onKeyDown={e => {
+                        if (e.key === "Enter") void saveInline();
+                        if (e.key === "Escape") setInlineEdit(null);
+                      }}
+                      maxLength={200}
+                      aria-label="Song title"
+                      className="w-full rounded-md border border-afrobrand-500/60 bg-slate-950 px-2 py-0.5 font-display text-lg text-white outline-none"
+                    />
+                  ) : (
+                    <span className="inline-flex items-center gap-1.5">
+                      <span className="truncate">{s.title}</span>
+                      <button
+                        type="button"
+                        onClick={() => setInlineEdit({ id: s.id, field: "title", value: s.title })}
+                        aria-label={`Rename ${s.title}`}
+                        title="Rename song"
+                        className="shrink-0 text-slate-500 opacity-0 transition hover:text-afrobrand-300 group-hover/title:opacity-100"
+                      >
+                        <Pencil className="h-3.5 w-3.5" aria-hidden />
+                      </button>
+                      {s.versionLabel ? (
+                        <span className="text-xs text-slate-500">· {s.versionLabel}</span>
+                      ) : null}
                     </span>
-                  ) : null}
+                  )}
                 </div>
                 <div className="flex shrink-0 flex-wrap items-center justify-end gap-1">
                   {/* Recovery truth: a deleted/quarantined row SAYS so (the
@@ -1846,10 +1913,39 @@ export default function CatalogGrid({ initial }: { initial: SongRow[] }) {
                   </span>
                 </div>
               </div>
-              <div className="mt-1 text-xs text-slate-400">
-                {s.artist} · {s.genre.replace("_", " ")}
-                {s.bpm ? ` · ${s.bpm} bpm` : ""}
-                {s.stemCount ? ` · ${s.stemCount} stems` : ""}
+              <div className="group/artist mt-1 flex flex-wrap items-center gap-x-1 text-xs text-slate-400">
+                {inlineEdit?.id === s.id && inlineEdit.field === "artist" ? (
+                  <input
+                    autoFocus
+                    value={inlineEdit.value}
+                    onChange={e => setInlineEdit({ id: s.id, field: "artist", value: e.target.value })}
+                    onBlur={() => void saveInline()}
+                    onKeyDown={e => {
+                      if (e.key === "Enter") void saveInline();
+                      if (e.key === "Escape") setInlineEdit(null);
+                    }}
+                    maxLength={80}
+                    aria-label="Singer name"
+                    placeholder="Singer name"
+                    className="w-40 rounded-md border border-afrobrand-500/60 bg-slate-950 px-2 py-0.5 text-xs text-white outline-none"
+                  />
+                ) : (
+                  <span className="inline-flex items-center gap-1">
+                    <span className="truncate">{s.artist}</span>
+                    <button
+                      type="button"
+                      onClick={() => setInlineEdit({ id: s.id, field: "artist", value: s.artist ?? "" })}
+                      aria-label={`Edit the singer name for ${s.title}`}
+                      title="Edit singer name"
+                      className="shrink-0 text-slate-500 opacity-0 transition hover:text-afrobrand-300 group-hover/artist:opacity-100"
+                    >
+                      <Pencil className="h-3 w-3" aria-hidden />
+                    </button>
+                  </span>
+                )}
+                <span>· {s.genre.replace("_", " ")}</span>
+                {s.bpm ? <span>· {s.bpm} bpm</span> : null}
+                {s.stemCount ? <span>· {s.stemCount} stems</span> : null}
               </div>
               {/* Every song carries the date AND time it was made. */}
               {madeAt(s.createdAt) ? (

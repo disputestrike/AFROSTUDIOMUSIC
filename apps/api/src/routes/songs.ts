@@ -40,6 +40,7 @@ type CatalogRow = {
   versionLabel: string | null;
   status: string;
   projectId: string;
+  displayArtist: string | null;
   instrumentalUrl: string | null;
   releaseReady: boolean;
   hitScore: number | null;
@@ -295,7 +296,8 @@ export default async function songs(app: FastifyInstance) {
         // findable under the same 🎹 chip.
         hasInstrumental: !!s.instrumentalUrl,
         status: s.status,
-        artist: s.project.artist.stageName,
+        // PER-SONG DISPLAY ARTIST wins; NULL falls back to the workspace artist.
+        artist: s.displayArtist || s.project.artist.stageName,
         projectId: s.projectId,
         projectTitle: s.project.title,
         genre: s.project.genre,
@@ -334,7 +336,7 @@ export default async function songs(app: FastifyInstance) {
     const song = await prisma.song.findFirst({
       where: { id: req.params.id, workspaceId },
       include: {
-        project: { select: { id: true, title: true, genre: true, bpm: true } },
+        project: { select: { id: true, title: true, genre: true, bpm: true, artist: { select: { stageName: true } } } },
         masters: { orderBy: { createdAt: 'desc' }, take: 20 },
         mixes: { orderBy: { createdAt: 'desc' }, take: 20 },
         beats: { orderBy: { createdAt: 'desc' }, take: 20, include: { stems: true } },
@@ -350,6 +352,8 @@ export default async function songs(app: FastifyInstance) {
     const currentAudio = currentPlayableAsset(song);
     return {
       ...song,
+      // PER-SONG DISPLAY ARTIST wins; NULL falls back to the workspace artist.
+      artist: song.displayArtist || song.project.artist.stageName,
       audioUrl: currentAudio?.url ?? null,
       currentAudio: playableAssetRef(currentAudio),
       coverUrl: cover?.url ?? null,
@@ -482,6 +486,10 @@ export default async function songs(app: FastifyInstance) {
   // ---- General edit (rename / version / status) — "not one-shot" ----
   const patchSchema = z.object({
     title: z.string().min(1).max(200).optional(),
+    // EDIT THE SINGER NAME (owner, 2026-07-20) — a PER-SONG display artist. It
+    // writes Song.displayArtist only, so it never renames the workspace Artist
+    // or a sibling song. Empty string clears it back to the workspace default.
+    artistName: z.string().max(80).nullable().optional(),
     versionLabel: z.string().max(60).nullable().optional(),
     status: z.enum(['SKETCH', 'DEMO', 'FULL', 'MIXED', 'MASTERED', 'RELEASED']).optional(),
     // QA quarantine toggle (operator + the QA gate). Reversible; hides the song
@@ -491,13 +499,19 @@ export default async function songs(app: FastifyInstance) {
   });
   app.patch<{ Params: { id: string } }>('/:id', async (req, reply) => {
     const { workspaceId } = requireAuth(req);
-    const body = patchSchema.parse(req.body);
+    const { artistName, ...rest } = patchSchema.parse(req.body);
+    // WORKSPACE SCOPE — the song must belong to the caller's workspace, or the
+    // update never runs (a cross-workspace id reads as not_found, never edits).
     const found = await prisma.song.findFirst({ where: { id: req.params.id, workspaceId }, select: { id: true } });
     if (!found) return reply.code(404).send({ error: 'song_not_found' });
-    const updated = await prisma.song.update({ where: { id: found.id }, data: body });
+    // Map the API's `artistName` onto the per-song display column. A blank
+    // string means "use the workspace default" → store NULL.
+    const data: Prisma.SongUpdateInput =
+      artistName === undefined ? rest : { ...rest, displayArtist: artistName?.trim() ? artistName.trim() : null };
+    const updated = await prisma.song.update({ where: { id: found.id }, data });
     // The catalog displays lyric.title ahead of song.title — keep them in step
     // on rename, or the new name "never sticks" on screen.
-    if (body.title) await prisma.lyricDraft.updateMany({ where: { songId: found.id }, data: { title: body.title } });
+    if (rest.title) await prisma.lyricDraft.updateMany({ where: { songId: found.id }, data: { title: rest.title } });
     return updated;
   });
 
@@ -611,8 +625,11 @@ export default async function songs(app: FastifyInstance) {
       (await prisma.beatAsset.count({ where: { songId: song.id, provider: { not: 'upload' } } })) > 0;
     if (!lyricId) {
       // No lyric yet — create one bound to this song so edits have a home.
+      // VERBATIM LAW: a manually-typed lyric is the ARTIST'S OWN WORDS, so it is
+      // stamped artistAuthored — the will-it-blow gate and make-it-bigger will
+      // then SCORE it and stop, never rewrite it. The singer sings it as written.
       const created = await prisma.lyricDraft.create({
-        data: { projectId: song.projectId, songId: song.id, body: body.body ?? '', title: body.title, cleanVersion: body.cleanVersion ?? undefined, explicit: body.explicit ?? false },
+        data: { projectId: song.projectId, songId: song.id, body: body.body ?? '', title: body.title, cleanVersion: body.cleanVersion ?? undefined, explicit: body.explicit ?? false, artistAuthored: true },
       });
       await prisma.song.update({ where: { id: song.id }, data: { lyricId: created.id } });
       return { lyric: created, needsRegeneration };
@@ -620,7 +637,8 @@ export default async function songs(app: FastifyInstance) {
     // Keep the current version before a manual overwrite too — original + every
     // edit stay recoverable.
     await snapshotLyricVersion(lyricId, 'before edit');
-    const updated = await prisma.lyricDraft.update({ where: { id: lyricId }, data: body });
+    // VERBATIM LAW (see above): a hand-edited lyric becomes artist-authored law.
+    const updated = await prisma.lyricDraft.update({ where: { id: lyricId }, data: { ...body, artistAuthored: true } });
     return { lyric: updated, needsRegeneration };
   });
 
