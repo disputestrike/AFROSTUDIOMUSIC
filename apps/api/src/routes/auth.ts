@@ -1,7 +1,8 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
-import { randomBytes, scrypt, timingSafeEqual } from 'node:crypto';
+import { createHash, randomBytes, scrypt, timingSafeEqual } from 'node:crypto';
 import { prisma } from '@afrohit/db';
+import { sendEmail, passwordResetEmail } from '../lib/email';
 import { isInternalMode, requireAuth } from '../middleware/auth';
 import { isFirstPartyBilling } from '../middleware/credits';
 import { captchaRequired, verifyCaptcha } from '../lib/captcha';
@@ -35,6 +36,28 @@ const loginSchema = z.object({
   password: z.string().min(1).max(128),
 });
 const adminUnlockSchema = z.object({ secret: z.string().min(1).max(512) });
+// Password lifecycle (change while signed in; forgotten-password reset).
+// newPassword mirrors the signup rule (min 12) so the floor can never drift.
+const changePasswordSchema = z.object({
+  currentPassword: z.string().min(1).max(128),
+  newPassword: z.string().min(12).max(128),
+});
+const requestResetSchema = z.object({ email: z.string().email().max(200) });
+const resetPasswordSchema = z.object({
+  token: z.string().min(1).max(256),
+  newPassword: z.string().min(12).max(128),
+});
+
+/**
+ * Password-reset tokens are stored ONLY as this SHA-256 hash — the opaque token
+ * itself lives just in the emailed link. A database leak therefore yields no
+ * usable reset material (the same "hash at rest" doctrine the scrypt password
+ * hash follows). Redemption re-hashes the presented token and looks it up.
+ */
+export function hashResetToken(token: string): string {
+  return createHash('sha256').update(token).digest('hex');
+}
+const RESET_TOKEN_TTL_MS = 60 * 60 * 1000; // 1 hour
 
 type PasswordVersion = 'v1' | 'v2';
 
@@ -241,6 +264,112 @@ export default async function auth(app: FastifyInstance) {
       isFirstPartyBilling(workspaceId),
     ]);
     return { userId, workspaceId, email: user?.email ?? null, name: user?.fullName ?? null, operator, firstParty, workspace };
+  });
+
+  /**
+   * CHANGE PASSWORD (signed in). Verifies the CURRENT password with the same
+   * constant-time verifyPassword the login path uses, then stores a fresh scrypt
+   * hash. The min-12 rule is enforced by the schema (identical to signup), so
+   * the password floor can never regress here. Never handles the password in any
+   * form other than hashing — the app never stores or transmits it in cleartext.
+   */
+  app.post('/change-password', { ...limited, schema: { body: changePasswordSchema } }, async (req, reply) => {
+    const { userId } = requireAuth(req);
+    const input = changePasswordSchema.parse(req.body);
+    const user = await prisma.user.findUnique({ where: { id: userId }, select: { id: true, passwordHash: true } });
+    if (!user) return reply.code(404).send({ error: 'user_not_found' });
+    const current = await verifyPassword(input.currentPassword, user.passwordHash ?? null);
+    if (!current.valid) return reply.code(401).send({ error: 'invalid_current_password' });
+    if (input.newPassword === input.currentPassword) {
+      return reply.code(400).send({ error: 'password_unchanged' });
+    }
+    await prisma.user.update({ where: { id: user.id }, data: { passwordHash: await hashPassword(input.newPassword) } });
+    return { ok: true };
+  });
+
+  /**
+   * REQUEST PASSWORD RESET (forgotten password — public). SECURITY:
+   *  - ANTI-ENUMERATION: the response is identical whether or not the email has
+   *    an account, and whether or not email delivery is configured. An attacker
+   *    learns nothing about which addresses exist.
+   *  - Only the token HASH is persisted (hashResetToken); the raw token rides
+   *    the emailed link exclusively.
+   *  - Single-use + ~1h expiry are enforced at redemption (reset-password).
+   *  - Rate-limited via `limited` (5/min/IP) to blunt spraying + mail-bombing.
+   * Prior un-used tokens for the account are invalidated so only the newest link
+   * works.
+   */
+  app.post('/request-reset', { ...limited, schema: { body: requestResetSchema } }, async (req) => {
+    const input = requestResetSchema.parse(req.body);
+    const email = input.email.toLowerCase().trim();
+    // The uniform success shape — returned on EVERY path below.
+    const ok = { ok: true };
+    try {
+      const user = await prisma.user.findUnique({ where: { email }, select: { id: true, fullName: true } });
+      if (!user) return ok; // unknown email → same response, no work, no leak
+      // Invalidate outstanding, still-valid links for this account.
+      await prisma.passwordResetToken.updateMany({
+        where: { userId: user.id, usedAt: null },
+        data: { usedAt: new Date() },
+      });
+      const rawToken = randomBytes(32).toString('base64url');
+      await prisma.passwordResetToken.create({
+        data: {
+          userId: user.id,
+          tokenHash: hashResetToken(rawToken),
+          expiresAt: new Date(Date.now() + RESET_TOKEN_TTL_MS),
+        },
+      });
+      const webBase = (process.env.WEB_URL ?? '').replace(/\/+$/, '');
+      const resetUrl = `${webBase}/reset?token=${encodeURIComponent(rawToken)}`;
+      // Delivery is best-effort: a missing/failed email provider must NOT change
+      // the response (that would leak account existence and configuration).
+      if (webBase) {
+        const mail = passwordResetEmail(resetUrl);
+        await sendEmail({ to: email, subject: mail.subject, html: mail.html }).catch((err) =>
+          req.log.warn({ err }, 'password-reset email send failed (response unchanged)'),
+        );
+      } else {
+        req.log.warn('password-reset requested but WEB_URL is not configured — no link could be built');
+      }
+      return ok;
+    } catch (err) {
+      // Even an internal error must not distinguish this email from any other.
+      req.log.error({ err }, 'request-reset failed internally (uniform response preserved)');
+      return ok;
+    }
+  });
+
+  /**
+   * RESET PASSWORD (public). Consumes a single-use, unexpired token: re-hashes
+   * the presented token, finds the row, checks it is unused and unexpired, then
+   * atomically marks it used AND sets the new scrypt hash in one transaction.
+   * The updateMany guard (usedAt: null) makes consumption race-safe — a token
+   * can be redeemed exactly once.
+   */
+  app.post('/reset-password', { ...limited, schema: { body: resetPasswordSchema } }, async (req, reply) => {
+    const input = resetPasswordSchema.parse(req.body);
+    const row = await prisma.passwordResetToken.findUnique({
+      where: { tokenHash: hashResetToken(input.token) },
+      select: { id: true, userId: true, usedAt: true, expiresAt: true },
+    });
+    if (!row || row.usedAt || row.expiresAt.getTime() <= Date.now()) {
+      return reply.code(400).send({ error: 'invalid_or_expired_token' });
+    }
+    const newHash = await hashPassword(input.newPassword);
+    type Tx = Omit<typeof prisma, '$connect' | '$disconnect' | '$on' | '$transaction' | '$use' | '$extends'>;
+    const consumed = await prisma.$transaction(async (tx: Tx) => {
+      // SINGLE USE: only the caller who flips usedAt from null wins the token.
+      const claim = await tx.passwordResetToken.updateMany({
+        where: { id: row.id, usedAt: null },
+        data: { usedAt: new Date() },
+      });
+      if (claim.count === 0) return false;
+      await tx.user.update({ where: { id: row.userId }, data: { passwordHash: newHash } });
+      return true;
+    });
+    if (!consumed) return reply.code(400).send({ error: 'invalid_or_expired_token' });
+    return { ok: true };
   });
 }
 

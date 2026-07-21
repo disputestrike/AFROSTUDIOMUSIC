@@ -97,7 +97,12 @@ function isPublicPath(url: string): boolean {
     atOrBelow("/api/v1/public") ||
     atOrBelow("/api/v1/billing/return") ||
     path === "/api/v1/auth/signup" ||
-    path === "/api/v1/auth/login"
+    path === "/api/v1/auth/login" ||
+    // Forgotten-password flow: the user has no session yet, so these two must be
+    // reachable unauthenticated. They carry their own anti-enumeration + single-
+    // use + rate-limit defenses in routes/auth.ts.
+    path === "/api/v1/auth/request-reset" ||
+    path === "/api/v1/auth/reset-password"
   );
 }
 
@@ -148,7 +153,9 @@ export const authPlugin = fp(async function auth(app: FastifyInstance) {
       if (
         unsafe &&
         (url.startsWith("/api/v1/auth/signup") ||
-          url.startsWith("/api/v1/auth/login"))
+          url.startsWith("/api/v1/auth/login") ||
+          url.startsWith("/api/v1/auth/request-reset") ||
+          url.startsWith("/api/v1/auth/reset-password"))
       ) {
         if (
           !originAllowed(

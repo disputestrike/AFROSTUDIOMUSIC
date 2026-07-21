@@ -10,9 +10,12 @@
  */
 
 import Link from 'next/link';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import {
+  Check,
+  DownloadCloud,
   ListMusic,
+  Loader2,
   Music2,
   Pause,
   Play,
@@ -24,8 +27,10 @@ import {
   SquareArrowOutUpRight,
   Volume2,
   VolumeX,
+  WifiOff,
 } from 'lucide-react';
 import { usePlayer } from './PlayerContext';
+import { isSavedOffline, saveSongOffline, removeOffline } from '@/lib/offline-store';
 
 function fmt(seconds: number): string {
   if (!Number.isFinite(seconds) || seconds < 0) return '0:00';
@@ -41,6 +46,44 @@ export function PlayerBar() {
 
   const track = p.current;
 
+  // OFFLINE SAVE — download the current track's audio for playback with no
+  // internet. Status is read from the IndexedDB store whenever the track
+  // changes; nothing here claims "saved" unless the bytes really landed.
+  const [savedOffline, setSavedOffline] = useState(false);
+  const [savingOffline, setSavingOffline] = useState(false);
+  const [offlineErr, setOfflineErr] = useState(false);
+  useEffect(() => {
+    let active = true;
+    setOfflineErr(false);
+    if (!track) {
+      setSavedOffline(false);
+      return;
+    }
+    void isSavedOffline(track.id).then((v) => active && setSavedOffline(v));
+    return () => {
+      active = false;
+    };
+  }, [track]);
+
+  async function toggleOffline() {
+    if (!track || savingOffline) return;
+    setOfflineErr(false);
+    if (savedOffline) {
+      await removeOffline(track.id);
+      setSavedOffline(false);
+      return;
+    }
+    setSavingOffline(true);
+    try {
+      await saveSongOffline({ id: track.id, url: track.url, title: track.title, artist: track.artist ?? null });
+      setSavedOffline(true);
+    } catch {
+      setOfflineErr(true);
+    } finally {
+      setSavingOffline(false);
+    }
+  }
+
   return (
     <div className="relative z-30 shrink-0 border-t border-white/10 glass-strong">
       <div className="mx-auto flex h-[72px] max-w-[1600px] items-center gap-3 px-3 sm:gap-4 sm:px-4">
@@ -48,7 +91,6 @@ export function PlayerBar() {
         <div className="flex w-[38%] min-w-0 items-center gap-3 sm:w-[26%]">
           <div className="h-11 w-11 shrink-0 overflow-hidden rounded-lg border border-white/10 bg-night-800">
             {track?.coverUrl ? (
-              // eslint-disable-next-line @next/next/no-img-element
               <img src={track.coverUrl} alt="" className="h-full w-full object-cover" />
             ) : (
               <div className="flex h-full w-full items-center justify-center text-slate-600">
@@ -59,7 +101,14 @@ export function PlayerBar() {
           <div className="min-w-0">
             {track ? (
               <>
-                <div className="truncate text-sm font-medium text-slate-100">{track.title}</div>
+                <div className="flex items-center gap-1.5">
+                  <span className="truncate text-sm font-medium text-slate-100">{track.title}</span>
+                  {savedOffline && (
+                    <span title="Saved for offline — plays with no internet" aria-label="Available offline" className="shrink-0 text-afrobrand-400">
+                      <DownloadCloud className="h-3.5 w-3.5" aria-hidden />
+                    </span>
+                  )}
+                </div>
                 {track.artist && <div className="truncate text-xs text-slate-500">{track.artist}</div>}
               </>
             ) : (
@@ -141,6 +190,39 @@ export function PlayerBar() {
 
         {/* Right cluster */}
         <div className="flex w-auto items-center justify-end gap-1 sm:w-[26%] sm:gap-1.5">
+          {track && (
+            <button
+              type="button"
+              onClick={() => void toggleOffline()}
+              disabled={savingOffline}
+              aria-label={savedOffline ? 'Saved offline — tap to remove' : 'Save for offline'}
+              aria-pressed={savedOffline}
+              title={
+                offlineErr
+                  ? "Couldn't save this one for offline — try again"
+                  : savedOffline
+                    ? 'Saved for offline (plays with no internet) — tap to remove'
+                    : 'Save for offline'
+              }
+              className={`inline-flex h-8 w-8 items-center justify-center rounded-full transition-colors disabled:opacity-40 ${
+                offlineErr
+                  ? 'text-red-400'
+                  : savedOffline
+                    ? 'text-afrobrand-400'
+                    : 'text-slate-400 hover:text-slate-200'
+              }`}
+            >
+              {savingOffline ? (
+                <Loader2 className="h-4 w-4 animate-spin" aria-hidden />
+              ) : offlineErr ? (
+                <WifiOff className="h-4 w-4" aria-hidden />
+              ) : savedOffline ? (
+                <Check className="h-4 w-4" aria-hidden />
+              ) : (
+                <DownloadCloud className="h-4 w-4" aria-hidden />
+              )}
+            </button>
+          )}
           <div className="relative">
             <button
               type="button"

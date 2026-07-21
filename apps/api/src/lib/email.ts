@@ -88,6 +88,23 @@ export function jobDoneEmail(
   };
 }
 
+export function passwordResetEmail(resetUrl: string) {
+  const link = safeHttpUrl(resetUrl);
+  return {
+    subject: "Reset your AfroHit Studio password",
+    html: wrap(`
+      <p>We got a request to reset the password on your AfroHit Studio account.</p>
+      ${
+        link
+          ? `<p><a href="${escapeHtml(link)}" style="color:#EA580C;font-weight:700">Choose a new password</a></p>
+      <p style="font-size:12px;color:#888">This link expires in one hour and can be used once.</p>`
+          : ""
+      }
+      <p>If you didn't ask for this, you can safely ignore this email — your password stays unchanged.</p>
+    `),
+  };
+}
+
 export function creditReceiptEmail(amountUsd: string, balanceUsd: string) {
   return {
     subject: `Credits added — ${amountUsd}`,

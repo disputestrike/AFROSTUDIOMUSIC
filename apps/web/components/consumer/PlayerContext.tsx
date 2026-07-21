@@ -16,6 +16,7 @@
  */
 
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
+import { getOfflineBlobUrl } from '@/lib/offline-store';
 
 export interface PlayerTrack {
   /** Stable id (song id where known) so the bar can mark the active row. */
@@ -86,15 +87,54 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
   shuffleRef.current = shuffle;
   repeatRef.current = repeat;
 
-  const startTrack = useCallback((track: PlayerTrack) => {
-    const el = audioRef.current;
-    if (!el) return;
-    setCurrent(track);
-    setPosition(0);
-    setDuration(0);
-    el.src = track.url;
-    void el.play().catch(() => setPlaying(false));
+  // OFFLINE PLAYBACK — the object URL of the blob currently playing (if any),
+  // and a guard so the network→offline fallback is attempted at most once per
+  // track. The blob URL is revoked on every track change to avoid leaking it.
+  const offlineUrlRef = useRef<string | null>(null);
+  const triedOfflineRef = useRef(false);
+  const revokeOfflineUrl = useCallback(() => {
+    if (offlineUrlRef.current) {
+      URL.revokeObjectURL(offlineUrlRef.current);
+      offlineUrlRef.current = null;
+    }
   }, []);
+
+  const startTrack = useCallback(
+    (track: PlayerTrack) => {
+      const el = audioRef.current;
+      if (!el) return;
+      setCurrent(track);
+      setPosition(0);
+      setDuration(0);
+      revokeOfflineUrl();
+      triedOfflineRef.current = false;
+      // NO CONNECTION → CONSULT THE OFFLINE CACHE FIRST. A saved song plays from
+      // its IndexedDB blob with zero network; an unsaved one still points at the
+      // network URL so the browser surfaces an honest "can't play offline" error
+      // rather than silence.
+      const online = typeof navigator === 'undefined' ? true : navigator.onLine;
+      if (!online) {
+        triedOfflineRef.current = true;
+        void getOfflineBlobUrl(track.id).then((blobUrl) => {
+          if (currentRef.current?.id !== track.id) {
+            if (blobUrl) URL.revokeObjectURL(blobUrl);
+            return;
+          }
+          if (blobUrl) {
+            offlineUrlRef.current = blobUrl;
+            el.src = blobUrl;
+          } else {
+            el.src = track.url;
+          }
+          void el.play().catch(() => setPlaying(false));
+        });
+        return;
+      }
+      el.src = track.url;
+      void el.play().catch(() => setPlaying(false));
+    },
+    [revokeOfflineUrl],
+  );
 
   const pickNext = useCallback((direction: 1 | -1): PlayerTrack | null => {
     const q = queueRef.current;
@@ -148,12 +188,38 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
       if (track) startTrack(track);
       else setPlaying(false);
     };
+    // NETWORK SRC FAILED (dropped connection mid-session) → FALL BACK TO THE
+    // SAVED BLOB if this song was downloaded for offline. Attempted once per
+    // track so a genuinely unplayable source can't loop.
+    const onError = () => {
+      const track = currentRef.current;
+      if (!track || triedOfflineRef.current) {
+        setPlaying(false);
+        return;
+      }
+      triedOfflineRef.current = true;
+      void getOfflineBlobUrl(track.id).then((blobUrl) => {
+        if (currentRef.current?.id !== track.id) {
+          if (blobUrl) URL.revokeObjectURL(blobUrl);
+          return;
+        }
+        if (blobUrl) {
+          revokeOfflineUrl();
+          offlineUrlRef.current = blobUrl;
+          el.src = blobUrl;
+          void el.play().catch(() => setPlaying(false));
+        } else {
+          setPlaying(false);
+        }
+      });
+    };
     el.addEventListener('timeupdate', onTime);
     el.addEventListener('loadedmetadata', onMeta);
     el.addEventListener('durationchange', onMeta);
     el.addEventListener('play', onPlay);
     el.addEventListener('pause', onPause);
     el.addEventListener('ended', onEnded);
+    el.addEventListener('error', onError);
     return () => {
       el.removeEventListener('timeupdate', onTime);
       el.removeEventListener('loadedmetadata', onMeta);
@@ -161,8 +227,10 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
       el.removeEventListener('play', onPlay);
       el.removeEventListener('pause', onPause);
       el.removeEventListener('ended', onEnded);
+      el.removeEventListener('error', onError);
+      revokeOfflineUrl();
     };
-  }, [pickNext, startTrack]);
+  }, [pickNext, startTrack, revokeOfflineUrl]);
 
   const play = useCallback(
     (track: PlayerTrack, newQueue?: PlayerTrack[]) => {

@@ -145,6 +145,10 @@ export default function SettingsPage() {
         <span className={`ml-3 text-xs ${saveMsg.ok ? 'text-emerald-400' : 'text-red-400'}`}>{saveMsg.text}</span>
       )}
 
+      <div className="mt-10">
+        <ChangePassword />
+      </div>
+
       <style jsx>{`
         :global(.input) {
           width: 100%;
@@ -170,6 +174,86 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
       <span className="mb-1 block text-slate-400">{label}</span>
       {children}
     </label>
+  );
+}
+
+const MIN_PASSWORD = 12;
+
+/**
+ * CHANGE PASSWORD (signed in). Verifies the current password server-side and
+ * sets a new one. The password never leaves this form except over the
+ * authenticated POST; the server hashes it (scrypt) and never stores cleartext.
+ */
+function ChangePassword() {
+  const api = useApi();
+  const [current, setCurrent] = useState('');
+  const [next, setNext] = useState('');
+  const [confirm, setConfirm] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
+
+  const tooShort = next.length > 0 && next.length < MIN_PASSWORD;
+  const mismatch = confirm.length > 0 && confirm !== next;
+  const canSubmit = current.length > 0 && next.length >= MIN_PASSWORD && confirm === next && !busy;
+
+  async function submit(e: React.FormEvent) {
+    e.preventDefault();
+    if (!canSubmit) return;
+    setBusy(true);
+    setMsg(null);
+    try {
+      await api.post('/auth/change-password', { currentPassword: current, newPassword: next });
+      setMsg({ ok: true, text: 'Password changed ✓' });
+      setCurrent('');
+      setNext('');
+      setConfirm('');
+    } catch (err) {
+      const raw = (err as Error).message || '';
+      setMsg({
+        ok: false,
+        text: /invalid_current_password|401/.test(raw)
+          ? 'Your current password is incorrect.'
+          : /password_unchanged/.test(raw)
+            ? 'Choose a password different from your current one.'
+            : /at least 12|password/i.test(raw)
+              ? `Use at least ${MIN_PASSWORD} characters.`
+              : "Couldn't change your password. Try again.",
+      });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="rounded-2xl border-gradient glass p-5">
+      <h2 className="font-display text-2xl">🔒 Password</h2>
+      <p className="mt-2 text-sm text-slate-400">
+        Change the password you use to sign in. You&apos;ll need your current one.
+      </p>
+      <form onSubmit={submit} className="mt-4 grid max-w-md gap-3">
+        <Field label="Current password">
+          <input className="input" type="password" autoComplete="current-password" value={current} onChange={(e) => setCurrent(e.target.value)} />
+        </Field>
+        <Field label={`New password (at least ${MIN_PASSWORD} characters)`}>
+          <input className="input" type="password" autoComplete="new-password" minLength={MIN_PASSWORD} value={next} onChange={(e) => setNext(e.target.value)} />
+        </Field>
+        <Field label="Confirm new password">
+          <input className="input" type="password" autoComplete="new-password" value={confirm} onChange={(e) => setConfirm(e.target.value)} />
+        </Field>
+        {tooShort && <p className="text-xs text-red-400">Use at least {MIN_PASSWORD} characters.</p>}
+        {mismatch && <p className="text-xs text-red-400">The two new passwords don&apos;t match.</p>}
+        <div className="flex items-center gap-3">
+          <button
+            type="submit"
+            disabled={!canSubmit}
+            className="rounded-full bg-brand-gradient px-4 py-2 text-sm font-medium text-ink shadow-glow disabled:opacity-50"
+          >
+            {busy ? 'Changing…' : 'Change password'}
+          </button>
+          {msg && <span className={`text-xs ${msg.ok ? 'text-emerald-400' : 'text-red-400'}`}>{msg.text}</span>}
+        </div>
+      </form>
+    </div>
   );
 }
 

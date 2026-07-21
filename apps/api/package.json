@@ -49,7 +49,9 @@
     "test:economics-readiness": "tsx scripts/test-economics-readiness.ts",
     "test:singing-evidence": "tsx scripts/test-singing-evidence.ts",
     "test:training-evaluation-seam": "tsx scripts/test-training-evaluation-seam.ts",
-    "test:streaming-events": "tsx scripts/test-streaming-events.ts"
+    "test:streaming-events": "tsx scripts/test-streaming-events.ts",
+    "test:auth-password-reset": "tsx scripts/test-auth-password-reset.ts",
+    "test:song-edit-lyrics": "tsx scripts/test-song-edit-lyrics.ts"
   },
   "dependencies": {
     "@afrohit/ai": "workspace:*",

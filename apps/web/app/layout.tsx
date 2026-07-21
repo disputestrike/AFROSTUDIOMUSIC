@@ -1,6 +1,7 @@
 import type { Metadata } from 'next';
 import { Anton, Inter, Space_Grotesk } from 'next/font/google';
 import './globals.css';
+import { ServiceWorkerRegister } from '@/components/ServiceWorkerRegister';
 
 const anton = Anton({ weight: '400', subsets: ['latin'], variable: '--font-display', display: 'swap' });
 const inter = Inter({ subsets: ['latin'], variable: '--font-sans', display: 'swap' });
@@ -24,6 +25,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
   return (
     <html lang="en" className={`${anton.variable} ${inter.variable} ${grotesk.variable}`}>
       <body data-build-id={buildId} className="min-h-screen bg-night-950 font-sans text-slate-100 antialiased">
+        <ServiceWorkerRegister />
         <div className="aurora" aria-hidden />
         <div className="grain" aria-hidden />
         <div className="relative z-10">{children}</div>

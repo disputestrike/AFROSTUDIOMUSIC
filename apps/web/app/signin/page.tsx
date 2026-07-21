@@ -42,7 +42,7 @@ function friendlyError(raw: string, mode: 'signin' | 'signup'): string {
 export default function SignInPage() {
   const api = useApi();
   const router = useRouter();
-  const [mode, setMode] = useState<'signin' | 'signup'>('signin');
+  const [mode, setMode] = useState<'signin' | 'signup' | 'reset'>('signin');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [stageName, setStageName] = useState('');
@@ -51,6 +51,9 @@ export default function SignInPage() {
   const [busy, setBusy] = useState(false);
   const [touched, setTouched] = useState(false);
   const [accountReady, setAccountReady] = useState(false);
+  // Forgotten-password: once the request is sent we show the SAME confirmation
+  // regardless of whether the email exists (anti-enumeration mirrors the API).
+  const [resetSent, setResetSent] = useState(false);
 
   useEffect(() => {
     const query = new URLSearchParams(window.location.search);
@@ -76,15 +79,45 @@ export default function SignInPage() {
           stageName: stageName.trim() || undefined,
         });
         setAccountReady(true);
+      } else if (mode === 'reset') {
+        // The API always answers the same (anti-enumeration), so a thrown error
+        // here is only a transport failure — show the confirmation regardless.
+        await api.post('/auth/request-reset', { email: email.trim() }).catch(() => undefined);
+        setResetSent(true);
       } else {
         await api.post('/auth/login', { email: email.trim(), password });
         router.push(createHref);
       }
     } catch (cause) {
-      setError(friendlyError((cause as Error).message || '', mode));
+      setError(friendlyError((cause as Error).message || '', mode === 'reset' ? 'signin' : mode));
     } finally {
       setBusy(false);
     }
+  }
+
+  if (resetSent) {
+    return (
+      <main className="studio-auth-shell">
+        <section className="studio-auth-panel" aria-labelledby="reset-sent-title">
+          <div className="studio-auth-brand"><Music2 aria-hidden="true" /> AfroStudioMusic</div>
+          <div className="mt-8 flex h-12 w-12 items-center justify-center rounded-lg border border-emerald-400/30 bg-emerald-400/10 text-emerald-300">
+            <Mail className="h-6 w-6" aria-hidden="true" />
+          </div>
+          <h1 id="reset-sent-title" className="mt-5 font-display text-3xl text-white">Check your email</h1>
+          <p className="mt-2 max-w-xl text-sm leading-6 text-slate-400">
+            If an account exists for that email, we&apos;ve sent a link to reset your password. The link works once and
+            expires in an hour. Be sure to check your spam folder.
+          </p>
+          <button
+            type="button"
+            onClick={() => { setResetSent(false); setMode('signin'); setPassword(''); setError(''); }}
+            className="mt-7 flex items-center justify-center gap-2 text-sm text-slate-400 transition hover:text-white"
+          >
+            <ArrowLeft className="h-4 w-4" aria-hidden="true" /> Back to sign in
+          </button>
+        </section>
+      </main>
+    );
   }
 
   if (accountReady) {
@@ -151,10 +184,14 @@ export default function SignInPage() {
 
         <div className="mt-9">
           <h1 id="auth-title" className="font-display text-3xl text-white">
-            {mode === 'signup' ? 'Create your studio' : 'Sign in'}
+            {mode === 'signup' ? 'Create your studio' : mode === 'reset' ? 'Reset your password' : 'Sign in'}
           </h1>
           <p className="mt-2 text-sm text-slate-400">
-            {mode === 'signup' ? 'Set up your private workspace, then choose how to begin.' : 'Continue to your studio workspace.'}
+            {mode === 'signup'
+              ? 'Set up your private workspace, then choose how to begin.'
+              : mode === 'reset'
+                ? "Enter your email and we'll send a link to set a new password."
+                : 'Continue to your studio workspace.'}
           </p>
         </div>
 
@@ -185,19 +222,32 @@ export default function SignInPage() {
             </div>
           </div>
 
-          <div>
-            <label htmlFor="password" className="studio-field-label">Password</label>
-            <div className={`studio-input-wrap ${mode === 'signup' && touched && passwordShort ? 'is-invalid' : ''}`}>
-              <LockKeyhole aria-hidden="true" />
-              <input id="password" value={password} onChange={(event) => { setPassword(event.target.value); setTouched(true); }} type="password" name="password" autoComplete={mode === 'signup' ? 'new-password' : 'current-password'} minLength={mode === 'signup' ? MIN_PASSWORD : 1} placeholder="Enter your password" required aria-describedby={mode === 'signup' ? 'password-help' : undefined} />
+          {mode !== 'reset' && (
+            <div>
+              <div className="flex items-center justify-between">
+                <label htmlFor="password" className="studio-field-label">Password</label>
+                {mode === 'signin' && (
+                  <button
+                    type="button"
+                    onClick={() => { setMode('reset'); setError(''); setTouched(false); }}
+                    className="text-xs text-slate-400 transition hover:text-orange-300 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-orange-400"
+                  >
+                    Forgot password?
+                  </button>
+                )}
+              </div>
+              <div className={`studio-input-wrap ${mode === 'signup' && touched && passwordShort ? 'is-invalid' : ''}`}>
+                <LockKeyhole aria-hidden="true" />
+                <input id="password" value={password} onChange={(event) => { setPassword(event.target.value); setTouched(true); }} type="password" name="password" autoComplete={mode === 'signup' ? 'new-password' : 'current-password'} minLength={mode === 'signup' ? MIN_PASSWORD : 1} placeholder="Enter your password" required aria-describedby={mode === 'signup' ? 'password-help' : undefined} />
+              </div>
+              {mode === 'signup' && (
+                <p id="password-help" className={`mt-2 flex items-center gap-1.5 text-xs ${passwordOk ? 'text-emerald-400' : touched && passwordShort ? 'text-red-400' : 'text-slate-500'}`}>
+                  {passwordOk ? <Check className="h-3.5 w-3.5" aria-hidden="true" /> : <KeyRound className="h-3.5 w-3.5" aria-hidden="true" />}
+                  {passwordOk ? 'Password meets the requirement.' : `Use at least ${MIN_PASSWORD} characters. A short sentence works well.`}
+                </p>
+              )}
             </div>
-            {mode === 'signup' && (
-              <p id="password-help" className={`mt-2 flex items-center gap-1.5 text-xs ${passwordOk ? 'text-emerald-400' : touched && passwordShort ? 'text-red-400' : 'text-slate-500'}`}>
-                {passwordOk ? <Check className="h-3.5 w-3.5" aria-hidden="true" /> : <KeyRound className="h-3.5 w-3.5" aria-hidden="true" />}
-                {passwordOk ? 'Password meets the requirement.' : `Use at least ${MIN_PASSWORD} characters. A short sentence works well.`}
-              </p>
-            )}
-          </div>
+          )}
 
           {error && (
             <div role="alert" className="studio-error-callout">
@@ -206,15 +256,24 @@ export default function SignInPage() {
             </div>
           )}
 
-          <button type="submit" disabled={busy || !email.trim() || password.length < (mode === 'signup' ? MIN_PASSWORD : 1)} className="studio-primary-button w-full">
-            {busy ? 'Please wait' : mode === 'signup' ? 'Continue' : 'Sign in'}
+          <button type="submit" disabled={busy || !email.trim() || (mode !== 'reset' && password.length < (mode === 'signup' ? MIN_PASSWORD : 1))} className="studio-primary-button w-full">
+            {busy ? 'Please wait' : mode === 'signup' ? 'Continue' : mode === 'reset' ? 'Send reset link' : 'Sign in'}
             {!busy && <ArrowRight aria-hidden="true" />}
           </button>
         </form>
 
-        <button type="button" onClick={() => { setMode(mode === 'signup' ? 'signin' : 'signup'); setError(''); setTouched(false); }} className="mt-5 flex w-full items-center justify-center gap-2 text-sm text-slate-400 transition hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-orange-400">
-          {mode === 'signup' && <ArrowLeft className="h-4 w-4" aria-hidden="true" />}
-          {mode === 'signup' ? 'I already have an account' : 'Create a new studio'}
+        <button
+          type="button"
+          onClick={() => {
+            if (mode === 'reset') { setMode('signin'); setError(''); setTouched(false); return; }
+            setMode(mode === 'signup' ? 'signin' : 'signup');
+            setError('');
+            setTouched(false);
+          }}
+          className="mt-5 flex w-full items-center justify-center gap-2 text-sm text-slate-400 transition hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-orange-400"
+        >
+          {(mode === 'signup' || mode === 'reset') && <ArrowLeft className="h-4 w-4" aria-hidden="true" />}
+          {mode === 'signup' ? 'I already have an account' : mode === 'reset' ? 'Back to sign in' : 'Create a new studio'}
         </button>
       </section>
     </main>

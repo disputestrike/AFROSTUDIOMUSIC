@@ -11,7 +11,9 @@
     "test:create-payment-cleanup": "node scripts/test-create-payment-cleanup.mjs",
     "test:nav-manifest": "node scripts/test-nav-manifest.mjs",
     "test:onboarding-ux": "node scripts/test-onboarding-ux.mjs",
-    "test:streaming-ux": "node scripts/test-streaming-ux.mjs"
+    "test:streaming-ux": "node scripts/test-streaming-ux.mjs",
+    "test:offline-playback": "node scripts/test-offline-playback.mjs",
+    "test:account-features": "node scripts/test-account-features.mjs"
   },
   "dependencies": {
     "@afrohit/shared": "workspace:*",
