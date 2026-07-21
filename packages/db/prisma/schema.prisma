@@ -605,13 +605,21 @@ model Song {
   instrumentalUrl  String? // 320k mp3 for the player/library (the WAV lives on the Stem row)
   acapellaUrl      String? // the isolated voice, same treatment
   instrumentalMeta Json? // { sourceUrl, sourceLufs, matchedLufs, engine, format, at }
-  // SOCIALS PACK (owner, 2026-07-20: "on every song … SOCIALS, like another tab
-  // next to the lyrics — what I can copy right away for my social media").
-  // { story, captions[3], hashtags, hook, language } written by the BULK brain
-  // from THIS song's own materials, stored so the tab opens instantly and a
-  // regenerate is an explicit refresh — never a silent re-run.
+  // RELEASE KIT (owner, 2026-07-21: "the hashtags don't show until I click
+  // Generate — we did not see it"). The FULL auto-generated release kit, written
+  // by the BULK brain from THIS song's own materials the MOMENT the song
+  // finishes rendering — no click. A superset of the old socials pack:
+  // { story, captions[per-platform], hashtags{tier1/2/3+line}, hook, titles[10],
+  //   description, artistBio, releaseCalendar[], pinnedComment, engagement
+  //   question, language }. Stored on socialsJson so the tab opens fully
+  //   populated; a Regenerate is an explicit refresh, never a silent re-run.
   socialsJson      Json?
   socialsUpdatedAt DateTime?  @db.Timestamptz(6)
+  // KIT LIFECYCLE so the tab can show "building your kit…" then the finished kit
+  // without a click: pending (a completion hook enqueued it) | ready (kit stored
+  // in socialsJson) | unavailable (the bulk brain was down — retry/refresh, the
+  // song render is never affected). Null = never triggered (legacy songs).
+  releaseKitStatus String?
   createdAt        DateTime   @default(now()) @db.Timestamptz(6)
 
   workspace           Workspace            @relation(fields: [workspaceId], references: [id], onDelete: Cascade)

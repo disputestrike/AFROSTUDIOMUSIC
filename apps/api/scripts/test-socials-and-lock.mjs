@@ -128,30 +128,31 @@ assert.equal(
   'the edit landed on the bound draft'
 );
 
-// ---- (a) socials generate: stores + returns the pack shape ----------------
+// ---- (a) socials generate: stores + returns the RELEASE KIT ---------------
+// (full-kit shape is exhaustively asserted in test-release-kit.mjs; here we
+// only prove the socials route still stores + serves a kit next to the lyrics.)
 res = await inject('POST', '/api/v1/songs/song-A/socials/generate', { payload: {} });
 assert.equal(res.statusCode, 200, `socials generate must be 200, got ${res.statusCode}: ${res.body}`);
 const generated = res.json();
 assert.equal(generated.exists, true, 'generate returns exists:true');
+assert.equal(generated.status, 'ready', 'generate returns status ready');
 const pack = generated.socials;
-assert.ok(pack && typeof pack === 'object', 'a pack came back');
-assert.ok(typeof pack.story === 'string' && pack.story.length > 20, 'story is a real 2-3 sentence string');
-assert.ok(Array.isArray(pack.captions) && pack.captions.length === 3, 'exactly 3 caption variants');
-for (const caption of pack.captions) {
-  assert.ok(typeof caption === 'string' && caption.length > 0 && caption.length <= 220, 'each caption is short + non-empty');
-}
-assert.ok(typeof pack.hashtags === 'string' && pack.hashtags.split(' ').every((t) => t.startsWith('#')), 'hashtags are ONE paste-ready #line');
-assert.ok(pack.hashtags.split(' ').length >= 3, 'a usable number of tags');
+assert.ok(pack && typeof pack === 'object', 'a kit came back');
+assert.equal(pack.kind, 'release-kit', 'the stored object is a release kit');
+assert.ok(typeof pack.story === 'string' && pack.story.length > 20, 'story is a real string');
+assert.ok(Array.isArray(pack.captions) && pack.captions.length === 3, '3 per-platform captions');
+assert.ok(pack.hashtags && Array.isArray(pack.hashtags.tier1), 'hashtags are tiered');
 assert.ok(typeof pack.hook === 'string' && pack.hook.length > 0, 'a one-line reel hook');
-assert.equal(pack.language, 'English', 'English lyric → English pack');
-assert.ok(typeof pack.generatedAt === 'string', 'the pack says when it was written');
-// STORED — the tab opens instantly next time, no silent regeneration.
+assert.equal(pack.language, 'English', 'English lyric → English kit');
+// STORED — the tab opens instantly next time, already populated.
 const storedSong = fakes.song.rows.find((s) => s.id === 'song-A');
-assert.deepEqual(storedSong.socialsJson, pack, 'the pack is persisted on the song');
+assert.deepEqual(storedSong.socialsJson, pack, 'the kit is persisted on the song');
+assert.equal(storedSong.releaseKitStatus, 'ready', 'kit status stored ready');
 assert.ok(storedSong.socialsUpdatedAt instanceof Date, 'socialsUpdatedAt stamped');
 res = await inject('GET', '/api/v1/songs/song-A/socials');
 assert.equal(res.statusCode, 200);
-assert.deepEqual(res.json().socials, pack, 'GET serves the STORED pack verbatim');
+assert.deepEqual(res.json().socials, pack, 'GET serves the STORED kit verbatim');
+assert.equal(res.json().status, 'ready', 'GET reports status ready');
 
 // ---- (b) workspace scoping + role gate -------------------------------------
 res = await inject('GET', '/api/v1/songs/song-F/socials');

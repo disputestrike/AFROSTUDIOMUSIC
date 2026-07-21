@@ -11,7 +11,7 @@ import {
   type SongBlueprint,
 } from '@afrohit/shared';
 import { prisma, Prisma } from '@afrohit/db';
-import { predictHit, researchTrends, enrichLyricsForVocals, cleanLyricsForMinimax } from '@afrohit/ai';
+import { predictHit, researchTrends, enrichLyricsForVocals, cleanLyricsForMinimax, writeReleaseKit, type ReleaseKitDb } from '@afrohit/ai';
 import { laneDna, laneDnaBrief } from '../lib/lane-pipeline';
 import { requireAuth, requireMinRole, requireRole } from '../middleware/auth';
 import { createQueuedProviderJob, scopedRequestKey } from '../lib/queued-job';
@@ -35,7 +35,6 @@ import {
 import { safeFetch } from '../lib/url-guard';
 import { operationErrorBody, runIdempotentOperation } from '../lib/idempotent-operation';
 import { registerBeatForInspection } from '../lib/beat-ingest';
-import { generateSocialsPack, SocialsUnavailableError } from '../lib/socials-pack';
 import { lyricsVideoLock, LYRICS_LOCKED_MESSAGE } from '../lib/lyrics-video-lock';
 import {
   arrangementBlueprint,
@@ -731,74 +730,65 @@ export default async function songs(app: FastifyInstance) {
     return { concept: concept ?? null };
   });
 
-  // ---- SOCIALS: the copy-paste promo pack beside the lyrics ---------------
-  // (owner, 2026-07-20: "another tab next to the lyrics … what I can copy
-  // right away and use for my social media"). The stored pack, or an honest
-  // "none yet" — generation is its own explicit POST below, never a silent
-  // side effect of reading.
+  // ---- RELEASE KIT: the auto-generated promo kit beside the lyrics ---------
+  // (owner, 2026-07-21: "the hashtags don't show until I click Generate — we
+  // did not see it"). The kit generates ITSELF the moment a song finishes
+  // rendering (worker completion hooks -> writeReleaseKit), so this GET usually
+  // serves an already-ready kit. `status` lets the tab show "building your
+  // kit…" (pending) vs the finished kit (ready) vs an outage (unavailable)
+  // without any click. Reading NEVER generates — that stays the explicit POST.
   app.get<{ Params: { id: string } }>('/:id/socials', async (req, reply) => {
     const { workspaceId } = requireAuth(req);
     const song = await prisma.song.findFirst({
       where: { id: req.params.id, workspaceId },
-      select: { socialsJson: true, socialsUpdatedAt: true },
+      select: { socialsJson: true, socialsUpdatedAt: true, releaseKitStatus: true },
     });
     if (!song) return reply.code(404).send({ error: 'song_not_found' });
-    if (!song.socialsJson) return { exists: false };
-    return { exists: true, socials: song.socialsJson, updatedAt: song.socialsUpdatedAt };
+    // A stored kit means "ready" even on a legacy row that predates the status
+    // column; a pending/unavailable status with no kit yet is reported as-is.
+    const status = song.releaseKitStatus ?? (song.socialsJson ? 'ready' : null);
+    if (!song.socialsJson) return { exists: false, status };
+    return { exists: true, socials: song.socialsJson, updatedAt: song.socialsUpdatedAt, status };
   });
 
   /**
-   * Write (or refresh) the socials pack from the song's REAL materials —
-   * title, display artist, genre, brief mood/topic, and the lyric draft (or
-   * instrumental status). BULK Cerebras tier ONLY (lib/socials-pack.ts): a
-   * bulk call is effectively $0, so no user credits are charged; if the bulk
-   * brain is down the route says "try again" instead of billing a paid brain.
+   * REGENERATE (the manual "fresh take" button) — the auto path already fills
+   * the kit on song completion; this force-rebuilds it from the song's REAL
+   * materials (title, display artist, genre, brief mood/topic, the bound lyric,
+   * whether a video exists). Runs the SAME shared writeReleaseKit the worker
+   * hook runs, so both produce an identical kit. BULK Cerebras tier ONLY: a
+   * bulk call is ~$0, no user credits are charged, and if the bulk brain is
+   * down the route says "try again" instead of ever billing a paid brain.
    */
   app.post<{ Params: { id: string } }>(
     '/:id/socials/generate',
     { config: { rateLimit: { max: 5, timeWindow: '1 minute' } } },
     async (req, reply) => {
       const { workspaceId } = requireMinRole(req, 'PRODUCER');
+      // Cheap pre-read so a missing/foreign song is a clean 404 and so the kit's
+      // calendar can lead with the video when one already exists.
       const song = await prisma.song.findFirst({
         where: { id: req.params.id, workspaceId, deletedAt: null },
-        include: {
-          project: { select: { genre: true, artist: { select: { stageName: true } } } },
-          lyric: true,
-        },
+        select: { id: true, projectId: true },
       });
       if (!song) return reply.code(404).send({ error: 'song_not_found' });
-      const brief = await prisma.songBrief.findFirst({
-        where: { projectId: song.projectId },
-        orderBy: { createdAt: 'desc' },
-        select: { mood: true, topic: true },
+      const lock = await lyricsVideoLock(song.id, song.projectId);
+      const res = await writeReleaseKit(prisma as unknown as ReleaseKitDb, {
+        songId: song.id,
+        workspaceId,
+        force: true,
+        hasVideo: lock.locked,
       });
-      // SONG SCOPE LAW — the pack must be written from THIS song's words.
-      const lyric = await songLyric(song);
-      try {
-        const pack = await generateSocialsPack({
-          title: lyric?.title || song.title,
-          artist: song.displayArtist || song.project.artist.stageName,
-          genre: song.project.genre,
-          mood: brief?.mood ?? null,
-          topic: brief?.topic ?? null,
-          lyrics: lyric?.body ?? null,
-          kind: (song as { kind?: string }).kind ?? 'song',
+      if (res.status === 'not_found') return reply.code(404).send({ error: 'song_not_found' });
+      if (res.status !== 'ready' || !res.kit) {
+        // Fail-soft: the bulk brain was down. writeReleaseKit already stored
+        // status 'unavailable' — the paid brains were never touched.
+        return reply.code(503).send({
+          error: 'socials_unavailable',
+          message: 'The release-kit writer is busy right now — try again in a moment.',
         });
-        const updatedAt = new Date();
-        await prisma.song.update({
-          where: { id: song.id },
-          data: { socialsJson: pack as never, socialsUpdatedAt: updatedAt },
-        });
-        return { exists: true, socials: pack, updatedAt };
-      } catch (error) {
-        if (error instanceof SocialsUnavailableError) {
-          return reply.code(503).send({
-            error: 'socials_unavailable',
-            message: 'The socials writer is busy right now — try again in a moment.',
-          });
-        }
-        throw error;
       }
+      return { exists: true, socials: res.kit, updatedAt: res.updatedAt, status: 'ready' };
     }
   );
 

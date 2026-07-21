@@ -11,6 +11,7 @@ import {
 } from '../lib/ffmpeg';
 import { markFailed, markRunning } from '../lib/jobs';
 import { deleteObjectByUrl, downloadToBuffer } from '../lib/storage';
+import { enqueueReleaseKit } from '../lib/release-kit';
 
 interface MasterPayload {
   jobId: string;
@@ -268,6 +269,10 @@ export async function processMaster(payload: MasterPayload): Promise<void> {
     });
     void master;
     uploaded.length = 0;
+    // AUTO RELEASE KIT (owner: "we did not see it") — the song is now mastered;
+    // build its full release kit in the background so the tab opens populated.
+    // Idempotent + fail-soft; never fails this master.
+    await enqueueReleaseKit({ songId: payload.songId, workspaceId: payload.workspaceId, reason: 'song-mastered' });
   } catch (error) {
     await Promise.allSettled(uploaded.map((url) => deleteObjectByUrl(url)));
     await markFailed(payload.jobId, error);

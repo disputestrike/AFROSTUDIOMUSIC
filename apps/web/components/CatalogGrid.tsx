@@ -316,16 +316,69 @@ type LyricVer = {
   at: string;
   label?: string;
 };
-/** The stored socials pack — GET/POST /songs/:id/socials(.generate). Every
- *  block is copy-paste-first; the server refused to store an incomplete one. */
+/** A caption tagged with the platform it's shaped for + its style. */
+type KitCaption = {
+  platform: "youtube" | "tiktok" | "instagram";
+  style: "hype" | "heartfelt" | "minimal";
+  text: string;
+};
+/** Hashtags in 3 tiers + a ready-to-paste line. */
+type KitHashtags = {
+  tier1: string[];
+  tier2: string[];
+  tier3: string[];
+  line: string;
+};
+type KitCalendarEntry = { day: number; channel: string; action: string };
+/** The stored RELEASE KIT — GET/POST /songs/:id/socials(.generate). It generates
+ *  ITSELF on song completion (owner: "we did not see it"), so the tab usually
+ *  opens already populated. Every block is copy-paste-first; the server refused
+ *  to store an incomplete one. captions/hashtags accept the LEGACY socials-pack
+ *  shape too (string[] / string) so pre-kit rows still render. */
 type SocialsPackRow = {
   story: string;
-  captions: string[];
-  hashtags: string;
+  captions: KitCaption[] | string[];
+  hashtags: KitHashtags | string;
   hook: string;
+  titles?: string[];
+  description?: string;
+  artistBio?: string;
+  releaseCalendar?: KitCalendarEntry[];
+  pinnedComment?: string;
+  engagementQuestion?: string;
   language?: string;
   generatedAt?: string;
+  kind?: string;
 };
+/** Kit lifecycle the server reports so the tab can show "building…" then the kit. */
+type KitStatus = "pending" | "ready" | "unavailable";
+
+const PLATFORM_LABEL: Record<KitCaption["platform"], string> = {
+  youtube: "YouTube (long)",
+  tiktok: "TikTok / Reels",
+  instagram: "Instagram",
+};
+/** Normalize captions from the kit shape OR the legacy string[] pack. */
+function kitCaptions(pack: SocialsPackRow): KitCaption[] {
+  const c = pack.captions;
+  if (Array.isArray(c) && c.length > 0 && typeof c[0] === "object") {
+    return c as KitCaption[];
+  }
+  const styles = ["hype", "heartfelt", "minimal"] as const;
+  const platforms = ["tiktok", "youtube", "instagram"] as const;
+  return (Array.isArray(c) ? (c as string[]) : []).map((text, i) => ({
+    platform: platforms[i] ?? "instagram",
+    style: styles[i] ?? "minimal",
+    text,
+  }));
+}
+/** Normalize hashtags from the 3-tier kit shape OR the legacy single line. */
+function kitHashtags(pack: SocialsPackRow): KitHashtags {
+  const h = pack.hashtags;
+  if (h && typeof h === "object") return h as KitHashtags;
+  const line = String(h ?? "");
+  return { tier1: line ? line.split(/\s+/).filter(Boolean) : [], tier2: [], tier3: [], line };
+}
 /** A song's recommended video treatment — shot list as the API stores it. */
 type VideoShot = {
   index: number;
@@ -470,15 +523,23 @@ export default function CatalogGrid({ initial }: { initial: SongRow[] }) {
   const [wordsTab, setWordsTab] = useState<"lyrics" | "video" | "socials">(
     "lyrics"
   );
-  // SOCIALS PACK — keyed by songId (same discipline as the treatment) so a
-  // stale fetch can never paint another song's captions onto this one.
+  // RELEASE KIT — keyed by songId (same discipline as the treatment) so a stale
+  // fetch can never paint another song's kit onto this one. `status` carries the
+  // server's lifecycle so the tab shows "building your kit…" (pending) then the
+  // finished kit, with NO click.
   const [socials, setSocials] = useState<{
     songId: string;
     state: "loading" | "ready" | "generating";
     pack?: SocialsPackRow | null;
+    status?: KitStatus | null;
     updatedAt?: string | null;
     error?: string | null;
   } | null>(null);
+  // Auto-poll while the kit is still building server-side — no button, it just
+  // fills in. The song ref guards against a stale poll writing another song.
+  const socialsPollTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const socialsPollSong = useRef<string>("");
+  const socialsPollCount = useRef<number>(0);
   // One-tap copy — which block just landed on the clipboard ("Copied ✓").
   const [copiedBlock, setCopiedBlock] = useState<string>("");
   // Keyed by songId so a treatment can never be shown against the wrong song —
@@ -1557,6 +1618,15 @@ export default function CatalogGrid({ initial }: { initial: SongRow[] }) {
     const timer = setInterval(() => void loadAssembly(conceptId), 10_000);
     return () => clearInterval(timer);
   }, [renderAllWatch, videoOpen]);
+  // Stop the release-kit auto-poll when the words modal closes — no orphan timer
+  // keeps hitting the API after the user has moved on.
+  useEffect(() => {
+    if (!editing && socialsPollTimer.current) {
+      clearTimeout(socialsPollTimer.current);
+      socialsPollTimer.current = null;
+      socialsPollSong.current = "";
+    }
+  }, [editing]);
   // Stop watching the moment a NEW assembled full cut lands — the Wave-9
   // panel below renders it (playable <video> + download); nothing duplicated.
   useEffect(() => {
@@ -1889,29 +1959,52 @@ export default function CatalogGrid({ initial }: { initial: SongRow[] }) {
     }
   }
 
-  /** The stored socials pack, or an honest "none yet" (state ready + null). */
-  async function loadSocials(songId: string) {
-    setSocials({ songId, state: "loading" });
+  /** The stored release kit — auto-generated on song completion, so this usually
+   *  returns a ready kit with zero clicks. While the server is still building it
+   *  (status "pending"), keep polling until it lands — no button. */
+  async function loadSocials(songId: string, opts?: { poll?: boolean }) {
+    if (!opts?.poll) {
+      socialsPollSong.current = songId;
+      socialsPollCount.current = 0;
+      if (socialsPollTimer.current) clearTimeout(socialsPollTimer.current);
+      setSocials({ songId, state: "loading" });
+    }
     try {
       const r = await api.get<{
         exists: boolean;
         socials?: SocialsPackRow;
         updatedAt?: string | null;
+        status?: KitStatus | null;
       }>(`/songs/${songId}/socials`);
+      // A stale poll for a song the modal already left must never write state.
+      if (socialsPollSong.current !== songId) return;
+      const status = r.status ?? null;
       setSocials({
         songId,
         state: "ready",
         pack: r.exists ? (r.socials ?? null) : null,
+        status,
         updatedAt: r.updatedAt ?? null,
       });
+      // Still building server-side → poll again shortly (bounded), no click.
+      if (!r.exists && status === "pending" && socialsPollCount.current < 30) {
+        socialsPollCount.current += 1;
+        socialsPollTimer.current = setTimeout(
+          () => void loadSocials(songId, { poll: true }),
+          4000
+        );
+      }
     } catch {
-      // No pack is a normal state — the tab offers Generate either way.
-      setSocials({ songId, state: "ready", pack: null });
+      if (socialsPollSong.current !== songId) return;
+      // No kit is a normal state — the tab offers Generate either way.
+      setSocials({ songId, state: "ready", pack: null, status: null });
     }
   }
 
-  /** Write (or refresh) the pack — bulk brain server-side, no credits. */
+  /** REGENERATE — a fresh take on demand (the auto path already filled it). Bulk
+   *  brain server-side, no credits. */
   async function generateSocials(songId: string) {
+    if (socialsPollTimer.current) clearTimeout(socialsPollTimer.current);
     setSocials(cur =>
       cur?.songId === songId
         ? { ...cur, state: "generating", error: null }
@@ -1921,14 +2014,16 @@ export default function CatalogGrid({ initial }: { initial: SongRow[] }) {
       const r = await api.post<{
         socials: SocialsPackRow;
         updatedAt?: string | null;
+        status?: KitStatus | null;
       }>(`/songs/${songId}/socials/generate`, {});
       setSocials({
         songId,
         state: "ready",
         pack: r.socials,
+        status: r.status ?? "ready",
         updatedAt: r.updatedAt ?? null,
       });
-      flash("Socials pack ready — tap any block to copy it.");
+      flash("Release kit refreshed — tap any block to copy it.");
     } catch (e) {
       const message = (e as Error).message || "";
       setSocials(cur =>
@@ -1937,8 +2032,8 @@ export default function CatalogGrid({ initial }: { initial: SongRow[] }) {
               ...cur,
               state: "ready",
               error: message.includes("socials_unavailable")
-                ? "The socials writer is busy right now — try again in a moment."
-                : message.slice(0, 140) || "Could not write the pack — try again.",
+                ? "The release-kit writer is busy right now — try again in a moment."
+                : message.slice(0, 140) || "Could not write the kit — try again.",
             }
           : cur
       );
@@ -2895,99 +2990,278 @@ export default function CatalogGrid({ initial }: { initial: SongRow[] }) {
             </div>
           )}
 
-          {/* ---- SOCIALS — the copy-paste promo pack (owner: "what I can
-                  copy right away and use for my social media"). ---- */}
+          {/* ---- RELEASE KIT — auto-generated on song completion (owner: "the
+                  hashtags don't show until I click Generate — we did not see
+                  it"). It fills itself; nothing waits on a click. ---- */}
           {wordsTab === "socials" &&
             (socials?.songId !== editing.id ||
             socials.state === "loading" ? (
               <div className="flex items-center gap-1.5 text-sm text-slate-500">
                 <Loader2 className="h-4 w-4 animate-spin" /> Loading…
               </div>
-            ) : socials.pack ? (
-              <div className="space-y-2.5">
-                <div className="flex items-center justify-between text-[11px] text-slate-500">
-                  <span>
-                    Tap Copy on any block — it&apos;s written from this
-                    song&apos;s own words
-                    {socials.pack.language
-                      ? ` (${socials.pack.language})`
-                      : ""}
-                    .
-                  </span>
+            ) : socials.pack
+              ? (() => {
+                  const pack = socials.pack;
+                  const caps = kitCaptions(pack);
+                  const tags = kitHashtags(pack);
+                  const titles = pack.titles ?? [];
+                  const cal = pack.releaseCalendar ?? [];
+                  const calText = cal
+                    .map(e => `Day ${e.day} · ${e.channel} — ${e.action}`)
+                    .join("\n");
+                  return (
+                    <div className="space-y-2.5">
+                      <div className="flex items-center justify-between gap-2 text-[11px] text-slate-500">
+                        <span>
+                          Your release kit — written from this song&apos;s own
+                          words
+                          {pack.language ? ` (${pack.language})` : ""}. Tap Copy
+                          on any block.
+                        </span>
+                        <button
+                          onClick={() => void generateSocials(editing.id)}
+                          disabled={socials.state === "generating"}
+                          className="shrink-0 rounded-full border border-white/15 px-2.5 py-1 text-[11px] text-slate-300 hover:bg-white/10 disabled:opacity-50"
+                        >
+                          {socials.state === "generating"
+                            ? "Rewriting…"
+                            : "↻ Regenerate"}
+                        </button>
+                      </div>
+                      {socials.error && (
+                        <div className="rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-[11px] text-red-300">
+                          {socials.error}
+                        </div>
+                      )}
+                      <CopyBlock
+                        label="The story — what this song is about"
+                        text={pack.story}
+                        copied={copiedBlock === "story"}
+                        onCopy={() => void copyBlock("story", pack.story)}
+                      />
+
+                      {/* Per-platform captions (YouTube long · TikTok · IG) */}
+                      {caps.map((c, i) => (
+                        <CopyBlock
+                          key={i}
+                          label={`Caption — ${PLATFORM_LABEL[c.platform] ?? c.platform} · ${c.style}`}
+                          text={c.text}
+                          copied={copiedBlock === `caption${i}`}
+                          onCopy={() => void copyBlock(`caption${i}`, c.text)}
+                        />
+                      ))}
+
+                      <CopyBlock
+                        label="Reel/short hook — say this over the first seconds"
+                        text={pack.hook}
+                        copied={copiedBlock === "hook"}
+                        onCopy={() => void copyBlock("hook", pack.hook)}
+                      />
+
+                      {/* Hashtags — 3 tiers + a ready-to-paste line */}
+                      <div className="rounded-lg border border-white/10 bg-black/20 p-2.5">
+                        <div className="mb-1.5 text-[11px] font-medium text-slate-300">
+                          Hashtags — tiered, 3-5 per post (never stuffed)
+                        </div>
+                        <div className="space-y-2">
+                          {tags.line && (
+                            <CopyBlock
+                              label="Ready-to-paste line"
+                              text={tags.line}
+                              copied={copiedBlock === "tagline"}
+                              onCopy={() => void copyBlock("tagline", tags.line)}
+                            />
+                          )}
+                          {tags.tier1.length > 0 && (
+                            <CopyBlock
+                              label="Tier 1 — genre"
+                              text={tags.tier1.join(" ")}
+                              copied={copiedBlock === "tier1"}
+                              onCopy={() =>
+                                void copyBlock("tier1", tags.tier1.join(" "))
+                              }
+                            />
+                          )}
+                          {tags.tier2.length > 0 && (
+                            <CopyBlock
+                              label="Tier 2 — audience"
+                              text={tags.tier2.join(" ")}
+                              copied={copiedBlock === "tier2"}
+                              onCopy={() =>
+                                void copyBlock("tier2", tags.tier2.join(" "))
+                              }
+                            />
+                          )}
+                          {tags.tier3.length > 0 && (
+                            <CopyBlock
+                              label="Tier 3 — matched trend"
+                              text={tags.tier3.join(" ")}
+                              copied={copiedBlock === "tier3"}
+                              onCopy={() =>
+                                void copyBlock("tier3", tags.tier3.join(" "))
+                              }
+                            />
+                          )}
+                        </div>
+                      </div>
+
+                      {/* 10 YouTube titles — curiosity, not clickbait */}
+                      {titles.length > 0 && (
+                        <div className="rounded-lg border border-white/10 bg-black/20 p-2.5">
+                          <div className="mb-1 flex items-center justify-between gap-2">
+                            <span className="text-[11px] font-medium text-slate-300">
+                              YouTube titles ({titles.length}) — pick one
+                            </span>
+                            <button
+                              onClick={() =>
+                                void copyBlock("titles", titles.join("\n"))
+                              }
+                              className={`inline-flex shrink-0 items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] transition-colors ${
+                                copiedBlock === "titles"
+                                  ? "border-emerald-400/50 bg-emerald-400/15 text-emerald-300"
+                                  : "border-white/15 text-slate-300 hover:bg-white/10"
+                              }`}
+                            >
+                              <Copy className="h-3 w-3" />{" "}
+                              {copiedBlock === "titles" ? "Copied ✓" : "Copy all"}
+                            </button>
+                          </div>
+                          <ol className="list-decimal space-y-1 pl-5 text-xs text-slate-200">
+                            {titles.map((t, i) => (
+                              <li key={i}>
+                                <button
+                                  onClick={() => void copyBlock(`title${i}`, t)}
+                                  className="text-left hover:text-white"
+                                  title="Copy this title"
+                                >
+                                  {t}
+                                  {copiedBlock === `title${i}` ? " ✓" : ""}
+                                </button>
+                              </li>
+                            ))}
+                          </ol>
+                        </div>
+                      )}
+
+                      {pack.description && (
+                        <CopyBlock
+                          label="YouTube description"
+                          text={pack.description}
+                          copied={copiedBlock === "description"}
+                          onCopy={() =>
+                            void copyBlock("description", pack.description!)
+                          }
+                        />
+                      )}
+                      {pack.artistBio && (
+                        <CopyBlock
+                          label="Artist bio"
+                          text={pack.artistBio}
+                          copied={copiedBlock === "bio"}
+                          onCopy={() => void copyBlock("bio", pack.artistBio!)}
+                        />
+                      )}
+
+                      {/* Release calendar — post when the audience is active */}
+                      {cal.length > 0 && (
+                        <div className="rounded-lg border border-white/10 bg-black/20 p-2.5">
+                          <div className="mb-1 flex items-center justify-between gap-2">
+                            <span className="text-[11px] font-medium text-slate-300">
+                              Release calendar — post when the audience is active
+                            </span>
+                            <button
+                              onClick={() => void copyBlock("calendar", calText)}
+                              className={`inline-flex shrink-0 items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] transition-colors ${
+                                copiedBlock === "calendar"
+                                  ? "border-emerald-400/50 bg-emerald-400/15 text-emerald-300"
+                                  : "border-white/15 text-slate-300 hover:bg-white/10"
+                              }`}
+                            >
+                              <Copy className="h-3 w-3" />{" "}
+                              {copiedBlock === "calendar" ? "Copied ✓" : "Copy all"}
+                            </button>
+                          </div>
+                          <ul className="space-y-1 text-xs text-slate-200">
+                            {cal.map((e, i) => (
+                              <li key={i} className="flex gap-2">
+                                <span className="shrink-0 rounded bg-white/10 px-1.5 text-[11px] text-slate-300">
+                                  Day {e.day}
+                                </span>
+                                <span>
+                                  <span className="text-slate-400">
+                                    {e.channel}
+                                  </span>{" "}
+                                  — {e.action}
+                                </span>
+                              </li>
+                            ))}
+                          </ul>
+                        </div>
+                      )}
+
+                      {pack.pinnedComment && (
+                        <CopyBlock
+                          label="Pinned comment — seed the thread"
+                          text={pack.pinnedComment}
+                          copied={copiedBlock === "pinned"}
+                          onCopy={() =>
+                            void copyBlock("pinned", pack.pinnedComment!)
+                          }
+                        />
+                      )}
+                      {pack.engagementQuestion && (
+                        <CopyBlock
+                          label="Engagement question — spark real replies"
+                          text={pack.engagementQuestion}
+                          copied={copiedBlock === "question"}
+                          onCopy={() =>
+                            void copyBlock("question", pack.engagementQuestion!)
+                          }
+                        />
+                      )}
+                    </div>
+                  );
+                })()
+              : socials.status === "pending" ? (
+                <div className="rounded-lg border border-white/10 bg-black/20 p-4">
+                  <div className="flex items-center gap-2 text-sm text-slate-300">
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                    Building your release kit…
+                  </div>
+                  <p className="mt-1.5 text-xs text-slate-500">
+                    Captions, 3-tier hashtags, 10 titles, artist bio and a
+                    posting calendar are being written from this song&apos;s own
+                    words. It appears here automatically — no need to click.
+                  </p>
+                </div>
+              ) : (
+                <div className="rounded-lg border border-white/10 bg-black/20 p-3">
+                  <p className="text-xs text-slate-400">
+                    {socials.status === "unavailable"
+                      ? "The release-kit writer was briefly busy. Tap Regenerate to build it — it's free."
+                      : "No release kit for this song yet. One click writes the story, per-platform captions, 3-tier hashtags, 10 YouTube titles, an artist bio and a posting calendar from this song's own words — all copy-paste-ready. Free."}
+                  </p>
+                  {socials.error && (
+                    <div className="mt-2 rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-[11px] text-red-300">
+                      {socials.error}
+                    </div>
+                  )}
                   <button
                     onClick={() => void generateSocials(editing.id)}
                     disabled={socials.state === "generating"}
-                    className="shrink-0 rounded-full border border-white/15 px-2.5 py-1 text-[11px] text-slate-300 hover:bg-white/10 disabled:opacity-50"
+                    className="mt-2 inline-flex items-center gap-1 rounded-full bg-brand-gradient px-4 py-2 text-sm font-medium text-ink disabled:opacity-60"
                   >
-                    {socials.state === "generating"
-                      ? "Rewriting…"
-                      : "↻ Refresh"}
+                    {socials.state === "generating" ? (
+                      <>
+                        <Loader2 className="h-3.5 w-3.5 animate-spin" /> Writing
+                        the kit…
+                      </>
+                    ) : (
+                      <>📣 Generate the release kit</>
+                    )}
                   </button>
                 </div>
-                {socials.error && (
-                  <div className="rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-[11px] text-red-300">
-                    {socials.error}
-                  </div>
-                )}
-                <CopyBlock
-                  label="The story — what this song is about"
-                  text={socials.pack.story}
-                  copied={copiedBlock === "story"}
-                  onCopy={() => void copyBlock("story", socials.pack!.story)}
-                />
-                {socials.pack.captions.map((caption, i) => (
-                  <CopyBlock
-                    key={i}
-                    label={`Caption — ${["hype", "heartfelt", "minimal"][i] ?? `variant ${i + 1}`}`}
-                    text={caption}
-                    copied={copiedBlock === `caption${i}`}
-                    onCopy={() => void copyBlock(`caption${i}`, caption)}
-                  />
-                ))}
-                <CopyBlock
-                  label="Hashtags — one paste-ready line"
-                  text={socials.pack.hashtags}
-                  copied={copiedBlock === "hashtags"}
-                  onCopy={() =>
-                    void copyBlock("hashtags", socials.pack!.hashtags)
-                  }
-                />
-                <CopyBlock
-                  label="Reel/short hook — say this over the first seconds"
-                  text={socials.pack.hook}
-                  copied={copiedBlock === "hook"}
-                  onCopy={() => void copyBlock("hook", socials.pack!.hook)}
-                />
-              </div>
-            ) : (
-              <div className="rounded-lg border border-white/10 bg-black/20 p-3">
-                <p className="text-xs text-slate-400">
-                  No socials pack for this song yet. One click writes the
-                  story, three captions, a hashtag line, and a reel hook from
-                  this song&apos;s own words — everything copy-paste-ready.
-                  Free.
-                </p>
-                {socials.error && (
-                  <div className="mt-2 rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-[11px] text-red-300">
-                    {socials.error}
-                  </div>
-                )}
-                <button
-                  onClick={() => void generateSocials(editing.id)}
-                  disabled={socials.state === "generating"}
-                  className="mt-2 inline-flex items-center gap-1 rounded-full bg-brand-gradient px-4 py-2 text-sm font-medium text-ink disabled:opacity-60"
-                >
-                  {socials.state === "generating" ? (
-                    <>
-                      <Loader2 className="h-3.5 w-3.5 animate-spin" /> Writing
-                      the pack…
-                    </>
-                  ) : (
-                    <>📣 Generate the socials pack</>
-                  )}
-                </button>
-              </div>
-            ))}
+              ))}
         </Modal>
       )}
 

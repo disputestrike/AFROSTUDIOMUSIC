@@ -16,6 +16,7 @@ import {
 } from '../lib/demucs-local';
 import { genreSignature, planFills, scoreLaneCompliance, scoreLyricAudioAlignment, engineAdequacy, structureMatch, blueprintFromMeasured, isFirstPartyWorkspace, resolveEngineForWorkspace, promotionEligible, selectMaterialRows, materialGenreMatches, normalizeMaterialGenre, type LaneComplianceScore, type LyricAudioAlignmentScore, type MeasuredAnalysis, type SongBlueprint } from '@afrohit/shared';
 import { enqueueJob } from '../lib/enqueue';
+import { enqueueReleaseKit } from '../lib/release-kit';
 
 /** Minimum measured coverage before a lane score is allowed to influence ranking. */
 const MIN_COVERAGE_FOR_RANKING = 0.5;
@@ -1046,6 +1047,14 @@ export async function processMusic(p: MusicPayload) {
         // The song is already shipped — a harvest hiccup must never fail it.
         console.warn('[self-harvest] enqueue failed (render unaffected):', (err as Error)?.message);
       }
+    }
+
+    // AUTO RELEASE KIT (owner 2026-07-21: "we did not see it") — the song just
+    // finished mastering, so build its full release kit in the background NOW.
+    // Opening the song then shows story/captions/hashtags/titles already there,
+    // no click. Fail-soft inside enqueueReleaseKit — never touches this render.
+    if (p.songId && masteredUrl && !placeholder) {
+      await enqueueReleaseKit({ songId: p.songId, workspaceId: p.workspaceId, reason: 'song-mastered' });
     }
 
     await markSucceeded(

@@ -25,6 +25,7 @@ import {
 import { renderMelodyGuide } from '../lib/melody-guide';
 import { uploadBytes } from '../lib/storage';
 import { markRunning, markSucceeded, markFailed } from '../lib/jobs';
+import { enqueueReleaseKit } from '../lib/release-kit';
 
 interface ProducePayload {
   jobId: string;
@@ -247,6 +248,11 @@ export async function processProduce(p: ProducePayload): Promise<void> {
     if (decision === 'CANDIDATE_FOR_HUMAN_AR') {
       const lyric = await prisma.lyricDraft.create({ data: { projectId: p.projectId, songId: p.songId, title, body: persistBody, approved: false } });
       await prisma.song.update({ where: { id: p.songId }, data: { title, lyricId: lyric.id, status: 'DEMO', proofPack: state as never } });
+      // AUTO RELEASE KIT (owner: "we did not see it") — the autopilot song now
+      // has its title + words, everything the kit needs. Build it in the
+      // background so opening the song shows the kit already there, no click.
+      // Idempotent + fail-soft; a later master refresh is a no-op if still fresh.
+      await enqueueReleaseKit({ songId: p.songId, workspaceId: p.workspaceId, reason: 'song-demo' });
     } else {
       await prisma.song.update({ where: { id: p.songId }, data: { title: title || 'Revise', quarantined: true, quarantineReason: `pipeline: ${decision}`, proofPack: state as never } });
     }

@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { prisma } from "@afrohit/db";
 import { lipSyncClip } from "@afrohit/ai";
 import { markFailed, markRunning, markSucceeded } from "../lib/jobs";
+import { enqueueReleaseKit } from "../lib/release-kit";
 import { downloadToBuffer, resolveAssetForProvider, uploadBytes } from "../lib/storage";
 import {
   assembleMusicVideoTimeline,
@@ -460,6 +461,19 @@ export async function processAssembleVideo(p: AssembleVideoPayload) {
       url,
       assembly,
     });
+
+    // AUTO RELEASE KIT — a music video now exists (full cut). Refresh the kit so
+    // the release calendar leads with the video on day 0. force:true because a
+    // ready kit is expected here; fail-soft, never touches this assembly.
+    if (p.kind === "full" && p.audio.songId) {
+      await enqueueReleaseKit({
+        songId: p.audio.songId,
+        workspaceId: p.workspaceId,
+        force: true,
+        hasVideo: true,
+        reason: "video-done",
+      });
+    }
   } catch (error) {
     await markFailed(p.jobId, error);
   } finally {

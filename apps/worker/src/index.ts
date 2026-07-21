@@ -73,6 +73,7 @@ import { processProduce } from "./processors/produce";
 import { processSongEdit } from "./processors/song-edit";
 import { processSynthMaterial } from "./processors/synth-material";
 import { processAssetCleanup } from "./processors/asset-cleanup";
+import { processReleaseKit } from "./lib/release-kit";
 import { enqueueJob } from "./lib/enqueue";
 import { assertStorageConfiguration } from "./lib/storage";
 import {
@@ -510,6 +511,16 @@ const workers = [
       throw new Error(`unknown cleanup job: ${job.name}`);
     await processAssetCleanup(job.data as never);
   }),
+  // RELEASE KIT — the auto-generated text kit (story, per-platform captions,
+  // 3-tier hashtags, 10 titles, bio, release calendar) built by the bulk brain
+  // the moment a song finishes rendering. Off the render lanes AND off the
+  // concurrency-1 lake lane so it lands promptly ("we did not see it"). The
+  // processor is fail-soft (never throws), so this job always completes.
+  makeWorker("releasekit", async (job: { data: never; name: string }) => {
+    if (job.name !== "generate-release-kit")
+      throw new Error(`unknown releasekit job: ${job.name}`);
+    await processReleaseKit(job.data as never);
+  }),
   makeWorker("cron", async (job: { data: never; name: string }) => {
     if (job.name === "morning-drop") await processMorningDrop();
     else if (job.name === "release-radar") await processReleaseRadar();
@@ -778,7 +789,7 @@ process.on("SIGTERM", () => void shutdown("SIGTERM"));
 process.on("SIGINT", () => void shutdown("SIGINT"));
 
 log.info(
-  "worker up, listening on queues: music, voice, image, video, mix, master, rights, export, cron"
+  "worker up, listening on queues: music, voice, image, video, mix, master, rights, export, releasekit, cron"
 );
 
 // FORGE PREWARM (songspeed perf): resolve + cache the Replicate forge model
