@@ -17,9 +17,50 @@ import type {
   ProviderJobResult,
 } from './types';
 import { getGenreKit } from '@afrohit/shared';
+import { detectAfricanLanguage, annotateLyricsForSinging } from '../african-g2p';
 
 function provider(): string {
   return (process.env.MUSIC_PROVIDER ?? 'unavailable').toLowerCase();
+}
+
+/**
+ * PER-GENRE SWING / MICRO-TIMING TOKEN (African-singing wave item 3).
+ *
+ * recipes.ts describes each lane's groove.swing as free text ("~55-62% swing",
+ * "light-to-moderate"); a text-to-music model can't read that, so it defaults to
+ * a stiff Western 4/4. This turns the prose into a MEASURED, front-loadable
+ * pocket token per genre so the engine is pulled onto the correct African feel:
+ * amapiano's triplet log-drum bounce, afrobeats' swung-16th shakers, highlife's
+ * straight-but-lilting push, gospel's back-heavy pocket. Returns null for lanes
+ * where a swing directive would be wrong (straight-grid gqom keeps its own note)
+ * or unknown/non-African genres — those are left untouched, matching the
+ * afroIdentity philosophy. Ratios are the measured centres of each lane's range.
+ */
+const SWING_POCKET: Record<string, string> = {
+  amapiano: 'groove: ~60% triplet swing, log-drum bounces just BEHIND the grid — never stiff four-on-the-floor',
+  afropiano: 'groove: ~60% triplet swing, log-drum bounces just BEHIND the grid — never stiff four-on-the-floor',
+  afrobeats: 'groove: swung 16th-note shakers ~56%, laid-back offbeat kick pocket, lead sits a hair behind the beat — NOT rigid 4/4',
+  afro_fusion: 'groove: swung 16th shakers ~56%, syncopated kick leaves holes, loose in-the-pocket bounce — NOT stiff 4/4',
+  afro_pop: 'groove: lightly swung 16th shakers ~55%, offbeat kick pocket — radio-clean but never metronomic 4/4',
+  street_pop: 'groove: hard-swung street 16ths ~57%, rowdy offbeat Zanku pocket — not a stiff grid',
+  afro_dancehall: 'groove: swung dancehall bounce ~56%, offbeat skank on the "and", bass behind the grid',
+  afro_rnb: 'groove: swung 16th shakers ~55%, relaxed behind-the-beat R&B pocket — not quantized',
+  afro_soul: 'groove: live-feel back-swung pocket ~56%, the drummer leans late — organic, not gridded',
+  highlife: 'groove: straight-but-lilting highlife push (~52% gentle swing), interlocking guitars breathe — flowing, not four-square',
+  afro_gospel: 'groove: back-heavy gospel pocket, snare/clap lean LATE, shekere 16ths swung ~55%',
+  gospel: 'groove: back-heavy gospel pocket, snare/clap lean LATE behind the grid — not a stiff straight groove',
+  praise: 'groove: joyful back-heavy praise pocket, handclaps and shekere swung ~55%, danceable — not stiff',
+  worship: 'groove: gentle back-leaning worship feel, unhurried rhythm section just behind the beat',
+  bongo_flava: 'groove: swung coastal 16ths ~55%, conga-and-shaker pocket — East African bounce, not rigid 4/4',
+  afro_house: 'groove: four-on-the-floor afro-house drive with rolling swung congas ~54%, hypnotic — not mechanical',
+  kwaito: 'groove: slowed township four-on-the-floor, offbeat open-hat, relaxed swagger just off the grid',
+  gqom: 'groove: straight broken-grid gqom pulse, hard offbeat kick placement — syncopated but no swing lilt',
+};
+
+/** Front-loadable swing/pocket token for a genre, or null to leave it untouched. */
+export function swingPocketToken(genre: string | undefined): string | null {
+  const key = (genre ?? '').toLowerCase().trim().replace(/[\s-]+/g, '_');
+  return SWING_POCKET[key] ?? null;
 }
 
 /**
@@ -259,10 +300,32 @@ export function composeStyleTags(
   const instrumentation = input.instruments?.length
     ? `instrumentation: ${input.instruments.slice(0, 8).map((i) => deLatin(i.trim())).filter(Boolean).join(', ')} — feature these instruments prominently`
     : null;
+  // SWING / MICRO-TIMING (item 3): front-load the measured per-genre pocket token
+  // so the engine is pulled off a stiff Western 4/4 onto the correct African feel.
+  const swingToken = swingPocketToken(input.genre);
+  // MELODY TONE-CONTOUR (item 2): the composed-score projection the worker threads
+  // for vocal renders — a relative rise/level/fall directive, style prompt only.
+  const melodyContour = (input.melodyContour ?? '').trim() || null;
+  // AFRICAN TONE-PRESERVING G2P (item 1): when the lyrics are in a tonal/African
+  // language, append the tone/stress directive to the STYLE tags — NEVER to the
+  // lyric field (VERBATIM LAW). Detection is diacritic/wordlist based; absent
+  // lyrics or a non-African language add nothing.
+  const g2pLang = input.lyrics ? detectAfricanLanguage(input.lyrics) : null;
+  const toneNotes = g2pLang ? annotateLyricsForSinging(input.lyrics!, g2pLang).toneNotes : null;
+  // ORDER = truncation BUDGET (models weight early, drop late): identity + the
+  // measured pocket lead, then the artist's explicit picks (kept at index <= 2 so
+  // the instrumentation test's truncation-proof guarantee holds), then the two
+  // SINGER directives (contour + tone), THEN the genre signature prose. On a
+  // heavily-annotated vocal render the long signature may fall off the 700-char
+  // budget — acceptable: genreLine's anchor + kit.engineTags still carry the
+  // lane, and holding lexical TONE matters more than the prose for a sung take.
   const raw = [
     genreLine,
-    afro ? afro.signature : null,
+    swingToken,
     instrumentation,
+    melodyContour,
+    toneNotes,
+    afro ? afro.signature : null,
     ...fusionTokens,
     // Every African lane rejects the specific reggaeton failure mode. Avoid a
     // blanket "NOT Latin" direction: Congolese rumba/soukous has a real historical

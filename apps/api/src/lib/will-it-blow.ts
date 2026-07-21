@@ -35,7 +35,7 @@ import {
   researchTrends,
   type HitPrediction,
 } from '@afrohit/ai';
-import { genreSignature, pickLawfulTitle, detectCatalogueContamination } from '@afrohit/shared';
+import { genreSignature, pickLawfulTitle, detectCatalogueContamination, melodyContourDirective, type MelodyScore } from '@afrohit/shared';
 import { learnedReferenceBrief } from './learned';
 import { laneContext } from './lane-context';
 import { laneDna, laneDnaBrief } from './lane-pipeline';
@@ -291,6 +291,14 @@ async function resing(
     if (existing) return existing.id;
   }
 
+  // MELODY TONE-CONTOUR (African-singing wave): if a prior render composed a
+  // MelodyScore (own-engine stores it on the beat), project it into a relative
+  // rise/level/fall directive so the re-sing's ACE-Step/vocal render follows the
+  // topline SHAPE instead of a black-box run. Absent score → no directive (the
+  // rented singer simply doesn't carry a score today — honest, fail-open).
+  const storedScore = (song.beats[0]?.meta as { melodyScore?: MelodyScore } | null)?.melodyScore;
+  const melodyContour = storedScore ? melodyContourDirective(storedScore) : '';
+
   const lawfulTitle = song.lyric.title || pickLawfulTitle([title], body);
   try {
     await snapshotLyricVersion(song.lyric.id, 'before make-it-bigger');
@@ -324,6 +332,7 @@ async function resing(
           // The improved take must stay full length and match the take it replaces.
           durationS: song.beats[0]?.duration && song.beats[0].duration > 30 ? Math.round(song.beats[0].duration) : genreSignature(genre).durationS,
           lyrics: lyricsForSong,
+          ...(melodyContour ? { melodyContour } : {}),
           artistTone: song.project.artist.vocalTone, languages: selLangs,
           dnaTags: [...[voiceVocalTag(orig.voice ?? null)].filter((tag): tag is string => !!tag), languageVocalTag(selLangs), ...(dna.tags ?? []), ...styleHints.slice(0, 3), ...laneSteer],
         },

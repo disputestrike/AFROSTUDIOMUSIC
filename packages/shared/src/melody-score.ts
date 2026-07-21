@@ -889,6 +889,83 @@ export function sectionsFitBars(score: MelodyScore): boolean {
   return true;
 }
 
+// ---------------------------------------------------------------------------
+// Tone-contour directive — a text-engine-readable projection of the score
+// ---------------------------------------------------------------------------
+
+const avgOf = (xs: number[]): number => (xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : 0);
+
+/** Phrase shape of ONE section's notes (rise / fall / arch / level). */
+function sectionShape(midis: number[]): 'rising' | 'falling' | 'arched' | 'level' {
+  if (midis.length < 2) return 'level';
+  const n = midis.length;
+  const third = Math.max(1, Math.floor(n / 3));
+  const head = avgOf(midis.slice(0, third));
+  const tail = avgOf(midis.slice(n - third));
+  const middle = avgOf(midis.slice(third, Math.max(third + 1, n - third)));
+  const peak = Math.max(...midis);
+  const RISE = 2; // ≥ 2 semitones of net motion reads as a real direction
+  if (peak - Math.max(head, tail) >= 3 && middle >= head && middle >= tail) return 'arched';
+  if (tail - head >= RISE) return 'rising';
+  if (head - tail >= RISE) return 'falling';
+  return 'level';
+}
+
+/**
+ * MELODY TONE-CONTOUR DIRECTIVE — ACE-Step (and the other text engines) can't
+ * take a note list, so project the composed MelodyScore into a compact RELATIVE
+ * contour directive for the STYLE/TAGS prompt: the rise/level/fall shape per
+ * section and a register hint (e.g. "hook sits a third above the verse"). It is
+ * RELATIVE on purpose — the engine follows the SHAPE, it does not transpose to
+ * absolute pitches. Returns '' for an empty score so callers can drop it.
+ */
+export function melodyContourDirective(score: MelodyScore): string {
+  const stats = score.sections
+    .map((s) => {
+      const midis = s.notes.map((n) => n.midi);
+      return { kind: s.kind, mean: midis.length ? avgOf(midis) : null, shape: sectionShape(midis) };
+    })
+    .filter((s) => s.mean != null) as Array<{ kind: SectionKind; mean: number; shape: string }>;
+  if (!stats.length) return '';
+
+  const shapeWord: Record<string, string> = {
+    rising: 'rises', falling: 'falls', arched: 'arcs up then settles', level: 'stays level',
+  };
+  // One clause per DISTINCT section kind (first occurrence), in song order.
+  const seen = new Set<string>();
+  const clauses: string[] = [];
+  for (const s of stats) {
+    if (seen.has(s.kind)) continue;
+    seen.add(s.kind);
+    clauses.push(`${s.kind} ${shapeWord[s.shape] ?? 'stays level'}`);
+  }
+
+  // Register hint: where the hook sits relative to the verse, in semitones.
+  const verse = stats.find((s) => s.kind === 'verse');
+  const hook = stats.find((s) => s.kind === 'hook');
+  let register = '';
+  if (verse && hook) {
+    const gap = Math.round(hook.mean - verse.mean);
+    if (gap >= 2) {
+      const interval = gap >= 6 ? 'a fifth' : gap >= 5 ? 'a fourth' : gap >= 3 ? 'a third' : 'a step';
+      register = `; hook sits ${interval} (~${gap} semitones) above the verse`;
+    } else if (gap <= -2) {
+      register = `; hook drops below the verse register`;
+    } else {
+      register = `; hook shares the verse register`;
+    }
+  }
+
+  return cap(
+    `vocal melody contour (relative, follow the SHAPE — do not transpose): ${clauses.join(', ')}${register}; ` +
+      `phrase ends breathe and fall home; keep this rise/level/fall topline, not a generic scale run.`
+  );
+}
+
+function cap(s: string, n = 300): string {
+  return s.length <= n ? s : `${s.slice(0, n - 1).trimEnd()}…`;
+}
+
 /** Total melodic span in semitones (singability law caps it at 14). */
 export function melodySpanSemitones(score: MelodyScore): number {
   let lo = Infinity;

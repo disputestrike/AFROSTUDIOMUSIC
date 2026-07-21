@@ -65,6 +65,15 @@ export interface MusicGenerationInput {
    */
   instruments?: string[];
   /**
+   * MELODY TONE-CONTOUR DIRECTIVE (African-singing wave): a compact, RELATIVE
+   * rise/level/fall directive derived from the composed MelodyScore
+   * (melodyContourDirective) — ACE-Step can't take a note list, so this threads
+   * the topline's SHAPE + register hints into the style/tags prompt for vocal
+   * renders. The worker sets it when a score is in scope; adapters append it to
+   * the style prompt only (never the lyric field). Absent on instrumental renders.
+   */
+  melodyContour?: string;
+  /**
    * VERBATIM FORGE MODE (SOUNDWAVE1 fix 1): when 'verbatim', adapters send the
    * caller's vibePrompt IN FULL as the prompt body, prefixed only by a minimal
    * identity line (genre, bpm, key when present). No genre anchor/signature
