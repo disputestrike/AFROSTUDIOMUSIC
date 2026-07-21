@@ -16,8 +16,12 @@ import {
   videoRenderAllUsage,
   videoRenderUsage,
 } from "@afrohit/shared";
+import {
+  currentShotPromptHashes,
+  videoShotPromptHash,
+} from "@afrohit/shared/video-prompt-hash";
 import { prompts, generateJson } from "@afrohit/ai";
-import { requireAuth } from "../middleware/auth";
+import { requireAuth, requireMinRole } from "../middleware/auth";
 import { presignAssetRef } from "../lib/storage";
 import {
   createQueuedProviderJob,
@@ -502,6 +506,153 @@ export default async function videos(app: FastifyInstance) {
   );
 
   // ==========================================================================
+  // PER-SCENE EDIT (2026-07-20 — owner's #1 video bug: "there should be no rain"
+  // never changed the cut). The ONLY way to change what a scene renders WITHOUT
+  // rewriting the whole treatment: edit THAT shot's prompt / negative in place
+  // on the concept's storyboard, then invalidate just that scene so the next
+  // render/assemble redoes only it. Historically a concept only ever had its
+  // `meta` updated — this is the first route that writes `storyboard`, so it
+  // mirrors the stored shape exactly (legacy flat array OR the full-song
+  // treatment's shots[] view). Editing one shot never regenerates the
+  // treatment. PRODUCER+ (the working role); workspace-scoped through the
+  // concept's own project.
+  // ==========================================================================
+  const editShotInputSchema = z
+    .object({
+      // Replace the shot's prompt (the scene description the engine renders).
+      prompt: z.string().trim().min(1).max(2000).optional(),
+      // Replace the shot's negative (the engine's "avoid" list).
+      negativePrompt: z.string().trim().max(500).optional(),
+      // A negative INSTRUCTION appended to the negative ("no rain") so it reaches
+      // the engine deterministically without clobbering existing avoids.
+      note: z.string().trim().max(500).optional(),
+    })
+    .refine(
+      value =>
+        value.prompt !== undefined ||
+        value.negativePrompt !== undefined ||
+        (value.note !== undefined && value.note.length > 0),
+      { message: "nothing to edit — send prompt, negativePrompt, or note" }
+    );
+
+  app.patch<{ Params: { conceptId: string; shotIndex: string } }>(
+    "/concepts/:conceptId/shots/:shotIndex",
+    { schema: { body: editShotInputSchema } },
+    async (req, reply) => {
+      const { workspaceId } = requireMinRole(req, "PRODUCER");
+      const input = editShotInputSchema.parse(req.body);
+      const shotIndex = Number(req.params.shotIndex);
+      if (!Number.isInteger(shotIndex) || shotIndex < 0) {
+        return reply.code(400).send({ error: "invalid_shot_index" });
+      }
+
+      const concept = await prisma.videoConcept.findFirst({
+        where: { id: req.params.conceptId, project: { workspaceId } },
+      });
+      if (!concept) return reply.code(404).send({ error: "concept_not_found" });
+
+      // Edit the shot IN PLACE inside whichever shape the storyboard is stored
+      // in. The treatment's shots[] is the same flat element shape as the legacy
+      // array (sequence.shotIndexes point INTO it and never change on a text
+      // edit), so mutating the element covers both readers.
+      const asRec = (v: unknown): Record<string, unknown> =>
+        v != null && typeof v === "object" && !Array.isArray(v)
+          ? (v as Record<string, unknown>)
+          : {};
+      const storyboard = concept.storyboard as unknown;
+      const shotList: Array<Record<string, unknown>> = Array.isArray(storyboard)
+        ? (storyboard as Array<Record<string, unknown>>)
+        : Array.isArray((storyboard as { shots?: unknown })?.shots)
+          ? ((storyboard as { shots: Array<Record<string, unknown>> }).shots)
+          : [];
+      const target =
+        shotList.find(s => Number(s?.index) === shotIndex) ??
+        shotList[shotIndex];
+      if (!target || typeof target !== "object") {
+        return reply.code(404).send({ error: "shot_not_found" });
+      }
+
+      // prompt replaces; negative = the (provided or existing) base with the
+      // note appended. "no rain" typed as a note lands in the engine's avoid
+      // list (worker shotInput → VideoShotInput.negativePrompt → adapter).
+      if (input.prompt !== undefined) target.prompt = input.prompt.slice(0, 2000);
+      const baseNegative =
+        input.negativePrompt !== undefined
+          ? input.negativePrompt
+          : typeof target.negativePrompt === "string"
+            ? target.negativePrompt
+            : "";
+      const nextNegative = [baseNegative.trim(), input.note?.trim()]
+        .filter(Boolean)
+        .join(", ")
+        .slice(0, 500);
+      if (nextNegative) target.negativePrompt = nextNegative;
+      else if (input.negativePrompt !== undefined) delete target.negativePrompt;
+
+      // The FIRST real storyboard write on a concept — only meta was ever
+      // updated before. Mirror the stored shape (array or treatment object).
+      await prisma.videoConcept.update({
+        where: { id: concept.id },
+        data: { storyboard: storyboard as never },
+      });
+
+      // INVALIDATE just this scene: drop its stored scene render(s) AND every
+      // assembled cut. The full/teaser cut glued the OLD clip, so it is stale
+      // the instant a scene changes; both are re-buildable, zero-provider-cost
+      // artifacts. The scene's untouched NEIGHBORS keep their renders (their
+      // hashes still match) — so the next render redoes ONLY this scene and only
+      // this scene re-bills. (The prompt-hash law is the second line of defense:
+      // even a render we failed to drop would read as stale on its changed hash.)
+      const existingRenders = await prisma.videoRender.findMany({
+        where: { conceptId: concept.id },
+        select: { id: true, meta: true },
+      });
+      const staleSceneIds = existingRenders
+        .filter(r => {
+          const m = asRec(r.meta);
+          return m.assembly == null && Number(m.shotIndex) === shotIndex;
+        })
+        .map(r => r.id);
+      const assembledIds = existingRenders
+        .filter(r => asRec(r.meta).assembly != null)
+        .map(r => r.id);
+      const invalidateIds = [...staleSceneIds, ...assembledIds];
+      if (invalidateIds.length) {
+        await prisma.videoRender.deleteMany({
+          where: { id: { in: invalidateIds } },
+        });
+      }
+
+      const promptHash = videoShotPromptHash(
+        String(target.prompt ?? ""),
+        typeof target.negativePrompt === "string" ? target.negativePrompt : null
+      );
+
+      return {
+        ok: true,
+        conceptId: concept.id,
+        shotIndex,
+        shot: {
+          index: shotIndex,
+          prompt: target.prompt,
+          ...(typeof target.negativePrompt === "string" && target.negativePrompt
+            ? { negativePrompt: target.negativePrompt }
+            : {}),
+        },
+        promptHash,
+        invalidated: {
+          sceneRenders: staleSceneIds.length,
+          assembledCuts: assembledIds.length,
+        },
+        // BILLING HONESTY (owner-visible): an edited scene is real work — it
+        // re-renders and re-bills at the per-scene rate on the next render.
+        // Untouched scenes are reused (no re-bill).
+        note: "This scene was updated — it will re-render (and re-bill at the per-scene rate) on the next render. Untouched scenes are reused.",
+      };
+    }
+  );
+
+  // ==========================================================================
   // ONE-CLICK FULL VIDEO — "🎬 Make the full video". ONE upfront charge =
   // per-scene class price × UNRENDERED scenes (already-rendered scenes are
   // excluded by the shared videoRenderAllUsage law — double-billing is
@@ -577,7 +728,14 @@ export default async function videos(app: FastifyInstance) {
         },
       });
       const sceneEvidence = completeSceneRows(renders);
-      const rendered = perShotRenders(sceneEvidence.complete);
+      // EDIT-AWARE COVERAGE (2026-07-20): a scene whose prompt was edited since
+      // its clip rendered no longer matches its current prompt hash, so it is
+      // NOT counted as rendered here — render-all bills + re-renders exactly the
+      // edited scenes (real work), and never re-bills an untouched scene whose
+      // hash still matches. This is what stops the spurious 409 nothing_to_render
+      // after an edit.
+      const expectedHashes = currentShotPromptHashes(concept.storyboard);
+      const rendered = perShotRenders(sceneEvidence.complete, expectedHashes);
       const usage = videoRenderAllUsage(shots, rendered.keys(), engineClass);
       if (!usage) {
         return reply.code(400).send({ error: "invalid_video_shot_selection" });
@@ -865,6 +1023,8 @@ export default async function videos(app: FastifyInstance) {
         storyboard: concept.storyboard,
         renders: sceneEvidence.complete,
         songDurationS: audio.ok ? audio.songDurationS : null,
+        // Edited scenes read as unrendered in the coverage chips + both gates.
+        expectedHashes: currentShotPromptHashes(concept.storyboard),
       });
       const assemblies: {
         full: ReturnType<typeof assemblyOf> | null;
@@ -1039,6 +1199,9 @@ export default async function videos(app: FastifyInstance) {
         storyboard: concept.storyboard,
         renders: sceneEvidence.complete,
         songDurationS: audio.songDurationS,
+        // An edited scene's stale clip is never glued into the cut — its hash
+        // no longer matches, so the gate reports it missing until it re-renders.
+        expectedHashes: currentShotPromptHashes(concept.storyboard),
       });
       if (!gate.ok) {
         return reply

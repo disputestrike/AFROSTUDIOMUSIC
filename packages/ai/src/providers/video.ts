@@ -50,7 +50,13 @@ function selectedProvider(): string {
   return (process.env.VIDEO_PROVIDER ?? "unavailable").trim().toLowerCase();
 }
 
-function promptFor(input: VideoShotInput): string {
+/**
+ * The ENGINE INPUT BUILDER: fold a shot's motion/lighting and — critically —
+ * its negative ("Avoid: no rain.") into the single prompt string the model
+ * actually receives. Exported (as composeVideoEnginePrompt) so the negativePrompt
+ * wiring can be asserted directly: a scene edit's negative MUST reach the engine.
+ */
+export function promptFor(input: VideoShotInput): string {
   return [
     input.prompt.trim(),
     input.motion ? `Camera motion: ${input.motion.trim()}.` : "",
@@ -61,6 +67,8 @@ function promptFor(input: VideoShotInput): string {
     .join("\n")
     .slice(0, 8_000);
 }
+
+export { promptFor as composeVideoEnginePrompt };
 
 function supportedDuration(
   requested: number,

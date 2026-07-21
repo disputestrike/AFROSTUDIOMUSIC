@@ -82,13 +82,41 @@ const timeOf = (value: string | Date): number => {
 };
 
 /**
+ * PER-SCENE EDIT STALENESS (2026-07-20 — the "no rain" bug). A stored render
+ * is STALE for its shot when the CURRENT storyboard shot's prompt hash is known
+ * and the render carries a DIFFERENT stored hash — the owner edited the prompt
+ * after this clip was made, so reusing it would silently ignore the edit. A
+ * render with NO stored hash predates the hash feature and is grandfathered
+ * VALID (only the per-scene edit endpoint's explicit invalidation drops those),
+ * so an untouched legacy video is never force-re-rendered or re-billed. Pure
+ * string comparison — the sha256 itself is computed server-side
+ * (@afrohit/shared/video-prompt-hash) and passed in, keeping this law and the
+ * web bundle free of node:crypto.
+ */
+function renderStaleForShot(
+  meta: Record<string, unknown>,
+  expected: string | undefined
+): boolean {
+  if (!expected) return false;
+  const stored = meta.promptHash;
+  return typeof stored === "string" && stored.length > 0 && stored !== expected;
+}
+
+/**
  * NEWEST successful per-shot render for each shot index. Only rows written by
  * the per-shot render worker count as shot evidence (integer meta.shotIndex —
  * assembly artifacts carry meta.assembly instead and must never gate
  * themselves); rows without a url are never evidence of anything.
+ *
+ * EDIT-AWARE: when `expectedHashes` maps a shot to its current prompt hash, a
+ * render whose stored meta.promptHash no longer matches is treated as if it
+ * never rendered — so an edited scene shows as unrendered to the billing and
+ * assembly gates and gets redone. Omit the map (legacy callers, pure tests) for
+ * the exact prior behavior.
  */
 export function perShotRenders(
-  rows: ReadonlyArray<AssemblyRenderRow>
+  rows: ReadonlyArray<AssemblyRenderRow>,
+  expectedHashes?: ReadonlyMap<number, string>
 ): Map<number, { renderId: string; url: string }> {
   const byShot = new Map<number, { renderId: string; url: string; at: number }>();
   for (const row of rows) {
@@ -97,6 +125,9 @@ export function perShotRenders(
     if (meta.assembly != null) continue; // an assembled cut is not a shot render
     const shotIndex = Number(meta.shotIndex);
     if (!Number.isInteger(shotIndex) || shotIndex < 0) continue;
+    // The scene was edited after this clip was rendered — not current evidence.
+    if (expectedHashes && renderStaleForShot(meta, expectedHashes.get(shotIndex)))
+      continue;
     const at = timeOf(row.createdAt);
     const existing = byShot.get(shotIndex);
     if (!existing || at >= existing.at) {
@@ -155,6 +186,11 @@ export interface PlanVideoAssemblyOptions {
   renders: ReadonlyArray<AssemblyRenderRow>;
   /** The song's current audio length — clamps the teaser's hook offset. */
   songDurationS?: number | null;
+  /** Current prompt hash per shot index (from currentShotPromptHashes in
+   *  @afrohit/shared/video-prompt-hash). When present, a render whose stored
+   *  hash no longer matches is treated as unrendered — an edited scene never
+   *  assembles from its stale clip. Absent = legacy behavior (no edit check). */
+  expectedHashes?: ReadonlyMap<number, string>;
 }
 
 /**
@@ -171,7 +207,7 @@ export function planVideoAssembly(
 ): VideoAssemblyGate {
   const shots = storyboardShots(options.storyboard);
   if (!shots.length) return { ok: false, error: "no_shots" };
-  const rendered = perShotRenders(options.renders);
+  const rendered = perShotRenders(options.renders, options.expectedHashes);
   const treatment = videoTreatmentOf(options.storyboard);
   const shotAt = new Map<number, NormalizedStoryboardShot>(
     shots.map(shot => [shot.index, shot])
@@ -310,9 +346,12 @@ export function videoAssemblyStatus(options: {
   storyboard: unknown;
   renders: ReadonlyArray<AssemblyRenderRow>;
   songDurationS?: number | null;
+  /** Current prompt hash per shot — an edited scene reads as unrendered in the
+   *  coverage chips and both gates (see planVideoAssembly). */
+  expectedHashes?: ReadonlyMap<number, string>;
 }): VideoAssemblyStatus {
   const shots = storyboardShots(options.storyboard);
-  const rendered = perShotRenders(options.renders);
+  const rendered = perShotRenders(options.renders, options.expectedHashes);
   const sequences = assemblySequenceCoverage(options.storyboard, rendered) ?? [];
   const treatment = videoTreatmentOf(options.storyboard);
   const fullGate = planVideoAssembly({ ...options, kind: "full" });

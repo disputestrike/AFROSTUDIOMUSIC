@@ -14,6 +14,10 @@ import {
   videoTreatmentOf,
 } from "@afrohit/shared";
 import {
+  currentShotPromptHashes,
+  videoShotPromptHash,
+} from "@afrohit/shared/video-prompt-hash";
+import {
   generateLikenessKeyframe,
   imageAdapter,
   videoAdapter,
@@ -845,6 +849,12 @@ export async function processVideo(p: VideoPayload) {
         renderedAt: new Date().toISOString(),
         shotIndex,
         shotPrompt: shot.prompt,
+        // PER-SCENE EDIT CACHE-BUST (2026-07-20): bind this clip to the EXACT
+        // decorated prompt + negative it was rendered from. If the owner later
+        // edits the scene ("no rain"), the concept's current hash no longer
+        // matches this one, and the render/assembly gates treat this clip as
+        // stale and redo just this scene (@afrohit/shared/video-prompt-hash).
+        promptHash: videoShotPromptHash(shot.prompt, shot.negativePrompt),
         motion: shot.motion,
         contentHash: stored.inspection.contentHash,
         sizeBytes: stored.inspection.sizeBytes,
@@ -1140,6 +1150,9 @@ async function maybeTriggerAutoAssemble(p: {
       storyboard: concept.storyboard,
       renders: completeRenders,
       songDurationS: audio.ok ? audio.songDurationS : null,
+      // An edited-but-not-yet-re-rendered scene reads as missing here, so
+      // auto-assemble waits for the fresh clip instead of gluing the stale one.
+      expectedHashes: currentShotPromptHashes(concept.storyboard),
     });
 
     if (gate.ok) {

@@ -12,12 +12,19 @@
     "./server-url-safety": {
       "types": "./dist/server-url-safety.d.ts",
       "default": "./dist/server-url-safety.js"
+    },
+    "./video-prompt-hash": {
+      "types": "./dist/video-prompt-hash.d.ts",
+      "default": "./dist/video-prompt-hash.js"
     }
   },
   "typesVersions": {
     "*": {
       "server-url-safety": [
         "dist/server-url-safety.d.ts"
+      ],
+      "video-prompt-hash": [
+        "dist/video-prompt-hash.d.ts"
       ],
       "*": [
         "dist/index.d.ts"
