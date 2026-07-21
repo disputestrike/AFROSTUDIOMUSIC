@@ -27,7 +27,7 @@ import { applySingingBrain, craftOf, type DraftCraft } from '../lib/singing-pipe
 import { enqueueHarvest, enqueueLearn } from '../lib/harvest';
 import { ownShelfRoles } from '../lib/material-plan';
 import { laneDna } from '../lib/lane-pipeline';
-import { requireAuth } from '../middleware/auth';
+import { requireAuth, requireMinRole } from '../middleware/auth';
 import { createQueuedProviderJob, scopedRequestKey } from '../lib/queued-job';
 import { publicUrlFor, verifyUploadedAudio } from '../lib/storage';
 import { voiceVocalTag, languageVocalTag } from '../services/chat-tools';
@@ -98,6 +98,14 @@ export function resolveOwnEngineRouting(
 }
 
 export default async function beats(app: FastifyInstance) {
+  // RBAC (identity wave, 2026-07-20): beat generation/attachment spends money
+  // and mutates the project — PRODUCER-and-up. Reads stay open to members.
+  app.addHook('preHandler', async (req) => {
+    if (['POST', 'PUT', 'PATCH', 'DELETE'].includes(req.method)) {
+      requireMinRole(req, 'PRODUCER');
+    }
+  });
+
   app.get<{ Params: { projectId: string } }>(
     '/',
     async (req) => {

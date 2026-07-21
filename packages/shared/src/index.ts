@@ -56,3 +56,5 @@ export * from "./genre-canon";
 export * from "./afroone-render";
 export * from "./producer-evidence";
 export * from "./singing-evidence";
+export * from "./rbac";
+export * from "./cover-prompt";

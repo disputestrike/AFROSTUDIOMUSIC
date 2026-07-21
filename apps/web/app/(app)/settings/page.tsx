@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useApi } from '@/lib/api';
 
 interface Artist {
@@ -36,6 +36,10 @@ export default function SettingsPage() {
         <MusicEngine />
         <h1 className="mt-10 font-display text-4xl">Artist DNA</h1>
         <p className="mt-3 text-sm text-slate-300">No artist profile yet. Create one in your workspace to start.</p>
+        <div className="mt-10 grid gap-6">
+          <ProfilePicture />
+          <WorkspaceTeam />
+        </div>
       </div>
     );
   }
@@ -145,7 +149,9 @@ export default function SettingsPage() {
         <span className={`ml-3 text-xs ${saveMsg.ok ? 'text-emerald-400' : 'text-red-400'}`}>{saveMsg.text}</span>
       )}
 
-      <div className="mt-10">
+      <div className="mt-10 grid gap-6">
+        <ProfilePicture />
+        <WorkspaceTeam />
         <ChangePassword />
       </div>
 
@@ -174,6 +180,418 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
       <span className="mb-1 block text-slate-400">{label}</span>
       {children}
     </label>
+  );
+}
+
+interface MeProfile {
+  userId: string;
+  role?: string;
+  email: string | null;
+  name: string | null;
+  avatarUrl: string | null;
+}
+
+/**
+ * PROFILE PICTURE (identity wave). Upload → presigned PUT → PATCH /auth/me
+ * with the storage key; the server verifies the real bytes (PNG/JPEG/WebP,
+ * ≤5MB) before the avatar exists. Shown here and in the top bar.
+ */
+function ProfilePicture() {
+  const api = useApi();
+  const fileInput = useRef<HTMLInputElement>(null);
+  const [me, setMe] = useState<MeProfile | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
+
+  useEffect(() => {
+    api.get<MeProfile>('/auth/me').then(setMe).catch(() => setMe(null));
+  }, [api]);
+
+  async function upload(file: File) {
+    setBusy(true);
+    setMsg(null);
+    try {
+      const { key } = await api.uploadImageToStorage(file, 'avatar');
+      const updated = await api.patch<MeProfile>('/auth/me', { avatarKey: key });
+      setMe((m) => (m ? { ...m, avatarUrl: updated.avatarUrl } : m));
+      setMsg({ ok: true, text: 'Profile picture updated ✓ (refresh to see it in the top bar)' });
+    } catch (e) {
+      setMsg({ ok: false, text: (e as Error).message.slice(0, 200) });
+    } finally {
+      setBusy(false);
+      if (fileInput.current) fileInput.current.value = '';
+    }
+  }
+
+  async function removeAvatar() {
+    setBusy(true);
+    setMsg(null);
+    try {
+      await api.patch('/auth/me', { avatarKey: null });
+      setMe((m) => (m ? { ...m, avatarUrl: null } : m));
+      setMsg({ ok: true, text: 'Removed.' });
+    } catch (e) {
+      setMsg({ ok: false, text: (e as Error).message.slice(0, 200) });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const initial = (me?.name || me?.email || '?').trim().charAt(0).toUpperCase() || '?';
+
+  return (
+    <div className="rounded-2xl border-gradient glass p-5">
+      <h2 className="font-display text-2xl">🖼 Profile picture</h2>
+      <p className="mt-2 text-sm text-slate-400">Shown in the top bar and to your teammates. JPEG, PNG, or WebP — up to 5MB.</p>
+      <div className="mt-4 flex items-center gap-4">
+        <div className="flex h-16 w-16 items-center justify-center overflow-hidden rounded-full border border-white/10 bg-white/5 font-grotesk text-xl text-slate-200">
+          {me?.avatarUrl ? (
+            <img src={me.avatarUrl} alt="Your avatar" className="h-full w-full object-cover" />
+          ) : (
+            initial
+          )}
+        </div>
+        <input
+          ref={fileInput}
+          type="file"
+          accept="image/jpeg,image/png,image/webp"
+          className="hidden"
+          aria-label="Upload profile picture"
+          onChange={(e) => {
+            const f = e.target.files?.[0];
+            if (f) void upload(f);
+          }}
+        />
+        <button
+          onClick={() => fileInput.current?.click()}
+          disabled={busy}
+          className="rounded-full bg-brand-gradient px-4 py-2 text-sm font-medium text-ink shadow-glow disabled:opacity-50"
+        >
+          {busy ? 'Uploading…' : me?.avatarUrl ? 'Change picture' : 'Upload picture'}
+        </button>
+        {me?.avatarUrl && (
+          <button onClick={() => void removeAvatar()} disabled={busy} className="text-xs text-slate-500 hover:text-slate-300">
+            Remove
+          </button>
+        )}
+        {msg && <span className={`text-xs ${msg.ok ? 'text-emerald-400' : 'text-red-400'}`}>{msg.text}</span>}
+      </div>
+    </div>
+  );
+}
+
+interface WorkspaceRow {
+  id: string;
+  name: string;
+  slug: string;
+  plan: string;
+  role: string;
+  active: boolean;
+}
+
+interface MemberRow {
+  userId: string;
+  role: string;
+  email: string;
+  name: string | null;
+  avatarUrl: string | null;
+}
+
+interface InviteRow {
+  id: string;
+  email: string;
+  role: string;
+  expiresAt: string;
+  inviteUrl?: string | null;
+}
+
+const INVITE_ROLES = ['ADMIN', 'PRODUCER', 'VIEWER'] as const;
+
+/**
+ * WORKSPACES & TEAM (identity wave). List/create/switch workspaces; ADMIN+
+ * invites members (single-use link, 7 days); OWNER changes roles / removes
+ * members. Presentation follows the role from /auth/me — the server enforces
+ * every gate regardless.
+ */
+function WorkspaceTeam() {
+  const api = useApi();
+  const [workspaces, setWorkspaces] = useState<WorkspaceRow[]>([]);
+  const [members, setMembers] = useState<MemberRow[]>([]);
+  const [invites, setInvites] = useState<InviteRow[]>([]);
+  const [me, setMe] = useState<MeProfile | null>(null);
+  const [newName, setNewName] = useState('');
+  const [inviteEmail, setInviteEmail] = useState('');
+  const [inviteRole, setInviteRole] = useState<string>('PRODUCER');
+  const [inviteLink, setInviteLink] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
+
+  const myRole = workspaces.find((w) => w.active)?.role ?? me?.role ?? 'PRODUCER';
+  const isOwner = myRole === 'OWNER';
+  const isAdmin = isOwner || myRole === 'ADMIN';
+
+  async function refresh() {
+    const [ws, m] = await Promise.all([
+      api.get<WorkspaceRow[]>('/workspaces').catch(() => [] as WorkspaceRow[]),
+      api.get<MeProfile>('/auth/me').catch(() => null),
+    ]);
+    setWorkspaces(ws);
+    setMe(m);
+    const admin = m?.role === 'OWNER' || m?.role === 'ADMIN';
+    const [mem, inv] = await Promise.all([
+      api.get<MemberRow[]>('/workspaces/members').catch(() => [] as MemberRow[]),
+      admin ? api.get<InviteRow[]>('/workspaces/invites').catch(() => [] as InviteRow[]) : Promise.resolve([] as InviteRow[]),
+    ]);
+    setMembers(mem);
+    setInvites(inv);
+  }
+
+  useEffect(() => {
+    void refresh();
+  }, []);
+
+  async function createWorkspace() {
+    if (!newName.trim()) return;
+    setBusy(true);
+    setMsg(null);
+    try {
+      await api.post('/workspaces', { name: newName.trim() });
+      setNewName('');
+      setMsg({ ok: true, text: 'Workspace created — switch to it below.' });
+      await refresh();
+    } catch (e) {
+      setMsg({ ok: false, text: (e as Error).message.slice(0, 200) });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function switchTo(id: string) {
+    setBusy(true);
+    try {
+      await api.post(`/workspaces/${id}/switch`, {});
+      // The session cookie now targets the other studio — reload everything.
+      window.location.reload();
+    } catch (e) {
+      setMsg({ ok: false, text: (e as Error).message.slice(0, 200) });
+      setBusy(false);
+    }
+  }
+
+  async function sendInvite() {
+    if (!inviteEmail.trim()) return;
+    setBusy(true);
+    setMsg(null);
+    setInviteLink(null);
+    try {
+      const created = await api.post<InviteRow & { inviteUrl: string | null; token: string }>(
+        '/workspaces/invites',
+        { email: inviteEmail.trim(), role: inviteRole },
+      );
+      setInviteEmail('');
+      setInviteLink(created.inviteUrl ?? null);
+      setMsg({ ok: true, text: created.inviteUrl ? 'Invite created — share the link below.' : 'Invite created.' });
+      await refresh();
+    } catch (e) {
+      const raw = (e as Error).message;
+      setMsg({
+        ok: false,
+        text: /already_a_member/.test(raw) ? 'That person is already in this workspace.' : raw.slice(0, 200),
+      });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function changeRole(userId: string, role: string) {
+    setBusy(true);
+    setMsg(null);
+    try {
+      await api.patch(`/workspaces/members/${userId}`, { role });
+      await refresh();
+    } catch (e) {
+      const raw = (e as Error).message;
+      setMsg({ ok: false, text: /last_owner/.test(raw) ? 'Promote another OWNER first — a workspace always keeps one.' : raw.slice(0, 200) });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function removeMember(userId: string) {
+    setBusy(true);
+    setMsg(null);
+    try {
+      await api.del(`/workspaces/members/${userId}`);
+      await refresh();
+    } catch (e) {
+      const raw = (e as Error).message;
+      setMsg({ ok: false, text: /last_owner/.test(raw) ? 'A workspace always keeps at least one OWNER.' : raw.slice(0, 200) });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function revokeInvite(id: string) {
+    setBusy(true);
+    try {
+      await api.del(`/workspaces/invites/${id}`);
+      await refresh();
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="rounded-2xl border-gradient glass p-5">
+      <h2 className="font-display text-2xl">👥 Workspaces &amp; team</h2>
+      <p className="mt-2 text-sm text-slate-400">
+        Each workspace is its own studio — catalog, credits, and team. You are {myRole} here.
+      </p>
+
+      {/* My workspaces + switcher */}
+      <div className="mt-4 grid gap-2">
+        {workspaces.map((w) => (
+          <div key={w.id} className="flex items-center justify-between gap-3 rounded-xl border border-white/10 bg-white/5 px-3 py-2">
+            <div className="min-w-0">
+              <span className="truncate text-sm text-slate-200">{w.name}</span>
+              <span className="ml-2 text-xs text-slate-500">{w.role}</span>
+            </div>
+            {w.active ? (
+              <span className="rounded-full bg-emerald-500/20 px-2.5 py-0.5 text-xs text-emerald-300">Active</span>
+            ) : (
+              <button
+                onClick={() => void switchTo(w.id)}
+                disabled={busy}
+                className="rounded-full border border-white/15 px-2.5 py-1 text-xs text-slate-300 hover:bg-white/10 disabled:opacity-50"
+              >
+                Switch
+              </button>
+            )}
+          </div>
+        ))}
+      </div>
+      <div className="mt-3 flex items-center gap-2">
+        <input
+          value={newName}
+          onChange={(e) => setNewName(e.target.value)}
+          placeholder="New workspace name"
+          aria-label="New workspace name"
+          maxLength={80}
+          className="flex-1 rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm"
+        />
+        <button
+          onClick={() => void createWorkspace()}
+          disabled={busy || !newName.trim()}
+          className="rounded-full border border-white/15 px-3 py-2 text-xs text-slate-200 hover:bg-white/10 disabled:opacity-50"
+        >
+          + Create workspace
+        </button>
+      </div>
+
+      {/* Members */}
+      <h3 className="mt-6 font-grotesk text-sm uppercase tracking-wide text-slate-400">Members</h3>
+      <div className="mt-2 grid gap-2">
+        {members.map((m) => (
+          <div key={m.userId} className="flex items-center justify-between gap-3 rounded-xl border border-white/10 bg-white/5 px-3 py-2">
+            <div className="flex min-w-0 items-center gap-2.5">
+              <span className="flex h-7 w-7 shrink-0 items-center justify-center overflow-hidden rounded-full border border-white/10 bg-white/5 text-xs text-slate-300">
+                {m.avatarUrl ? <img src={m.avatarUrl} alt="" className="h-full w-full object-cover" /> : (m.name || m.email).charAt(0).toUpperCase()}
+              </span>
+              <span className="truncate text-sm text-slate-200">{m.name || m.email}</span>
+              {m.userId === me?.userId && <span className="text-xs text-slate-500">(you)</span>}
+            </div>
+            <div className="flex shrink-0 items-center gap-2">
+              {isOwner && m.userId !== me?.userId ? (
+                <>
+                  <select
+                    value={m.role}
+                    onChange={(e) => void changeRole(m.userId, e.target.value)}
+                    disabled={busy}
+                    aria-label={`Role for ${m.email}`}
+                    className="rounded-lg border border-slate-700 bg-slate-950 px-2 py-1 text-xs"
+                  >
+                    {['OWNER', 'ADMIN', 'PRODUCER', 'VIEWER'].map((r) => (
+                      <option key={r} value={r}>{r}</option>
+                    ))}
+                  </select>
+                  <button
+                    onClick={() => void removeMember(m.userId)}
+                    disabled={busy}
+                    className="text-xs text-red-400 hover:text-red-300"
+                  >
+                    Remove
+                  </button>
+                </>
+              ) : (
+                <span className="text-xs text-slate-500">{m.role}</span>
+              )}
+            </div>
+          </div>
+        ))}
+      </div>
+
+      {/* Invites (ADMIN+) */}
+      {isAdmin && (
+        <>
+          <h3 className="mt-6 font-grotesk text-sm uppercase tracking-wide text-slate-400">Invite someone</h3>
+          <div className="mt-2 flex flex-wrap items-center gap-2">
+            <input
+              value={inviteEmail}
+              onChange={(e) => setInviteEmail(e.target.value)}
+              placeholder="teammate@email.com"
+              aria-label="Invite email"
+              type="email"
+              className="min-w-[200px] flex-1 rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm"
+            />
+            <select
+              value={inviteRole}
+              onChange={(e) => setInviteRole(e.target.value)}
+              aria-label="Invite role"
+              className="rounded-lg border border-slate-700 bg-slate-950 px-2 py-2 text-sm"
+            >
+              {INVITE_ROLES.map((r) => (
+                <option key={r} value={r}>{r}</option>
+              ))}
+            </select>
+            <button
+              onClick={() => void sendInvite()}
+              disabled={busy || !inviteEmail.trim()}
+              className="rounded-full bg-brand-gradient px-4 py-2 text-sm font-medium text-ink shadow-glow disabled:opacity-50"
+            >
+              Invite
+            </button>
+          </div>
+          <p className="mt-2 text-[11px] text-slate-500">
+            ADMIN manages people &amp; settings · PRODUCER makes music · VIEWER listens only. Links last 7 days, single use.
+          </p>
+          {inviteLink && (
+            <div className="mt-2 flex items-center gap-2 rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-3 py-2">
+              <code className="min-w-0 flex-1 truncate text-xs text-emerald-300">{inviteLink}</code>
+              <button
+                onClick={() => void navigator.clipboard?.writeText(inviteLink)}
+                className="shrink-0 text-xs text-emerald-300 hover:text-emerald-200"
+              >
+                Copy
+              </button>
+            </div>
+          )}
+          {invites.length > 0 && (
+            <div className="mt-3 grid gap-1.5">
+              {invites.map((inv) => (
+                <div key={inv.id} className="flex items-center justify-between gap-3 rounded-lg border border-white/5 px-3 py-1.5 text-xs text-slate-400">
+                  <span className="truncate">{inv.email} · {inv.role} · expires {new Date(inv.expiresAt).toLocaleDateString()}</span>
+                  <button onClick={() => void revokeInvite(inv.id)} disabled={busy} className="shrink-0 text-red-400 hover:text-red-300">
+                    Revoke
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+        </>
+      )}
+
+      {msg && <p className={`mt-3 text-xs ${msg.ok ? 'text-emerald-400' : 'text-red-400'}`}>{msg.text}</p>}
+    </div>
   );
 }
 

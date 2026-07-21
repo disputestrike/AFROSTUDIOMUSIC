@@ -11,6 +11,7 @@ import {
 } from "./likeness";
 import { isMaterialRole, type MaterialRole } from "./material-roles";
 import { AFROONE_DIRECTIONS } from "./afroone-render";
+import { INVITABLE_ROLES, WORKSPACE_ROLES } from "./rbac";
 import {
   GENRES,
   LANGUAGES,
@@ -910,3 +911,75 @@ export const chatMessageInputSchema = z.object({
 });
 
 export type ChatMessageInput = z.infer<typeof chatMessageInputSchema>;
+
+// ---------- Identity wave: pictures + tenancy (2026-07-20) -----------------
+
+/** Kinds of first-class image uploads (distinct from likeness photos, which
+ *  carry consent and their own flow). avatar = the user's profile picture;
+ *  cover = a song's cover image. */
+export const IMAGE_UPLOAD_KINDS = ["avatar", "cover"] as const;
+export const IMAGE_UPLOAD_FORMATS = ["png", "jpg", "jpeg", "webp"] as const;
+/** ~5 MB — plenty for a square cover/avatar, small enough to sniff + hash. */
+export const MAX_IMAGE_UPLOAD_BYTES = 5 * 1024 * 1024;
+
+/** Presign a browser→storage PUT for an avatar or song cover. Image claims
+ *  only — the attach step's magic-byte sniff (verifyUploadedImage) is the
+ *  real content check, exactly like the likeness photo flow. */
+export const imageUploadPresignSchema = z
+  .object({
+    kind: z.enum(IMAGE_UPLOAD_KINDS),
+    contentType: z
+      .string()
+      .regex(/^image\/(png|jpe?g|webp)$/i)
+      .max(60),
+    ext: z.enum(IMAGE_UPLOAD_FORMATS),
+    sizeBytes: z.number().int().min(1_000).max(MAX_IMAGE_UPLOAD_BYTES),
+  })
+  .strict();
+
+/** PATCH /auth/me — profile edits. avatarKey is the storage key returned by
+ *  the image presign (verified byte-by-byte before it becomes avatarUrl);
+ *  null clears the avatar. */
+export const profilePatchSchema = z
+  .object({
+    name: z.string().trim().min(1).max(80).nullable().optional(),
+    avatarKey: z.string().min(4).max(512).nullable().optional(),
+  })
+  .strict();
+
+export const workspaceCreateSchema = z
+  .object({ name: z.string().trim().min(1).max(80) })
+  .strict();
+
+export const workspaceInviteCreateSchema = z
+  .object({
+    email: z.string().trim().email().max(200),
+    role: z.enum(INVITABLE_ROLES),
+  })
+  .strict();
+
+/** Accept a workspace invite. `password` doubles as the NEW password when the
+ *  invited email has no account yet (min 12 — the signup floor), and as the
+ *  EXISTING password when it does and no session cookie is present. */
+export const inviteAcceptSchema = z
+  .object({
+    token: z.string().min(16).max(256),
+    password: z.string().min(1).max(128).optional(),
+    name: z.string().trim().min(1).max(80).optional(),
+  })
+  .strict();
+
+export const inviteInfoSchema = z
+  .object({ token: z.string().min(16).max(256) })
+  .strict();
+
+/** OWNER-only member-role change. OWNER itself is grantable here (co-owner /
+ *  ownership handover); the route refuses to demote the last OWNER. */
+export const memberRoleUpdateSchema = z
+  .object({ role: z.enum(WORKSPACE_ROLES) })
+  .strict();
+
+/** POST /songs/:id/cover/generate — AI photorealistic cover. */
+export const generateSongCoverSchema = z
+  .object({ quality: z.enum(["low", "medium", "high"]).default("medium") })
+  .strict();

@@ -21,8 +21,13 @@ import { useApi } from '@/lib/api';
 
 export interface SessionMe {
   userId: string;
+  workspaceId?: string;
+  /** The caller's role in the ACTIVE workspace (identity wave). Presentation
+   *  only — the server enforces every gate regardless. */
+  role?: string;
   email: string | null;
   name: string | null;
+  avatarUrl?: string | null;
   operator?: boolean;
   workspace?: { name: string; plan: string; creditsCents: number } | null;
 }

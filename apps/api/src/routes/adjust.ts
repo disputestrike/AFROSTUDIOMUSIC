@@ -19,7 +19,7 @@ import { snapshotLyricVersion } from '../lib/lyric-versions';
 import { createQueuedProviderJob, scopedRequestKey, type SuccessfulCharge } from '../lib/queued-job';
 import { z } from 'zod';
 import { prisma } from '@afrohit/db';
-import { requireAuth } from '../middleware/auth';
+import { requireAuth, requireMinRole } from '../middleware/auth';
 import { buildLaneReport, planAdjustRoutes, classifyAllLanes, unseededForLane, type AdjustRoute } from '../lib/lane-report';
 import type { MeasuredAnalysis } from '@afrohit/shared';
 import {
@@ -29,6 +29,15 @@ import {
 } from '../lib/current-playable-asset';
 
 export default async function adjust(app: FastifyInstance) {
+  // RBAC (identity wave, 2026-07-20): Adjust-Song executes repairs (spends
+  // credits, rewrites takes) — PRODUCER-and-up on every mutation; the $0
+  // lane-report reads stay open to members.
+  app.addHook('preHandler', async (req) => {
+    if (['POST', 'PUT', 'PATCH', 'DELETE'].includes(req.method)) {
+      requireMinRole(req, 'PRODUCER');
+    }
+  });
+
   // §9 — the producer-brain block for a song. Read-only, always honest.
   app.get<{ Params: { id: string } }>('/:id/lane-report', async (req) => {
     const { workspaceId } = requireAuth(req);

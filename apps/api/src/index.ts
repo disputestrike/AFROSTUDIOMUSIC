@@ -74,6 +74,7 @@ import zap from "./routes/zap";
 import lanes from "./routes/lanes";
 import adjust from "./routes/adjust";
 import uploads from "./routes/uploads";
+import workspaces from "./routes/workspaces";
 import mixer from "./routes/mixer";
 import settings from "./routes/settings";
 import analyze from "./routes/analyze";
@@ -556,6 +557,7 @@ async function bootstrap() {
       await api.register(zap, { prefix: "/zap" });
       await api.register(lanes, { prefix: "/lanes" });
       await api.register(uploads, { prefix: "/uploads" });
+      await api.register(workspaces, { prefix: "/workspaces" });
       await api.register(settings, { prefix: "/settings" });
       await api.register(publicRoutes, { prefix: "/public" });
       await api.register(debug, { prefix: "/debug" });

@@ -9,6 +9,10 @@ interface ImagePayload {
   workspaceId: string;
   projectId?: string;
   brandKitId?: string;
+  /** When set (POST /songs/:id/cover/generate), the finished cover is also
+   *  stamped onto Song.coverUrl — workspace-scoped, so a stale/foreign id
+   *  can never repaint another tenant's song. */
+  songId?: string;
   prompt: string;
   size: '1024x1024' | '1024x1792' | '1792x1024';
   quality: 'low' | 'medium' | 'high';
@@ -85,6 +89,14 @@ export async function processImage(payload: ImagePayload): Promise<void> {
         await tx.song.updateMany({
           where: { projectId: payload.projectId, workspaceId: payload.workspaceId },
           data: { releaseReady: false },
+        });
+      }
+      // PER-SONG COVER (identity wave): an AI cover generated FOR a song
+      // becomes that song's cover the moment it is certified + stored.
+      if (payload.songId && payload.kind === 'cover') {
+        await tx.song.updateMany({
+          where: { id: payload.songId, workspaceId: payload.workspaceId },
+          data: { coverUrl: storedUrl! },
         });
       }
       await tx.providerJob.update({

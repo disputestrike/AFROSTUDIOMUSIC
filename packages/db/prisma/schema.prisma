@@ -44,6 +44,7 @@ model Workspace {
   members              WorkspaceMember[]
   artists              Artist[]
   projects             Project[]
+  invites              WorkspaceInvite[]
   voiceConsents        VoiceConsent[]
   voiceProfiles        VoiceProfile[]
   voiceDatasets        VoiceDataset[]
@@ -98,6 +99,7 @@ model User {
   benchmarkPairsCreated BenchmarkPair[]     @relation("BenchmarkPairCreator")
   benchmarkJudgments    BenchmarkJudgment[] @relation("BenchmarkJudge")
   passwordResetTokens   PasswordResetToken[]
+  workspaceInvitesSent  WorkspaceInvite[]   @relation("WorkspaceInviteSender")
 }
 
 /// PASSWORD RESET (forgotten-password flow, 2026-07-20). A single-use, expiring
@@ -132,6 +134,32 @@ model WorkspaceMember {
 
   @@unique([workspaceId, userId])
   @@index([userId])
+}
+
+/// WORKSPACE INVITE (identity wave, 2026-07-20). A single-use, expiring grant
+/// to join a workspace at a named role. Mirrors PasswordResetToken's security
+/// shape: only the SHA-256 hash of the opaque token is stored (`tokenHash`) —
+/// a database leak cannot be replayed into a membership. `expiresAt` bounds
+/// the window (~7d); `usedAt` enforces single use (claimed race-safely via a
+/// conditional updateMany). Acceptance works even when public signup is
+/// closed — an invited signup is not a public signup.
+model WorkspaceInvite {
+  id          String    @id @default(cuid())
+  workspaceId String
+  email       String
+  role        Role      @default(PRODUCER)
+  tokenHash   String    @unique
+  expiresAt   DateTime  @db.Timestamptz(6)
+  usedAt      DateTime? @db.Timestamptz(6)
+  invitedById String?
+  createdAt   DateTime  @default(now()) @db.Timestamptz(6)
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  invitedBy User?     @relation("WorkspaceInviteSender", fields: [invitedById], references: [id], onDelete: SetNull)
+
+  @@index([workspaceId, createdAt(sort: Desc)])
+  @@index([email])
+  @@index([expiresAt])
 }
 
 enum Role {
@@ -530,6 +558,11 @@ model Song {
   /// song | instrumental | film_sound — stamped at creation so every door's
   /// output is findable and filterable.
   kind             String     @default("song")
+  /// PER-SONG COVER (identity wave, 2026-07-20). Canonical private storage ref
+  /// (s3://...) set by upload (verified bytes) or by the AI cover generator.
+  /// Null falls back to the project's newest approved cover ImageAsset — so
+  /// legacy covers keep rendering. Always presigned before it reaches a client.
+  coverUrl         String?
   versionLabel     String? // "demo-1", "club-mix"
   albumId          String? // album this song belongs to (style-anchored)
   status           SongStatus @default(SKETCH)

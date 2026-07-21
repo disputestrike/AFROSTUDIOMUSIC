@@ -1,4 +1,4 @@
-import type { FastifyInstance } from 'fastify';
+import type { FastifyInstance, FastifyReply } from 'fastify';
 import { z } from 'zod';
 import { createHash, randomBytes, scrypt, timingSafeEqual } from 'node:crypto';
 import { prisma } from '@afrohit/db';
@@ -7,18 +7,28 @@ import { isInternalMode, requireAuth } from '../middleware/auth';
 import { isFirstPartyBilling } from '../middleware/credits';
 import { captchaRequired, verifyCaptcha } from '../lib/captcha';
 import { hasAdminAccess } from './admin';
-import { TRAINING_LICENSE_CLAUSE, TRAINING_LICENSE_VERSION } from '@afrohit/shared';
+import {
+  inviteAcceptSchema,
+  inviteInfoSchema,
+  profilePatchSchema,
+  TRAINING_LICENSE_CLAUSE,
+  TRAINING_LICENSE_VERSION,
+} from '@afrohit/shared';
 import { hashTrainingLicense } from '../lib/training-license';
+import { hashInviteToken } from '../lib/invites';
+import { presignAssetRef, verifyUploadedImage } from '../lib/storage';
 import {
   adminGrantCookie,
   assertSessionConfiguration,
   clearAdminGrantCookie,
   clearSessionCookie,
   constantTimeSecretEqual,
+  requestSession,
   revokeSessionFamily,
   sessionCookie,
   signAdminGrant,
   signSession,
+  verifySession,
 } from '../lib/session';
 
 const signupSchema = z.object({
@@ -248,12 +258,12 @@ export default async function auth(app: FastifyInstance) {
   });
 
   app.get('/me', async (req) => {
-    const { userId, workspaceId } = requireAuth(req);
+    const { userId, workspaceId, role } = requireAuth(req);
     // TENANT SURFACE ISOLATION (Wave 8a): the web decides which nav manifest to
     // render from this single boolean. It reuses the ADMIN_EMAILS allowlist via
     // hasAdminAccess — the list itself is never sent to any client.
     const [user, workspace, operator, firstParty] = await Promise.all([
-      prisma.user.findUnique({ where: { id: userId }, select: { email: true, fullName: true } }),
+      prisma.user.findUnique({ where: { id: userId }, select: { email: true, fullName: true, avatarUrl: true } }),
       prisma.workspace.findUnique({ where: { id: workspaceId }, select: { name: true, plan: true, creditsCents: true } }),
       hasAdminAccess(req),
       // THE HOUSE KNOWS ITSELF: first-party workspaces render free (no credit
@@ -263,7 +273,50 @@ export default async function auth(app: FastifyInstance) {
       // that would not have charged them a cent).
       isFirstPartyBilling(workspaceId),
     ]);
-    return { userId, workspaceId, email: user?.email ?? null, name: user?.fullName ?? null, operator, firstParty, workspace };
+    return {
+      userId,
+      workspaceId,
+      // The caller's role in the ACTIVE workspace — the web shows/hides
+      // member management from this; the server enforces regardless.
+      role,
+      email: user?.email ?? null,
+      name: user?.fullName ?? null,
+      // Display link only — the stored URL is private storage.
+      avatarUrl: user?.avatarUrl ? await presignAssetRef(user.avatarUrl, 900) : null,
+      operator,
+      firstParty,
+      workspace,
+    };
+  });
+
+  /**
+   * PROFILE EDIT (identity wave): display name + profile picture. avatarKey is
+   * the storage key from POST /uploads/presign-image — the bytes are sniffed
+   * (real PNG/JPEG/WebP, ≤5MB) and fully hashed by verifyUploadedImage before
+   * the reference is stored, exactly like likeness photos. null clears it.
+   */
+  app.patch('/me', { schema: { body: profilePatchSchema } }, async (req, reply) => {
+    const { userId, workspaceId } = requireAuth(req);
+    const input = profilePatchSchema.parse(req.body);
+    const data: { fullName?: string | null; avatarUrl?: string | null } = {};
+    if (input.name !== undefined) data.fullName = input.name;
+    if (input.avatarKey === null) data.avatarUrl = null;
+    else if (typeof input.avatarKey === 'string') {
+      const verified = await verifyUploadedImage(workspaceId, input.avatarKey, 5 * 1024 * 1024);
+      data.avatarUrl = verified.assetRef;
+    }
+    if (!Object.keys(data).length) return reply.code(400).send({ error: 'nothing_to_update' });
+    const user = await prisma.user.update({
+      where: { id: userId },
+      data,
+      select: { email: true, fullName: true, avatarUrl: true },
+    });
+    return {
+      userId,
+      email: user.email,
+      name: user.fullName,
+      avatarUrl: user.avatarUrl ? await presignAssetRef(user.avatarUrl, 900) : null,
+    };
   });
 
   /**
@@ -370,6 +423,144 @@ export default async function auth(app: FastifyInstance) {
     });
     if (!consumed) return reply.code(400).send({ error: 'invalid_or_expired_token' });
     return { ok: true };
+  });
+
+  /**
+   * WORKSPACE INVITES — the two public halves (identity wave, 2026-07-20).
+   *
+   * ANTI-ENUMERATION: every token failure (unknown, used, expired, suspended
+   * workspace) answers the SAME 'invalid_or_expired_invite' — a probe learns
+   * nothing about which tokens, workspaces, or emails exist. Only a VALID
+   * token unlocks any detail, and the invite was addressed to that email in
+   * the first place.
+   *
+   * INVITED ≠ PUBLIC: acceptance creates the account itself when the email is
+   * new, deliberately bypassing the ALLOW_PUBLIC_SIGNUP gate — closing public
+   * signup must never lock a team out of inviting its own people.
+   */
+  const invalidInvite = (reply: FastifyReply) =>
+    reply.code(400).send({ error: 'invalid_or_expired_invite' });
+
+  async function liveInviteByToken(token: string) {
+    const row = await prisma.workspaceInvite.findUnique({
+      where: { tokenHash: hashInviteToken(token) },
+      select: {
+        id: true,
+        workspaceId: true,
+        email: true,
+        role: true,
+        usedAt: true,
+        expiresAt: true,
+        workspace: { select: { name: true, suspendedAt: true } },
+      },
+    });
+    if (!row || row.usedAt || row.expiresAt.getTime() <= Date.now() || row.workspace.suspendedAt) {
+      return null;
+    }
+    return row;
+  }
+
+  /** The /invite page's read: who is this invite for, and does that email
+   *  already hold an account (→ ask for their password, not a new one)? */
+  app.post('/invite-info', { ...limited, schema: { body: inviteInfoSchema } }, async (req, reply) => {
+    const input = inviteInfoSchema.parse(req.body);
+    const invite = await liveInviteByToken(input.token);
+    if (!invite) return invalidInvite(reply);
+    const existing = await prisma.user.findUnique({
+      where: { email: invite.email.toLowerCase().trim() },
+      select: { id: true },
+    });
+    return {
+      email: invite.email,
+      role: invite.role,
+      workspaceName: invite.workspace.name,
+      existingAccount: !!existing,
+      expiresAt: invite.expiresAt,
+    };
+  });
+
+  /**
+   * Accept: joins the invited email's account to the workspace at the invited
+   * role. Three doors, one law (the token):
+   *   - already signed in as that email → joins directly;
+   *   - existing account, no session → their password authenticates (the same
+   *     constant-time verifyPassword login uses);
+   *   - no account → the password becomes their NEW password (signup floor,
+   *     min 12) and the account is created inside the claim transaction.
+   * SINGLE USE: the conditional updateMany claim is race-safe — a token joins
+   * exactly once, ever.
+   */
+  app.post('/accept-invite', { ...limited, schema: { body: inviteAcceptSchema } }, async (req, reply) => {
+    if (!sessionsAvailable()) return reply.code(503).send({ error: 'invites_disabled' });
+    const input = inviteAcceptSchema.parse(req.body);
+    const invite = await liveInviteByToken(input.token);
+    if (!invite) return invalidInvite(reply);
+    const email = invite.email.toLowerCase().trim();
+    const existing = await prisma.user.findUnique({
+      where: { email },
+      select: { id: true, passwordHash: true },
+    });
+
+    // A live session for the SAME email joins without re-typing a password.
+    const session = requestSession(req);
+    const claims = session ? verifySession(session.token) : null;
+    const signedInAsInvitee = !!existing && claims?.sub === existing.id;
+
+    let newAccountHash: string | null = null;
+    if (existing) {
+      if (!signedInAsInvitee) {
+        if (!input.password) return reply.code(401).send({ error: 'password_required' });
+        const check = await verifyPassword(input.password, existing.passwordHash ?? null);
+        if (!check.valid) return reply.code(401).send({ error: 'invalid_credentials' });
+      }
+    } else {
+      // Invited signup — same password floor as public signup.
+      if (!input.password || input.password.length < 12) {
+        return reply.code(400).send({ error: 'password_too_short', note: 'Choose a password of at least 12 characters.' });
+      }
+      newAccountHash = await hashPassword(input.password);
+    }
+
+    type Tx = Omit<typeof prisma, '$connect' | '$disconnect' | '$on' | '$transaction' | '$use' | '$extends'>;
+    const result = await prisma.$transaction(async (tx: Tx) => {
+      // SINGLE USE: only the caller who flips usedAt from null wins the token.
+      const claim = await tx.workspaceInvite.updateMany({
+        where: { id: invite.id, usedAt: null },
+        data: { usedAt: new Date() },
+      });
+      if (claim.count === 0) return null;
+      const user = existing
+        ? existing
+        : await tx.user.create({
+            data: {
+              clerkId: `local_${randomBytes(10).toString('hex')}`,
+              email,
+              fullName: input.name ?? null,
+              passwordHash: newAccountHash,
+            },
+            select: { id: true, passwordHash: true },
+          });
+      // An invite can never DEMOTE someone who already belongs: upsert keeps
+      // an existing membership's role untouched.
+      const membership = await tx.workspaceMember.upsert({
+        where: { workspaceId_userId: { workspaceId: invite.workspaceId, userId: user.id } },
+        create: { workspaceId: invite.workspaceId, userId: user.id, role: invite.role },
+        update: {},
+        select: { role: true },
+      });
+      return { userId: user.id, role: membership.role, created: !existing };
+    });
+    if (!result) return invalidInvite(reply);
+
+    const token = signSession({ sub: result.userId, workspaceId: invite.workspaceId, role: result.role });
+    reply.header('set-cookie', sessionCookie(token)).code(result.created ? 201 : 200);
+    return {
+      userId: result.userId,
+      workspaceId: invite.workspaceId,
+      role: result.role,
+      workspaceName: invite.workspace.name,
+      accountCreated: result.created,
+    };
   });
 }
 

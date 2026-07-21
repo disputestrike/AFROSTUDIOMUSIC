@@ -24,6 +24,7 @@ import {
   Sparkles,
   GitCompare,
   ShieldCheck,
+  ImagePlus,
 } from "lucide-react";
 import dynamic from "next/dynamic";
 // R-1: the bridge is an admin-only LAZY chunk — its code never loads in a
@@ -784,6 +785,50 @@ export default function CatalogGrid({ initial }: { initial: SongRow[] }) {
         /no_lyrics/.test(message)
           ? "This one has no saved lyrics to recreate from — open Create to make it fresh."
           : message.slice(0, 140) || "Could not recreate"
+      );
+    } finally {
+      setBusy("");
+    }
+  }
+
+  // PER-SONG COVER (identity wave, 2026-07-20). Upload: presigned PUT → PATCH
+  // /songs/:id { coverUrl } (the server verifies the bytes and refuses any
+  // reference outside this workspace's own storage). Generate: queues an AI
+  // PHOTOREALISTIC cover built from the song's own title/genre/mood — celebrity
+  // names are stripped server-side and no real person's likeness is allowed.
+  const coverInputRef = useRef<HTMLInputElement>(null);
+  const coverTargetRef = useRef<string>("");
+  async function uploadCover(s: SongRow, file: File) {
+    setBusy(`${s.id}:cover`);
+    try {
+      const { assetRef } = await api.uploadImageToStorage(file, "cover");
+      const updated = await api.patch<{ coverUrl: string | null }>(
+        `/songs/${s.id}`,
+        { coverUrl: assetRef }
+      );
+      setSongs(list =>
+        list.map(x =>
+          x.id === s.id ? { ...x, coverUrl: updated.coverUrl ?? x.coverUrl } : x
+        )
+      );
+      flash("Cover updated ✓");
+    } catch (e) {
+      flash((e as Error).message.slice(0, 140) || "Cover upload failed");
+    } finally {
+      setBusy("");
+    }
+  }
+  async function generateCover(s: SongRow) {
+    setBusy(`${s.id}:gencover`);
+    try {
+      await api.post(`/songs/${s.id}/cover/generate`, {});
+      flash("AI cover queued — photorealistic, no real faces. Refresh in ~1 min.");
+    } catch (e) {
+      const m = (e as Error).message || "";
+      flash(
+        /402|insufficient_credits/.test(m)
+          ? "Not enough credits for a cover."
+          : m.slice(0, 140) || "Could not start the cover"
       );
     } finally {
       setBusy("");
@@ -1789,6 +1834,22 @@ export default function CatalogGrid({ initial }: { initial: SongRow[] }) {
         </div>
       )}
 
+      {/* One hidden picker serves every card's "Upload cover" — the target
+          song id rides coverTargetRef. */}
+      <input
+        ref={coverInputRef}
+        type="file"
+        accept="image/jpeg,image/png,image/webp"
+        className="hidden"
+        aria-label="Upload song cover"
+        onChange={e => {
+          const file = e.target.files?.[0];
+          const target = songs.find(x => x.id === coverTargetRef.current);
+          e.target.value = "";
+          if (file && target) void uploadCover(target, file);
+        }}
+      />
+
       <div className="grid gap-5 sm:grid-cols-2 lg:grid-cols-3">
         {visibleSongs.map(s => (
           <div
@@ -2250,6 +2311,21 @@ export default function CatalogGrid({ initial }: { initial: SongRow[] }) {
                     label="Rename"
                     icon={<Pencil className="h-3.5 w-3.5" />}
                     onClick={() => void rename(s)}
+                  />
+                  <Action
+                    label="Upload cover"
+                    icon={<ImagePlus className="h-3.5 w-3.5" />}
+                    busy={isBusy(s.id, "cover")}
+                    onClick={() => {
+                      coverTargetRef.current = s.id;
+                      coverInputRef.current?.click();
+                    }}
+                  />
+                  <Action
+                    label="✨ Generate cover"
+                    icon={<Sparkles className="h-3.5 w-3.5" />}
+                    busy={isBusy(s.id, "gencover")}
+                    onClick={() => void generateCover(s)}
                   />
                   <Action
                     label="Studio"

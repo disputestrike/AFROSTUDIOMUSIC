@@ -218,7 +218,9 @@ export default async function billing(app: FastifyInstance) {
 
   /** Create a PayPal Subscription and return the approve URL the web app redirects to. */
   app.post('/checkout/subscribe', { schema: { body: subscribeSchema } }, async (req, reply) => {
-    const { workspaceId } = requireRole(req, ['OWNER', 'ADMIN']);
+    // RBAC (identity wave): billing is the OWNER's privilege alone —
+    // ADMIN manages people and settings, never the money.
+    const { workspaceId } = requireRole(req, ['OWNER']);
     const { plan } = subscribeSchema.parse(req.body);
     const idempotencyKey = checkoutKey(req.headers as Record<string, unknown>);
     if (!idempotencyKey) return reply.code(400).send({ error: 'idempotency_key_required' });
@@ -301,7 +303,9 @@ export default async function billing(app: FastifyInstance) {
 
   /** Create a PayPal Order for a credit pack and return the approve URL. */
   app.post('/checkout/credits', { schema: { body: packSchema } }, async (req, reply) => {
-    const { workspaceId } = requireRole(req, ['OWNER', 'ADMIN']);
+    // RBAC (identity wave): billing is the OWNER's privilege alone —
+    // ADMIN manages people and settings, never the money.
+    const { workspaceId } = requireRole(req, ['OWNER']);
     const { pack } = packSchema.parse(req.body);
     const { amountUsd: amount, creditsCents } = CREDIT_PACKS[pack];
     const idempotencyKey = checkoutKey(req.headers as Record<string, unknown>);
@@ -438,7 +442,9 @@ export default async function billing(app: FastifyInstance) {
    * BILLING.SUBSCRIPTION.CANCELLED, which downgrades the workspace plan.
    */
   app.post('/subscription/cancel', async (req, reply) => {
-    const { workspaceId } = requireRole(req, ['OWNER', 'ADMIN']);
+    // RBAC (identity wave): billing is the OWNER's privilege alone —
+    // ADMIN manages people and settings, never the money.
+    const { workspaceId } = requireRole(req, ['OWNER']);
     const ws = await prisma.workspace.findUniqueOrThrow({ where: { id: workspaceId } });
     if (!ws.paypalSubscriptionId) return reply.code(400).send({ error: 'no_active_subscription' });
     await cancelSubscription(ws.paypalSubscriptionId, 'user_request', `cancel-${ws.paypalSubscriptionId}`);

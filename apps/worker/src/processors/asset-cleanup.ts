@@ -60,6 +60,11 @@ async function protectedAssetRefs(
           WHERE song."workspaceId" = ${workspaceId}
         UNION ALL SELECT song."acapellaUrl" FROM "Song" song
           WHERE song."workspaceId" = ${workspaceId}
+        UNION ALL SELECT song."coverUrl" FROM "Song" song
+          WHERE song."workspaceId" = ${workspaceId}
+        UNION ALL SELECT member_user."avatarUrl" FROM "User" member_user
+          JOIN "WorkspaceMember" membership ON membership."userId" = member_user."id"
+          WHERE membership."workspaceId" = ${workspaceId}
         UNION ALL SELECT beat."url" FROM "BeatAsset" beat
           JOIN "Project" project ON project."id" = beat."projectId"
           WHERE project."workspaceId" = ${workspaceId}
