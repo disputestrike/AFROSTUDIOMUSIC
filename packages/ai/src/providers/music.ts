@@ -49,6 +49,7 @@ const SWING_POCKET: Record<string, string> = {
   afro_fusion: 'groove: swung 16th shakers ~56%, syncopated kick leaves holes, loose in-the-pocket bounce — NOT stiff 4/4',
   afro_pop: 'groove: lightly swung 16th shakers ~55%, offbeat kick pocket — radio-clean but never metronomic 4/4',
   street_pop: 'groove: hard-swung street 16ths ~57%, rowdy offbeat Zanku pocket — not a stiff grid',
+  afro_hip_hop: 'groove: swung 16th shaker ~56% with a log-drum bounce, syncopated Afro kick and snare on beat 3, a rap flow riding the pocket — NOT a stiff US boom-bap grid, NOT four-on-the-floor',
   afro_dancehall: 'groove: swung dancehall bounce ~56%, offbeat skank on the "and", bass behind the grid',
   afro_rnb: 'groove: swung 16th shakers ~55%, relaxed behind-the-beat R&B pocket — not quantized',
   afro_soul: 'groove: live-feel back-swung pocket ~56%, the drummer leans late — organic, not gridded',
@@ -143,6 +144,11 @@ function afroIdentity(genre: string): { anchor: string; signature: string } | nu
         anchor: 'Lagos Nigerian street-pop',
         signature: 'signature sound: rowdy syncopated street-hop drums, log-drum bounce used as street flavor, swung shaker 16ths, gang chants, rough pidgin rap-singing and call-response adlibs — energetic Zanku street pocket, NOT lounge amapiano or US trap',
       };
+    case 'afro_hip_hop': // Naija rap / Afro-rap — NOT American 'hip_hop'
+      return {
+        anchor: 'Afro/Naija hip-hop (Naija rap)',
+        signature: 'signature sound: log-drum bounce and swung shaker 16ths under a syncopated Afro kick with the snare on beat 3, bright clean highlife guitar hook, warm gliding 808 bass, and code-switched Pidgin/Yoruba/Igbo/English sing-rap with call-response adlibs — Afrobeats-percussion rap, NOT American boom-bap/trap and NOT plain afropop',
+      };
     case 'afrobeats':
       return {
         anchor: 'West African Afrobeats (Nigerian/Ghanaian)',
@@ -223,6 +229,33 @@ function afroIdentity(genre: string): { anchor: string; signature: string } | nu
   }
 }
 
+/**
+ * ANTI-AFRO-LEAK (rapfix) — the mirror of the deLatin scrub. Afro Sound-DNA
+ * carries signature-instrument tokens (log drum, talking drum, shekere,
+ * shaku-shaku, highlife guitar, agogo, gbedu…). A single such token bleeding
+ * into a NON-Afro lane's engine prompt was enough to turn "Hip-hop / Rap" into
+ * Naija sing-rap (the #1 product bug). For any lane afroIdentity() does NOT
+ * recognise, a DNA tag that carries an afro-signature token is dropped before it
+ * reaches the engine, so a mislabeled token can never contaminate a rap / pop /
+ * rock / country render. Data-driven — extend the list to cover new afro
+ * instruments. NEVER runs for a real Afro lane: those NEED these tokens.
+ */
+const AFRO_SIGNATURE_TOKENS = [
+  'log drum', 'log_drum', 'logdrum', 'log-drum',
+  'talking drum', 'talking-drum', 'talking_drum', 'dundun', 'gangan', 'gan gan', 'gan-gan',
+  'shekere', 'shaku-shaku', 'shaku shaku', 'shakushaku',
+  'highlife',
+  'agogo', 'gbedu', 'sakara', 'bata', 'agidigbo', 'ogene', 'ekwe', 'igba', 'kpanlogo', 'fontomfrom',
+  'kalimba', 'mbira', 'balafon', 'kora', 'ngoni', 'udu', 'djembe',
+  'palm-wine', 'palmwine',
+];
+/** Drop a DNA tag entirely when it carries an afro-signature token (non-Afro
+ *  lanes only). Returns '' so the caller's filter(Boolean) removes it. */
+function stripAfroSignatureTag(tag: string): string {
+  const low = tag.toLowerCase();
+  return AFRO_SIGNATURE_TOKENS.some((tok) => low.includes(tok)) ? '' : tag;
+}
+
 export function composeStyleTags(
   input: MusicGenerationInput,
   opts: { fallbackLiteral: string; genreLabel?: string; genreSuffix?: string; keyPrefix?: string; tonePrefix?: string }
@@ -266,6 +299,12 @@ export function composeStyleTags(
          .replace(/\bclave\b/gi, 'off-beat')
          .replace(/\btresillo\b/gi, 'off-beat')
       : t;
+  // ANTI-AFRO-LEAK SCRUB (rapfix): the mirror of deLatin. For lanes afroIdentity()
+  // does NOT recognise (rap/pop/rock/…), drop any DNA tag carrying an afro-
+  // signature token (log/talking drum, shekere, shaku-shaku, highlife, agogo…) so
+  // a single mislabeled token can never contaminate the render. No-op for real
+  // Afro lanes — they need these tokens.
+  const deAfro = (t: string): string => (isAfro ? t : stripAfroSignatureTag(t));
   // ANTI-SOUP: models weight early tokens and truncate late ones, so this order
   // is a BUDGET, not a bag — identity leads (genre+tempo+key), then the DNA +
   // learned tokens, then a CAPPED vibe (an uncapped vibePrompt used to drown the
@@ -339,7 +378,7 @@ export function composeStyleTags(
     isAfro ? 'NOT reggaeton, NOT dembow, NOT tresillo/dembow kick, NOT perreo' : null,
     ...(kit ? kit.engineTags.slice(0, 8).map(deLatin) : []),
     opts.genreSuffix ?? null,
-    ...(input.dnaTags ?? []).map(deLatin),
+    ...(input.dnaTags ?? []).map(deLatin).map(deAfro),
     vibe || null,
     input.artistTone?.length ? `${opts.tonePrefix ?? ''}${input.artistTone.join(', ')}` : null,
     // Keep transitions genre-authentic. A blanket tom-fill instruction is wrong

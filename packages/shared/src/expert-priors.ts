@@ -22,6 +22,7 @@ const P: Record<string, Prior> = {
   gospel: { bpm: 100, four: 0.5, log: 0.1, swing: 0.52, shaker: 0.35, keys: 0.85, sync: 0.45 },
   highlife: { bpm: 112, four: 0.5, log: 0.1, swing: 0.56, shaker: 0.5, keys: 0.65, sync: 0.6 },
   hip_hop: { bpm: 92, four: 0.35, log: 0.15, swing: 0.5, shaker: 0.35, keys: 0.45, hat: 0.6, sync: 0.45 },
+  afro_hip_hop: { bpm: 104, four: 0.6, log: 0.6, swing: 0.56, shaker: 0.55, keys: 0.45, hat: 0.5, sync: 0.62 },
   trap: { bpm: 140, four: 0.35, log: 0.3, swing: 0.5, shaker: 0.3, keys: 0.35, hat: 0.85, sync: 0.45 },
   drill: { bpm: 142, four: 0.3, log: 0.45, swing: 0.5, shaker: 0.3, keys: 0.3, hat: 0.7, sync: 0.48 },
   rnb: { bpm: 88, four: 0.35, log: 0.1, swing: 0.52, shaker: 0.35, keys: 0.8, sync: 0.45 },

@@ -66,7 +66,8 @@ const GENRES = [
   { value: 'afro_pop', label: 'Afropop' }, { value: 'afro_soul', label: 'Afro-soul' }, { value: 'highlife', label: 'Highlife' },
   { value: 'gospel', label: 'Gospel' }, { value: 'afro_gospel', label: 'Afro-gospel' },
   { value: 'worship', label: 'Worship' }, { value: 'praise', label: 'Praise' }, { value: 'spiritual', label: 'Spiritual' },
-  { value: 'hip_hop', label: 'Hip-hop / Rap' }, { value: 'reggae', label: 'Reggae' }, { value: 'alte', label: 'Alté' },
+  { value: 'hip_hop', label: 'Hip-hop / Rap' }, { value: 'afro_hip_hop', label: 'Afro / Naija Hip-Hop' },
+  { value: 'reggae', label: 'Reggae' }, { value: 'alte', label: 'Alté' },
   // African continental
   { value: 'gqom', label: 'Gqom' }, { value: 'kwaito', label: 'Kwaito' }, { value: 'afro_house', label: 'Afro house' },
   { value: 'bongo_flava', label: 'Bongo Flava' }, { value: 'azonto', label: 'Azonto' },

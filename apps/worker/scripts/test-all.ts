@@ -329,6 +329,7 @@ async function runOfflineTests(): Promise<void> {
     ["Claims-evidence probe", "test-claims.ts"],
     ["Craft laws (writer/critic/hooks)", "test-craft-laws.ts"],
     ["Genre identity (afro≠reggaeton)", "test-genre-identity.ts"],
+    ["Genre identity consistency (kit⟷DNA)", "test-genre-identity-consistency.ts"],
     ["Engine adapters (no silent stub)", "test-engine-adapters.ts"],
     ["Production runtime safety", "test-runtime-safety.ts"],
     ["Feature runtime readiness", "test-config-readiness.ts"],

@@ -27,6 +27,7 @@ const GENRES = [
   { value: "highlife", label: "Highlife" },
   { value: "gospel", label: "Gospel" },
   { value: "hip_hop", label: "Hip-hop" },
+  { value: "afro_hip_hop", label: "Afro / Naija Hip-Hop" },
   { value: "reggae", label: "Reggae" },
   { value: "pop", label: "Pop" },
   { value: "rnb", label: "R&B" },

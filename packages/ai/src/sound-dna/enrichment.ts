@@ -558,8 +558,8 @@ export const GENRE_ENRICHMENT: Record<string, GenreEnrichment> = {
     ],
     "researchedAt": "2026-07-05"
   },
-  "hip_hop": {
-    "genre": "Hip-hop / Afro-drill",
+  "afro_hip_hop": {
+    "genre": "Afro / Naija Hip-Hop (Afro-drill / Afroswing)",
     "trendingProductionMoves": [
       "Log drum as bass foundation (110-115 BPM amapiano pocket) with sidechain compression ducks allowing kick transient cut-through",
       "Sparse, minor-key melodic architecture (D minor, A minor, G minor) using cold pianos, eerie synth pads, reverb-heavy strings with long reverb tails",

@@ -6724,6 +6724,253 @@ export const GENRE_KITS: Record<string, GenreKit> = {
       "east coast hip hop"
     ]
   },
+  "afro_hip_hop": {
+    "genre": "afro_hip_hop",
+    "displayName": "Afro / Naija Hip-Hop",
+    "origin": "West Africa (Nigeria/Ghana) x hip-hop — the Naija rap / Afro-rap lane where American hip-hop meets Afrobeats/street-pop percussion and pidgin sing-rap. Grown from the Olamide/Phyno indigenous-rap wave, Show Dem Camp/M.I lyrical rap, and the UK Afroswing diaspora (J Hus, NSG); log-drum-and-shaker beats under code-switched Pidgin/Yoruba/Igbo bars and melodic hooks. Distinct from American boom-bap/trap (hip_hop) and from street-pop.",
+    "bpmLo": 95,
+    "bpmHi": 115,
+    "typicalBpm": 104,
+    "swing": "moderate",
+    "fourOnFloor": false,
+    "requiredRoles": [
+      "kick",
+      "snare",
+      "rimshot",
+      "shaker",
+      "closed_hat",
+      "log_drum",
+      "synth_bass",
+      "sub_bass",
+      "lead_vocal",
+      "adlib"
+    ],
+    "optionalRoles": [
+      "kick_808",
+      "bass_808",
+      "sliding_808",
+      "clap",
+      "snap",
+      "open_hat",
+      "trap_hat_roll",
+      "triplet_hat_roll",
+      "snare_roll",
+      "conga",
+      "bongo",
+      "talking_drum",
+      "shekere",
+      "agogo",
+      "cowbell",
+      "woodblock",
+      "gbedu",
+      "gangan",
+      "piano",
+      "rhodes",
+      "organ",
+      "synth_pad",
+      "warm_pad",
+      "string_pad",
+      "highlife_guitar",
+      "guitar_chords",
+      "clean_guitar_riff",
+      "synth_pluck",
+      "bell_lead",
+      "synth_lead",
+      "flute",
+      "sax",
+      "brass_section",
+      "vocal_chop",
+      "double",
+      "harmony_vocal",
+      "call_response",
+      "chant",
+      "crowd_chant",
+      "hype_vocal",
+      "spoken_word",
+      "vinyl_noise",
+      "tape_hiss",
+      "riser",
+      "impact",
+      "beat_stop",
+      "transition_fx"
+    ],
+    "signatureRoles": [
+      "log_drum",
+      "shaker",
+      "highlife_guitar",
+      "rimshot",
+      "adlib"
+    ],
+    "forbiddenTraits": [
+      "four-on-the-floor house/EDM kick (afro rap is syncopated and head-nodding, not a dance-floor pulse)",
+      "pure US boom-bap or trap with NO African percussion and NO pidgin/code-switched flavor (that is plain American hip_hop, not this Afro/Naija lane)",
+      "clean American-only diction with no Afro pocket or afro drums",
+      "reggaeton/dembow tresillo boom-ch-boom-chick pattern",
+      "amapiano-lounge slowness and patience — afro rap pushes harder with a rap cadence",
+      "EDM supersaw drops or festival builds",
+      "drill sliding-808 glides as the central bass identity",
+      "over-quantized sterile pop grid with no human swing",
+      "lush orchestral/cinematic strings as the lead texture",
+      "Jamaican one-drop reggae skank as the backbone"
+    ],
+    "grooveRules": "Mid-tempo (95-115, usually ~102-107) in 4/4 with a rolling, buoyant Afro bounce that a rap flow rides — NOT four-on-the-floor and NOT a stiff Western boom-bap grid. The kick is syncopated (off-grid, dodging the snare), the snare/rimshot cracks the Afro backbeat feel on beat 3, and a busy swung 16th shaker/shekere motion drives the pocket. A melodic percussive log drum answers the kick between hits (amapiano DNA absorbed into modern Afro-rap); the low end is a warm gliding 808/synth bass or the log drum itself. A bright clean highlife-style guitar lick recurs as the hook motif. Delivery is code-switched Pidgin/Yoruba/Igbo/English sing-rap with light Auto-tune on hooks and rapped bars in the verses; ad-libs answer bar-ends. Hook-first, loop-and-breathe structure with beat-stops so a chant or adlib carries a bar. Grittier and more rap-forward than mainstream afropop, more melodic and afro-percussive than American hip_hop.",
+    "sectionMap": [
+      {
+        "section": "intro",
+        "materials": [
+          "highlife_guitar",
+          "shaker",
+          "log_drum",
+          "vinyl_noise",
+          "adlib",
+          "spoken_word"
+        ]
+      },
+      {
+        "section": "verse",
+        "materials": [
+          "kick",
+          "rimshot",
+          "shaker",
+          "closed_hat",
+          "log_drum",
+          "synth_bass",
+          "lead_vocal",
+          "adlib",
+          "woodblock"
+        ]
+      },
+      {
+        "section": "pre-hook",
+        "materials": [
+          "kick",
+          "clap",
+          "shaker",
+          "open_hat",
+          "log_drum",
+          "synth_bass",
+          "lead_vocal",
+          "call_response",
+          "snare_roll",
+          "riser"
+        ]
+      },
+      {
+        "section": "hook",
+        "materials": [
+          "kick",
+          "snare",
+          "clap",
+          "shaker",
+          "shekere",
+          "closed_hat",
+          "open_hat",
+          "log_drum",
+          "synth_bass",
+          "highlife_guitar",
+          "lead_vocal",
+          "double",
+          "harmony_vocal",
+          "adlib",
+          "agogo"
+        ]
+      },
+      {
+        "section": "verse2",
+        "materials": [
+          "kick",
+          "rimshot",
+          "shaker",
+          "closed_hat",
+          "log_drum",
+          "synth_bass",
+          "lead_vocal",
+          "adlib",
+          "conga",
+          "talking_drum",
+          "beat_stop"
+        ]
+      },
+      {
+        "section": "bridge",
+        "materials": [
+          "chant",
+          "highlife_guitar",
+          "shaker",
+          "log_drum",
+          "call_response",
+          "adlib",
+          "beat_stop",
+          "impact"
+        ]
+      },
+      {
+        "section": "final_hook",
+        "materials": [
+          "kick",
+          "snare",
+          "clap",
+          "shaker",
+          "shekere",
+          "closed_hat",
+          "open_hat",
+          "log_drum",
+          "synth_bass",
+          "highlife_guitar",
+          "lead_vocal",
+          "double",
+          "harmony_vocal",
+          "adlib",
+          "crowd_chant",
+          "agogo",
+          "brass_section"
+        ]
+      },
+      {
+        "section": "outro",
+        "materials": [
+          "highlife_guitar",
+          "adlib",
+          "shaker",
+          "log_drum",
+          "vinyl_noise",
+          "spoken_word"
+        ]
+      }
+    ],
+    "fillCadenceBars": 8,
+    "mixPriorities": [
+      "lead_vocal",
+      "shaker",
+      "log_drum",
+      "kick",
+      "synth_bass"
+    ],
+    "qualityChecks": [
+      "log_drum present as a melodic percussive counter-line bouncing between the kick hits",
+      "busy swung 16th shaker/shekere motion audible as the groove engine",
+      "kick is syncopated NOT four-on-the-floor; snare/rimshot on the Afro beat-3 backbeat feel",
+      "bright clean highlife-style guitar lick recurs as the hook motif",
+      "code-switched Pidgin/Yoruba/Igbo/English sing-rap: rapped bars in verses, melodic hook with light Auto-tune",
+      "moderate swing (~55-58%) — not a stiff straight boom-bap grid, not four-on-the-floor",
+      "warm gliding 808 / synth bass (or the log drum) as the low end, not a dry US-trap sub only",
+      "rhythmic pidgin ad-libs and gang chants functioning as percussion",
+      "tempo sits ~95-115 BPM (Afro-rap bounce)",
+      "clearly Afro/Naija, NOT American boom-bap/trap and NOT plain afropop"
+    ],
+    "engineTags": [
+      "Afro/Naija hip-hop",
+      "Naija rap sing-rap",
+      "log drum bounce",
+      "swung shaker 16ths",
+      "snare on beat 3 afro backbeat",
+      "bright highlife guitar hook",
+      "warm gliding 808 bass",
+      "code-switched pidgin bars",
+      "call-and-response adlibs",
+      "afroswing rap pocket"
+    ]
+  },
   "house": {
     "genre": "house",
     "displayName": "House",

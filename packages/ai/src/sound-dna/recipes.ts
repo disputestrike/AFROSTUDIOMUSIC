@@ -1557,6 +1557,172 @@ export const SOUND_DNA: Record<string, SoundDNA> = {
   },
   "hip_hop": {
     "genre": "hip_hop",
+    "displayName": "Hip-Hop / Rap",
+    "bpmRange": [
+      82,
+      100
+    ],
+    "typicalBpm": 90,
+    "commonKeys": [
+      "A minor",
+      "C minor",
+      "F minor",
+      "G minor",
+      "D minor",
+      "E minor",
+      "B minor",
+      "F# minor"
+    ],
+    "chordProgressions": [
+      {
+        "roman": "i - iv - i (looped minor vamp)",
+        "description": "A two-to-four-bar chopped minor loop that never resolves — the boom-bap default. Cut from a soul/jazz sample so the harmony loops rather than progresses; the drums are sliced to it. In A minor: Am - Dm - Am.",
+        "whereUsed": "Head-nod verses, the sampled loop that carries a whole beat"
+      },
+      {
+        "roman": "i - VI - VII - i",
+        "description": "Darker cyclical minor loop with a modal, non-resolving pull; keeps tension under hard-hitting verses. In A minor: Am - F - G - Am.",
+        "whereUsed": "Aggressive trap-rap and street verses, moody hooks"
+      },
+      {
+        "roman": "i7 - iv7 (jazzy 7th vamp)",
+        "description": "Extended minor-seventh chords chopped from a jazz/soul record for a smoky, sophisticated bed; the classic dusty sample-flip color. In A minor: Am7 - Dm7.",
+        "whereUsed": "Lyrical/conscious cuts, jazzy boom-bap loops"
+      },
+      {
+        "roman": "i - v - VI - IV",
+        "description": "Cinematic minor loop borrowed for melodic trap-rap; the major VI/IV lift keeps space airy under a sung-rap hook. In F# minor: F#m - C#m - D - A.",
+        "whereUsed": "Melodic trap-rap hooks, atmospheric radio-facing cuts"
+      },
+      {
+        "roman": "i - bVII - bVI - V (Andalusian-tinged)",
+        "description": "Descending minor line that adds dramatic tension; a menacing color for hard trap and horrorcore-leaning beats. In A minor: Am - G - F - E.",
+        "whereUsed": "Dark hard-trap beats, tension builds into the drop"
+      }
+    ],
+    "arrangement": [
+      {
+        "section": "Intro",
+        "bars": "4-8",
+        "whatHappens": "Cold open on the chopped sample or a lone dark piano/string motif under vinyl crackle, maybe a producer tag or a scratched vocal. No full drums yet — establish key, mood and the loop that the beat is cut to."
+      },
+      {
+        "section": "Verse 1",
+        "bars": "16",
+        "whatHappens": "Full head-nod groove drops: hard kick syncopated around beat 1, dry snare/clap cracking the 2-and-4 backbeat, swung hats, sub 808 locked to the kick. Arrangement stays sparse to leave a pocket for the rap. Ad-libs answer the ends of bars."
+      },
+      {
+        "section": "Hook / Chorus",
+        "bars": "8",
+        "whatHappens": "The earworm: a repeated chanted or melodic hook line, often doubled and stacked, with the sample opened up (add a piano/horn layer) and the drums at their fullest. In trap-rap the hook may be lightly sung; in boom-bap it is often a rapped or scratched refrain."
+      },
+      {
+        "section": "Verse 2",
+        "bars": "16",
+        "whatHappens": "Second verse, sometimes a feature or a flow switch. Introduce one new element (an extra sample chop, a vibraphone/vibe line, a filter open) so it doesn't feel static; drums may add a fill or open hat accents."
+      },
+      {
+        "section": "Bridge / Breakdown",
+        "bars": "8",
+        "whatHappens": "Beat-stop or strip to the sample + sub for a bar or two, a spoken word or scratched phrase, then slam the full drums back in. The dynamic reset before the last hook."
+      },
+      {
+        "section": "Final Hook (double)",
+        "bars": "8-16",
+        "whatHappens": "Hook repeated with maximum stacking — extra ad-libs, harmony/vocal doubles, added sample layers or a string/horn stab. Highest energy of the record."
+      },
+      {
+        "section": "Outro",
+        "bars": "4-8",
+        "whatHappens": "Strip back to the sample and vinyl crackle plus lingering ad-libs; let the loop ride out or filter down. Often ends on the loop rather than a hard resolve."
+      }
+    ],
+    "instrumentation": {
+      "core": [
+        "Hard, punchy kick syncopated around beat 1 with ghost hits (NOT four-on-the-floor)",
+        "Crisp, dry snare or clap cracking the backbeat on beats 2 and 4",
+        "Tight closed hi-hats running swung 8ths/16ths, with occasional fast triplet/roll fills (trap-rap side)",
+        "808 sub-bass, mono and rounded, locked to the kick",
+        "Chopped soul/jazz sample OR a sparse dark piano / string / Rhodes motif",
+        "Vinyl crackle and tape hiss under the loop"
+      ],
+      "signature": [
+        "Hard punchy kick and dry cracking snare/clap backbeat (the head-nod boom-bap pocket)",
+        "Deep mono 808 / sub-bass locked to the kick",
+        "Chopped, looped soul/jazz sample or a sparse dark piano/string motif (harmony loops, never progresses)",
+        "Swung MPC hi-hats with occasional triplet roll fills",
+        "Vinyl crackle / dusty tape texture as the aesthetic glue",
+        "Producer voice tag or scratched vocal as an identity stamp"
+      ],
+      "percussion": [
+        "Rimshot and cross-stick ghost notes",
+        "Hand claps and finger-snaps layered with the snare",
+        "Tambourine or subtle shaker on the offbeat",
+        "Vinyl crackle and tape hiss used as rhythmic texture"
+      ],
+      "bass": "A deep, simple 808 or sub-bass IS the low end: mono, rounded and centered, following the kick and the sample's root motion with tasteful passing notes. In boom-bap it can be a sampled upright/electric bass line instead; in trap-rap the 808 can slide/pitch-bend between roots. Kept simple so it locks with the kick and leaves room for the rap.",
+      "keys": "Sparse and dark: a looped minor piano/Rhodes/Wurlitzer chop, a jazzy 7th-chord vamp, or a single string/pad motif. Harmony loops rather than progresses; the keys stay supportive, leaving space for the vocal — never busy.",
+      "guitar": "Rare and never a lead: at most a muted or filtered guitar chop lifted into the sample bed, or a soulful clean lick buried in the loop. No interlocking live-band guitar work."
+    },
+    "groove": {
+      "feel": "Head-nod backbeat in 4/4 with a laid-back, behind-the-beat pocket — often a half-time feel where the snare lands on 3. Body-rocking rather than dancing; space and repetition matter more than density.",
+      "pocketNotes": "The kick anchors beat 1 with one or two syncopated ghost hits; the snare/clap cracks hard and dry on the backbeat (2 and 4, or 3 in half-time). Closed hats sit a few ticks late with pronounced MPC swing so the whole kit reads behind the beat. The 808 answers the kick. The rap flow floats across the pocket; arrangement stays sparse so the bars have room.",
+      "swing": "Moderate MPC swing (~54-62%) on the hats and the kit, landing slightly late for the classic dusty, laid-back feel. Not straight-quantized — the human looseness is the aesthetic.",
+      "syncopation": "Moderate: syncopated ghost kicks around a hard backbeat, with hat rolls and the occasional triplet fill (trap-rap) adding motion. The groove reads as a swung boom-bap or half-time trap pocket, never a driving four-on-the-floor."
+    },
+    "vocalStyle": {
+      "delivery": "Rapped bars first — confident, rhythmic flow riding the pocket with clear cadence and internal rhyme. Ranges from hard, punchy boom-bap delivery to a more melodic sing-rap on trap-rap hooks (light Auto-tune only if the record calls for it, never forced). Written in the lyric's own language (US English by default), NOT code-switched Pidgin unless the artist specifies it. Hook-driven: a memorable rapped or lightly-sung refrain anchors the record.",
+      "adLibs": [
+        "Yeah / uh / c'mon",
+        "Skrrt",
+        "What! / ayy",
+        "Let's go",
+        "Gang / brr (trap-rap)",
+        "Doubled last words of bars",
+        "Breaths and grunts punctuating bar-ends",
+        "Producer tag drop"
+      ],
+      "harmonyApproach": "Verses are largely single-tracked and dry for intimacy; hooks get doubles, octave stacks and answering ad-libs. Trap-rap hooks add light melodic harmony; boom-bap leans on call-and-response and scratched vocal hooks rather than sung stacks. Ad-libs answer the lead in the gaps.",
+      "languageMix": "US English by default (any regional dialect the record calls for); other languages only when the artist writes them. Content: storytelling, hustle and ambition, braggadocio, street narrative, social commentary, romance — the full rap spectrum. No forced code-switching."
+    },
+    "signatureElements": [
+      "Hard syncopated kick with a dry, cracking snare/clap backbeat (head-nod boom-bap pocket)",
+      "Deep mono 808 / sub-bass locked to the kick",
+      "Chopped, looped soul/jazz sample OR a sparse dark piano/string motif (harmony loops, never progresses)",
+      "Swung MPC hi-hats with occasional triplet roll fills",
+      "Vinyl crackle / dusty tape texture under the whole loop",
+      "Sparse arrangement that leaves a clear pocket for the rap vocal",
+      "Rapped bars with confident cadence and call-and-response ad-libs",
+      "Half-time feel option (snare on 3) for hard trap-rap",
+      "Producer voice tag or scratched vocal as identity stamp",
+      "Loop-and-breathe structure, often non-resolving"
+    ],
+    "referenceArtists": [
+      "1990s East Coast boom-bap lane (production feel only)",
+      "Chopped soul/jazz sample school (dusty MPC/SP-1200 flip)",
+      "West Coast G-funk / laid-back rap lane",
+      "Modern minimalist trap-rap lane",
+      "Lyrical / conscious rap lane"
+    ],
+    "mixTraits": {
+      "lowEnd": "808/sub-forward, mono and centered so it knocks on club and car systems while staying tight. Kick and 808 are carved so they lock without masking; the low end is simple and hard-hitting, not tuneful-melodic like an Afro 808.",
+      "drums": "Punchy, dry and compressed with a deliberate dusty, lo-fi character. The snare cracks hard and present; hats are crisp and swung. Slight looseness and vinyl crackle are the aesthetic — never gridded-to-death or over-polished.",
+      "vocals": "Rap lead up-front and intimate, largely dry on verses for clarity and closeness; de-essed and present. Hook doubles and ad-libs widened with panning and reverb throws. Vocals sit ON TOP of the beat, clearly the focus.",
+      "space": "Verses drier and close; hooks and ad-libs get more reverb/delay for depth. Stereo width from panned sample layers, hats and backing vocals; the sub/808 stays mono and centered.",
+      "loudness": "Loud, streaming-competitive master with strong perceived level, but preserving the swing and the snap of the drums — over-limiting kills the head-nod bounce."
+    },
+    "productionPromptSnippet": "Hip-hop / rap: head-nod pocket ~85-95 BPM, 4/4, minor key, with a half-time feel option (snare on 3). Hard punchy kick syncopated around the backbeat, crisp dry snare/clap on 2 and 4, swung MPC hi-hats with occasional triplet rolls, deep mono 808 sub-bass locked to the kick. Harmony is a chopped, looped soul/jazz sample OR a sparse dark piano/string/Rhodes motif that loops rather than progresses; vinyl crackle and tape texture glue it. Arrangement stays sparse to leave space for the rap. Delivery: confident rapped bars / flow with clear cadence (melodic sing-rap only on trap-rap hooks, light Auto-tune only if called for — never forced), call-and-response ad-libs answering bar-ends. Mix: mono sub-forward low end, punchy dusty drums, rap vocal up-front. Boom-bap-to-modern-trap color. NO log drum, NO talking drum, NO highlife guitar, NO shaku-shaku — this is American rap, not Afro/Naija hip-hop.",
+    "freshnessGuardrails": "Capture the LANE (American boom-bap to modern trap-rap), never a specific song. Use the archetypal minor sample-loops and the swung-backbeat / half-time pocket as a FEEL, not a transcription of any released beat. Generate original melodies, sample-style chops, hook phrases and 808 lines from scratch; do not reproduce any recognizable topline, break, drum-fill signature or lyric from real records. Reference lanes are factual STYLE anchors ONLY — capture the production feel of an era/scene, never a specific artist's melodies, cadences, catchphrases, ad-libs or vocal timbre, and never clone any living artist's voice or use their name/tag in output. Vary BPM, key, sample color and arrangement per track so no two beats feel the same. Aim for 'unmistakably rap, unmistakably new'.",
+    "sources": [
+      "Genre musicology and public music-theory knowledge",
+      "Publicly documented genre conventions (Wikipedia: Hip hop music, Boom bap, Trap music)",
+      "Music-production/BPM reference guides (boom-bap ~85-95 BPM, trap-rap half-time conventions)",
+      "Editorial/journalistic coverage of hip-hop production (sampling, MPC/SP-1200 boom-bap, 808 trap)",
+      "Producer interviews referenced in genre documentation (sample-chop and 808 technique)"
+    ]
+  },
+  "afro_hip_hop": {
+    "genre": "afro_hip_hop",
     "displayName": "Afro / Naija Hip-Hop",
     "bpmRange": [
       95,
