@@ -374,6 +374,7 @@ async function runOfflineTests(): Promise<void> {
     ["Video treatment brain-tier (Cerebras bulk)", "test-video-brain-tier.ts"],
     ["Hit concept gate (emotion, not scenery)", "test-concept-gate.ts"],
     ["Producer Brain (plan referee + wiring)", "test-producer-plan.ts"],
+    ["Reference steering (feel-like-Dre, never voice-clone)", "test-reference-steering.ts"],
     ["Training flywheel (P3: gates+rights+wiring)", "test-training-flywheel.ts"],
     ["Training lifecycle (poll/dedupe/promote/rollback)", "test-training-lifecycle.ts"],
     ["Trained layer (training in the sound)", "test-trained-layer.ts"],

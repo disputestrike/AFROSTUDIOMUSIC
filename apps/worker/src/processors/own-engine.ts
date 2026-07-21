@@ -25,6 +25,7 @@ import {
   forgeKitFor,
   structureMatch,
   genreSignature,
+  influenceDirective,
   synthKitFor,
   isMaterialRole,
   jobOf,
@@ -117,6 +118,15 @@ export interface OwnEnginePayload {
   durationS?: number;
   melody?: boolean;
   melodyPrompt?: string;
+  /** The owner's REFERENCE steering, threaded from the enqueue sites so the
+   *  DEFAULT (own) renderer honors it instead of dropping it: an artist
+   *  production lane ("feel like Dre" — style only, never a voice clone), the
+   *  song's mood, and any free-text vibe. `melodyPrompt` above is already the
+   *  ENRICHED prompt built from these (enrichedOwnMelodyPrompt); these raw
+   *  fields let the Producer Brain steer on mood + lane as STRUCTURED cues. */
+  mood?: string;
+  influence?: string;
+  vibePrompt?: string;
   blueprint?: SongBlueprint | null;
   requestedRoles?: MaterialRole[];
   requestedRoleProvenance?: RequestedMaterialRoleProvenance;
@@ -1482,6 +1492,13 @@ export async function processOwnEngine(p: OwnEnginePayload): Promise<void> {
       }
       const plan = await planProduction({
         genre: p.genre,
+        // MOOD as STRUCTURAL steering (owner: "heartbreak should feel like
+        // heartbreak"): the brain biases the energy arc / density / bpm-key
+        // lean WITHIN the lane. Was a declared-but-never-filled param.
+        mood: p.mood ?? null,
+        // ARTIST/PRODUCTION LANE ("feel like Dre" — style only, never a voice
+        // clone; the guard rides inside the directive string).
+        influenceLane: influenceDirective(p.influence),
         theme: p.melodyPrompt ?? null,
         bpmHint: bpm,
         keyHint: homeKey,

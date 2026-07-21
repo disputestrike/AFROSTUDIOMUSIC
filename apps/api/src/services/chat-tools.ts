@@ -42,6 +42,7 @@ import {
 } from "../lib/learned";
 import { blueprintForReference } from "../lib/blueprint";
 import {
+  enrichedOwnMelodyPrompt,
   genreSignature,
   structureBrief,
   materialGenreMatches,
@@ -1474,7 +1475,20 @@ async function createBeatJob(
         trainingUsage: ownTrainingUsage,
         // LENGTH CONTRACT: the lane's full-song target (a.durationS wins if set).
         durationS: a.durationS ?? genreSignature(a.genre).durationS,
-        melodyPrompt: genreSignature(a.genre).melodyPrompt,
+        // REFERENCE HONORED (parity with beats.ts): the enriched melody prompt
+        // carries the owner's mood + artist-lane ("feel like Dre" — style only,
+        // never a voice clone) + vibe into planProduction and the melody layer,
+        // and the raw fields ride so the Producer Brain steers on them. The bare
+        // table string used to drop the reference entirely.
+        melodyPrompt: enrichedOwnMelodyPrompt({
+          genre: a.genre,
+          mood: a.mood,
+          influence: a.influence,
+          vibePrompt: a.vibePrompt,
+        }),
+        mood: a.mood,
+        influence: a.influence,
+        vibePrompt: a.vibePrompt,
         ...(ownSings
           ? {
               withVocals: true,
@@ -1734,22 +1748,14 @@ async function createBeatJob(
       songId,
       input: {
         ...a,
-        // Influence = steer the SOUND toward an artist's lane (vibe/energy),
-        // never a clone and never named. Goes to the music model as a style cue.
-        // ANTI-SOUP: vibe stays short (vibe + influence only); styleHints ride
-        // as tags on dnaTags where terse tokens belong. The LANGUAGE belt rides
-        // in dnaTags too — composeStyleTags caps vibePrompt at 160ch, and the
-        // belt alone is ~155ch with Igbo selected, so putting it here starved
-        // the engine of the vibe AND clipped the belt itself.
-        vibePrompt:
-          [
-            [a.vibePrompt].filter(Boolean).join(" "),
-            a.influence
-              ? `in the vibe/lane of ${a.influence} (capture the feel, not a copy)`
-              : null,
-          ]
-            .filter(Boolean)
-            .join(", ") || undefined,
+        // INFLUENCE is now a FIRST-CLASS field (carried by ...a above): the
+        // artist's production lane (vibe/energy — never a clone, never named)
+        // is FRONT-LOADED by composeStyleTags as its own token that survives the
+        // char cap, instead of being baked into the vibe tail where the ~160ch
+        // vibe cap truncated it (and the language belt in dnaTags). vibePrompt
+        // stays the user's own text.
+        vibePrompt: a.vibePrompt || undefined,
+        influence: a.influence,
         durationS:
           a.durationS ??
           blueprint?.totalDurationS ??
