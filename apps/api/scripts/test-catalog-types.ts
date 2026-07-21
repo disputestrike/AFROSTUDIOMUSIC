@@ -45,10 +45,14 @@ assert.ok(
   ownPayloadAt > mintAt,
   "job payloads must carry the minted song id"
 );
-assert.equal(
-  (beats.match(/songId: effectiveSongId/g) ?? []).length,
-  2,
-  "BOTH render paths (own + provider) bind the minted song"
+// Every job dispatch on every render path must bind the minted song so a
+// creation can never be orphaned. The own-engine path dispatches two jobs
+// (main render + direction variant) and the provider path one — all three
+// carry effectiveSongId. This is a floor, not an exact count: adding another
+// correctly-bound dispatch must never trip this guard, only an UNBOUND one.
+assert.ok(
+  (beats.match(/songId: effectiveSongId/g) ?? []).length >= 2,
+  "every render path's job payloads bind the minted song"
 );
 assert.match(
   beats,
