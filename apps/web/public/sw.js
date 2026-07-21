@@ -14,7 +14,7 @@
  * the shell openable offline.
  */
 
-const CACHE = 'afrohit-shell-v1';
+const CACHE = 'afrohit-shell-v2';
 const SHELL = ['/manifest.json', '/icon-192.png', '/icon-512.png'];
 
 self.addEventListener('install', (event) => {

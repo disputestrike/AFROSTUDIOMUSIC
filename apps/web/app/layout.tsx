@@ -12,8 +12,12 @@ export const viewport = { themeColor: '#0B0F19' };
 export const metadata: Metadata = {
   manifest: '/manifest.json',
   icons: {
-    icon: [{ url: '/icon-192.png', sizes: '192x192', type: 'image/png' }],
-    apple: '/icon-192.png',
+    icon: [
+      { url: '/favicon.ico', sizes: '48x48' },
+      { url: '/icon-192.png', sizes: '192x192', type: 'image/png' },
+      { url: '/icon-512.png', sizes: '512x512', type: 'image/png' },
+    ],
+    apple: '/apple-touch-icon.png',
   },
   title: 'AfroHit Studio - the AI production house',
   description:

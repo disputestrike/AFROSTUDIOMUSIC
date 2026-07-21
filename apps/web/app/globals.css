@@ -48,6 +48,10 @@ body {
     @apply h-4 w-4 text-orange-400;
   }
 
+  .studio-auth-logo {
+    @apply h-5 w-5 rounded-md;
+  }
+
   .studio-step-row {
     @apply flex items-center gap-2 text-xs text-slate-500;
   }

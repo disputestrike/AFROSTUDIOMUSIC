@@ -146,13 +146,7 @@ export function ConsumerSidebar({
       {/* Brand + collapse */}
       <div className={`flex items-center gap-2 px-3 pt-4 ${collapsed ? 'flex-col' : 'justify-between'}`}>
         <Link href="/home" className="flex min-w-0 items-center gap-2" onClick={onMobileClose}>
-          <span className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-xl bg-brand-gradient text-ink shadow-glow">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden>
-              <path d="M9 18V5l10-2v13" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" />
-              <circle cx="6" cy="18" r="3" fill="currentColor" />
-              <circle cx="16" cy="16" r="3" fill="currentColor" />
-            </svg>
-          </span>
+          <img src="/logo.png" alt="" aria-hidden className="h-8 w-8 shrink-0 rounded-xl shadow-glow" />
           {!collapsed && (
             <span className="truncate font-display text-lg tracking-tight">
               AFRO<span className="text-gradient">HIT</span>

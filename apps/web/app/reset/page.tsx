@@ -10,7 +10,7 @@
 
 import { FormEvent, useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { ArrowRight, Check, CircleAlert, KeyRound, LockKeyhole, Music2 } from 'lucide-react';
+import { ArrowRight, Check, CircleAlert, KeyRound, LockKeyhole } from 'lucide-react';
 import { useApi } from '@/lib/api';
 
 const MIN_PASSWORD = 12;
@@ -61,7 +61,7 @@ export default function ResetPasswordPage() {
     return (
       <main className="studio-auth-shell">
         <section className="studio-auth-panel" aria-labelledby="reset-done-title">
-          <div className="studio-auth-brand"><Music2 aria-hidden="true" /> AfroStudioMusic</div>
+          <div className="studio-auth-brand"><img src="/logo.png" alt="" aria-hidden="true" className="studio-auth-logo" /> AfroStudioMusic</div>
           <div className="mt-8 flex h-12 w-12 items-center justify-center rounded-lg border border-emerald-400/30 bg-emerald-400/10 text-emerald-300">
             <Check className="h-6 w-6" aria-hidden="true" />
           </div>
@@ -75,7 +75,7 @@ export default function ResetPasswordPage() {
   return (
     <main className="studio-auth-shell">
       <section className="studio-auth-panel" aria-labelledby="reset-title">
-        <div className="studio-auth-brand"><Music2 aria-hidden="true" /> AfroStudioMusic</div>
+        <div className="studio-auth-brand"><img src="/logo.png" alt="" aria-hidden="true" className="studio-auth-logo" /> AfroStudioMusic</div>
         <div className="mt-9">
           <h1 id="reset-title" className="font-display text-3xl text-white">Set a new password</h1>
           <p className="mt-2 text-sm text-slate-400">Choose a new password for your account.</p>
