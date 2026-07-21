@@ -106,6 +106,19 @@ Primary: **watch time, shares, saves, repeat plays.** Secondary: likes, follower
 
 ---
 
+## Revision — patterns learned from ViralForge (2026-07-21)
+
+*Read the owner's separate ViralForge OS project for understanding only — nothing connected, nothing imported. It's a working blueprint for the publish/grow problems below, and it sharpens this plan four ways. Patterns adopted, not code.*
+
+1. **Distribution = one aggregator, not N native uploaders.** ViralForge routes all 9 social platforms through a single aggregator adapter. Phase 3 distribution shrinks from weeks-per-platform to one integration for everything (caveat: the aggregator needs the artist's connected accounts). Biggest speedup.
+2. **Keep the render on ffmpeg — do NOT adopt Remotion/Chromium.** ViralForge's one fatal prod flaw was a Chromium-dependent render that ran "degraded / no MP4" on slim containers. AfroHits' ffmpeg pipeline (proven live) is the robust choice. Phase 2's auto-clip stays pure ffmpeg crops. De-risked.
+3. **The grow loop has a proven recipe:** analytics → reward → bandit picks winners → auto-repost winners across channels. Phase 3 gets a blueprint, not a research problem (comes alive only once real posts exist — cold-start).
+4. **Fan-out data model settled:** one master → tracked derivative assets (ViralForge's project→run→treatment shape). Removes Phase 2 design churn.
+
+**The cautionary lesson (hardens the kill list):** ViralForge built the full autonomous empire — 9 workers, documentaries, podcasts, talking-heads — and by its own audit **never ran a single paid live generation** and never verified live publishing. A skeleton unproven at paid scale. So: build the thin music slice and **prove ONE real thing live end-to-end — one song rendered, clipped, and actually published — before adding any breadth.** Do not repeat "coded but never run."
+
+Net effect on timeline: Phase 1 unchanged (sound validation still gates everything, ears-first — ViralForge speeds up none of it). Phase 2 same scope but lower risk. Phase 3 meaningfully faster and clearer.
+
 ## The first three things to do tomorrow
 
 1. **Listen.** Owner + real artists validate the sound across genres. No build until it passes.
