@@ -74,6 +74,7 @@ import { processSongEdit } from "./processors/song-edit";
 import { processSynthMaterial } from "./processors/synth-material";
 import { processAssetCleanup } from "./processors/asset-cleanup";
 import { processReleaseKit } from "./lib/release-kit";
+import { processGenerateClips } from "./processors/generate-clips";
 import { enqueueJob } from "./lib/enqueue";
 import { assertStorageConfiguration } from "./lib/storage";
 import {
@@ -521,6 +522,16 @@ const workers = [
       throw new Error(`unknown releasekit job: ${job.name}`);
     await processReleaseKit(job.data as never);
   }),
+  // AUTO-CLIP (Phase 2) — cut the ONE assembled master into ~10 vertical shorts
+  // by ffmpeg EDIT (no re-render, $0), the moment the music video finishes. Its
+  // own dedicated lane, off the render lanes AND off the concurrency-1 lake lane
+  // so cutting lands promptly. The processor is fail-soft (never throws), so
+  // this job always completes.
+  makeWorker("clips", async (job: { data: never; name: string }) => {
+    if (job.name !== "generate-clips")
+      throw new Error(`unknown clips job: ${job.name}`);
+    await processGenerateClips(job.data as never);
+  }),
   makeWorker("cron", async (job: { data: never; name: string }) => {
     if (job.name === "morning-drop") await processMorningDrop();
     else if (job.name === "release-radar") await processReleaseRadar();
@@ -789,7 +800,7 @@ process.on("SIGTERM", () => void shutdown("SIGTERM"));
 process.on("SIGINT", () => void shutdown("SIGINT"));
 
 log.info(
-  "worker up, listening on queues: music, voice, image, video, mix, master, rights, export, releasekit, cron"
+  "worker up, listening on queues: music, voice, image, video, mix, master, rights, export, releasekit, clips, cron"
 );
 
 // FORGE PREWARM (songspeed perf): resolve + cache the Replicate forge model

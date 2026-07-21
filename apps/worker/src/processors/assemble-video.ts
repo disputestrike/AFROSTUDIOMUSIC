@@ -6,6 +6,7 @@ import { prisma } from "@afrohit/db";
 import { lipSyncClip } from "@afrohit/ai";
 import { markFailed, markRunning, markSucceeded } from "../lib/jobs";
 import { enqueueReleaseKit } from "../lib/release-kit";
+import { enqueueGenerateClips } from "../lib/clips";
 import { downloadToBuffer, resolveAssetForProvider, uploadBytes } from "../lib/storage";
 import {
   assembleMusicVideoTimeline,
@@ -471,6 +472,18 @@ export async function processAssembleVideo(p: AssembleVideoPayload) {
         workspaceId: p.workspaceId,
         force: true,
         hasVideo: true,
+        reason: "video-done",
+      });
+
+      // AUTO-CLIP (Phase 2) — the ONE master now exists, so cut it into ~10
+      // vertical shorts by ffmpeg EDIT (no re-render, $0). Fail-soft on its own
+      // 'clips' lane exactly like the release kit — a clip problem NEVER fails
+      // this assembly. Only the 'full' master is clipped (the teaser is already
+      // a single social cut).
+      await enqueueGenerateClips({
+        songId: p.audio.songId,
+        workspaceId: p.workspaceId,
+        sourceVideoId: row.id,
         reason: "video-done",
       });
     }

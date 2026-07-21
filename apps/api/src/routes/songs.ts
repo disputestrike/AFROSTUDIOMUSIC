@@ -792,6 +792,105 @@ export default async function songs(app: FastifyInstance) {
     }
   );
 
+  // ---- AUTO-CLIP (Phase 2): the vertical shorts cut off the master video ----
+  // The clips are cut automatically the moment the music video finishes (ffmpeg
+  // EDITS off the ONE master, never a re-render). Reading NEVER generates — it
+  // lists what the worker has cut, presigned for the <video> previews, plus the
+  // lifecycle so the tab can show "cutting clips…" (cutting) then the grid.
+  app.get<{ Params: { id: string } }>('/:id/clips', async (req, reply) => {
+    const { workspaceId } = requireAuth(req);
+    const song = await prisma.song.findFirst({
+      where: { id: req.params.id, workspaceId },
+      select: { id: true, clipsStatus: true },
+    });
+    if (!song) return reply.code(404).send({ error: 'song_not_found' });
+    const rows = await prisma.songClip.findMany({
+      where: { songId: song.id, workspaceId },
+      orderBy: [{ durationS: 'asc' }, { createdAt: 'asc' }],
+      select: {
+        id: true,
+        url: true,
+        durationS: true,
+        startS: true,
+        aspect: true,
+        kind: true,
+        captionText: true,
+        sectionLabel: true,
+        sourceVideoId: true,
+        createdAt: true,
+      },
+    });
+    const clips = await Promise.all(
+      rows.map(async row => ({
+        id: row.id,
+        // Presigned — a storage URI must never reach a <video>/<a download> tag.
+        url: await presignAssetRef(row.url, 3600),
+        durationS: row.durationS,
+        startS: row.startS,
+        aspect: row.aspect,
+        kind: row.kind,
+        captionText: row.captionText,
+        sectionLabel: row.sectionLabel,
+        sourceVideoId: row.sourceVideoId,
+        createdAt: row.createdAt,
+      }))
+    );
+    // A stored clip means "ready" even on a row whose status column lagged; a
+    // cutting/unavailable status with no clips yet is reported as-is.
+    const status = song.clipsStatus ?? (clips.length ? 'ready' : null);
+    return { clips, count: clips.length, status };
+  });
+
+  /**
+   * RECUT — re-cut the master into fresh shorts on demand (the auto path already
+   * cut them on video completion). Enqueues the SAME worker 'generate-clips' job
+   * the completion hook fires, forced so it replaces the current set. Cheap
+   * ffmpeg EDITS off the existing master — NO new render, no credits.
+   */
+  app.post<{ Params: { id: string } }>(
+    '/:id/clips/recut',
+    { config: { rateLimit: { max: 5, timeWindow: '1 minute' } } },
+    async (req, reply) => {
+      const { workspaceId } = requireMinRole(req, 'PRODUCER');
+      const song = await prisma.song.findFirst({
+        where: { id: req.params.id, workspaceId, deletedAt: null },
+        select: { id: true },
+      });
+      if (!song) return reply.code(404).send({ error: 'song_not_found' });
+      // The master is the newest assembled full cut for this song's concept.
+      const master = await prisma.videoRender.findFirst({
+        where: {
+          provider: 'assembler',
+          concept: { songId: song.id },
+          meta: { path: ['assembly', 'kind'], equals: 'full' },
+        },
+        orderBy: { createdAt: 'desc' },
+        select: { id: true },
+      });
+      if (!master) {
+        return reply.code(409).send({
+          error: 'no_master_video',
+          message: 'Assemble the full music video first — clips are cut from it.',
+        });
+      }
+      await prisma.song
+        .updateMany({ where: { id: song.id }, data: { clipsStatus: 'cutting' } })
+        .catch(() => undefined);
+      await app.queues.clips.add(
+        'generate-clips',
+        {
+          songId: song.id,
+          workspaceId,
+          sourceVideoId: master.id,
+          force: true,
+          reason: 'recut',
+        },
+        { jobId: `generate-clips-${master.id}-force`, removeOnComplete: 200, removeOnFail: 500 }
+      );
+      return reply.code(202).send({ status: 'cutting' });
+    }
+  );
+
   // ---- Lyrics: view + EDIT (persist) ----
   app.get<{ Params: { id: string } }>('/:id/lyrics', async (req, reply) => {
     const { workspaceId } = requireAuth(req);

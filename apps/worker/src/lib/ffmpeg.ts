@@ -2663,6 +2663,220 @@ export async function overlayCreditsAndWatermark(opts: {
   }
 }
 
+// ---------------------------------------------------------------------------
+// AUTO-CLIP (Phase 2, 2026-07-21) — cut the ONE assembled master music video
+// into ~10 vertical shorts by ffmpeg EDIT (trim + 9:16 crop + scale + caption +
+// watermark), NEVER a re-render. HARD ECONOMIC RULE: no new video generation,
+// no provider call, no charge — each clip is a few CPU seconds off the master
+// mp4 the assembler already produced ("generate once, repurpose many"). Every
+// clip is ONE ffmpeg invocation: one filtergraph, one re-encode, the same
+// ASSEMBLY_ENCODE preset + Anton font mechanism the credit/watermark already use.
+// ---------------------------------------------------------------------------
+
+/** The vertical target every clip conforms to (9:16 for TikTok/Reels/Shorts). */
+export const CLIP_WIDTH = 1080;
+export const CLIP_HEIGHT = 1920;
+/** Loop-friendly declick: a fast 0.2s in/out so cuts never pop (video + audio).
+ *  Small enough that the clip still STARTS on the action — no slow intro. */
+export const CLIP_FADE_S = 0.2;
+/** Caption height as a fraction of frame height — large, sound-off-legible. */
+export const CLIP_CAPTION_FONT_RATIO = 0.045; // ~86px on a 1920-tall frame
+
+/** 9:16 CENTER-CROP from the 16:9 master then scale to 1080x1920 — subject
+ *  centered, frame FULL (feeds punish pillarboxed verticals). Pure filter, one
+ *  pass. The spec recipe verbatim: crop=ih*9/16:ih; x=(iw-ow)/2 centers the
+ *  strip (ow is the just-computed crop width, so NO comma sneaks into the
+ *  filtergraph — a comma inside crop's args would be read as a filter separator).
+ *  We only ever clip the assembled 'full' master, which is always 16:9, so the
+ *  crop width (0.5625·ih) is always <= iw and never exceeds the frame. */
+export function buildClipCropScale(width = CLIP_WIDTH, height = CLIP_HEIGHT): string {
+  return `crop=ih*9/16:ih:(iw-ow)/2:0,scale=${width}:${height},setsar=1`;
+}
+
+/** The burned-in caption (sound-off viewing): the hook line, large, bottom-third,
+ *  high contrast (semi-opaque box + shadow), safe side margins. SAME font +
+ *  textfile mechanism as the credit/watermark — the text rides a textfile so a
+ *  lyric with a quote/colon can never break the filter. Pure/unit-testable. */
+export function buildClipCaptionFilter(opts: {
+  fontPath: string;
+  textPath: string;
+  width: number;
+  height: number;
+}): string {
+  const escape = (p: string) => p.replace(/\\/g, '/').replace(/:/g, '\\:');
+  const font = escape(opts.fontPath);
+  const text = escape(opts.textPath);
+  const size = Math.round(opts.height * CLIP_CAPTION_FONT_RATIO);
+  const y = Math.round(opts.height * 0.66); // bottom third, above the watermark
+  return (
+    `drawtext=fontfile='${font}':textfile='${text}'` +
+    `:fontcolor=white:fontsize=${size}:line_spacing=12` +
+    `:box=1:boxcolor=black@0.5:boxborderw=${Math.round(size * 0.35)}` +
+    `:x=(w-text_w)/2:y=${y}` +
+    `:shadowcolor=black@0.6:shadowx=2:shadowy=2`
+  );
+}
+
+/** The exact seconds a clip covers on the master. */
+export interface ClipRenderSpec {
+  startS: number;
+  durationS: number;
+  width?: number;
+  height?: number;
+  /** 0.2s in/out declick; pass false to cut hard (no fade). */
+  fade?: boolean;
+}
+
+/** PURE (unit-testable without ffmpeg): the FULL single-invocation argv that
+ *  cuts ONE vertical clip off the master — trim + 9:16 crop/scale + optional
+ *  fade + caption + the persistent "afro" watermark, ALL in one filtergraph,
+ *  encoded with the exact ASSEMBLY_ENCODE preset. There is exactly ONE input
+ *  (`-i`) and one re-encode: a single pass per clip, an EDIT off the master —
+ *  never a regeneration. `-ss` BEFORE `-i` is accurate-seek when transcoding
+ *  (ffmpeg decodes+discards to the exact point), so the clip starts ON the
+ *  intended hook moment while the seek stays fast. */
+export function buildClipArgs(opts: {
+  input: string;
+  output: string;
+  fontPath: string;
+  captionTextPath: string;
+  watermarkTextPath: string;
+  spec: ClipRenderSpec;
+}): string[] {
+  const width = opts.spec.width ?? CLIP_WIDTH;
+  const height = opts.spec.height ?? CLIP_HEIGHT;
+  const dur = Math.max(0.5, opts.spec.durationS);
+  const filters = [buildClipCropScale(width, height)];
+  const withFade = opts.spec.fade !== false;
+  if (withFade) {
+    const outStart = Math.max(0, dur - CLIP_FADE_S);
+    filters.push(
+      `fade=t=in:d=${CLIP_FADE_S.toFixed(2)}`,
+      `fade=t=out:st=${outStart.toFixed(2)}:d=${CLIP_FADE_S.toFixed(2)}`
+    );
+  }
+  filters.push(
+    buildClipCaptionFilter({
+      fontPath: opts.fontPath,
+      textPath: opts.captionTextPath,
+      width,
+      height,
+    }),
+    // Brand consistency: keep the "afro" watermark on clips exactly like the
+    // master (the same pure builder the assembler burns into the full cut).
+    ...buildBrandWatermarkFilters({
+      fontPath: opts.fontPath,
+      textPath: opts.watermarkTextPath,
+      width,
+      height,
+    })
+  );
+  const audioFade = withFade
+    ? `,afade=t=in:d=${CLIP_FADE_S.toFixed(2)},afade=t=out:st=${Math.max(0, dur - CLIP_FADE_S).toFixed(2)}:d=${CLIP_FADE_S.toFixed(2)}`
+    : '';
+  return [
+    '-ss', Math.max(0, opts.spec.startS).toFixed(3),
+    '-i', opts.input,
+    '-t', dur.toFixed(3),
+    '-vf', filters.join(','),
+    // The master always carries AAC audio; the optional map keeps a rare
+    // audioless master from failing the whole invocation.
+    '-af', `aformat=sample_rates=44100:channel_layouts=stereo${audioFade}`,
+    '-map', '0:v:0', '-map', '0:a:0?',
+    ...ASSEMBLY_ENCODE,
+    '-c:a', 'aac', '-b:a', '192k',
+    '-movflags', '+faststart',
+    opts.output,
+  ];
+}
+
+/** Cut ONE clip (see buildClipArgs): write the caption + wordmark textfiles, run
+ *  one ffmpeg invocation, leave the file at `output` for the caller to upload. */
+export async function renderClip(opts: {
+  input: string;
+  output: string;
+  fontPath: string;
+  /** Pre-wrapped caption text (the hook line). Empty → a blank caption box. */
+  caption: string;
+  spec: ClipRenderSpec;
+}): Promise<void> {
+  const dir = await mkdtemp(join(tmpdir(), 'clip-cut-'));
+  try {
+    const captionTextPath = join(dir, 'caption.txt');
+    const watermarkTextPath = join(dir, 'wordmark.txt');
+    await writeFile(captionTextPath, opts.caption?.trim() ? opts.caption : ' ');
+    await writeFile(watermarkTextPath, WATERMARK_TEXT);
+    await runFfmpeg(
+      buildClipArgs({
+        input: opts.input,
+        output: opts.output,
+        fontPath: opts.fontPath,
+        captionTextPath,
+        watermarkTextPath,
+        spec: opts.spec,
+      })
+    );
+  } finally {
+    await rm(dir, { recursive: true, force: true }).catch(() => {});
+  }
+}
+
+export interface CutClipRequest {
+  spec: ClipRenderSpec;
+  caption: string;
+}
+export interface CutClipOk {
+  index: number;
+  spec: ClipRenderSpec;
+  caption: string;
+  path: string;
+  width: number;
+  height: number;
+}
+export interface CutClipFailure {
+  index: number;
+  error: string;
+}
+
+/** FAIL-SOFT BATCH: cut every requested clip off the master, one cheap pass
+ *  each, collecting the successes and the failures. A single clip that errors
+ *  (bad seek, decode hiccup) NEVER kills the batch — the rest still come back.
+ *  Serial by design: each clip is a few CPU seconds, so ordered + bounded beats
+ *  a fan-out that could spike the worker host. */
+export async function cutClips(opts: {
+  input: string;
+  workDir: string;
+  fontPath: string;
+  clips: CutClipRequest[];
+}): Promise<{ ok: CutClipOk[]; failed: CutClipFailure[] }> {
+  const ok: CutClipOk[] = [];
+  const failed: CutClipFailure[] = [];
+  for (let i = 0; i < opts.clips.length; i++) {
+    const c = opts.clips[i]!;
+    const output = join(opts.workDir, `clip-${i}.mp4`);
+    try {
+      await renderClip({
+        input: opts.input,
+        output,
+        fontPath: opts.fontPath,
+        caption: c.caption,
+        spec: c.spec,
+      });
+      ok.push({
+        index: i,
+        spec: c.spec,
+        caption: c.caption,
+        path: output,
+        width: c.spec.width ?? CLIP_WIDTH,
+        height: c.spec.height ?? CLIP_HEIGHT,
+      });
+    } catch (err) {
+      failed.push({ index: i, error: (err as Error).message.slice(0, 200) });
+    }
+  }
+  return { ok, failed };
+}
+
 export interface AssemblyTimelineClip {
   /** LOCAL path to the downloaded rendered shot. */
   path: string;

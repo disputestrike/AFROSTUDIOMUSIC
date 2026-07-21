@@ -353,6 +353,22 @@ type SocialsPackRow = {
 /** Kit lifecycle the server reports so the tab can show "building…" then the kit. */
 type KitStatus = "pending" | "ready" | "unavailable";
 
+/** ONE auto-cut vertical short — GET /songs/:id/clips (url presigned). The clips
+ *  are cut automatically the moment the music video finishes (ffmpeg EDITS off
+ *  the ONE master, never a re-render), so this grid usually fills with no click. */
+type ClipRow = {
+  id: string;
+  url: string;
+  durationS: number;
+  startS: number;
+  aspect: string;
+  kind: string;
+  captionText?: string | null;
+  sectionLabel?: string | null;
+};
+/** Clip lifecycle the server reports: cutting → ready (or unavailable). */
+type ClipsStatus = "cutting" | "ready" | "unavailable";
+
 const PLATFORM_LABEL: Record<KitCaption["platform"], string> = {
   youtube: "YouTube (long)",
   tiktok: "TikTok / Reels",
@@ -540,6 +556,21 @@ export default function CatalogGrid({ initial }: { initial: SongRow[] }) {
   const socialsPollTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const socialsPollSong = useRef<string>("");
   const socialsPollCount = useRef<number>(0);
+  // AUTO-CLIP — the vertical shorts grid, keyed by songId (same stale-guard
+  // discipline as the kit). It auto-fills the moment the video's clips finish
+  // cutting; while status is "cutting" it polls until the grid lands, no click.
+  const [clips, setClips] = useState<{
+    songId: string;
+    state: "loading" | "ready";
+    items: ClipRow[];
+    status?: ClipsStatus | null;
+    recutting?: boolean;
+  } | null>(null);
+  const clipsPollTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const clipsPollSong = useRef<string>("");
+  const clipsPollCount = useRef<number>(0);
+  // Which clip's link just landed on the clipboard ("Copied ✓").
+  const [copiedClip, setCopiedClip] = useState<string>("");
   // One-tap copy — which block just landed on the clipboard ("Copied ✓").
   const [copiedBlock, setCopiedBlock] = useState<string>("");
   // Keyed by songId so a treatment can never be shown against the wrong song —
@@ -1626,6 +1657,12 @@ export default function CatalogGrid({ initial }: { initial: SongRow[] }) {
       socialsPollTimer.current = null;
       socialsPollSong.current = "";
     }
+    // Same for the auto-clip poll — no orphan timer after the modal closes.
+    if (!editing && clipsPollTimer.current) {
+      clearTimeout(clipsPollTimer.current);
+      clipsPollTimer.current = null;
+      clipsPollSong.current = "";
+    }
   }, [editing]);
   // Stop watching the moment a NEW assembled full cut lands — the Wave-9
   // panel below renders it (playable <video> + download); nothing duplicated.
@@ -1952,6 +1989,7 @@ export default function CatalogGrid({ initial }: { initial: SongRow[] }) {
       // background — a failure or slow fetch there never touches this tab.
       void loadVideoConcept(s.id);
       void loadSocials(s.id);
+      void loadClips(s.id);
     } catch (e) {
       flash((e as Error).message || "Could not load lyrics");
     } finally {
@@ -2040,6 +2078,75 @@ export default function CatalogGrid({ initial }: { initial: SongRow[] }) {
     }
   }
 
+  /** The auto-cut vertical shorts — cut the moment the video finished, so this
+   *  usually returns a ready grid with zero clicks. While the worker is still
+   *  cutting (status "cutting"), keep polling until they land — no button. */
+  async function loadClips(songId: string, opts?: { poll?: boolean }) {
+    if (!opts?.poll) {
+      clipsPollSong.current = songId;
+      clipsPollCount.current = 0;
+      if (clipsPollTimer.current) clearTimeout(clipsPollTimer.current);
+      setClips({ songId, state: "loading", items: [] });
+    }
+    try {
+      const r = await api.get<{
+        clips: ClipRow[];
+        count: number;
+        status?: ClipsStatus | null;
+      }>(`/songs/${songId}/clips`);
+      if (clipsPollSong.current !== songId) return;
+      const status = r.status ?? null;
+      setClips(cur => ({
+        songId,
+        state: "ready",
+        items: r.clips ?? [],
+        status,
+        recutting: cur?.songId === songId ? cur.recutting : false,
+      }));
+      // Still cutting server-side (or a recut in flight) → poll again shortly.
+      if (
+        (r.count === 0 && status === "cutting") ||
+        (status === "cutting" && clipsPollCount.current < 30)
+      ) {
+        if (clipsPollCount.current < 30) {
+          clipsPollCount.current += 1;
+          clipsPollTimer.current = setTimeout(
+            () => void loadClips(songId, { poll: true }),
+            4000
+          );
+        }
+      }
+    } catch {
+      if (clipsPollSong.current !== songId) return;
+      setClips({ songId, state: "ready", items: [], status: null });
+    }
+  }
+
+  /** RECUT — a fresh set of shorts on demand (the auto path already cut them).
+   *  Cheap ffmpeg EDITS off the existing master server-side, no credits. */
+  async function recutClips(songId: string) {
+    if (clipsPollTimer.current) clearTimeout(clipsPollTimer.current);
+    setClips(cur =>
+      cur?.songId === songId ? { ...cur, recutting: true } : cur
+    );
+    try {
+      await api.post(`/songs/${songId}/clips/recut`, {});
+      flash("Recutting the shorts — they’ll refresh here automatically.");
+      // Kick the poll: the worker flips status to "cutting", we watch it land.
+      void loadClips(songId);
+    } catch (e) {
+      const message = (e as Error).message || "";
+      setClips(cur =>
+        cur?.songId === songId ? { ...cur, recutting: false } : cur
+      );
+      flash(
+        message.includes("no_master_video")
+          ? "Make the full music video first — the shorts are cut from it."
+          : "Couldn’t start a recut — try again in a moment."
+      );
+    }
+  }
+
   /** One-tap copy with a visible "Copied ✓" on the block that landed. */
   async function copyBlock(key: string, text: string) {
     try {
@@ -2049,6 +2156,115 @@ export default function CatalogGrid({ initial }: { initial: SongRow[] }) {
     } catch {
       flash("Copy failed — select the text and copy it manually.");
     }
+  }
+
+  /** Copy a single clip's shareable (presigned) link. */
+  async function copyClipLink(id: string, url: string) {
+    try {
+      await navigator.clipboard.writeText(url);
+      setCopiedClip(id);
+      setTimeout(() => setCopiedClip(cur => (cur === id ? "" : cur)), 1600);
+    } catch {
+      flash("Copy failed — long-press the clip to copy its link.");
+    }
+  }
+
+  /** The auto-cut vertical shorts grid inside the Release Kit tab. Renders
+   *  nothing until a video's clips start cutting (keeps the tab clean for songs
+   *  with no video yet); then shows "cutting clips…" and finally the 9:16 grid
+   *  with per-clip Save + Copy-link, plus an optional Recut. */
+  function clipsPanel(songId: string) {
+    const c = clips?.songId === songId ? clips : null;
+    const cutting = c?.status === "cutting";
+    const items = c?.items ?? [];
+    if (
+      !c ||
+      (items.length === 0 && !cutting && c.status !== "unavailable")
+    ) {
+      return null;
+    }
+    return (
+      <div className="rounded-lg border border-white/10 bg-black/20 p-2.5">
+        <div className="mb-2 flex items-center justify-between gap-2">
+          <span className="text-[11px] font-medium text-slate-300">
+            Vertical clips — ready for TikTok / Reels / Shorts
+          </span>
+          {items.length > 0 && (
+            <button
+              onClick={() => void recutClips(songId)}
+              disabled={!!c.recutting || cutting}
+              className="shrink-0 rounded-full border border-white/15 px-2.5 py-1 text-[11px] text-slate-300 hover:bg-white/10 disabled:opacity-50"
+            >
+              {c.recutting || cutting ? "Cutting…" : "↻ Recut"}
+            </button>
+          )}
+        </div>
+        {items.length === 0 && cutting && (
+          <div className="flex items-center gap-2 py-2 text-sm text-slate-300">
+            <Loader2 className="h-4 w-4 animate-spin" /> Cutting clips…
+            <span className="text-[11px] text-slate-500">
+              Your master video is being sliced into shorts — they appear here
+              automatically, no click.
+            </span>
+          </div>
+        )}
+        {items.length === 0 && !cutting && c.status === "unavailable" && (
+          <p className="py-1 text-xs text-slate-400">
+            The clip cutter was briefly busy. It retries on its own — or tap
+            Recut once the full music video is ready.
+          </p>
+        )}
+        {items.length > 0 && (
+          <>
+            <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
+              {items.map(clip => (
+                <div key={clip.id} className="space-y-1">
+                  <div
+                    className="relative overflow-hidden rounded-lg bg-black"
+                    style={{ aspectRatio: "9 / 16" }}
+                  >
+                    <video
+                      src={clip.url}
+                      controls
+                      playsInline
+                      preload="metadata"
+                      className="h-full w-full object-cover"
+                    />
+                    <span className="pointer-events-none absolute left-1 top-1 rounded bg-black/60 px-1 text-[10px] text-white">
+                      {Math.round(clip.durationS)}s
+                    </span>
+                  </div>
+                  <div className="flex items-center justify-between gap-1">
+                    <a
+                      href={clip.url}
+                      download={`clip-${Math.round(clip.durationS)}s.mp4`}
+                      className="inline-flex items-center gap-1 rounded-full border border-white/15 px-2 py-0.5 text-[10px] text-slate-300 hover:bg-white/10"
+                    >
+                      <Download className="h-3 w-3" /> Save
+                    </a>
+                    <button
+                      onClick={() => void copyClipLink(clip.id, clip.url)}
+                      className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] transition-colors ${
+                        copiedClip === clip.id
+                          ? "border-emerald-400/50 bg-emerald-400/15 text-emerald-300"
+                          : "border-white/15 text-slate-300 hover:bg-white/10"
+                      }`}
+                    >
+                      <Copy className="h-3 w-3" />{" "}
+                      {copiedClip === clip.id ? "Copied ✓" : "Link"}
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+            <p className="mt-1.5 text-[11px] text-slate-500">
+              {items.length} shorts, hook-first, captions burned in — cut from
+              your master video (no re-render).
+            </p>
+          </>
+        )}
+      </div>
+    );
   }
 
   // Revert the lyric to a saved prior take — the original is never lost.
@@ -2993,6 +3209,11 @@ export default function CatalogGrid({ initial }: { initial: SongRow[] }) {
           {/* ---- RELEASE KIT — auto-generated on song completion (owner: "the
                   hashtags don't show until I click Generate — we did not see
                   it"). It fills itself; nothing waits on a click. ---- */}
+          {/* AUTO-CLIP — the vertical shorts, cut from the master on video
+              completion. Rendered first in the Release Kit tab so the shorts sit
+              at the top of the kit; self-fills with no click. */}
+          {wordsTab === "socials" && clipsPanel(editing.id)}
+
           {wordsTab === "socials" &&
             (socials?.songId !== editing.id ||
             socials.state === "loading" ? (
