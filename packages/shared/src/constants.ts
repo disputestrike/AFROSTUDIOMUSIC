@@ -19,6 +19,7 @@ export const GENRES = [
   'afro_pop',
   'afro_soul',
   'hip_hop',
+  'afro_hip_hop',
   'highlife',
   'reggae',
   'alte',

@@ -56,6 +56,16 @@ const GENRE_ALIASES: Record<string, CanonicalGenre> = {
   hiphop: 'hip_hop',
   hip_hop_rap: 'hip_hop',
   rap: 'hip_hop',
+  // Afro/Naija rap is its OWN lane (afro percussion + pidgin sing-rap); keep the
+  // bare rap/hiphop terms mapped to American hip_hop above, and route the
+  // explicitly-Afro phrasings here.
+  afro_hiphop: 'afro_hip_hop',
+  naija_hip_hop: 'afro_hip_hop',
+  naija_hiphop: 'afro_hip_hop',
+  naija_rap: 'afro_hip_hop',
+  afro_rap: 'afro_hip_hop',
+  afroswing: 'afro_hip_hop',
+  afro_swing: 'afro_hip_hop',
   uk_drill: 'drill',
   // rnb / pop / global
   rb: 'rnb',

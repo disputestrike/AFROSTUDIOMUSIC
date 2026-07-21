@@ -192,6 +192,18 @@ export const GENRE_PALETTES: Record<string, readonly string[]> = {
     'chant',
     'vinyl_noise', 'riser', 'reverse_cymbal', 'beat_stop',
   ],
+  // Afro/Naija rap — its OWN lane: afro percussion + log-drum bounce + highlife
+  // guitar hook under pidgin sing-rap (mirrors the street_pop/afro_fusion drum
+  // profile, NOT the American boom-bap hip_hop palette above).
+  afro_hip_hop: [
+    'conga', 'bongo', 'gbedu', 'cowbell', 'agogo', 'gangan', 'shekere', 'talking_drum', 'woodblock',
+    'open_hat', 'snap', 'kick_808', 'triplet_hat_roll', 'snare_rush', 'tom_fill',
+    'sub_bass', 'bass_808', 'log_drum',
+    'piano', 'rhodes', 'synth_pad', 'warm_pad', 'highlife_guitar', 'guitar_chords',
+    'clean_guitar_riff', 'flute', 'sax', 'brass_section', 'synth_lead', 'bell_lead', 'vocal_chop',
+    'chant', 'crowd_chant',
+    'vinyl_noise', 'riser', 'transition_fx',
+  ],
   highlife: [
     'conga', 'bongo', 'claves', 'agogo', 'ogene', 'woodblock', 'cowbell', 'maraca', 'ekwe', 'igba', 'kpanlogo', 'fontomfrom',
     'live_kick', 'rimshot', 'open_hat', 'tom_fill', 'ride',
