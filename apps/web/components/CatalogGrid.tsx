@@ -316,6 +316,16 @@ type LyricVer = {
   at: string;
   label?: string;
 };
+/** The stored socials pack — GET/POST /songs/:id/socials(.generate). Every
+ *  block is copy-paste-first; the server refused to store an incomplete one. */
+type SocialsPackRow = {
+  story: string;
+  captions: string[];
+  hashtags: string;
+  hook: string;
+  language?: string;
+  generatedAt?: string;
+};
 /** A song's recommended video treatment — shot list as the API stores it. */
 type VideoShot = {
   index: number;
@@ -448,7 +458,28 @@ export default function CatalogGrid({ initial }: { initial: SongRow[] }) {
     title: string;
     body: string;
     versions?: LyricVer[];
+    /** LYRICS LOCK AFTER VIDEO — server truth from GET /:id/lyrics. Locked =
+     *  read-only words + a clear notice; PATCH would 409 anyway. */
+    locked?: boolean;
   } | null>(null);
+  // THE WORDS MODAL IS THREE TABS (owner: "the video script and the lyrics are
+  // SEPARATE — keep them separate"; "SOCIALS, like another tab next to the
+  // lyrics"). Lyrics is always the landing tab; nothing video-related renders
+  // on it, so a slow/failed treatment fetch can never bury the textarea again.
+  const [wordsTab, setWordsTab] = useState<"lyrics" | "video" | "socials">(
+    "lyrics"
+  );
+  // SOCIALS PACK — keyed by songId (same discipline as the treatment) so a
+  // stale fetch can never paint another song's captions onto this one.
+  const [socials, setSocials] = useState<{
+    songId: string;
+    state: "loading" | "ready" | "generating";
+    pack?: SocialsPackRow | null;
+    updatedAt?: string | null;
+    error?: string | null;
+  } | null>(null);
+  // One-tap copy — which block just landed on the clipboard ("Copied ✓").
+  const [copiedBlock, setCopiedBlock] = useState<string>("");
   // Keyed by songId so a treatment can never be shown against the wrong song —
   // the same discipline the lyrics themselves now follow server-side.
   const [videoOpen, setVideoOpen] = useState<SongRow | null>(null);
@@ -1651,19 +1682,93 @@ export default function CatalogGrid({ initial }: { initial: SongRow[] }) {
           body: string;
           versions?: LyricVer[];
         } | null;
+        locked?: boolean;
       }>(`/songs/${s.id}/lyrics`);
+      // Always LAND on the lyrics tab — the words are the point of this door.
+      setWordsTab("lyrics");
       setEditing({
         id: s.id,
         lyricId: r.lyric?.id,
         title: r.lyric?.title ?? s.title,
         body: r.lyric?.body ?? "",
         versions: r.lyric?.versions ?? [],
+        locked: !!r.locked,
       });
+      // The Video-script and Socials tabs load their OWN pieces in the
+      // background — a failure or slow fetch there never touches this tab.
       void loadVideoConcept(s.id);
+      void loadSocials(s.id);
     } catch (e) {
       flash((e as Error).message || "Could not load lyrics");
     } finally {
       setBusy("");
+    }
+  }
+
+  /** The stored socials pack, or an honest "none yet" (state ready + null). */
+  async function loadSocials(songId: string) {
+    setSocials({ songId, state: "loading" });
+    try {
+      const r = await api.get<{
+        exists: boolean;
+        socials?: SocialsPackRow;
+        updatedAt?: string | null;
+      }>(`/songs/${songId}/socials`);
+      setSocials({
+        songId,
+        state: "ready",
+        pack: r.exists ? (r.socials ?? null) : null,
+        updatedAt: r.updatedAt ?? null,
+      });
+    } catch {
+      // No pack is a normal state — the tab offers Generate either way.
+      setSocials({ songId, state: "ready", pack: null });
+    }
+  }
+
+  /** Write (or refresh) the pack — bulk brain server-side, no credits. */
+  async function generateSocials(songId: string) {
+    setSocials(cur =>
+      cur?.songId === songId
+        ? { ...cur, state: "generating", error: null }
+        : { songId, state: "generating" }
+    );
+    try {
+      const r = await api.post<{
+        socials: SocialsPackRow;
+        updatedAt?: string | null;
+      }>(`/songs/${songId}/socials/generate`, {});
+      setSocials({
+        songId,
+        state: "ready",
+        pack: r.socials,
+        updatedAt: r.updatedAt ?? null,
+      });
+      flash("Socials pack ready — tap any block to copy it.");
+    } catch (e) {
+      const message = (e as Error).message || "";
+      setSocials(cur =>
+        cur?.songId === songId
+          ? {
+              ...cur,
+              state: "ready",
+              error: message.includes("socials_unavailable")
+                ? "The socials writer is busy right now — try again in a moment."
+                : message.slice(0, 140) || "Could not write the pack — try again.",
+            }
+          : cur
+      );
+    }
+  }
+
+  /** One-tap copy with a visible "Copied ✓" on the block that landed. */
+  async function copyBlock(key: string, text: string) {
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopiedBlock(key);
+      setTimeout(() => setCopiedBlock(cur => (cur === key ? "" : cur)), 1600);
+    } catch {
+      flash("Copy failed — select the text and copy it manually.");
     }
   }
 
@@ -1687,7 +1792,14 @@ export default function CatalogGrid({ initial }: { initial: SongRow[] }) {
         `Reverted to ${r.revertedTo ?? "that take"}.${r.needsRegeneration ? " Use “Re-sing” to hear it." : ""}`
       );
     } catch (e) {
-      flash((e as Error).message || "Revert failed");
+      // 409 race: a video finished while the modal was open — flip to the
+      // locked read-only view instead of surfacing a raw error string.
+      if (((e as Error).message || "").includes("lyrics_locked_after_video")) {
+        setEditing(cur => (cur ? { ...cur, locked: true } : cur));
+        flash("This song now has a video — its lyrics just locked.");
+      } else {
+        flash((e as Error).message || "Revert failed");
+      }
     } finally {
       setBusy("");
     }
@@ -1717,7 +1829,16 @@ export default function CatalogGrid({ initial }: { initial: SongRow[] }) {
         );
       }
     } catch (e) {
-      flash((e as Error).message || "Save failed");
+      // 409 race: a video finished while the words sat open in the editor —
+      // the server refused the drift; show the lock instead of a raw error.
+      if (((e as Error).message || "").includes("lyrics_locked_after_video")) {
+        setEditing(cur =>
+          cur && cur.id === id ? { ...cur, locked: true } : cur
+        );
+        flash("This song now has a video — its lyrics just locked.");
+      } else {
+        flash((e as Error).message || "Save failed");
+      }
     } finally {
       setBusy("");
     }
@@ -2360,39 +2481,174 @@ export default function CatalogGrid({ initial }: { initial: SongRow[] }) {
         </Modal>
       )}
 
-      {/* Lyric editor */}
+      {/* SONG WORDS — three SEPARATE tabs (owner: "the video script and the
+          lyrics are SEPARATE — keep them separate"; "SOCIALS, like another tab
+          next to the lyrics"). Lyrics is the landing tab and renders ONLY the
+          editable words; the treatment and the promo pack each live behind
+          their own tab with their own fetch state, so neither can ever bury
+          or block the textarea again. */}
       {editing && (
-        <Modal onClose={() => setEditing(null)} title="Edit lyrics">
-          <input
-            value={editing.title}
-            onChange={e => setEditing({ ...editing, title: e.target.value })}
-            className="mb-3 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm"
-            placeholder="Title"
-          />
-          <textarea
-            value={editing.body}
-            onChange={e => setEditing({ ...editing, body: e.target.value })}
-            rows={16}
-            className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 font-mono text-xs leading-relaxed"
-            placeholder="[Hook]…"
-          />
+        <Modal onClose={() => setEditing(null)} title="Song words">
+          <div className="mb-3 flex flex-wrap gap-1.5">
+            {(
+              [
+                ["lyrics", "✍️ Lyrics"],
+                ["video", "🎬 Video script"],
+                ["socials", "📣 Socials"],
+              ] as const
+            ).map(([key, label]) => (
+              <button
+                key={key}
+                onClick={() => setWordsTab(key)}
+                className={`rounded-full border px-3 py-1.5 text-xs transition-colors ${
+                  wordsTab === key
+                    ? "border-afrobrand-500/50 bg-afrobrand-500/15 text-afrobrand-300"
+                    : "border-white/15 text-slate-400 hover:bg-white/10"
+                }`}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
 
-          {/* VIDEO RECOMMENDATION — its own piece, right beside the lyrics.
-              Guarded on songId so a stale fetch from a previously-opened song
-              can never paint its treatment onto this one. */}
-          {videoConcept?.songId === editing.id && (
-            <div className="mt-3 rounded-lg border border-white/10 bg-black/20 p-2.5">
+          {/* ---- LYRICS — editable front and center; nothing video here ---- */}
+          {wordsTab === "lyrics" &&
+            (editing.locked ? (
+              <div>
+                {/* LOCKED AFTER VIDEO — read the words, never edit them: the
+                    server 409s the PATCH; this states why up front. */}
+                <div className="mb-3 rounded-lg border border-amber-400/30 bg-amber-400/10 px-3 py-2 text-xs text-amber-300">
+                  🔒 This song already has a video — its lyrics are locked so
+                  the song and video can never drift apart. Use “Reuse lyrics”
+                  to keep writing these words in a new song.
+                </div>
+                <div className="mb-2 text-sm font-medium text-slate-200">
+                  {editing.title}
+                </div>
+                <pre className="max-h-80 w-full overflow-y-auto whitespace-pre-wrap rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 font-mono text-xs leading-relaxed text-slate-300">
+                  {editing.body || "No lyrics on this song."}
+                </pre>
+                <div className="mt-3 flex justify-end">
+                  <button
+                    onClick={() => setEditing(null)}
+                    className="rounded-full border border-white/15 px-4 py-2 text-sm"
+                  >
+                    Close
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <div>
+                <input
+                  value={editing.title}
+                  onChange={e =>
+                    setEditing({ ...editing, title: e.target.value })
+                  }
+                  className="mb-3 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm"
+                  placeholder="Title"
+                />
+                <textarea
+                  value={editing.body}
+                  onChange={e =>
+                    setEditing({ ...editing, body: e.target.value })
+                  }
+                  rows={16}
+                  className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 font-mono text-xs leading-relaxed"
+                  placeholder="[Hook]…"
+                />
+
+                {editing.versions && editing.versions.length > 0 && (
+                  <div className="mt-3 rounded-lg border border-white/10 bg-black/20 p-2.5">
+                    <div className="mb-1.5 flex items-center gap-1.5 text-[11px] font-medium text-slate-300">
+                      <RefreshCw className="h-3 w-3 text-afrobrand-400" />{" "}
+                      Version history — your original is always here
+                    </div>
+                    <ul className="space-y-1">
+                      {editing.versions.map((v, i) => (
+                        <li
+                          key={i}
+                          className="flex items-center gap-2 text-[11px]"
+                        >
+                          <span
+                            className={`rounded-full px-1.5 py-0.5 ${v.label === "original" ? "bg-emerald-500/15 text-emerald-300" : "bg-white/5 text-slate-400"}`}
+                          >
+                            {v.label ?? `take ${editing.versions!.length - i}`}
+                          </span>
+                          <span className="truncate text-slate-500">
+                            {v.body
+                              .replace(/\[[^\]]*\]/g, "")
+                              .replace(/\s+/g, " ")
+                              .trim()
+                              .slice(0, 54)}
+                            …
+                          </span>
+                          <button
+                            onClick={() => void revertLyric(i)}
+                            disabled={isBusy(editing.id, "revert")}
+                            className="ml-auto shrink-0 rounded-full border border-white/15 px-2 py-0.5 text-[11px] text-slate-300 hover:bg-white/10 disabled:opacity-50"
+                          >
+                            {isBusy(editing.id, "revert") ? "…" : "Revert"}
+                          </button>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+                <p className="mt-3 text-[11px] text-slate-500">
+                  Editing the words? “Save &amp; re-sing” re-records the vocal
+                  with your new lyrics and makes it the current version. “Save
+                  only” keeps the text edit without re-rendering. Every rewrite
+                  keeps your previous take above — “Revert” restores it (then
+                  Re-sing to hear it).
+                </p>
+                <div className="mt-2 flex flex-wrap justify-end gap-2">
+                  <button
+                    onClick={() => setEditing(null)}
+                    className="rounded-full border border-white/15 px-4 py-2 text-sm"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    onClick={() => void saveLyrics(false)}
+                    disabled={isBusy(editing.id, "savelyrics")}
+                    className="rounded-full border border-white/15 px-4 py-2 text-sm"
+                  >
+                    {isBusy(editing.id, "savelyrics")
+                      ? "Saving…"
+                      : "Save only"}
+                  </button>
+                  <button
+                    onClick={() => void saveLyrics(true)}
+                    disabled={isBusy(editing.id, "savelyrics")}
+                    className="inline-flex items-center gap-1 rounded-full bg-brand-gradient px-4 py-2 text-sm font-medium text-ink"
+                  >
+                    <RefreshCw className="h-3.5 w-3.5" />{" "}
+                    {isBusy(editing.id, "savelyrics")
+                      ? "Working…"
+                      : "Save & re-sing"}
+                  </button>
+                </div>
+              </div>
+            ))}
+
+          {/* ---- VIDEO SCRIPT — read-only, its OWN fetch/state (guarded on
+                  songId so a stale fetch from a previously-opened song can
+                  never paint its treatment onto this one). ---- */}
+          {wordsTab === "video" && (
+            <div className="rounded-lg border border-white/10 bg-black/20 p-2.5">
               <div className="mb-1.5 flex items-center gap-1.5 text-[11px] font-medium text-slate-300">
                 <Clapperboard className="h-3 w-3 text-afrobrand-400" /> Video
                 treatment
-                {videoConcept.concept ? (
+                {videoConcept?.songId === editing.id &&
+                videoConcept.concept ? (
                   <span className="font-normal text-slate-500">
                     · {videoConcept.concept.durationS}s ·{" "}
                     {videoConcept.concept.format}
                   </span>
                 ) : null}
               </div>
-              {videoConcept.state === "loading" ? (
+              {videoConcept?.songId !== editing.id ||
+              videoConcept.state === "loading" ? (
                 <div className="flex items-center gap-1.5 text-[11px] text-slate-500">
                   <Loader2 className="h-3 w-3 animate-spin" /> Loading…
                 </div>
@@ -2427,88 +2683,127 @@ export default function CatalogGrid({ initial }: { initial: SongRow[] }) {
                       </li>
                     ))}
                   </ol>
+                  <p className="mt-2 text-[11px] text-slate-600">
+                    Rendering and assembling live under the 🎬 Video button on
+                    the song card.
+                  </p>
                 </div>
               ) : (
-                <button
-                  disabled={makingVideo}
-                  onClick={() => {
-                    const row = songs.find(x => x.id === editing.id);
-                    if (row) void makeVideoPlan(row);
-                  }}
-                  className="rounded-full border border-white/10 bg-white/5 px-3 py-1.5 text-[11px] text-slate-300 hover:bg-white/10 disabled:opacity-40"
-                >
-                  {makingVideo
-                    ? "Writing the treatment…"
-                    : "🎬 Write the video plan from this song's words"}
-                </button>
+                <div>
+                  <p className="mb-2 text-[11px] text-slate-500">
+                    No video script for this song yet — it gets written from
+                    this song&apos;s own words and structure.
+                  </p>
+                  <button
+                    disabled={makingVideo}
+                    onClick={() => {
+                      const row = songs.find(x => x.id === editing.id);
+                      if (row) void makeVideoPlan(row);
+                    }}
+                    className="rounded-full border border-white/10 bg-white/5 px-3 py-1.5 text-[11px] text-slate-300 hover:bg-white/10 disabled:opacity-40"
+                  >
+                    {makingVideo
+                      ? "Writing the treatment…"
+                      : "🎬 Write the video plan from this song's words"}
+                  </button>
+                </div>
               )}
             </div>
           )}
 
-          {editing.versions && editing.versions.length > 0 && (
-            <div className="mt-3 rounded-lg border border-white/10 bg-black/20 p-2.5">
-              <div className="mb-1.5 flex items-center gap-1.5 text-[11px] font-medium text-slate-300">
-                <RefreshCw className="h-3 w-3 text-afrobrand-400" /> Version
-                history — your original is always here
+          {/* ---- SOCIALS — the copy-paste promo pack (owner: "what I can
+                  copy right away and use for my social media"). ---- */}
+          {wordsTab === "socials" &&
+            (socials?.songId !== editing.id ||
+            socials.state === "loading" ? (
+              <div className="flex items-center gap-1.5 text-sm text-slate-500">
+                <Loader2 className="h-4 w-4 animate-spin" /> Loading…
               </div>
-              <ul className="space-y-1">
-                {editing.versions.map((v, i) => (
-                  <li key={i} className="flex items-center gap-2 text-[11px]">
-                    <span
-                      className={`rounded-full px-1.5 py-0.5 ${v.label === "original" ? "bg-emerald-500/15 text-emerald-300" : "bg-white/5 text-slate-400"}`}
-                    >
-                      {v.label ?? `take ${editing.versions!.length - i}`}
-                    </span>
-                    <span className="truncate text-slate-500">
-                      {v.body
-                        .replace(/\[[^\]]*\]/g, "")
-                        .replace(/\s+/g, " ")
-                        .trim()
-                        .slice(0, 54)}
-                      …
-                    </span>
-                    <button
-                      onClick={() => void revertLyric(i)}
-                      disabled={isBusy(editing.id, "revert")}
-                      className="ml-auto shrink-0 rounded-full border border-white/15 px-2 py-0.5 text-[11px] text-slate-300 hover:bg-white/10 disabled:opacity-50"
-                    >
-                      {isBusy(editing.id, "revert") ? "…" : "Revert"}
-                    </button>
-                  </li>
+            ) : socials.pack ? (
+              <div className="space-y-2.5">
+                <div className="flex items-center justify-between text-[11px] text-slate-500">
+                  <span>
+                    Tap Copy on any block — it&apos;s written from this
+                    song&apos;s own words
+                    {socials.pack.language
+                      ? ` (${socials.pack.language})`
+                      : ""}
+                    .
+                  </span>
+                  <button
+                    onClick={() => void generateSocials(editing.id)}
+                    disabled={socials.state === "generating"}
+                    className="shrink-0 rounded-full border border-white/15 px-2.5 py-1 text-[11px] text-slate-300 hover:bg-white/10 disabled:opacity-50"
+                  >
+                    {socials.state === "generating"
+                      ? "Rewriting…"
+                      : "↻ Refresh"}
+                  </button>
+                </div>
+                {socials.error && (
+                  <div className="rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-[11px] text-red-300">
+                    {socials.error}
+                  </div>
+                )}
+                <CopyBlock
+                  label="The story — what this song is about"
+                  text={socials.pack.story}
+                  copied={copiedBlock === "story"}
+                  onCopy={() => void copyBlock("story", socials.pack!.story)}
+                />
+                {socials.pack.captions.map((caption, i) => (
+                  <CopyBlock
+                    key={i}
+                    label={`Caption — ${["hype", "heartfelt", "minimal"][i] ?? `variant ${i + 1}`}`}
+                    text={caption}
+                    copied={copiedBlock === `caption${i}`}
+                    onCopy={() => void copyBlock(`caption${i}`, caption)}
+                  />
                 ))}
-              </ul>
-            </div>
-          )}
-          <p className="mt-3 text-[11px] text-slate-500">
-            Editing the words? “Save &amp; re-sing” re-records the vocal with
-            your new lyrics and makes it the current version. “Save only” keeps
-            the text edit without re-rendering. Every rewrite keeps your
-            previous take above — “Revert” restores it (then Re-sing to hear
-            it).
-          </p>
-          <div className="mt-2 flex flex-wrap justify-end gap-2">
-            <button
-              onClick={() => setEditing(null)}
-              className="rounded-full border border-white/15 px-4 py-2 text-sm"
-            >
-              Cancel
-            </button>
-            <button
-              onClick={() => void saveLyrics(false)}
-              disabled={isBusy(editing.id, "savelyrics")}
-              className="rounded-full border border-white/15 px-4 py-2 text-sm"
-            >
-              {isBusy(editing.id, "savelyrics") ? "Saving…" : "Save only"}
-            </button>
-            <button
-              onClick={() => void saveLyrics(true)}
-              disabled={isBusy(editing.id, "savelyrics")}
-              className="inline-flex items-center gap-1 rounded-full bg-brand-gradient px-4 py-2 text-sm font-medium text-ink"
-            >
-              <RefreshCw className="h-3.5 w-3.5" />{" "}
-              {isBusy(editing.id, "savelyrics") ? "Working…" : "Save & re-sing"}
-            </button>
-          </div>
+                <CopyBlock
+                  label="Hashtags — one paste-ready line"
+                  text={socials.pack.hashtags}
+                  copied={copiedBlock === "hashtags"}
+                  onCopy={() =>
+                    void copyBlock("hashtags", socials.pack!.hashtags)
+                  }
+                />
+                <CopyBlock
+                  label="Reel/short hook — say this over the first seconds"
+                  text={socials.pack.hook}
+                  copied={copiedBlock === "hook"}
+                  onCopy={() => void copyBlock("hook", socials.pack!.hook)}
+                />
+              </div>
+            ) : (
+              <div className="rounded-lg border border-white/10 bg-black/20 p-3">
+                <p className="text-xs text-slate-400">
+                  No socials pack for this song yet. One click writes the
+                  story, three captions, a hashtag line, and a reel hook from
+                  this song&apos;s own words — everything copy-paste-ready.
+                  Free.
+                </p>
+                {socials.error && (
+                  <div className="mt-2 rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-[11px] text-red-300">
+                    {socials.error}
+                  </div>
+                )}
+                <button
+                  onClick={() => void generateSocials(editing.id)}
+                  disabled={socials.state === "generating"}
+                  className="mt-2 inline-flex items-center gap-1 rounded-full bg-brand-gradient px-4 py-2 text-sm font-medium text-ink disabled:opacity-60"
+                >
+                  {socials.state === "generating" ? (
+                    <>
+                      <Loader2 className="h-3.5 w-3.5 animate-spin" /> Writing
+                      the pack…
+                    </>
+                  ) : (
+                    <>📣 Generate the socials pack</>
+                  )}
+                </button>
+              </div>
+            ))}
         </Modal>
       )}
 
@@ -3696,6 +3991,42 @@ function Action({
   );
 }
 
+/** One labeled copy-paste block of the socials pack — the whole point of the
+ *  tab is "copy right away", so the button and the "Copied ✓" flash are the
+ *  primary affordance, not an afterthought. */
+function CopyBlock({
+  label,
+  text,
+  copied,
+  onCopy,
+}: {
+  label: string;
+  text: string;
+  copied: boolean;
+  onCopy: () => void;
+}) {
+  return (
+    <div className="rounded-lg border border-white/10 bg-black/20 p-2.5">
+      <div className="mb-1 flex items-center justify-between gap-2">
+        <span className="text-[11px] font-medium text-slate-300">{label}</span>
+        <button
+          onClick={onCopy}
+          className={`inline-flex shrink-0 items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] transition-colors ${
+            copied
+              ? "border-emerald-400/50 bg-emerald-400/15 text-emerald-300"
+              : "border-white/15 text-slate-300 hover:bg-white/10"
+          }`}
+        >
+          <Copy className="h-3 w-3" /> {copied ? "Copied ✓" : "Copy"}
+        </button>
+      </div>
+      <div className="whitespace-pre-wrap text-xs leading-relaxed text-slate-200">
+        {text}
+      </div>
+    </div>
+  );
+}
+
 function Modal({
   title,
   children,
@@ -3710,8 +4041,12 @@ function Modal({
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
       onClick={onClose}
     >
+      {/* max-h + overflow: a modal taller than the viewport (long lyrics, a
+          full-song shot list) must SCROLL. Without this the centered box
+          clipped off BOTH screen edges with no way to reach what was cut —
+          the "sticky lyrics" the owner hit. */}
       <div
-        className="w-full max-w-lg rounded-2xl border border-white/10 bg-slate-900 p-5 shadow-xl"
+        className="max-h-[85vh] w-full max-w-lg overflow-y-auto rounded-2xl border border-white/10 bg-slate-900 p-5 shadow-xl"
         onClick={e => e.stopPropagation()}
       >
         <div className="mb-3 flex items-center justify-between">

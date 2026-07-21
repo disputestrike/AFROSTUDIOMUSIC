@@ -35,6 +35,8 @@ import {
 import { safeFetch } from '../lib/url-guard';
 import { operationErrorBody, runIdempotentOperation } from '../lib/idempotent-operation';
 import { registerBeatForInspection } from '../lib/beat-ingest';
+import { generateSocialsPack, SocialsUnavailableError } from '../lib/socials-pack';
+import { lyricsVideoLock, LYRICS_LOCKED_MESSAGE } from '../lib/lyrics-video-lock';
 import {
   arrangementBlueprint,
   currentPlayableAsset,
@@ -729,6 +731,77 @@ export default async function songs(app: FastifyInstance) {
     return { concept: concept ?? null };
   });
 
+  // ---- SOCIALS: the copy-paste promo pack beside the lyrics ---------------
+  // (owner, 2026-07-20: "another tab next to the lyrics … what I can copy
+  // right away and use for my social media"). The stored pack, or an honest
+  // "none yet" — generation is its own explicit POST below, never a silent
+  // side effect of reading.
+  app.get<{ Params: { id: string } }>('/:id/socials', async (req, reply) => {
+    const { workspaceId } = requireAuth(req);
+    const song = await prisma.song.findFirst({
+      where: { id: req.params.id, workspaceId },
+      select: { socialsJson: true, socialsUpdatedAt: true },
+    });
+    if (!song) return reply.code(404).send({ error: 'song_not_found' });
+    if (!song.socialsJson) return { exists: false };
+    return { exists: true, socials: song.socialsJson, updatedAt: song.socialsUpdatedAt };
+  });
+
+  /**
+   * Write (or refresh) the socials pack from the song's REAL materials —
+   * title, display artist, genre, brief mood/topic, and the lyric draft (or
+   * instrumental status). BULK Cerebras tier ONLY (lib/socials-pack.ts): a
+   * bulk call is effectively $0, so no user credits are charged; if the bulk
+   * brain is down the route says "try again" instead of billing a paid brain.
+   */
+  app.post<{ Params: { id: string } }>(
+    '/:id/socials/generate',
+    { config: { rateLimit: { max: 5, timeWindow: '1 minute' } } },
+    async (req, reply) => {
+      const { workspaceId } = requireMinRole(req, 'PRODUCER');
+      const song = await prisma.song.findFirst({
+        where: { id: req.params.id, workspaceId, deletedAt: null },
+        include: {
+          project: { select: { genre: true, artist: { select: { stageName: true } } } },
+          lyric: true,
+        },
+      });
+      if (!song) return reply.code(404).send({ error: 'song_not_found' });
+      const brief = await prisma.songBrief.findFirst({
+        where: { projectId: song.projectId },
+        orderBy: { createdAt: 'desc' },
+        select: { mood: true, topic: true },
+      });
+      // SONG SCOPE LAW — the pack must be written from THIS song's words.
+      const lyric = await songLyric(song);
+      try {
+        const pack = await generateSocialsPack({
+          title: lyric?.title || song.title,
+          artist: song.displayArtist || song.project.artist.stageName,
+          genre: song.project.genre,
+          mood: brief?.mood ?? null,
+          topic: brief?.topic ?? null,
+          lyrics: lyric?.body ?? null,
+          kind: (song as { kind?: string }).kind ?? 'song',
+        });
+        const updatedAt = new Date();
+        await prisma.song.update({
+          where: { id: song.id },
+          data: { socialsJson: pack as never, socialsUpdatedAt: updatedAt },
+        });
+        return { exists: true, socials: pack, updatedAt };
+      } catch (error) {
+        if (error instanceof SocialsUnavailableError) {
+          return reply.code(503).send({
+            error: 'socials_unavailable',
+            message: 'The socials writer is busy right now — try again in a moment.',
+          });
+        }
+        throw error;
+      }
+    }
+  );
+
   // ---- Lyrics: view + EDIT (persist) ----
   app.get<{ Params: { id: string } }>('/:id/lyrics', async (req, reply) => {
     const { workspaceId } = requireAuth(req);
@@ -742,7 +815,10 @@ export default async function songs(app: FastifyInstance) {
     // DIFFERENT song's words — and because the same fallback fed PATCH and
     // re-sing, it also overwrote the sibling's row in place and sang the wrong
     // words into a render. Unbound now means "no lyric yet", said honestly.
-    return { lyric: await songLyric(song) };
+    // LYRICS LOCK AFTER VIDEO: reading stays open forever; `locked` tells the
+    // UI to render read-only (the PATCH below enforces the same law with 409).
+    const lock = await lyricsVideoLock(song.id, song.projectId);
+    return { lyric: await songLyric(song), locked: lock.locked, lockReason: lock.reason };
   });
 
   const lyricPatchSchema = z.object({
@@ -756,6 +832,14 @@ export default async function songs(app: FastifyInstance) {
     const body = lyricPatchSchema.parse(req.body);
     const song = await prisma.song.findFirst({ where: { id: req.params.id, workspaceId }, include: { lyric: true } });
     if (!song) return reply.code(404).send({ error: 'song_not_found' });
+    // LYRICS LOCK AFTER VIDEO (owner, 2026-07-20): once a video exists for
+    // this song (assembled cut, or paid scene renders — lib/lyrics-video-lock)
+    // the words are frozen so song and video can never drift apart. Reading
+    // stays open; reuse-lyrics into a NEW song stays open.
+    const lock = await lyricsVideoLock(song.id, song.projectId);
+    if (lock.locked) {
+      return reply.code(409).send({ error: 'lyrics_locked_after_video', message: LYRICS_LOCKED_MESSAGE });
+    }
     // SONG SCOPE LAW (see GET /:id/lyrics). This resolved an unbound song to the
     // project's newest lyric and then ran update({ where: { id: lyricId } })
     // below — so editing THIS song's lyrics silently overwrote a SIBLING song's
@@ -793,6 +877,11 @@ export default async function songs(app: FastifyInstance) {
     const { workspaceId } = requireAuth(req);
     const song = await prisma.song.findFirst({ where: { id: req.params.id, workspaceId }, include: { lyric: true } });
     if (!song) return reply.code(404).send({ error: 'song_not_found' });
+    // LYRICS LOCK AFTER VIDEO — a revert is an edit too; the same law holds.
+    const lock = await lyricsVideoLock(song.id, song.projectId);
+    if (lock.locked) {
+      return reply.code(409).send({ error: 'lyrics_locked_after_video', message: LYRICS_LOCKED_MESSAGE });
+    }
     // SONG SCOPE LAW — reverting used to be able to rewrite a SIBLING song's
     // lyric from this song's UI.
     const lyric = await songLyric(song);

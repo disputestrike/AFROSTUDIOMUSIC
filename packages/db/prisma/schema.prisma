@@ -605,6 +605,13 @@ model Song {
   instrumentalUrl  String? // 320k mp3 for the player/library (the WAV lives on the Stem row)
   acapellaUrl      String? // the isolated voice, same treatment
   instrumentalMeta Json? // { sourceUrl, sourceLufs, matchedLufs, engine, format, at }
+  // SOCIALS PACK (owner, 2026-07-20: "on every song … SOCIALS, like another tab
+  // next to the lyrics — what I can copy right away for my social media").
+  // { story, captions[3], hashtags, hook, language } written by the BULK brain
+  // from THIS song's own materials, stored so the tab opens instantly and a
+  // regenerate is an explicit refresh — never a silent re-run.
+  socialsJson      Json?
+  socialsUpdatedAt DateTime?  @db.Timestamptz(6)
   createdAt        DateTime   @default(now()) @db.Timestamptz(6)
 
   workspace           Workspace            @relation(fields: [workspaceId], references: [id], onDelete: Cascade)

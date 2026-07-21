@@ -97,6 +97,19 @@ const fakePrisma = {
       return 0;
     },
   },
+  // LYRICS LOCK AFTER VIDEO (lib/lyrics-video-lock): the lyric PATCH now asks
+  // whether a video exists before allowing an edit. These songs have none —
+  // empty stores keep every edit here on the unlocked path.
+  videoConcept: {
+    async findMany() {
+      return [];
+    },
+  },
+  videoRender: {
+    async findMany() {
+      return [];
+    },
+  },
 };
 
 (globalThis as unknown as { __afrohit_prisma: unknown }).__afrohit_prisma = fakePrisma;

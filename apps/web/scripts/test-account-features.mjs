@@ -13,7 +13,10 @@ assert.match(catalog, /setSongs\(arr => arr\.map\(x => \(x\.id === id \? before 
 
 // ---- Feature 3: the lyrics editor saves the draft body. --------------------
 assert.match(catalog, /`\/songs\/\$\{id\}\/lyrics`/, 'lyrics save posts to the song lyric editor endpoint');
-assert.match(catalog, /Edit lyrics/, 'a lyrics editor modal exists');
+// The editor lives inside the tabbed "Song words" modal now (Lyrics | Video
+// script | Socials — owner 2026-07-20); the Lyrics tab is still the editor.
+assert.match(catalog, /Song words/, 'a lyrics editor modal exists');
+assert.match(catalog, /wordsTab === "lyrics"/, 'the Lyrics tab renders the editable draft');
 
 // ---- Feature 4: change password in settings. -------------------------------
 const settings = read('../app/(app)/settings/page.tsx');
