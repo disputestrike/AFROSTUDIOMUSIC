@@ -51,8 +51,8 @@ export default function Pricing() {
           Priced by what you <span className="text-gradient">ship</span>.
         </h1>
         <p className="mx-auto mt-5 max-w-2xl text-base leading-relaxed text-slate-300 sm:text-lg">
-          Pick a plan by the records and campaigns it lets you make. The credits that meter each render
-          stay under the hood — you never have to do the math.
+          Four plans, priced by what each one lets you make — from writing your first hook to shipping
+          cinematic music videos for a whole roster.
         </p>
       </section>
 
