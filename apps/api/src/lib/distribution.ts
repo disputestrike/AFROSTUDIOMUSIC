@@ -1,6 +1,56 @@
-import { createHmac, timingSafeEqual } from "node:crypto";
+import { createHash, createHmac, timingSafeEqual } from "node:crypto";
 import { canonicalJson } from "@afrohit/shared";
 import { assertSafeUrl, safeFetch } from "./url-guard";
+
+/**
+ * FIRST-PARTY RELEASE (Phase 5, Part A).
+ *
+ * The label a first-party release wears in `Release.distributor`. The public
+ * release page (/r/[id]) only goes live once a song is RELEASED, but until now
+ * ONLY an external distributor's signed webhook could move it there — so the
+ * release loop was unreachable without a partner. A first-party release drives
+ * the SAME Release row to "live" + Song RELEASED and records the SAME shape of
+ * `DistributionEvent` the webhook records, only self-issued (distributor set to
+ * this label, never a faked external partner id). Takedown is its inverse.
+ */
+export const FIRST_PARTY_DISTRIBUTOR = "afrohit-first-party";
+
+/** The synthetic, unique external id a first-party release carries. Keyed by the
+ *  song so it is stable and cannot collide with a real distributor's external id
+ *  (which is opaque and partner-assigned). */
+export function firstPartyExternalId(songId: string): string {
+  return `firstparty:${songId}`;
+}
+
+/**
+ * Build a self-issued distribution event — the SAME schema the signed distributor
+ * webhook validates and stores, so a first-party release/takedown is auditable
+ * exactly like a partner event (append-only `DistributionEvent`, hashed payload).
+ * `status` is the distributor vocabulary: "live" on release, "cancelled" on
+ * takedown.
+ */
+export function firstPartyReleaseEvent(input: {
+  releaseId: string;
+  externalId: string;
+  status: "live" | "cancelled";
+  occurredAt: Date;
+}): { eventId: string; payloadHash: string; payload: Record<string, unknown> } {
+  const payload = {
+    schemaVersion: 1 as const,
+    event: "release.status" as const,
+    source: "first-party",
+    externalId: input.externalId,
+    status: input.status,
+    occurredAt: input.occurredAt.toISOString(),
+  };
+  // Stable-per-transition id: the state check gates re-issue, so a millisecond
+  // stamp is collision-free for human-driven release/takedown actions.
+  const eventId = `firstparty:${input.releaseId}:${input.status}:${input.occurredAt.getTime()}`;
+  const payloadHash = createHash("sha256")
+    .update(canonicalJson(payload))
+    .digest("hex");
+  return { eventId, payloadHash, payload };
+}
 
 export interface DistributeRelease {
   releaseId: string;

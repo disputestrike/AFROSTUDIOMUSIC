@@ -605,6 +605,11 @@ export default function CatalogGrid({ initial }: { initial: SongRow[] }) {
   const [copiedClip, setCopiedClip] = useState<string>("");
   // One-tap copy — which block just landed on the clipboard ("Copied ✓").
   const [copiedBlock, setCopiedBlock] = useState<string>("");
+  // RELEASE (Phase 5) — which song's shareable /r/{id} link just landed on the
+  // clipboard ("Copied ✓"), and the two-step arm for Take down (a destructive
+  // "unpublish", so it confirms before it fires).
+  const [copiedShare, setCopiedShare] = useState<string>("");
+  const [armedTakedown, setArmedTakedown] = useState<string>("");
   // Keyed by songId so a treatment can never be shown against the wrong song —
   // the same discipline the lyrics themselves now follow server-side.
   const [videoOpen, setVideoOpen] = useState<SongRow | null>(null);
@@ -922,6 +927,120 @@ export default function CatalogGrid({ initial }: { initial: SongRow[] }) {
       );
     } catch (e) {
       flash((e as Error).message || "Could not update the landing wall");
+    } finally {
+      setBusy("");
+    }
+  }
+
+  // RELEASE (Phase 5, Part A) — first-party publish. Makes a FINISHED song
+  // shareable: the server flips it to RELEASED (via a self-issued release event,
+  // the same shape the distributor webhook records) and the public /r/{id} page
+  // goes live WITHOUT waiting on an external distributor. Optimistically flips
+  // the card to Released; honest error copy when the song isn't finished.
+  const shareUrl = (id: string) =>
+    (typeof window !== "undefined" ? window.location.origin : "") + "/r/" + id;
+  async function publishRelease(s: SongRow) {
+    setBusy(`${s.id}:publish`);
+    try {
+      const r = await api.post<{ alreadyReleased?: boolean }>(
+        `/projects/${s.projectId}/release/${s.id}/publish`,
+        {}
+      );
+      setSongs(list =>
+        list.map(x =>
+          x.id === s.id ? { ...x, status: "RELEASED", releaseReady: true } : x
+        )
+      );
+      flash(
+        r.alreadyReleased
+          ? "Already live — your release page is up."
+          : "Released — your shareable page is live. Copy the link to share it."
+      );
+    } catch (e) {
+      const m = (e as Error).message || "";
+      flash(
+        /no_master/.test(m)
+          ? "Master this song first — a release needs a finished take."
+          : /quarantined/.test(m)
+            ? "This song is quarantined — lift the quarantine before releasing."
+            : /external_distribution/.test(m)
+              ? "This release is with an external distributor — manage it there."
+              : m.slice(0, 140) || "Could not release"
+      );
+    } finally {
+      setBusy("");
+    }
+  }
+
+  // TAKE DOWN (unrelease) — the inverse of publish. Two-step armed confirm (it
+  // unpublishes a public page). Flips releaseReady off and moves the song back
+  // off RELEASED so /r/{id} 404s again.
+  async function takedownRelease(s: SongRow) {
+    if (armedTakedown !== s.id) {
+      setArmedTakedown(s.id);
+      setTimeout(
+        () => setArmedTakedown(cur => (cur === s.id ? "" : cur)),
+        4000
+      );
+      return;
+    }
+    setArmedTakedown("");
+    setBusy(`${s.id}:takedown`);
+    try {
+      const r = await api.post<{ songStatus: string }>(
+        `/projects/${s.projectId}/release/${s.id}/takedown`,
+        {}
+      );
+      setSongs(list =>
+        list.map(x =>
+          x.id === s.id
+            ? { ...x, status: r.songStatus ?? "MASTERED", releaseReady: false }
+            : x
+        )
+      );
+      flash("Taken down — the release page is offline again.");
+    } catch (e) {
+      flash((e as Error).message.slice(0, 140) || "Take down failed");
+    } finally {
+      setBusy("");
+    }
+  }
+
+  async function copyShare(s: SongRow) {
+    try {
+      await navigator.clipboard.writeText(shareUrl(s.id));
+      setCopiedShare(s.id);
+      setTimeout(() => setCopiedShare(cur => (cur === s.id ? "" : cur)), 2000);
+    } catch {
+      flash("Couldn’t copy — the link is " + shareUrl(s.id));
+    }
+  }
+
+  // DISTRIBUTE TO SOCIALS (Phase 5, Part B) — push the released record out to the
+  // artist's connected platforms through the ONE aggregator. HONEST: when the
+  // aggregator isn't configured (no flag/key) the server returns "not
+  // configured" and this says exactly that — never a fake "posted!".
+  async function distributeSocials(s: SongRow) {
+    setBusy(`${s.id}:distribute`);
+    try {
+      const r = await api.post<{ platforms?: string[]; provider?: string }>(
+        `/projects/${s.projectId}/release/${s.id}/socials/distribute`,
+        {}
+      );
+      flash(
+        `Distributing to ${(r.platforms ?? []).join(", ") || "your platforms"} via the aggregator.`
+      );
+    } catch (e) {
+      const m = (e as Error).message || "";
+      flash(
+        /distribution_not_configured/.test(m)
+          ? "Connect your accounts to distribute — social distribution isn’t configured yet."
+          : /no_connected_accounts/.test(m)
+            ? "Connect at least one social account first before distributing."
+            : /not_released/.test(m)
+              ? "Release this song before distributing it to socials."
+              : m.slice(0, 140) || "Could not distribute"
+      );
     } finally {
       setBusy("");
     }
@@ -3024,6 +3143,81 @@ export default function CatalogGrid({ initial }: { initial: SongRow[] }) {
                           {masterReferenceLine(s.masterReport)}
                         </div>
                       ) : null}
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* RELEASE (Phase 5, Part A) — first-party publish makes the song
+                  shareable: /r/{id} goes live WITHOUT waiting on an external
+                  distributor. When released, the copyable link + Take down +
+                  Distribute-to-socials (Part B) surface here. Honest states
+                  only. */}
+              {!s.deleted && !s.quarantined && (s.audioUrl || s.status === "RELEASED") && (
+                <div className="mt-3 rounded-lg border border-white/10 bg-white/[0.02] p-2.5">
+                  {s.status === "RELEASED" ? (
+                    <div className="flex flex-col gap-2">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className="inline-flex items-center gap-1 rounded-full bg-emerald-500/15 px-2 py-0.5 text-[11px] font-medium uppercase tracking-wide text-emerald-300">
+                          ● Released
+                        </span>
+                        <a
+                          href={`/r/${s.id}`}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="truncate text-xs text-afrobrand-300 underline decoration-dotted underline-offset-2 hover:text-afrobrand-200"
+                          title="Open the public release page"
+                        >
+                          {shareUrl(s.id)}
+                        </a>
+                      </div>
+                      <div className="flex flex-wrap gap-1.5">
+                        <button
+                          onClick={() => void copyShare(s)}
+                          className="inline-flex items-center gap-1 rounded-full border border-white/10 bg-white/5 px-2.5 py-1 text-xs text-slate-300 hover:bg-white/10"
+                        >
+                          <Copy className="h-3 w-3" />{" "}
+                          {copiedShare === s.id ? "Copied ✓" : "Copy link"}
+                        </button>
+                        <button
+                          onClick={() => void distributeSocials(s)}
+                          disabled={isBusy(s.id, "distribute")}
+                          title="Push this release to your connected social platforms via the aggregator"
+                          className="inline-flex items-center gap-1 rounded-full border border-afrobrand-500/40 bg-afrobrand-500/10 px-2.5 py-1 text-xs text-afrobrand-300 hover:bg-afrobrand-500/20 disabled:opacity-50"
+                        >
+                          {isBusy(s.id, "distribute") ? (
+                            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                          ) : (
+                            <TrendingUp className="h-3.5 w-3.5" />
+                          )}{" "}
+                          Distribute to socials
+                        </button>
+                        <button
+                          onClick={() => void takedownRelease(s)}
+                          disabled={isBusy(s.id, "takedown")}
+                          className={`inline-flex items-center gap-1 rounded-full border px-2.5 py-1 text-xs ${armedTakedown === s.id ? "border-red-500/60 bg-red-500/20 font-medium text-red-300" : "border-white/10 bg-white/5 text-slate-400 hover:bg-white/10"}`}
+                        >
+                          {armedTakedown === s.id ? "Really take down?" : "Take down"}
+                        </button>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <span className="text-xs text-slate-400">
+                        Ready to share? Publish a public release page.
+                      </span>
+                      <button
+                        onClick={() => void publishRelease(s)}
+                        disabled={isBusy(s.id, "publish")}
+                        className="inline-flex items-center gap-1 rounded-full bg-afrobrand-500 px-3 py-1 text-xs font-medium text-ink hover:bg-afrobrand-400 disabled:opacity-50"
+                      >
+                        {isBusy(s.id, "publish") ? (
+                          <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                        ) : (
+                          <Sparkles className="h-3.5 w-3.5" />
+                        )}{" "}
+                        Release
+                      </button>
                     </div>
                   )}
                 </div>
