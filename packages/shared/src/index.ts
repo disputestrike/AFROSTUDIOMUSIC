@@ -60,3 +60,4 @@ export * from "./producer-evidence";
 export * from "./singing-evidence";
 export * from "./rbac";
 export * from "./cover-prompt";
+export * from "./social-distribution";

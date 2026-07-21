@@ -83,6 +83,7 @@ import drop from "./routes/drop";
 import prewarm from "./routes/prewarm";
 import producer from "./routes/producer";
 import release from "./routes/release";
+import distribution from "./routes/distribution";
 import benchmark from "./routes/benchmark";
 import authRoutes, { bootstrapOwnerAccount } from "./routes/auth";
 import publicRoutes from "./routes/public";
@@ -528,6 +529,7 @@ async function bootstrap() {
       await api.register(prewarm, { prefix: "/prewarm" });
       await api.register(producer, { prefix: "/projects" });
       await api.register(release, { prefix: "/projects/:projectId/release" });
+      await api.register(distribution, { prefix: "/distribution" });
       await api.register(images, { prefix: "/images" });
       await api.register(videos, { prefix: "/videos" });
       await api.register(voices, { prefix: "/voices" });

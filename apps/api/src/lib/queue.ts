@@ -28,6 +28,11 @@ export const QUEUES = {
   // Regenerate of the lyric video + visualizer + thumbnails (the auto path fires
   // from the worker's own song-completion hooks).
   visuals: 'visuals',
+  // DISTRIBUTION SEAM (Phase 5, Part B) — the worker's social-publish lane, so
+  // the API can enqueue a fan-out of a released song to the artist's connected
+  // platforms through the ONE aggregator. Flag-gated + key-gated in the worker:
+  // no real publish ever fires without DISTRIBUTION_ENABLED + an aggregator key.
+  social: 'social',
 } as const;
 export type QueueName = (typeof QUEUES)[keyof typeof QUEUES];
 

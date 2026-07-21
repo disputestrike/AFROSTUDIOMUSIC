@@ -348,6 +348,7 @@ async function runOfflineTests(): Promise<void> {
     ["Media adapters fail closed", "test-media-adapter-safety.ts"],
     ["Email delivery truth", "test-email-delivery.ts"],
     ["Distribution lifecycle contract", "test-distribution-contract.ts"],
+    ["Social distribution seam (flag-gated, honest, payload)", "test-social-distribution.ts"],
     ["Music provider contracts", "test-music-provider-contracts.ts"],
     ["Stem format + persistence integrity", "test-stem-integrity.ts"],
     ["Voice consent enforcement", "test-voice-consent-enforcement.ts"],

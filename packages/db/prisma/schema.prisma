@@ -77,6 +77,8 @@ model Workspace {
   billingEvents        BillingEvent[]
   billingSubscriptions BillingSubscription[]
   billingEntitlements  BillingEntitlement[]
+  connectedAccounts    ConnectedAccount[]
+  socialPosts          SocialPost[]
 
   @@index([slug])
 }
@@ -659,6 +661,7 @@ model Song {
   videoConcepts       VideoConcept[]       @relation("SongVideoConcept")
   clips               SongClip[]
   visuals             SongVisual[]
+  socialPosts         SocialPost[]
   release             Release?             @relation("ReleaseSong")
   album               Album?               @relation(fields: [albumId], references: [id], onDelete: SetNull)
   benchmarkPairs      BenchmarkPair[]
@@ -1432,6 +1435,64 @@ model DistributionEvent {
 
   @@index([releaseId, occurredAt])
   @@index([externalId, receivedAt])
+}
+
+/// PART B — the distribution seam (Phase 5). ONE social account a workspace
+/// connected through the single aggregator (Ayrshare). "connected" means the
+/// aggregator holds a live link to the artist's platform. Publishing ONLY ever
+/// fires when a real aggregator key is present (DISTRIBUTION_ENABLED +
+/// AYRSHARE_API_KEY) — without it these rows are inert and the UI says "connect
+/// your accounts to distribute", never a fake "published".
+model ConnectedAccount {
+  id          String   @id @default(cuid())
+  workspaceId String
+  /// youtube | tiktok | instagram | facebook | twitter | linkedin | ... — the
+  /// aggregator's platform label. One row per platform per workspace.
+  platform    String
+  /// The aggregator's reference for the linked profile (e.g. Ayrshare
+  /// profileKey / social handle). Null until the artist finishes linking.
+  externalRef String?
+  /// pending | connected | error | disconnected.
+  status      String   @default("pending")
+  /// The handle shown to the artist (e.g. @afrohouse). Null until known.
+  displayName String?
+  meta        Json?
+  createdAt   DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt   DateTime @default(now()) @updatedAt @db.Timestamptz(6)
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@unique([workspaceId, platform])
+  @@index([workspaceId])
+}
+
+/// PART B — one scheduled/published social post, recorded HONESTLY. A row exists
+/// only when a REAL publish was attempted through the aggregator (flag + key
+/// present); its status carries the aggregator's own verdict and externalPostId
+/// is the aggregator's post id when accepted. Nothing here is ever written on a
+/// fake / not-configured path.
+model SocialPost {
+  id             String    @id @default(cuid())
+  workspaceId    String
+  songId         String
+  releaseId      String?
+  platform       String
+  /// scheduled | published | failed.
+  status         String
+  externalPostId String?
+  caption        String?
+  /// music_video | clip | visualizer | lyric_video — the primary media kind.
+  mediaKind      String?
+  scheduledAt    DateTime? @db.Timestamptz(6)
+  error          String?
+  meta           Json?
+  createdAt      DateTime  @default(now()) @db.Timestamptz(6)
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  song      Song      @relation(fields: [songId], references: [id], onDelete: Cascade)
+
+  @@index([workspaceId, createdAt(sort: Desc)])
+  @@index([songId])
 }
 
 /// LISTENING BENCHMARK — the ear-vs-machine ground truth. Each row is a rendered

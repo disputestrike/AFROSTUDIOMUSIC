@@ -7,7 +7,11 @@ import {
   Prisma,
   releaseEvidenceHash,
 } from "@afrohit/db";
-import { laneReleaseGate, rightsInputSchema } from "@afrohit/shared";
+import {
+  laneReleaseGate,
+  rightsInputSchema,
+  socialDistributionConfig,
+} from "@afrohit/shared";
 import { requireAuth, requireRole } from "../middleware/auth";
 import { presignAssetRef } from "../lib/storage";
 import { authenticRefCount, unseededForLane } from "../lib/lane-report";
@@ -15,6 +19,9 @@ import {
   distributeRelease,
   distributionConfigurationStatus,
   distributionLifecycleDiagnostics,
+  FIRST_PARTY_DISTRIBUTOR,
+  firstPartyExternalId,
+  firstPartyReleaseEvent,
 } from "../lib/distribution";
 import { BLOW_TARGET } from "../lib/will-it-blow";
 
@@ -290,7 +297,7 @@ async function statusFor(options: {
     authenticRefCount(options.workspaceId, certification.song.project.genre),
     prisma.song.findUnique({
       where: { id: options.songId },
-      select: { releaseReady: true },
+      select: { releaseReady: true, status: true },
     }),
     prisma.export.findFirst({
       where: { songId: options.songId },
@@ -396,7 +403,21 @@ async function statusFor(options: {
   };
   const canonicalReady =
     certification.readiness.ready && certifiedArtworkSelected;
-  if (currentSong && currentSong.releaseReady !== canonicalReady) {
+  // Keep the derived green-light in sync with the full distribution
+  // certification — EXCEPT never silently UN-publish a song that is already
+  // RELEASED. A first-party release (Part A) makes /r/[id] live on a lighter
+  // gate (a finished master), and an external distributor release went live
+  // through its own rigorous gate; in both cases the readiness panel must not
+  // flip releaseReady back to false and 404 a page that is intentionally
+  // public. Un-publishing is the explicit Takedown action, never a side effect
+  // of reading this panel.
+  const wouldUnpublishReleased =
+    currentSong?.status === "RELEASED" && !canonicalReady;
+  if (
+    currentSong &&
+    currentSong.releaseReady !== canonicalReady &&
+    !wouldUnpublishReleased
+  ) {
     await prisma.song.update({
       where: { id: options.songId },
       data: { releaseReady: canonicalReady },
@@ -1351,6 +1372,399 @@ export default async function release(app: FastifyInstance) {
         })
         .catch(() => undefined);
       return result;
+    }
+  );
+
+  // -------------------------------------------------------------------------
+  // PART A — FIRST-PARTY RELEASE (make a finished song shareable → /r/[id] live)
+  // -------------------------------------------------------------------------
+  //
+  // THE GAP this closes: the public release page (/r/[id]) only shows a song
+  // once it is RELEASED, but until now ONLY an external distributor's signed
+  // webhook (routes/webhooks.ts) could move a song there. So the release loop
+  // was unreachable — you could build everything and never get a shareable
+  // page. This action lets the owner release a finished song FIRST-PARTY: it
+  // drives the SAME Release row to "live" and the SAME Song.status = RELEASED
+  // the webhook does, and records the SAME shape of DistributionEvent — only
+  // self-issued (distributor = FIRST_PARTY_DISTRIBUTOR), never a faked external
+  // partner id. Gate: OWNER/ADMIN, an approved master (a real finished take),
+  // not quarantined, not deleted. Idempotent + reversible (Takedown below).
+  app.post<{ Params: { projectId: string; songId: string } }>(
+    "/:songId/publish",
+    { config: { rateLimit: { max: 10, timeWindow: "1 minute" } } },
+    async (req, reply) => {
+      const { workspaceId } = requireRole(req, ["OWNER", "ADMIN"]);
+      const song = await prisma.song.findFirst({
+        where: {
+          id: req.params.songId,
+          projectId: req.params.projectId,
+          workspaceId,
+          deletedAt: null,
+        },
+        include: {
+          project: {
+            select: {
+              artistId: true,
+              genre: true,
+              artist: { select: { stageName: true } },
+            },
+          },
+        },
+      });
+      if (!song) return reply.code(404).send({ error: "song_not_found" });
+      if (song.quarantined) {
+        return reply.code(409).send({
+          error: "song_quarantined",
+          message:
+            "A quarantined song cannot be released. Lift the quarantine first.",
+        });
+      }
+      // "A real finished take" — an approved master must exist. A master-less
+      // song is not a release.
+      const master = await prisma.master.findFirst({
+        where: { songId: song.id, approved: true },
+        orderBy: { createdAt: "desc" },
+        select: { id: true },
+      });
+      if (!master) {
+        return reply.code(409).send({
+          error: "no_master",
+          message:
+            "Master this song before releasing it — the release page needs a finished take.",
+        });
+      }
+
+      const sharePath = "/r/" + song.id;
+      const existingRelease = await prisma.release.findUnique({
+        where: { songId: song.id },
+        select: { id: true, status: true, distributor: true },
+      });
+      // A release already held by an EXTERNAL distributor (mid-submission or
+      // live) owns this song's release state — a first-party publish must not
+      // clobber the partner's state machine.
+      if (
+        existingRelease &&
+        existingRelease.distributor &&
+        existingRelease.distributor !== FIRST_PARTY_DISTRIBUTOR &&
+        LOCKED_RELEASE_STATUSES.has(existingRelease.status)
+      ) {
+        if (existingRelease.status === "live" && song.status === "RELEASED") {
+          return {
+            status: "released",
+            releaseReady: true,
+            songStatus: "RELEASED",
+            alreadyReleased: true,
+            distributor: existingRelease.distributor,
+            sharePath,
+          };
+        }
+        return reply.code(409).send({
+          error: "external_distribution_in_progress",
+          message:
+            "This release is with an external distributor. Manage it there.",
+        });
+      }
+
+      // IDEMPOTENT no-op: already first-party released.
+      if (
+        song.status === "RELEASED" &&
+        song.releaseReady &&
+        existingRelease?.status === "live"
+      ) {
+        return {
+          status: "released",
+          releaseReady: true,
+          songStatus: "RELEASED",
+          alreadyReleased: true,
+          distributor: FIRST_PARTY_DISTRIBUTOR,
+          sharePath,
+        };
+      }
+
+      const occurredAt = new Date();
+      const externalId = firstPartyExternalId(song.id);
+      await prisma.$transaction(async tx => {
+        await tx.$queryRaw(Prisma.sql`
+          SELECT 1::int AS locked
+          FROM pg_advisory_xact_lock(hashtext(${song.id}))
+        `);
+        const head = await tx.release.upsert({
+          where: { songId: song.id },
+          create: {
+            workspaceId,
+            projectId: song.projectId,
+            artistId: song.project.artistId,
+            songId: song.id,
+            title: song.title,
+            artistName: song.displayArtist ?? song.project.artist.stageName,
+            genre: song.project.genre,
+            isrc: song.isrc,
+            upc: song.upc,
+            distributor: FIRST_PARTY_DISTRIBUTOR,
+            externalId,
+            status: "live",
+            submittedAt: occurredAt,
+            distributionStatusAt: occurredAt,
+            liveAt: occurredAt,
+            releaseDate: occurredAt,
+          },
+          update: {
+            distributor: FIRST_PARTY_DISTRIBUTOR,
+            externalId,
+            status: "live",
+            submittedAt: occurredAt,
+            distributionStatusAt: occurredAt,
+            liveAt: occurredAt,
+            releaseDate: occurredAt,
+          },
+          select: { id: true },
+        });
+        await tx.song.update({
+          where: { id: song.id },
+          data: { status: "RELEASED", releaseReady: true },
+        });
+        // Record the transition as a self-issued distribution event — the SAME
+        // append-only shape the distributor webhook writes, so a first-party
+        // release is auditable exactly like a partner event.
+        const event = firstPartyReleaseEvent({
+          releaseId: head.id,
+          externalId,
+          status: "live",
+          occurredAt,
+        });
+        await tx.distributionEvent.create({
+          data: {
+            eventId: event.eventId,
+            releaseId: head.id,
+            externalId,
+            status: "live",
+            payloadHash: event.payloadHash,
+            applied: true,
+            occurredAt,
+          },
+        });
+      });
+
+      await prisma.analyticsEvent
+        .create({
+          data: {
+            workspaceId,
+            name: "release.publish",
+            properties: { songId: song.id, mode: "first_party" } as never,
+          },
+        })
+        .catch(() => undefined);
+
+      return {
+        status: "released",
+        releaseReady: true,
+        songStatus: "RELEASED",
+        alreadyReleased: false,
+        distributor: FIRST_PARTY_DISTRIBUTOR,
+        sharePath,
+      };
+    }
+  );
+
+  // TAKEDOWN (unrelease) — the inverse of publish. Flips releaseReady=false and
+  // moves the song off RELEASED so /r/[id] 404s again, recording a self-issued
+  // "cancelled" DistributionEvent. Only a FIRST-PARTY release is taken down
+  // here — an external distributor's live release is managed with the
+  // distributor. Idempotent (taking down a song that isn't released is a no-op).
+  app.post<{ Params: { projectId: string; songId: string } }>(
+    "/:songId/takedown",
+    { config: { rateLimit: { max: 10, timeWindow: "1 minute" } } },
+    async (req, reply) => {
+      const { workspaceId } = requireRole(req, ["OWNER", "ADMIN"]);
+      const song = await prisma.song.findFirst({
+        where: {
+          id: req.params.songId,
+          projectId: req.params.projectId,
+          workspaceId,
+        },
+        select: { id: true, status: true, releaseReady: true },
+      });
+      if (!song) return reply.code(404).send({ error: "song_not_found" });
+
+      const release = await prisma.release.findUnique({
+        where: { songId: song.id },
+        select: { id: true, status: true, distributor: true },
+      });
+      // A live/in-flight external distribution is not ours to retract here.
+      if (
+        release &&
+        release.distributor &&
+        release.distributor !== FIRST_PARTY_DISTRIBUTOR &&
+        LOCKED_RELEASE_STATUSES.has(release.status)
+      ) {
+        return reply.code(409).send({
+          error: "external_distribution_locked",
+          message:
+            "This release is live with an external distributor. Take it down there.",
+        });
+      }
+
+      // IDEMPOTENT no-op: not currently released.
+      if (song.status !== "RELEASED" && !song.releaseReady) {
+        return {
+          status: "withdrawn",
+          releaseReady: false,
+          songStatus: song.status,
+          alreadyWithdrawn: true,
+        };
+      }
+
+      // Revert the song to its pre-release finished state — EXPORTED when an
+      // export exists, else MASTERED (release required a master).
+      const hasExport = await prisma.export.count({
+        where: { songId: song.id },
+      });
+      const revertStatus: "EXPORTED" | "MASTERED" =
+        hasExport > 0 ? "EXPORTED" : "MASTERED";
+      const occurredAt = new Date();
+
+      await prisma.$transaction(async tx => {
+        await tx.$queryRaw(Prisma.sql`
+          SELECT 1::int AS locked
+          FROM pg_advisory_xact_lock(hashtext(${song.id}))
+        `);
+        await tx.song.update({
+          where: { id: song.id },
+          data: { status: revertStatus, releaseReady: false },
+        });
+        if (release) {
+          const externalId = firstPartyExternalId(song.id);
+          await tx.release.update({
+            where: { id: release.id },
+            data: {
+              status: "draft",
+              distributionStatusAt: occurredAt,
+              liveAt: null,
+              releaseDate: null,
+            },
+          });
+          const event = firstPartyReleaseEvent({
+            releaseId: release.id,
+            externalId,
+            status: "cancelled",
+            occurredAt,
+          });
+          await tx.distributionEvent.create({
+            data: {
+              eventId: event.eventId,
+              releaseId: release.id,
+              externalId,
+              status: "cancelled",
+              payloadHash: event.payloadHash,
+              applied: true,
+              occurredAt,
+            },
+          });
+        }
+      });
+
+      await prisma.analyticsEvent
+        .create({
+          data: {
+            workspaceId,
+            name: "release.takedown",
+            properties: { songId: song.id, mode: "first_party" } as never,
+          },
+        })
+        .catch(() => undefined);
+
+      return {
+        status: "withdrawn",
+        releaseReady: false,
+        songStatus: revertStatus,
+        alreadyWithdrawn: false,
+      };
+    }
+  );
+
+  // -------------------------------------------------------------------------
+  // PART B — DISTRIBUTE TO SOCIALS (through the ONE aggregator)
+  // -------------------------------------------------------------------------
+  //
+  // Fan the finished release out to the artist's connected social platforms via
+  // the single aggregator. HONEST + FLAG-GATED (do NOT repeat the ViralForge
+  // "coded but never run" trap): without DISTRIBUTION_ENABLED + an
+  // AYRSHARE_API_KEY this returns a clear 501 "not configured" and NEVER a fake
+  // "published". With the flag + key it enqueues the worker publish job (the
+  // dedicated 'social' lane) which builds the posts (video + clips + kit
+  // caption/hashtags) and calls the adapter. A real HTTP publish ONLY ever fires
+  // in the worker with the key present.
+  app.post<{ Params: { projectId: string; songId: string } }>(
+    "/:songId/socials/distribute",
+    { config: { rateLimit: { max: 10, timeWindow: "1 minute" } } },
+    async (req, reply) => {
+      const { workspaceId } = requireRole(req, ["OWNER", "ADMIN"]);
+
+      // HONESTY GATE FIRST: is social distribution configured at all?
+      const config = socialDistributionConfig();
+      if (!config.ready) {
+        return reply.code(501).send({
+          error: "distribution_not_configured",
+          provider: config.provider,
+          message:
+            "Connect your accounts to distribute — social distribution is not configured.",
+          missing: config.missing,
+        });
+      }
+
+      const song = await prisma.song.findFirst({
+        where: {
+          id: req.params.songId,
+          projectId: req.params.projectId,
+          workspaceId,
+          deletedAt: null,
+        },
+        select: { id: true, status: true, releaseReady: true },
+      });
+      if (!song) return reply.code(404).send({ error: "song_not_found" });
+      // You distribute what is LIVE — a released, public song — not a draft.
+      if (song.status !== "RELEASED" || !song.releaseReady) {
+        return reply.code(409).send({
+          error: "not_released",
+          message:
+            "Release this song before distributing it to social platforms.",
+        });
+      }
+
+      const accounts = await prisma.connectedAccount.findMany({
+        where: { workspaceId, status: "connected" },
+        select: { platform: true },
+      });
+      if (!accounts.length) {
+        return reply.code(409).send({
+          error: "no_connected_accounts",
+          message: "Connect at least one social account before distributing.",
+        });
+      }
+
+      const release = await prisma.release.findUnique({
+        where: { songId: song.id },
+        select: { id: true },
+      });
+      await app.queues.social.add(
+        "social-publish",
+        {
+          songId: song.id,
+          workspaceId,
+          releaseId: release?.id ?? null,
+          reason: "distribute",
+        },
+        {
+          jobId: "social-publish-" + song.id,
+          removeOnComplete: 200,
+          removeOnFail: 500,
+        }
+      );
+      return reply.code(202).send({
+        status: "distributing",
+        provider: config.provider,
+        platforms: accounts.map(a => a.platform),
+      });
     }
   );
 }

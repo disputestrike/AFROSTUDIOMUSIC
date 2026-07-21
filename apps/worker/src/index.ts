@@ -76,6 +76,7 @@ import { processAssetCleanup } from "./processors/asset-cleanup";
 import { processReleaseKit } from "./lib/release-kit";
 import { processGenerateClips } from "./processors/generate-clips";
 import { processGenerateVisuals } from "./processors/generate-visuals";
+import { processSocialPublish } from "./processors/social-publish";
 import { enqueueJob } from "./lib/enqueue";
 import { assertStorageConfiguration } from "./lib/storage";
 import {
@@ -544,6 +545,17 @@ const workers = [
       throw new Error(`unknown visuals job: ${job.name}`);
     await processGenerateVisuals(job.data as never);
   }),
+  // DISTRIBUTION SEAM (Phase 5, Part B) — fan a released song out to the artist's
+  // connected platforms through the ONE aggregator. Its own dedicated lane, off
+  // the render lanes AND off the concurrency-1 lake lane. Flag-gated + key-gated
+  // (resolveSocialAdapter): with no key it publishes NOTHING — never a fake
+  // success. The processor is fail-soft (never throws), so this job always
+  // completes.
+  makeWorker("social", async (job: { data: never; name: string }) => {
+    if (job.name !== "social-publish")
+      throw new Error(`unknown social job: ${job.name}`);
+    await processSocialPublish(job.data as never);
+  }),
   makeWorker("cron", async (job: { data: never; name: string }) => {
     if (job.name === "morning-drop") await processMorningDrop();
     else if (job.name === "release-radar") await processReleaseRadar();
@@ -812,7 +824,7 @@ process.on("SIGTERM", () => void shutdown("SIGTERM"));
 process.on("SIGINT", () => void shutdown("SIGINT"));
 
 log.info(
-  "worker up, listening on queues: music, voice, image, video, mix, master, rights, export, releasekit, clips, visuals, cron"
+  "worker up, listening on queues: music, voice, image, video, mix, master, rights, export, releasekit, clips, visuals, social, cron"
 );
 
 // FORGE PREWARM (songspeed perf): resolve + cache the Replicate forge model
