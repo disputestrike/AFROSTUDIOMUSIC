@@ -334,6 +334,7 @@ type VideoShot = {
   motion?: string;
   lighting?: string;
   subjects?: string[];
+  negativePrompt?: string;
 };
 type VideoConceptRow = {
   id: string;
@@ -1158,6 +1159,18 @@ export default function CatalogGrid({ initial }: { initial: SongRow[] }) {
   // videos — they can bring that, stick with it, or enhance it").
   const [visionText, setVisionText] = useState("");
   const [visionMode, setVisionMode] = useState<"strict" | "enhance">("enhance");
+  // PER-SCENE EDIT (owner's #1 video bug — an edit must reach the pixels). The
+  // shot whose prompt/negative is being edited in the Video-script tab, the
+  // draft text, and the set of scenes already edited this session (so each
+  // shows "edited — will re-render" until it renders again).
+  const [shotEdit, setShotEdit] = useState<{
+    conceptId: string;
+    shotIndex: number;
+    prompt: string;
+    negativePrompt: string;
+  } | null>(null);
+  const [savingShot, setSavingShot] = useState(false);
+  const [editedShots, setEditedShots] = useState<Record<string, true>>({});
 
   // The full-song treatment now runs on the WORKER QUEUE — its LLM chain can
   // take minutes and used to 502 at the proxy. The POST returns 202 + a jobId;
@@ -1321,6 +1334,14 @@ export default function CatalogGrid({ initial }: { initial: SongRow[] }) {
   async function assembleVideo(kind: "full" | "teaser") {
     const concept = videoConcept?.concept;
     if (!concept || assembling) return;
+    // Don't silently assemble around an un-applied "video idea": tell the owner
+    // to apply it first so the assembled cut reflects their edit, not the old plan.
+    if (visionText.trim()) {
+      flash(
+        "You've typed a new video idea but haven't applied it. Rewrite the treatment (or use “Make the whole video”) first, then assemble — so your edit is in the cut."
+      );
+      return;
+    }
     setAssembling(kind);
     setAssemblyStage("queued");
     try {
@@ -1388,22 +1409,54 @@ export default function CatalogGrid({ initial }: { initial: SongRow[] }) {
     if (renderAllBusy) return;
     setRenderAllBusy(true);
     try {
+      // NEVER silently drop a pending "video idea": if the vision box holds
+      // un-applied text, apply it FIRST (rewrites the treatment, the makeWholeVideo
+      // path) so the EDIT is what renders — then render the resulting concept.
+      let target = concept;
+      if (visionText.trim() && videoOpen) {
+        const resp = await api.post<{ jobId?: string; concept?: unknown }>(
+          `/videos/storyboards`,
+          {
+            projectId: videoOpen.projectId,
+            songId: videoOpen.id,
+            vision: visionText.trim(),
+            visionMode,
+          }
+        );
+        const settled = await settleStoryboard(resp);
+        if (!settled.ok) {
+          flash(settled.note || "Couldn't apply your video idea — try again.");
+          return;
+        }
+        const fresh = await api
+          .get<{ concept: VideoConceptRow | null }>(
+            `/songs/${videoOpen.id}/video-concept`
+          )
+          .then(res => res.concept)
+          .catch(() => null);
+        if (!fresh) {
+          flash("Couldn't load the updated plan — try again.");
+          return;
+        }
+        target = fresh;
+        await loadVideoConcept(videoOpen.id);
+      }
       const r = await api.post<{
         jobIds: string[];
         queuedShotIndexes: number[];
       }>(`/videos/render-all`, {
-        conceptId: concept.id,
+        conceptId: target.id,
         engineClass: sceneEngine,
         ...(withLikeness && likenessTrained ? { useLikeness: true } : {}),
       });
       setRenderAllArmed(false);
-      setRenderAllWatch({ conceptId: concept.id, since: Date.now() });
+      setRenderAllWatch({ conceptId: target.id, since: Date.now() });
       flash(
         `${r.queuedShotIndexes.length} scene${
           r.queuedShotIndexes.length === 1 ? "" : "s"
         } rendering on the ${sceneEngine} engine — the full video assembles itself when they finish.`
       );
-      await loadAssembly(concept.id);
+      await loadAssembly(target.id);
     } catch (e) {
       const message = (e as Error).message;
       flash(
@@ -1543,6 +1596,14 @@ export default function CatalogGrid({ initial }: { initial: SongRow[] }) {
     shotIndex: number
   ) {
     if (renderingScene !== null) return;
+    // A pending whole-treatment "video idea" rewrites every scene — rendering a
+    // single scene of the OLD plan would drop that edit. Apply it first.
+    if (visionText.trim()) {
+      flash(
+        "You've typed a new video idea but haven't applied it. Rewrite the treatment (or use “Make the whole video”) first — then render, so your edit is what renders."
+      );
+      return;
+    }
     if (armedScene !== shotIndex) {
       setArmedScene(shotIndex);
       setTimeout(
@@ -1586,6 +1647,129 @@ export default function CatalogGrid({ initial }: { initial: SongRow[] }) {
 
   /** The per-shot render control — armed confirm carries the EXACT cost the
    *  server will bill (same videoRenderUsage law both sides). */
+  /** Save a per-scene edit — PATCH the shot's prompt/negative on the concept's
+   *  storyboard. The server invalidates that scene's render + any assembled cut,
+   *  so the edit deterministically reaches the next render. Words-only: timing
+   *  and structure are untouched, and the rest of the treatment is not touched. */
+  async function saveShotEdit(s: SongRow) {
+    if (!shotEdit || savingShot) return;
+    const { conceptId, shotIndex } = shotEdit;
+    const prompt = shotEdit.prompt.trim();
+    if (!prompt) {
+      flash("A scene needs a description.");
+      return;
+    }
+    const negativePrompt = shotEdit.negativePrompt.trim();
+    setSavingShot(true);
+    try {
+      await api.patch(
+        `/videos/concepts/${conceptId}/shots/${shotIndex}`,
+        negativePrompt ? { prompt, negativePrompt } : { prompt }
+      );
+      setEditedShots(prev => ({ ...prev, [`${conceptId}:${shotIndex}`]: true }));
+      setShotEdit(null);
+      flash(
+        `Scene ${shotIndex + 1} updated — it will re-render${
+          houseBilling ? "" : " (and re-bill at the per-scene rate)"
+        } on the next render.`
+      );
+      // Re-read the plan + coverage: the edited scene now reads as unrendered.
+      await loadVideoConcept(s.id);
+      void loadAssembly(conceptId);
+    } catch (e) {
+      flash((e as Error).message?.slice(0, 140) || "Couldn't save the scene edit");
+    } finally {
+      setSavingShot(false);
+    }
+  }
+
+  /** One scene's prompt line — read-only text with an "Edit scene" affordance,
+   *  or the inline editor when this shot is being edited. Shared by the
+   *  full-song treatment list and the legacy flat list. */
+  const shotPromptBlock = (concept: VideoConceptRow, shot: VideoShot) => {
+    const key = `${concept.id}:${shot.index}`;
+    const editing =
+      shotEdit?.conceptId === concept.id && shotEdit.shotIndex === shot.index;
+    if (editing && shotEdit) {
+      return (
+        <div className="mt-1 space-y-1.5">
+          <textarea
+            value={shotEdit.prompt}
+            onChange={e =>
+              setShotEdit(cur => (cur ? { ...cur, prompt: e.target.value } : cur))
+            }
+            rows={3}
+            maxLength={2000}
+            className="w-full rounded border border-white/10 bg-black/40 p-1.5 text-xs text-slate-100"
+          />
+          <input
+            value={shotEdit.negativePrompt}
+            onChange={e =>
+              setShotEdit(cur =>
+                cur ? { ...cur, negativePrompt: e.target.value } : cur
+              )
+            }
+            maxLength={500}
+            placeholder="Avoid — e.g. no rain, no logos, no other artists"
+            className="w-full rounded border border-white/10 bg-black/40 p-1.5 text-[11px] text-slate-200 placeholder:text-slate-600"
+          />
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              disabled={savingShot || !shotEdit.prompt.trim()}
+              onClick={() => void saveShotEdit(videoOpen!)}
+              className="inline-flex items-center gap-1 rounded-full border border-emerald-400/50 bg-emerald-500/15 px-2.5 py-1 text-[11px] text-emerald-200 hover:bg-emerald-500/25 disabled:opacity-40"
+            >
+              {savingShot ? (
+                <Loader2 className="h-3 w-3 animate-spin" />
+              ) : null}
+              Save — re-renders this scene
+            </button>
+            <button
+              onClick={() => setShotEdit(null)}
+              className="rounded-full border border-white/15 px-2.5 py-1 text-[11px] text-slate-400 hover:bg-white/10"
+            >
+              Cancel
+            </button>
+            <span className="text-[10px] text-slate-500">
+              Editing changes only this scene — its clip re-renders; the rest of
+              the video is untouched.
+            </span>
+          </div>
+        </div>
+      );
+    }
+    return (
+      <>
+        <div className="mt-0.5">{shot.prompt}</div>
+        {shot.negativePrompt ? (
+          <div className="mt-0.5 text-[11px] text-slate-600">
+            Avoid · {shot.negativePrompt}
+          </div>
+        ) : null}
+        <div className="mt-1 flex flex-wrap items-center gap-2">
+          <button
+            onClick={() =>
+              setShotEdit({
+                conceptId: concept.id,
+                shotIndex: shot.index,
+                prompt: shot.prompt,
+                negativePrompt: shot.negativePrompt ?? "",
+              })
+            }
+            className="text-[11px] text-slate-400 underline decoration-dotted underline-offset-2 hover:text-slate-200"
+          >
+            ✎ Edit scene
+          </button>
+          {editedShots[key] ? (
+            <span className="text-[11px] text-amber-300">
+              edited — will re-render
+            </span>
+          ) : null}
+        </div>
+      </>
+    );
+  };
+
   const sceneRenderButton = (
     s: SongRow,
     concept: VideoConceptRow,
@@ -3342,7 +3526,7 @@ export default function CatalogGrid({ initial }: { initial: SongRow[] }) {
                                       {" "}
                                       · {shot.duration_s}s
                                     </span>
-                                    <div className="mt-0.5">{shot.prompt}</div>
+                                    {shotPromptBlock(conceptRow, shot)}
                                     {shot.motion || shot.lighting ? (
                                       <div className="mt-0.5 text-slate-600">
                                         {[shot.motion, shot.lighting]
@@ -3397,7 +3581,7 @@ export default function CatalogGrid({ initial }: { initial: SongRow[] }) {
                             Scene {shot.index + 1}
                           </span>
                           <span className="text-slate-600"> · {shot.duration_s}s</span>
-                          <div className="mt-1 text-slate-400">{shot.prompt}</div>
+                          {shotPromptBlock(conceptRow, shot)}
                           {shot.motion || shot.lighting ? (
                             <div className="mt-1 text-slate-600">
                               {[shot.motion, shot.lighting].filter(Boolean).join(" · ")}
