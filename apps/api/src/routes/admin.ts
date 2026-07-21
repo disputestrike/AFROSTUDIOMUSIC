@@ -142,6 +142,73 @@ const economicsReconciliationSchema = z.object({
 export default async function admin(app: FastifyInstance) {
   app.get('/status', async (req) => ({ admin: await hasAdminAccess(req) }));
 
+  /**
+   * BULK SONG RESTORE (owner order 2026-07-20: "return all deleted songs across
+   * all catalogs and all users"). Songs are only ever SOFT-deleted (deletedAt
+   * stamped, row kept — see songs.ts "NEVER LOSE A SONG"), so recovery is just
+   * clearing deletedAt/deletedReason. The per-song POST /songs/:id/restore is
+   * workspace-scoped; this operator-only endpoint restores EVERY soft-deleted
+   * song across EVERY workspace at once, and reports a per-workspace breakdown
+   * so the operator can see exactly what came back (and re-delete any junk).
+   *
+   * GET  /admin/songs/deleted        → dry inventory: how many are recoverable.
+   * POST /admin/songs/restore-all    → restore them all; body {dryRun?:boolean}
+   *                                     dryRun:true returns the same inventory
+   *                                     without mutating.
+   */
+  async function deletedSongInventory() {
+    const rows = await prisma.song.groupBy({
+      by: ['workspaceId'],
+      where: { deletedAt: { not: null } },
+      _count: { _all: true },
+    });
+    const total = rows.reduce((n, r) => n + r._count._all, 0);
+    const workspaces = await prisma.workspace.findMany({
+      where: { id: { in: rows.map((r) => r.workspaceId) } },
+      select: { id: true, name: true, slug: true },
+    });
+    const nameById = new Map(workspaces.map((w) => [w.id, w]));
+    const byWorkspace = rows
+      .map((r) => ({
+        workspaceId: r.workspaceId,
+        workspace: nameById.get(r.workspaceId)?.name ?? nameById.get(r.workspaceId)?.slug ?? '(unknown)',
+        count: r._count._all,
+      }))
+      .sort((a, b) => b.count - a.count);
+    return { total, byWorkspace };
+  }
+
+  app.get('/songs/deleted', async (req, reply) => {
+    await requireAdmin(req);
+    const inv = await deletedSongInventory();
+    return reply.send({ recoverable: inv.total, byWorkspace: inv.byWorkspace });
+  });
+
+  const restoreAllSchema = z.object({ dryRun: z.boolean().optional() });
+  app.post('/songs/restore-all', { schema: { body: restoreAllSchema } }, async (req, reply) => {
+    await requireAdmin(req);
+    const { userId } = requireAuth(req);
+    const { dryRun } = restoreAllSchema.parse(req.body ?? {});
+    const before = await deletedSongInventory();
+    if (dryRun) {
+      return reply.send({ dryRun: true, wouldRestore: before.total, byWorkspace: before.byWorkspace });
+    }
+    req.log.warn(
+      { adminUserId: userId, count: before.total },
+      '[admin] BULK SONG RESTORE — clearing deletedAt across all workspaces',
+    );
+    const result = await prisma.song.updateMany({
+      where: { deletedAt: { not: null } },
+      data: { deletedAt: null, deletedReason: null },
+    });
+    const after = await deletedSongInventory();
+    return reply.send({
+      restored: result.count,
+      remainingDeleted: after.total,
+      byWorkspace: before.byWorkspace,
+    });
+  });
+
   // "SEE THE MUSIC" — the REAL catalog (material loops, instrumentals, vocals)
   // as a rights-gated training manifest: what may train our own model and what
   // is refused, with reasons. Read-only. user-original counts as trainable only
