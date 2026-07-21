@@ -54,7 +54,8 @@
     "test:training-evaluation-seam": "tsx scripts/test-training-evaluation-seam.ts",
     "test:streaming-events": "tsx scripts/test-streaming-events.ts",
     "test:auth-password-reset": "tsx scripts/test-auth-password-reset.ts",
-    "test:song-edit-lyrics": "tsx scripts/test-song-edit-lyrics.ts"
+    "test:song-edit-lyrics": "tsx scripts/test-song-edit-lyrics.ts",
+    "test:socials-and-lock": "tsx scripts/test-socials-and-lock.mjs"
   },
   "dependencies": {
     "@afrohit/ai": "workspace:*",
