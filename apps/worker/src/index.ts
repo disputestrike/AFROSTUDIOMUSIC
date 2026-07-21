@@ -8,6 +8,7 @@ import pino from "pino";
 import * as Sentry from "@sentry/node";
 
 import {
+  prewarmForgeModel,
   runWithBrainContext,
   runWithLlmUsageContext,
   setLlmUsageSink,
@@ -779,6 +780,13 @@ process.on("SIGINT", () => void shutdown("SIGINT"));
 log.info(
   "worker up, listening on queues: music, voice, image, video, mix, master, rights, export, cron"
 );
+
+// FORGE PREWARM (songspeed perf): resolve + cache the Replicate forge model
+// version at boot so a fresh-lane song's forge fan-out skips the per-forge
+// version lookup and lands on an already-warm memo. Fully fail-soft (it swallows
+// its own errors) and a no-op when REPLICATE_MUSIC_VERSION is pinned or no
+// Replicate token is set — pinning that env removes the lookup entirely.
+void prewarmForgeModel();
 
 // Deploy maintenance is not an autonomy feature: historical vocal rows must be
 // measured before any of them can re-enter a mix. The dated id makes this once

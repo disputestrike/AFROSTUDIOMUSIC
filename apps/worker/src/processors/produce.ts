@@ -169,15 +169,23 @@ export async function processProduce(p: ProducePayload): Promise<void> {
     const catalogue = catRows.map((s: { id: string; title: string; lyric: { body: string } | null }) => ({ id: s.id, title: s.title, bodyNorm: normalizeLyricBody(s.lyric?.body ?? '') }));
     let body = ''; let cell = hookCell; let title = ''; let langMix: Record<string, number> | undefined;
     let qa: LyricQaResult = { ok: false, blocks: ['not-generated'], warnings: [], band: 'F', bodyNorm: '', wordCount: 0 };
-    for (let attempt = 0; attempt < 3 && !qa.ok; attempt++) {
+    // LYRIC-FITTING — cheap-first, taste-on-retry (songspeed perf; mirrors
+    // singing-brain.ts's tier law). Attempt 0 DRAFTS on the CHEAP bulk brain
+    // (Cerebras-first); only a QA-FAILED retry ESCALATES to the judgment brain
+    // (Claude). The QA gate is unchanged — the accepted lyric still has to pass
+    // the SAME lyricQaCheck below — so this trims the paid-brain latency/$ tail
+    // without touching output quality. Bounded to 2 attempts (was 3) and each
+    // Claude round-trip is capped at 30s (was the ~55s default), so a QA-fail
+    // path tops out near ~60s instead of ~165s.
+    for (let attempt = 0; attempt < 2 && !qa.ok; attempt++) {
       const fit = await generateJson<{ title?: string; body?: string; hookCell?: string; languageMix?: Record<string, number> }>({
-        tier: 'judgment', task: 'lyric-fitting', system: FIT_SYSTEM,
+        tier: attempt === 0 ? 'bulk' : 'judgment', task: 'lyric-fitting', system: FIT_SYSTEM,
         user: JSON.stringify({
           brief, primary_language: (p.languages ?? ['pcm'])[0], languages_allowed: p.languages ?? ['pcm', 'en'],
           hook_cell_spine: cell, syllable_budget: mrm.syllableSlots, held_vowel_slots: mrm.heldVowelSlots, breaths: mrm.breaths,
           forbidden_vocab: sim.forbiddenVocab, lyric_mode: brief.lyricMode,
           ...(attempt > 0 ? { FIX_THESE_QA_FAILURES: qa.blocks } : {}),
-        }), maxTokens: 2200,
+        }), maxTokens: 2200, timeoutMs: 30_000,
       }).catch(() => null);
       if (!fit?.body || fit.body.trim().length < 20) continue;
       body = fit.body.trim();
@@ -195,8 +203,17 @@ export async function processProduce(p: ProducePayload): Promise<void> {
     }
     state = advanceState(state, { sungWords: { sections: [{ name: 'draft', lines: body.split(/\r?\n/).filter(Boolean) }] } }, { stage: 'lyric_fitting', by: 'songwriter', changed: `"${title}", ${qa.wordCount} words`, why: `mode=${brief.lyricMode}`, testNext: qa.warnings.join('; ') || undefined });
 
-    // Stage 5-6 — Language + Vocal Producer.
-    const lang = await reviewLanguage({ lyricBody: body, languages: p.languages ?? ['pcm', 'en'], hasMelody: true }).catch(() => ({ entries: [], blocksRelease: false }));
+    // Stage 5-6 + 9-10 — reviewLanguage (language review) and scoreForAR (A&R
+    // scoring) both consume ONLY the finished lyric (body/title/cell) and are
+    // independent — neither mutates shared state the other reads — so run the two
+    // bulk round-trips CONCURRENTLY (songspeed perf: saves one full LLM round-trip
+    // per song). produceVocal still runs after (it too only reads the finished
+    // lyric); the advanceState narrative order below is UNCHANGED, so the
+    // proofPack the song persists is byte-identical.
+    const [lang, ar] = await Promise.all([
+      reviewLanguage({ lyricBody: body, languages: p.languages ?? ['pcm', 'en'], hasMelody: true }).catch(() => ({ entries: [], blocksRelease: false })),
+      scoreForAR({ title, sungLyric: body, hookCell: cell, genre: p.genre, languages: p.languages }).catch(() => null),
+    ]);
     state = advanceState(state, { languageReview: lang.entries }, { stage: 'language_review', by: 'language-agent', changed: `${lang.entries.length} phrases`, why: lang.blocksRelease ? 'HUMAN_NATIVE_REVIEW_REQUIRED' : 'clear' });
     const vp = await produceVocal({ sungLyric: body, hookCell: cell, melodyRhythmMap: mrm, languages: p.languages }).catch(() => null);
     if (vp?.rejected) {
@@ -206,9 +223,9 @@ export async function processProduce(p: ProducePayload): Promise<void> {
       state = advanceState(state, { sungWords: vp.sungWords, adlibOptions: vp.adlibOptions, leadPerformanceMap: vp.leadPerformanceMap, doublesHarmonies: vp.doublesHarmonies, productionNotes: vp.productionNotes }, { stage: 'vocal_production', by: 'vocal-producer', changed: 'sung form + performance map', why: 'lead comped, ad-libs selective' });
     }
 
-    // Stage 9-10 — A&R + decision.
+    // Stage 9-10 — A&R decision. `ar` was scored above, concurrently with the
+    // language review (its result is only consumed here, after produceVocal).
     const clash = titleTooClose(title, sim.nearestTitles);
-    const ar = await scoreForAR({ title, sungLyric: body, hookCell: cell, genre: p.genre, languages: p.languages }).catch(() => null);
     let decision: SongState['decision'] = ar?.verdict ?? 'CANDIDATE_FOR_HUMAN_AR';
     if (state.decision === 'REVISE_FROM_STAGE_X') decision = 'REVISE_FROM_STAGE_X';
     if (clash) decision = 'REVISE_FROM_STAGE_X';

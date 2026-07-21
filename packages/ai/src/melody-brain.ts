@@ -21,6 +21,7 @@ import {
   type MelodySectionInput,
 } from '@afrohit/shared';
 import { generateJson } from './generate';
+import { runWithBrainContext } from './brain-context';
 
 const CONTOURS: ReadonlySet<string> = new Set(['rise', 'fall', 'arch', 'wave']);
 const DENSITIES: ReadonlySet<string> = new Set(['sparse', 'flowing', 'dense']);
@@ -51,23 +52,32 @@ Return ONLY JSON: {"sections":[{"contourShape":"...","densityHint":"...","startD
 export async function melodyBrain(opts: ComposeMelodyOpts): Promise<MelodyScore> {
   let phrasing: PhrasingSection[] | null = null;
   try {
-    const out = await generateJson<{ sections: PhrasingSection[] }>({
-      tier: 'bulk',
-      task: 'melody-phrasing',
-      system: MELODY_BRAIN_SYSTEM,
-      user: [
-        `GENRE: ${opts.genre}`,
-        `BPM: ${opts.bpm}`,
-        `KEY: ${opts.key}`,
-        `SECTIONS (choose parameters for each, in order):`,
-        ...opts.sections.map(
-          (s, i) =>
-            `${i + 1}. [${s.kind}] "${s.name}" — ${s.lines.length} line(s); first line: "${s.lines[0] ?? ''}"${s.anchors?.length ? `; anchors: ${s.anchors.join(', ')}` : ''}`
-        ),
-      ].join('\n'),
-      temperature: 0.6,
-      maxTokens: 1200,
-    });
+    // COST LAW — close the paid-brain leak (songspeed audit): this taste-garnish
+    // is 'bulk' tier, but tier alone still lets generate.ts LADDER up to Claude on
+    // any Cerebras hiccup/misconfig. Wrap in forceTier:'bulk' (EXACTLY like
+    // producer-brain.ts) so a failed bulk call tops out at the OpenAI draft and
+    // NEVER bills Sonnet — a phrasing garnish must never silently spend taste
+    // money. The wrap is scoped to THIS call only (AsyncLocalStorage), so it can
+    // never leak into produce's intentional judgment lyric-fitting call.
+    const out = await runWithBrainContext({ forceTier: 'bulk' }, () =>
+      generateJson<{ sections: PhrasingSection[] }>({
+        tier: 'bulk',
+        task: 'melody-phrasing',
+        system: MELODY_BRAIN_SYSTEM,
+        user: [
+          `GENRE: ${opts.genre}`,
+          `BPM: ${opts.bpm}`,
+          `KEY: ${opts.key}`,
+          `SECTIONS (choose parameters for each, in order):`,
+          ...opts.sections.map(
+            (s, i) =>
+              `${i + 1}. [${s.kind}] "${s.name}" — ${s.lines.length} line(s); first line: "${s.lines[0] ?? ''}"${s.anchors?.length ? `; anchors: ${s.anchors.join(', ')}` : ''}`
+          ),
+        ].join('\n'),
+        temperature: 0.6,
+        maxTokens: 1200,
+      })
+    );
     // HARD validation — closed vocabulary, exact length, integer ranges. One
     // bad field voids the WHOLE phrasing (never mix trusted and untrusted).
     const secs = out?.sections;
