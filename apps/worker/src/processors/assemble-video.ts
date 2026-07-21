@@ -173,17 +173,21 @@ export async function processAssembleVideo(p: AssembleVideoPayload) {
     const audioPath = join(workDir, "song-audio.bin");
     await writeFile(audioPath, audioBytes);
 
-    // 1b) LIP-SYNC PASS (owner: "the big issue is lip syncing"). Flag-gated
-    //     (LIPSYNC_ENABLED=1) so it never spends until the operator arms it.
-    //     Each clip is synced to the EXACT slice of the record that plays
-    //     under it (offset math mirrors the assembler's timeline and is
-    //     test-pinned against it). Per-clip BEST EFFORT: a failed sync keeps
-    //     the original clip — a mouth is never worth failing a paid cut.
+    // 1b) LIP-SYNC PASS (owner 2026-07-21: "lip sync turned on — the new singers
+    //     to work on every video"). ON BY DEFAULT now; set LIPSYNC_ENABLED=0 to
+    //     disable (it is real Replicate spend, ~$1-2 per full video). Each clip
+    //     is synced to the EXACT slice of the record that plays under it (offset
+    //     math mirrors the assembler's timeline and is test-pinned against it).
+    //     Per-clip BEST EFFORT: a failed sync keeps the original clip — a mouth
+    //     is never worth failing a paid cut, and b-roll scenes with no face keep
+    //     their original clip by design. Needs a class engine (character-sheet
+    //     face on performance scenes) for a mouth to sync; the ~10 vertical
+    //     shorts are cut FROM this full cut, so they inherit the synced mouths.
     //     First cycle only under the full-song loop law (hooks repeat their
     //     words, so looped hook clips still roughly match).
     let lipSync: { synced: number; failed: number; estimatedUsd: number } | null =
       null;
-    if (process.env.LIPSYNC_ENABLED === "1" && p.kind === "full" && workDir) {
+    if (process.env.LIPSYNC_ENABLED !== "0" && p.kind === "full" && workDir) {
       const syncDir = workDir;
       lipSync = { synced: 0, failed: 0, estimatedUsd: 0 };
       const offsets = computeClipAudioOffsets(
