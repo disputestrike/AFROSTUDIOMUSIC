@@ -20,6 +20,10 @@ export const QUEUES = {
   embed: 'embed',
   orchestration: 'orchestration',
   cleanup: 'cleanup',
+  // AUTO-CLIP (Phase 2) — the worker's clips lane, so the API can enqueue a
+  // Recut of the master into vertical shorts (the auto path fires from the
+  // worker's own video-completion hook).
+  clips: 'clips',
 } as const;
 export type QueueName = (typeof QUEUES)[keyof typeof QUEUES];
 

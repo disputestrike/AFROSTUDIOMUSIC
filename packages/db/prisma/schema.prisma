@@ -52,6 +52,7 @@ model Workspace {
   artistLikenesses     ArtistLikeness[]
   brandKits            BrandKit[]
   songs                Song[]
+  songClips            SongClip[]
   jobs                 ProviderJob[]
   rightsReceipts       RightsReceipt[]
   releaseAttestations  ReleaseAttestation[]
@@ -620,6 +621,13 @@ model Song {
   // in socialsJson) | unavailable (the bulk brain was down — retry/refresh, the
   // song render is never affected). Null = never triggered (legacy songs).
   releaseKitStatus String?
+  // AUTO-CLIP LIFECYCLE (Phase 2, 2026-07-21). When the music video finishes, the
+  // ONE assembled master is auto-cut (ffmpeg EDITS, never a re-render) into ~10
+  // vertical shorts. This lets the tab show "cutting clips…": cutting (a
+  // completion hook enqueued the cut) | ready (SongClip rows exist) | unavailable
+  // (ffmpeg was absent or every clip failed — the video render is never
+  // affected). Null = never triggered (legacy songs / no video yet).
+  clipsStatus      String?
   createdAt        DateTime   @default(now()) @db.Timestamptz(6)
 
   workspace           Workspace            @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
@@ -639,6 +647,7 @@ model Song {
   referenceUsages     ReferenceUsage[]
   shareLinks          ShareLink[]
   videoConcepts       VideoConcept[]       @relation("SongVideoConcept")
+  clips               SongClip[]
   release             Release?             @relation("ReleaseSong")
   album               Album?               @relation(fields: [albumId], references: [id], onDelete: SetNull)
   benchmarkPairs      BenchmarkPair[]
@@ -1079,6 +1088,48 @@ model VideoRender {
   concept VideoConcept? @relation(fields: [conceptId], references: [id])
 
   @@index([projectId])
+}
+
+/// AUTO-CLIP DERIVATIVE (Phase 2, 2026-07-21) — a vertical short cut from the
+/// ONE assembled master music video by ffmpeg EDIT (crop/trim/drawtext), NEVER a
+/// re-render. "Generate once, repurpose many": each row is a cheap 9:16 slice of
+/// the master ready for TikTok / Reels / Shorts, hook-first, captions burned in,
+/// "afro" watermark kept. sourceVideoId ties it to the exact VideoRender master
+/// it was cut from (so a fresh master can recut without touching the old set).
+model SongClip {
+  id            String   @id @default(cuid())
+  songId        String
+  workspaceId   String
+  /// The assembled master VideoRender this clip was cut from.
+  sourceVideoId String
+  /// Presigned/canonical storage ref of the rendered clip (private s3://...).
+  url           String
+  durationS     Float
+  /// Start offset (seconds) into the master this clip was cut at.
+  startS        Float
+  /// 9:16 by construction; kept explicit so the UI never guesses the frame.
+  aspect        String   @default("9:16")
+  /// Duration-bucket label the UI + distributor use: short (<=15s) | reel
+  /// (<=30s) | tiktok (longer). Not a hard platform binding — a hint.
+  kind          String
+  /// The line burned into the clip (the hook, sound-off caption). Null only if
+  /// no caption could be resolved.
+  captionText   String?
+  /// The section this clip starts on (hook/chorus/verse…) when a real section
+  /// map was available, or a 'heuristic:*' tag when the start was placed by the
+  /// no-analysis fallback — stated honestly, never faked as detection.
+  sectionLabel  String?
+  /// Honest per-clip receipt: { width, height, fps, splashLeadInS, sizeBytes,
+  /// codec, hookFirst } — proof this is an edit off the master, not a render.
+  meta          Json?
+  createdAt     DateTime @default(now()) @db.Timestamptz(6)
+
+  song      Song      @relation(fields: [songId], references: [id], onDelete: Cascade)
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@index([songId, createdAt(sort: Desc)])
+  @@index([sourceVideoId])
+  @@index([workspaceId])
 }
 
 // ===========================================================================
