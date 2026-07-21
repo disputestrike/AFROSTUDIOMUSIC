@@ -97,6 +97,7 @@ import {
 } from "../lib/training-flywheel";
 import { measureAudio, dspAvailable } from "../lib/dsp";
 import { markRunning, markSucceeded, markFailed, emitJobEvent } from "../lib/jobs";
+import { enqueueReleaseKit } from "../lib/release-kit";
 import { runSynthBedPreview } from "../lib/bed-first-stream";
 import { assessLaneCompliance } from "../lib/lane-assess";
 import { processSynthMaterial } from "./synth-material";
@@ -2579,6 +2580,19 @@ export async function processOwnEngine(p: OwnEnginePayload): Promise<void> {
     console.log(
       `[own-engine] ${p.genre} done — ${notes.join(" | ")}${blueprintMatch != null ? ` | skeleton ${Math.round(blueprintMatch * 100)}%` : ""}`
     );
+    // AUTO RELEASE KIT: the own engine is the DEFAULT renderer, so a finished
+    // beat/instrumental is a creation too — fire the kit so its socials, 3-tier
+    // hashtags, titles, bio and calendar are already there, no click. The other
+    // completion points (music/master/produce/assemble-video) hook this too;
+    // own-engine was the missing one. Fail-soft inside enqueueReleaseKit — this
+    // render is already committed and is never touched by a kit failure.
+    if (p.songId) {
+      await enqueueReleaseKit({
+        songId: p.songId,
+        workspaceId: p.workspaceId,
+        reason: "song-rendered",
+      });
+    }
   } catch (err) {
     await markFailed(
       p.jobId,
