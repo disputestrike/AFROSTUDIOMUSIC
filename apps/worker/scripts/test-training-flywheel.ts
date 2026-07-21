@@ -27,13 +27,17 @@ assert(dflt?.model === 'sakemin/musicgen-fine-tuner', 'default trainer is the li
 assert(dflt?.version === 'b1ec6490e57013463006e928abc7acd8d623fe3e8321d3092e1231bf006898b1', 'default trainer pins the documented fine-tuning version');
 assert(dflt?.kind === 'training' && dflt?.datasetKey === 'dataset_path', 'default is destination-based with the verified dataset_path input');
 assert(
-  dflt?.extraInput.model_version === 'small' &&
+  dflt?.extraInput.model_version === 'stereo-melody' &&
     dflt?.extraInput.batch_size === 8 &&
     dflt?.extraInput.epochs === 1 &&
     dflt?.extraInput.updates_per_epoch === 25 &&
     dflt?.extraInput.drop_vocals === false,
-  'default trainer uses the cheapest memory-safe MusicGen settings'
+  'default trainer fine-tunes stereo-melody (32kHz stereo, melody-conditioned) on memory-safe settings'
 );
+// LICENSE LAW (trainlegal): the default MusicGen fine-tuner classifies
+// cc-by-nc, so every adapter it produces is dev-lane-only by the promotion
+// gate — the stereo-melody default is reachable ONLY behind that gate.
+assert(dflt?.license === 'cc-by-nc', 'default MusicGen trainer classifies cc-by-nc (dev lane only)');
 process.env.MUSIC_TRAINER_ENABLED = '1';
 process.env.MUSIC_TRAINER_MODEL = 'owner/music-model';
 process.env.MUSIC_TRAINER_VERSION = 'abc123';

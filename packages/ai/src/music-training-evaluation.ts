@@ -18,10 +18,19 @@
  * pinned here so the two processes can never drift onto different rows.
  */
 import {
+  emptyMusicModelRoute,
   evaluateAndPromote,
   promoteMusicModelRoute,
   type MusicModelRouteState,
 } from './music-trainer';
+import {
+  classifyModelLicense,
+  laneForBaseModel,
+  licenseGateReceipt,
+  type ModelLicense,
+  type RouteLane,
+} from './music-license';
+import { audioMetricsEnabled, audioMetricsGate } from './audio-metrics';
 
 /** ProviderJob identity of every music-training receipt (worker + API). */
 export const MUSIC_TRAINING_WORKSPACE_ID = 'training';
@@ -29,14 +38,29 @@ export const MUSIC_TRAINING_JOB_KIND = 'music-training';
 /** Candidate lifecycle phases stamped into ProviderJob.outputJson.phase. */
 export const MUSIC_TRAINING_CANDIDATE_READY_PHASE = 'candidate_ready';
 export const MUSIC_TRAINING_PROMOTED_PHASE = 'promoted';
+/** DEV-LANE promotion (trainlegal): a candidate whose BASE model license is
+ *  non-commercial (or unknown) can only ever win the isolated dev pointer. */
+export const MUSIC_TRAINING_PROMOTED_DEV_PHASE = 'promoted_dev';
 export const MUSIC_TRAINING_REJECTED_PHASE = 'rejected';
 
-/** SystemSetting keys — the durable route pointer and per-job score receipts. */
+/** SystemSetting keys — the durable route pointers and per-job receipts. */
 export const ACTIVE_MUSIC_MODEL_SETTING_KEY = 'music.training.activeModel.v1';
+/** The ISOLATED dev-lane pointer. NOTHING on a commercial render path may ever
+ *  read this key — it exists so non-commercial-base experiments still have a
+ *  measured, reversible route without touching production. */
+export const MUSIC_DEV_MODEL_SETTING_KEY = 'music.training.devModel.v1';
+/** Per-(genre|language) adapter route table (music-license.ts shapes). */
+export const MUSIC_ADAPTER_ROUTE_SETTING_KEY = 'music.training.adapterRoutes.v1';
 export const MUSIC_TRAINING_EVALUATION_PREFIX = 'music.training.evaluation.v1.';
+/** Optional measured-audio receipt persisted by the audio-metrics harness. */
+export const MUSIC_TRAINING_AUDIO_METRICS_PREFIX = 'music.training.audioMetrics.v1.';
 
 export function musicTrainingEvaluationKey(providerJobId: string): string {
   return `${MUSIC_TRAINING_EVALUATION_PREFIX}${providerJobId}`;
+}
+
+export function musicTrainingAudioMetricsKey(providerJobId: string): string {
+  return `${MUSIC_TRAINING_AUDIO_METRICS_PREFIX}${providerJobId}`;
 }
 
 type JsonRecord = Record<string, unknown>;
@@ -135,6 +159,58 @@ export function buildMusicTrainingEvaluationReceipt(input: {
   return receipt;
 }
 
+/**
+ * MEASURED-AUDIO RECEIPT (trainlegal, item 3) — what the audio-metrics harness
+ * persists beside a candidate. Like the score receipt it is BOUND to the exact
+ * candidate artifact + corpus hash; an unbound receipt parses to null and can
+ * never influence a different candidate's promotion.
+ */
+export interface MusicAudioMetricsReceipt {
+  candidateModelRef: string;
+  datasetHash: string;
+  /** FAD-CLAP vs the AfroRef reference set (lower = closer). Null = not run. */
+  fadClap: number | null;
+  /** Lyric WER on a rendered vocal clip (lower = better). Null = not run. */
+  lyricWer: number | null;
+  measuredAt: string;
+  /** Cost/model receipt lines from the harness (auditable spend trail). */
+  receipts: string[];
+}
+
+function finiteNonNegative(value: unknown): number | null {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : null;
+}
+
+/** Strict parser — fail-closed like every receipt in this file. */
+export function parseMusicAudioMetricsReceipt(
+  raw: string | null | undefined
+): MusicAudioMetricsReceipt | null {
+  if (!raw) return null;
+  try {
+    const value = JSON.parse(raw) as JsonRecord;
+    if (
+      typeof value.candidateModelRef !== 'string' || !value.candidateModelRef.trim() ||
+      typeof value.datasetHash !== 'string' || !/^[a-f0-9]{64}$/.test(value.datasetHash) ||
+      typeof value.measuredAt !== 'string' || !Number.isFinite(Date.parse(value.measuredAt)) ||
+      (value.fadClap != null && finiteNonNegative(value.fadClap) == null) ||
+      (value.lyricWer != null && finiteNonNegative(value.lyricWer) == null)
+    ) return null;
+    const receipts = Array.isArray(value.receipts)
+      ? value.receipts.filter((line): line is string => typeof line === 'string').slice(0, 50)
+      : [];
+    return {
+      candidateModelRef: value.candidateModelRef.trim(),
+      datasetHash: value.datasetHash,
+      fadClap: value.fadClap == null ? null : finiteNonNegative(value.fadClap),
+      lyricWer: value.lyricWer == null ? null : finiteNonNegative(value.lyricWer),
+      measuredAt: value.measuredAt,
+      receipts,
+    };
+  } catch {
+    return null;
+  }
+}
+
 /** Receipt minGain wins; else MUSIC_TRAINER_PROMOTION_MIN_GAIN; else 1. */
 export function resolveMusicPromotionMinGain(receiptMinGain?: number): number {
   const configuredGain = Number(process.env.MUSIC_TRAINER_PROMOTION_MIN_GAIN ?? '1');
@@ -149,6 +225,9 @@ export interface MusicTrainingCandidate {
   candidateModelRef: string;
   datasetHash: string;
   trainingId: string;
+  /** The trainer/base model that produced this adapter (license provenance);
+   *  null on legacy receipts — the license gate then fails closed to dev. */
+  trainerModel: string | null;
   phase: string | null;
   evaluationKey: string;
   evaluationError: string | null;
@@ -182,6 +261,10 @@ export function musicTrainingCandidateFromJob(job: {
     candidateModelRef,
     datasetHash,
     trainingId,
+    trainerModel:
+      typeof input.trainerModel === 'string' && input.trainerModel.trim()
+        ? input.trainerModel
+        : null,
     phase: typeof output.phase === 'string' ? output.phase : null,
     evaluationKey: musicTrainingEvaluationKey(job.id),
     evaluationError: typeof output.evaluationError === 'string' ? output.evaluationError : null,
@@ -196,16 +279,31 @@ export interface MusicCandidateEvaluationSummary extends MusicTrainingEvaluation
   minGain: number;
   promote: boolean;
   reason: string;
+  /** LICENSE LANE (trainlegal): where this candidate is ALLOWED to live. */
+  lane: RouteLane;
+  license: ModelLicense;
+  /** Every receipt behind the decision — the license gate line always leads;
+   *  measured-audio lines follow when the metrics gate ran. */
+  receipts: string[];
 }
 
 export interface MusicCandidatePromotionDecision {
-  verdict: 'mismatch' | 'rejected' | 'promoted';
+  verdict: 'mismatch' | 'rejected' | 'promoted' | 'promoted_dev';
+  /** True ONLY for a PRODUCTION promotion. A dev-lane win is real but must
+   *  never read as "the commercial route changed". */
   promoted: boolean;
   reason: string;
   minGain: number;
+  lane: RouteLane;
+  license: ModelLicense;
+  /** The exact license-gate receipt string (also receipts[0]). */
+  licenseReceipt: string;
+  receipts: string[];
   evaluationSummary: MusicCandidateEvaluationSummary;
-  /** The new route state — non-null ONLY when verdict is 'promoted'. */
+  /** The new PRODUCTION route — non-null ONLY when verdict is 'promoted'. */
   route: MusicModelRouteState | null;
+  /** The new DEV-lane route — non-null ONLY when verdict is 'promoted_dev'. */
+  devRoute: MusicModelRouteState | null;
 }
 
 /**
@@ -213,6 +311,17 @@ export interface MusicCandidatePromotionDecision {
  * a different artifact or corpus; holds the incumbent on ties, regressions, and
  * re-scores of the already-active model; promotes only a measured win of at
  * least minGain (receipt override, else env, else 1). Pure — callers persist.
+ *
+ * LICENSE LAW (trainlegal, code-enforced): the candidate's BASE model license
+ * decides its lane BEFORE any score is read. A cc-by-nc base (MusicGen) or an
+ * unknown base can ONLY ever reach the isolated dev route ('promoted_dev',
+ * devRoute) — `route` (the commercial production pointer) stays null for it on
+ * every path, no override, no env, no operator flag.
+ *
+ * MEASURED AUDIO (item 3): when AUDIO_METRICS_ENABLED=1 and a bound audio
+ * receipt is supplied, the WER/FAD thresholds referee the text score — a
+ * candidate that fails them cannot promote in ANY lane. With the gate off the
+ * text-only path is byte-for-byte the previous behavior.
  */
 export function decideMusicCandidatePromotion(input: {
   candidate: {
@@ -220,51 +329,109 @@ export function decideMusicCandidatePromotion(input: {
     candidateModelRef: string;
     trainingId: string;
     datasetHash: string;
+    /** Trainer/base model ref (license provenance). Absent → fail-closed dev. */
+    trainerModel?: string | null;
   };
   evaluation: MusicTrainingEvaluationReceipt;
   currentRoute: MusicModelRouteState;
+  /** The dev-lane pointer — incumbent for dev-lane candidates. */
+  currentDevRoute?: MusicModelRouteState;
+  /** Optional measured-audio receipt (strictly parsed, candidate-bound). */
+  audioMetrics?: MusicAudioMetricsReceipt | null;
   at?: string;
 }): MusicCandidatePromotionDecision {
   const { candidate, evaluation, currentRoute } = input;
   const minGain = resolveMusicPromotionMinGain(evaluation.minGain);
+
+  // 1. LICENSE GATE FIRST — the lane is a legal fact, not a quality outcome.
+  //    Classify the trainer base when recorded; otherwise the candidate ref
+  //    itself. Anything not positively commercial lands in the dev lane.
+  const licenseSource = candidate.trainerModel ?? candidate.candidateModelRef;
+  const license = classifyModelLicense(licenseSource);
+  const lane = laneForBaseModel(licenseSource);
+  const licenseReceipt = licenseGateReceipt(licenseSource);
+  const receipts: string[] = [licenseReceipt];
+
+  // The incumbent this candidate competes against lives in ITS OWN lane.
+  const laneRoute =
+    lane === 'production' ? currentRoute : input.currentDevRoute ?? emptyMusicModelRoute();
+
   const summaryBase = {
     ...evaluation,
-    incumbentModelRef: currentRoute.active?.modelRef ?? null,
-    incumbentScore: currentRoute.active?.score ?? null,
+    incumbentModelRef: laneRoute.active?.modelRef ?? null,
+    incumbentScore: laneRoute.active?.score ?? null,
     minGain,
+    lane,
+    license,
   };
+  const decide = (
+    verdict: MusicCandidatePromotionDecision['verdict'],
+    reason: string,
+    routes: { route?: MusicModelRouteState | null; devRoute?: MusicModelRouteState | null },
+    promote: boolean
+  ): MusicCandidatePromotionDecision => ({
+    verdict,
+    promoted: verdict === 'promoted',
+    reason,
+    minGain,
+    lane,
+    license,
+    licenseReceipt,
+    receipts,
+    evaluationSummary: { ...summaryBase, promote, reason, receipts },
+    route: routes.route ?? null,
+    devRoute: routes.devRoute ?? null,
+  });
+
   if (
     evaluation.candidateModelRef !== candidate.candidateModelRef ||
     evaluation.datasetHash !== candidate.datasetHash
   ) {
-    const reason = 'score receipt does not match candidate model and dataset hash';
-    return {
-      verdict: 'mismatch',
-      promoted: false,
-      reason,
-      minGain,
-      evaluationSummary: { ...summaryBase, promote: false, reason },
-      route: null,
-    };
+    return decide(
+      'mismatch',
+      'score receipt does not match candidate model and dataset hash',
+      {},
+      false
+    );
   }
+
+  // 2. MEASURED-AUDIO REFEREE (flag-gated; off => text-only path unchanged).
+  if (audioMetricsEnabled() && input.audioMetrics) {
+    const metrics = input.audioMetrics;
+    if (
+      metrics.candidateModelRef !== candidate.candidateModelRef ||
+      metrics.datasetHash !== candidate.datasetHash
+    ) {
+      receipts.push(
+        'audio metrics receipt ignored: bound to a different candidate/dataset (fail-soft — text judge decides alone)'
+      );
+    } else {
+      const audioGate = audioMetricsGate({
+        fadClap: metrics.fadClap,
+        lyricWer: metrics.lyricWer,
+      });
+      receipts.push(...metrics.receipts, ...audioGate.notes);
+      if (audioGate.block) {
+        receipts.push(...audioGate.reasons);
+        return decide('rejected', audioGate.reasons.join('; '), {}, false);
+      }
+    }
+  }
+
+  // 3. THE MEASURED WIN, judged against the lane's own incumbent.
   const gate = evaluateAndPromote({
     candidateScore: evaluation.candidateScore,
-    incumbentScore: currentRoute.active?.score ?? null,
+    incumbentScore: laneRoute.active?.score ?? null,
     minGain,
   });
-  const evaluationSummary: MusicCandidateEvaluationSummary = {
-    ...summaryBase,
-    promote: gate.promote,
-    reason: gate.reason,
-  };
-  if (!gate.promote || currentRoute.active?.modelRef === candidate.candidateModelRef) {
-    const reason = currentRoute.active?.modelRef === candidate.candidateModelRef
+  if (!gate.promote || laneRoute.active?.modelRef === candidate.candidateModelRef) {
+    const reason = laneRoute.active?.modelRef === candidate.candidateModelRef
       ? 'candidate is already the active model'
       : gate.reason;
-    return { verdict: 'rejected', promoted: false, reason, minGain, evaluationSummary, route: null };
+    return decide('rejected', reason, {}, gate.promote);
   }
-  const route = promoteMusicModelRoute({
-    current: currentRoute,
+  const promotedRoute = promoteMusicModelRoute({
+    current: laneRoute,
     candidate: {
       modelRef: candidate.candidateModelRef,
       providerJobId: candidate.providerJobId,
@@ -272,16 +439,20 @@ export function decideMusicCandidatePromotion(input: {
       datasetHash: candidate.datasetHash,
       score: evaluation.candidateScore,
       evaluatedAt: evaluation.measuredAt,
+      lane,
+      license,
     },
     reason: gate.reason,
     at: input.at,
   });
-  return {
-    verdict: 'promoted',
-    promoted: true,
-    reason: gate.reason,
-    minGain,
-    evaluationSummary,
-    route,
-  };
+  // 4. HARD LANE SPLIT: a dev-lane candidate NEVER touches `route` (the
+  //    production pointer) — the block is this branch, not a comment.
+  return lane === 'production'
+    ? decide('promoted', gate.reason, { route: promotedRoute }, true)
+    : decide(
+        'promoted_dev',
+        `${gate.reason} — dev lane only: ${licenseReceipt}`,
+        { devRoute: promotedRoute },
+        true
+      );
 }

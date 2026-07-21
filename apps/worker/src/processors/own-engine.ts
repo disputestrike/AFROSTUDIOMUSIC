@@ -90,7 +90,10 @@ import { certifyAudioBytes } from "../lib/certified-assets";
 import { deleteUnreferencedAssetRefs } from "./asset-cleanup";
 import { renderMelodyGuide, renderMelodyLead, leadVoiceFor } from "../lib/melody-guide";
 import { overlayFills } from "../lib/fills";
-import { resolveActiveMusicModelRef } from "../lib/training-flywheel";
+import {
+  resolveActiveMusicModelRef,
+  resolveTrainedAdapterRefForRender,
+} from "../lib/training-flywheel";
 import { measureAudio, dspAvailable } from "../lib/dsp";
 import { markRunning, markSucceeded, markFailed, emitJobEvent } from "../lib/jobs";
 import { assessLaneCompliance } from "../lib/lane-assess";
@@ -1762,9 +1765,20 @@ export async function processOwnEngine(p: OwnEnginePayload): Promise<void> {
       verifiedBpm: number | null;
     } | null = null;
     {
-      const activeModelRef = await resolveActiveMusicModelRef().catch(
+      // LICENSE-LANE-GATED base pointer (trainlegal): resolveActiveMusicModelRef
+      // now returns ONLY a production-lane (commercially-licensed) promotion —
+      // a cc-by-nc MusicGen fine-tune parses into the dev lane and can no
+      // longer back this paid commercial render.
+      const baseTrainedModelRef = await resolveActiveMusicModelRef().catch(
         () => null
       );
+      // PER-GENRE/LANGUAGE ADAPTER ROUTE (flag-gated OFF by default via
+      // MUSIC_ADAPTER_ROUTES_ENABLED): route this render's genre to its
+      // matching production-lane adapter, base fallback otherwise.
+      const activeModelRef = await resolveTrainedAdapterRefForRender({
+        genre: p.genre,
+        fallback: baseTrainedModelRef,
+      }).catch(() => baseTrainedModelRef);
       const trainedDecision = trainedLayerDecision({
         modelRef: activeModelRef,
         flag: process.env.OWN_ENGINE_TRAINED_LAYER ?? null,

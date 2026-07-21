@@ -15,20 +15,26 @@
 import { prisma } from '@afrohit/db';
 import {
   ACTIVE_MUSIC_MODEL_SETTING_KEY,
+  MUSIC_DEV_MODEL_SETTING_KEY,
   MUSIC_TRAINING_CANDIDATE_READY_PHASE,
   MUSIC_TRAINING_JOB_KIND,
+  MUSIC_TRAINING_PROMOTED_DEV_PHASE,
   MUSIC_TRAINING_PROMOTED_PHASE,
   MUSIC_TRAINING_REJECTED_PHASE,
   MUSIC_TRAINING_WORKSPACE_ID,
   buildMusicTrainingEvaluationReceipt,
   decideMusicCandidatePromotion,
+  musicTrainingAudioMetricsKey,
   musicTrainingCandidateFromJob,
   musicTrainingEvaluationKey,
+  parseMusicAudioMetricsReceipt,
   parseMusicModelRoute,
   parseMusicTrainingEvaluation,
   rollbackMusicModelRoute,
   type MusicModelRouteState,
   type MusicTrainingEvaluationReceipt,
+  type ModelLicense,
+  type RouteLane,
 } from '@afrohit/ai';
 
 function seamError(message: string, statusCode: number): Error {
@@ -39,6 +45,15 @@ function seamError(message: string, statusCode: number): Error {
 export async function readActiveMusicModelRoute(): Promise<MusicModelRouteState> {
   const row = await prisma.systemSetting.findUnique({
     where: { key: ACTIVE_MUSIC_MODEL_SETTING_KEY },
+  });
+  return parseMusicModelRoute(row?.value);
+}
+
+/** The isolated DEV-lane pointer (trainlegal): where non-commercial-base
+ * candidates promote. Never read by any render path. */
+export async function readDevMusicModelRoute(): Promise<MusicModelRouteState> {
+  const row = await prisma.systemSetting.findUnique({
+    where: { key: MUSIC_DEV_MODEL_SETTING_KEY },
   });
   return parseMusicModelRoute(row?.value);
 }
@@ -127,10 +142,17 @@ export async function listMusicTrainingCandidates(): Promise<TrainingCandidatesR
 export interface EvaluationSubmissionResult {
   receipt: MusicTrainingEvaluationReceipt;
   evaluationKey: string;
+  /** True ONLY for a PRODUCTION promotion (never for a dev-lane win). */
   promoted: boolean;
   reason: string;
   activeModelRef: string | null;
   previousModelRef: string | null;
+  /** LICENSE LANE (trainlegal) — where the candidate was allowed to live. */
+  lane: RouteLane;
+  license: ModelLicense;
+  licenseReceipt: string;
+  /** Set ONLY when the candidate won the isolated dev pointer. */
+  devModelRef: string | null;
 }
 
 /** Persist a strict, candidate-bound score receipt and run the promotion gate
@@ -181,17 +203,66 @@ export async function submitMusicTrainingEvaluation(input: {
   });
 
   const current = await readActiveMusicModelRoute();
+  const currentDev = await readDevMusicModelRoute();
+  const audioMetricsRow = await prisma.systemSetting.findUnique({
+    where: { key: musicTrainingAudioMetricsKey(job.id) },
+  });
   const decision = decideMusicCandidatePromotion({
     candidate: {
       providerJobId: candidate.providerJobId,
       candidateModelRef: candidate.candidateModelRef,
       trainingId: candidate.trainingId,
       datasetHash: candidate.datasetHash,
+      trainerModel: candidate.trainerModel,
     },
     evaluation: receipt,
     currentRoute: current,
+    currentDevRoute: currentDev,
+    audioMetrics: parseMusicAudioMetricsReceipt(audioMetricsRow?.value),
   });
   const evaluatedOutput = { ...candidate.output, evaluation: decision.evaluationSummary };
+  const laneFields = {
+    lane: decision.lane,
+    license: decision.license,
+    licenseReceipt: decision.licenseReceipt,
+  };
+
+  // DEV-LANE PROMOTION (license law): the production pointer is untouched by
+  // construction — only the isolated dev pointer moves.
+  if (decision.verdict === 'promoted_dev' && decision.devRoute) {
+    const devRoute = decision.devRoute;
+    await prisma.$transaction([
+      prisma.systemSetting.upsert({
+        where: { key: MUSIC_DEV_MODEL_SETTING_KEY },
+        create: { key: MUSIC_DEV_MODEL_SETTING_KEY, value: JSON.stringify(devRoute) },
+        update: { value: JSON.stringify(devRoute) },
+      }),
+      prisma.providerJob.update({
+        where: { id: job.id },
+        data: {
+          outputJson: {
+            ...evaluatedOutput,
+            phase: MUSIC_TRAINING_PROMOTED_DEV_PHASE,
+            devModelRef: devRoute.active?.modelRef,
+            previousDevModelRef: devRoute.previous?.modelRef ?? null,
+            licenseReceipt: decision.licenseReceipt,
+            promotedAt: devRoute.updatedAt,
+          } as never,
+          finishedAt: new Date(),
+        },
+      }),
+    ]);
+    return {
+      receipt,
+      evaluationKey: key,
+      promoted: false,
+      reason: decision.reason,
+      activeModelRef: current.active?.modelRef ?? null,
+      previousModelRef: current.previous?.modelRef ?? null,
+      ...laneFields,
+      devModelRef: devRoute.active?.modelRef ?? null,
+    };
+  }
 
   if (decision.verdict !== 'promoted' || !decision.route) {
     await prisma.providerJob.update({
@@ -212,6 +283,8 @@ export async function submitMusicTrainingEvaluation(input: {
       reason: decision.reason,
       activeModelRef: current.active?.modelRef ?? null,
       previousModelRef: current.previous?.modelRef ?? null,
+      ...laneFields,
+      devModelRef: null,
     };
   }
 
@@ -230,6 +303,7 @@ export async function submitMusicTrainingEvaluation(input: {
           phase: MUSIC_TRAINING_PROMOTED_PHASE,
           activeModelRef: route.active?.modelRef,
           previousModelRef: route.previous?.modelRef ?? null,
+          licenseReceipt: decision.licenseReceipt,
           promotedAt: route.updatedAt,
         } as never,
         finishedAt: new Date(),
@@ -243,6 +317,8 @@ export async function submitMusicTrainingEvaluation(input: {
     reason: decision.reason,
     activeModelRef: route.active?.modelRef ?? null,
     previousModelRef: route.previous?.modelRef ?? null,
+    ...laneFields,
+    devModelRef: null,
   };
 }
 

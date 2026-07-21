@@ -16,6 +16,12 @@ import type {
   MusicProviderAdapter,
   ProviderJobResult,
 } from './types';
+import {
+  parseMusicAdapterRouteTable,
+  resolveMusicAdapterRoute,
+  type MusicAdapterResolution,
+  type RouteLane,
+} from '../music-license';
 import { getGenreKit } from '@afrohit/shared';
 import { detectAfricanLanguage, annotateLyricsForSinging } from '../african-g2p';
 
@@ -1179,6 +1185,34 @@ export function forgeLoopAdapter(input: {
     adapter: musicAdapter(input.songProvider ?? undefined, input.workspaceKey),
     route: "song-provider-fallback",
   };
+}
+
+/**
+ * PER-GENRE/LANGUAGE TRAINED-ADAPTER ROUTING (trainlegal item 5) — resolve
+ * which fine-tuned adapter should back a render for a given genre/language,
+ * with base fallback. Pure over the raw SystemSetting value so the worker's
+ * one DB read stays in the worker.
+ *
+ * LICENSE LAW rides the resolver: a 'production' query can only ever receive
+ * a production-lane, commercially-licensed adapter (resolveMusicAdapterRoute
+ * enforces it); dev-lane experiments are invisible to paying renders.
+ */
+export function resolveTrainedAdapterForRender(input: {
+  /** Raw JSON from MUSIC_ADAPTER_ROUTE_SETTING_KEY (or null/undefined). */
+  routeTableRaw?: string | null;
+  genre?: string | null;
+  language?: string | null;
+  lane?: RouteLane;
+  /** The single active base pointer (already lane-gated by the caller). */
+  baseModelRef?: string | null;
+}): MusicAdapterResolution {
+  const table = parseMusicAdapterRouteTable(input.routeTableRaw);
+  return resolveMusicAdapterRoute(table, {
+    genre: input.genre,
+    language: input.language,
+    lane: input.lane ?? 'production',
+    baseModelRef: input.baseModelRef ?? null,
+  });
 }
 
 export function musicAdapter(override?: string, apiKey?: string): MusicProviderAdapter {
