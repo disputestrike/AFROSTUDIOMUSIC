@@ -111,7 +111,13 @@ export async function overlayFills(song: Buffer, fill: Buffer, placements: numbe
     await writeFile(songPath, song);
     await writeFile(fillPath, fill);
     await new Promise<void>((resolve, reject) => {
-      const p = spawn('ffmpeg', ['-y', '-hide_banner', '-loglevel', 'error', '-i', songPath, '-i', fillPath, '-filter_complex', graph, '-map', '[out]', outPath]);
+      // 44.1kHz STEREO GUARANTEE (African-singing wave item 4): pin the output to
+      // 44.1k/stereo so a fill overlay — the one pre-master mutation on the
+      // ACE-Step path — can never silently downgrade the render's sample rate or
+      // fold it to mono before mastering/delivery. Config only (output-stage
+      // resample/upmix), never a DSP change to the fill graph itself; identity
+      // for the common 44.1k stereo source.
+      const p = spawn('ffmpeg', ['-y', '-hide_banner', '-loglevel', 'error', '-i', songPath, '-i', fillPath, '-filter_complex', graph, '-map', '[out]', '-ar', '44100', '-ac', '2', outPath]);
       let stderr = '';
       p.stderr.on('data', (d) => (stderr += d.toString()));
       p.on('error', (e) => reject(new Error(`ffmpeg spawn failed: ${e.message}`)));

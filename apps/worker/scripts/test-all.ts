@@ -360,6 +360,7 @@ async function runOfflineTests(): Promise<void> {
     ["Training isolation (lane/pin/zap)", "test-training-isolation.ts"],
     ["Singing brain (sung-form laws)", "test-singing-brain.ts"],
     ["Melody brain (composed, not guessed)", "test-melody-brain.ts"],
+    ["African singing wave (G2P/contour/swing/44.1k)", "test-singer.ts"],
     ["Vocal assets + mix truth", "test-vocal-assets.ts"],
     ["Title law (brand, not sentence)", "test-title-law.ts"],
     ["Catalogue QA (blocks the garbage)", "test-lyric-qa.ts"],
