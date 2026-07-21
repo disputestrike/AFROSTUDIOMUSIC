@@ -106,8 +106,12 @@ assert.equal(
 );
 
 // --- 2. THE PROMOTION GATE (shared decision; worker and API run this) --------
+// LICENSE LAW (trainlegal): production promotion requires a commercially-
+// licensed BASE model (apache-2.0), so these candidates record an ACE-Step
+// trainer. The cc-by-nc / unknown dev-lane confinement is asserted below.
 delete process.env.MUSIC_TRAINER_PROMOTION_MIN_GAIN;
-const candidate = { providerJobId: 'job-1', candidateModelRef: modelRef, trainingId: 'train-1', datasetHash };
+const commercialTrainer = 'acme/ace-step-fine-tuner';
+const candidate = { providerJobId: 'job-1', candidateModelRef: modelRef, trainingId: 'train-1', datasetHash, trainerModel: commercialTrainer };
 
 // no incumbent → the first measured candidate becomes the baseline
 const baseline = decideMusicCandidatePromotion({
@@ -124,7 +128,7 @@ const incumbentRoute = baseline.route!;
 
 // tie → hold
 const rivalHash = 'c'.repeat(64);
-const rival = { providerJobId: 'job-2', candidateModelRef: 'afrohit/music:v2v2v2v2', trainingId: 'train-2', datasetHash: rivalHash };
+const rival = { providerJobId: 'job-2', candidateModelRef: 'afrohit/music:v2v2v2v2', trainingId: 'train-2', datasetHash: rivalHash, trainerModel: commercialTrainer };
 const tie = decideMusicCandidatePromotion({
   candidate: rival,
   evaluation: buildMusicTrainingEvaluationReceipt({
@@ -186,6 +190,30 @@ const clearWin = decideMusicCandidatePromotion({
 });
 assert.equal(clearWin.verdict, 'promoted', 'clearing the env bar promotes');
 delete process.env.MUSIC_TRAINER_PROMOTION_MIN_GAIN;
+
+// --- LICENSE LANES (trainlegal): cc-by-nc / unknown bases never touch prod ---
+const devCandidate = { ...rival, trainerModel: 'sakemin/musicgen-fine-tuner' };
+const devWin = decideMusicCandidatePromotion({
+  candidate: devCandidate,
+  evaluation: buildMusicTrainingEvaluationReceipt({
+    candidateModelRef: rival.candidateModelRef, datasetHash: rivalHash, candidateScore: 99, evaluator: 'ear',
+  }),
+  currentRoute: incumbentRoute,
+});
+assert.equal(devWin.verdict, 'promoted_dev', 'a MusicGen (cc-by-nc) base wins the DEV lane only');
+assert.equal(devWin.route, null, 'the PRODUCTION route is untouched by a cc-by-nc base — code-enforced');
+assert.equal(devWin.devRoute?.active?.modelRef, rival.candidateModelRef, 'the isolated dev pointer carries the win');
+assert.equal(devWin.lane, 'dev');
+assert.equal(devWin.license, 'cc-by-nc');
+assert.match(devWin.licenseReceipt, /CC-BY-NC-4\.0/, 'the license receipt names the law');
+const unknownBase = decideMusicCandidatePromotion({
+  candidate: { ...rival, trainerModel: null },
+  evaluation: buildMusicTrainingEvaluationReceipt({
+    candidateModelRef: rival.candidateModelRef, datasetHash: rivalHash, candidateScore: 99, evaluator: 'ear',
+  }),
+  currentRoute: incumbentRoute,
+});
+assert.equal(unknownBase.route, null, 'an UNRECORDED base fails closed to the dev lane (no production route)');
 
 // rollback state math (shared): no previous → honest refusal
 assert.equal(rollbackMusicModelRoute({ current: emptyMusicModelRoute(), reason: 'x' }).rolledBack, false);

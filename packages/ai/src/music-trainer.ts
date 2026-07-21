@@ -22,7 +22,18 @@
  */
 import { createHash } from 'node:crypto';
 import { replicateToken } from './providers/music';
+import {
+  classifyModelLicense,
+  type ModelLicense,
+  type RouteLane,
+} from './music-license';
 import type { TrainingManifest, TrainingOrigin } from '@afrohit/shared';
+
+/** LICENSE LAW (trainlegal): MODEL_LICENSES, licenseAllowsCommercial(),
+ *  laneForBaseModel(), licenseGateReceipt() and the per-(genre|language)
+ *  adapter route table are single-sourced in music-license.ts and re-exported
+ *  here so the trainer surface carries its own legal classification. */
+export * from './music-license';
 
 const REPLICATE_API = 'https://api.replicate.com/v1';
 const REQUEST_TIMEOUT_MS = 30_000;
@@ -46,6 +57,10 @@ export interface MusicTrainerConfig {
   datasetKey: string;
   destination?: string;
   extraInput: Record<string, unknown>;
+  /** License of the BASE model this trainer fine-tunes (fail-closed 'unknown').
+   *  Adapters inherit it: a cc-by-nc base (MusicGen) means every adapter is
+   *  confined to the dev lane by the promotion gate — never a commercial render. */
+  license: ModelLicense;
 }
 
 /** DEFAULT TRAINER — LIVE-VERIFIED on replicate.com 2026-07-19 (same precedent
@@ -70,9 +85,14 @@ export function musicTrainerConfig(): MusicTrainerConfig | null {
     model === DEFAULT_TRAINER_MODEL && version === DEFAULT_TRAINER_VERSION;
   let extraInput: Record<string, unknown> = usingDefault
     ? {
-        // Cheapest memory-safe baseline for the verified MusicGen trainer.
-        // Operators may override any value through MUSIC_TRAINER_EXTRA_INPUT.
-        model_version: 'small',
+        // 32 kHz STEREO + MELODY-CONDITIONED default (trainlegal wave): the
+        // fine-tune that can actually carry a melodic lead. LEGAL REACH: the
+        // MusicGen base is CC-BY-NC, so every adapter this default produces is
+        // license-gated into the isolated DEV lane by
+        // decideMusicCandidatePromotion — it can never back a commercial
+        // render (see music-license.ts). Operators may override any value
+        // through MUSIC_TRAINER_EXTRA_INPUT.
+        model_version: 'stereo-melody',
         // The trainer runs eight-way data parallelism and requires a multiple
         // of eight; 8 is the smallest valid, lowest-memory batch.
         batch_size: 8,
@@ -109,6 +129,9 @@ export function musicTrainerConfig(): MusicTrainerConfig | null {
     datasetKey: process.env.MUSIC_TRAINER_DATASET_KEY?.trim() || (usingDefault ? 'dataset_path' : 'dataset_zip'),
     destination: process.env.MUSIC_TRAINER_DESTINATION?.trim() || undefined,
     extraInput,
+    // Fail-closed classification of the BASE model's weight license — the
+    // default MusicGen fine-tuner classifies cc-by-nc (dev lane only).
+    license: classifyModelLicense(model),
   };
 }
 
@@ -391,6 +414,12 @@ export interface MusicModelRouteEntry {
   score: number;
   evaluatedAt: string;
   activatedAt: string;
+  /** LICENSE LANE (trainlegal): 'production' ONLY when the base model's
+   *  license permits commercial use. Absent on legacy entries → parsed as
+   *  'dev' (fail-closed) so a pre-gate MusicGen fine-tune can never keep
+   *  backing commercial renders on a technicality. */
+  lane?: RouteLane;
+  license?: ModelLicense;
 }
 
 export interface MusicModelRouteEvent {
@@ -434,6 +463,12 @@ function routeEntry(value: unknown): MusicModelRouteEntry | null {
     score: row.score,
     evaluatedAt: row.evaluatedAt,
     activatedAt: row.activatedAt,
+    // Fail-closed lane parse: anything not explicitly 'production' is 'dev'.
+    lane: row.lane === 'production' ? 'production' : 'dev',
+    license:
+      row.license === 'cc-by-nc' || row.license === 'apache-2.0'
+        ? row.license
+        : 'unknown',
   };
 }
 

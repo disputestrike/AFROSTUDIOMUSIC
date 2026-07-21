@@ -191,6 +191,55 @@ export function trainingEligibility(a: AssetProvenance, policy?: TrainingPolicy)
   }
 }
 
+/**
+ * AFROREF ELIGIBILITY (trainlegal item 4) — may this asset enter the AfroRef
+ * REFERENCE set (the measuring stick FAD-CLAP compares candidates against)?
+ *
+ * STRICTER than the training gate on purpose, and with NO policy override:
+ * the reference set defines what "our sound" means, so it admits ONLY
+ *  - own-engine renders / own masters ('own-master'), and
+ *  - consented user-original uploads ('user-original' + consentGranted).
+ * MiniMax/Suno/ACE-step/Eleven renders are refused UNCONDITIONALLY — even the
+ * operator's outside-render learning toggle never reaches this gate. A
+ * measuring stick built from someone else's engine would make every FAD
+ * number a comparison to THEIR sound (and their ToS problem), not ours.
+ */
+export function afroRefEligibility(a: AssetProvenance): EligibilityVerdict {
+  const origin = deriveTrainingOrigin(a);
+  switch (origin) {
+    case 'own-master':
+      return { eligible: true, origin };
+    case 'user-original':
+      return a.consentGranted === true
+        ? { eligible: true, origin }
+        : {
+            eligible: false,
+            origin,
+            reason: `clip ${a.id}: user-original audio needs an explicit training-license grant (consentGranted) before it can anchor the AfroRef reference set`,
+          };
+    case 'third-party-render':
+      return {
+        eligible: false,
+        origin,
+        reason: `clip ${a.id}: third-party-engine render (MiniMax/Suno/ACE-step/Eleven) — NEVER admitted to the AfroRef reference set, no override exists`,
+      };
+    case 'licensed-catalog':
+    case 'live-session':
+      return {
+        eligible: false,
+        origin,
+        reason: `clip ${a.id}: AfroRef admits only own-engine renders and consented user-original uploads — '${origin}' stays training fuel, not the measuring stick`,
+      };
+    case 'unknown':
+    default:
+      return {
+        eligible: false,
+        origin,
+        reason: `clip ${a.id}: provenance not established — refused (fail-closed)`,
+      };
+  }
+}
+
 export interface TrainingManifest {
   eligible: Array<{ id: string; origin: TrainingOrigin }>;
   rejected: Array<{ id: string; origin: TrainingOrigin; reason: string }>;

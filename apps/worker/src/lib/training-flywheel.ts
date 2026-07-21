@@ -21,6 +21,9 @@ import {
 } from "@afrohit/shared";
 import {
   ACTIVE_MUSIC_MODEL_SETTING_KEY,
+  MUSIC_ADAPTER_ROUTE_SETTING_KEY,
+  MUSIC_DEV_MODEL_SETTING_KEY,
+  MUSIC_TRAINING_AUDIO_METRICS_PREFIX,
   MUSIC_TRAINING_EVALUATION_PREFIX,
   MUSIC_TRAINING_WORKSPACE_ID,
   buildMusicTrainingEvaluationReceipt,
@@ -30,9 +33,11 @@ import {
   musicTrainerConfig,
   musicTrainerEnabled,
   minCorpusSize,
+  parseMusicAudioMetricsReceipt,
   parseMusicModelRoute,
   parseMusicTrainingEvaluation,
   pollMusicTraining,
+  resolveTrainedAdapterForRender,
   rollbackMusicModelRoute,
   trainingDatasetHash,
   type MusicModelRouteState,
@@ -203,10 +208,56 @@ export async function readActiveMusicModelRoute(): Promise<MusicModelRouteState>
   return parseMusicModelRoute(row?.value);
 }
 
-/** Routing seam for inference consumers. Rendering changes are intentionally
- * outside this bounded subtask, so callers opt in by reading this pointer. */
+/** The isolated dev-lane pointer — read/written by the promotion gate for
+ * non-commercial-base candidates. NOTHING on a render path reads this. */
+export async function readDevMusicModelRoute(): Promise<MusicModelRouteState> {
+  const row = await prisma.systemSetting.findUnique({
+    where: { key: MUSIC_DEV_MODEL_SETTING_KEY },
+  });
+  return parseMusicModelRoute(row?.value);
+}
+
+/** Routing seam for inference consumers — PRODUCTION renders only.
+ *
+ * LICENSE LANE ENFORCEMENT (trainlegal): the pointer is honored ONLY when the
+ * active entry sits in the 'production' lane. Legacy entries (promoted before
+ * lanes existed) parse fail-closed to 'dev' — the pre-gate MusicGen fine-tune
+ * is CC-BY-NC and may not back commercial renders, so it stops routing here
+ * BY LAW, not by comment. A commercially-licensed promotion re-opens the tap. */
 export async function resolveActiveMusicModelRef(): Promise<string | null> {
-  return (await readActiveMusicModelRoute()).active?.modelRef ?? null;
+  const active = (await readActiveMusicModelRoute()).active;
+  if (!active) return null;
+  return active.lane === "production" ? active.modelRef : null;
+}
+
+/**
+ * PER-GENRE/LANGUAGE ADAPTER ROUTE (trainlegal item 5) — flag-gated OFF by
+ * default (MUSIC_ADAPTER_ROUTES_ENABLED=1 arms it). Resolves the matching
+ * production-lane adapter for a render slice via the shared pure resolver in
+ * @afrohit/ai providers/music.ts, falling back to the (lane-gated) base
+ * pointer. Off or unreadable → the fallback, exactly today's behavior.
+ */
+export async function resolveTrainedAdapterRefForRender(input: {
+  genre?: string | null;
+  language?: string | null;
+  fallback: string | null;
+}): Promise<string | null> {
+  if (process.env.MUSIC_ADAPTER_ROUTES_ENABLED !== "1") return input.fallback;
+  try {
+    const row = await prisma.systemSetting.findUnique({
+      where: { key: MUSIC_ADAPTER_ROUTE_SETTING_KEY },
+    });
+    const resolved = resolveTrainedAdapterForRender({
+      routeTableRaw: row?.value ?? null,
+      genre: input.genre,
+      language: input.language,
+      lane: "production",
+      baseModelRef: input.fallback,
+    });
+    return resolved.modelRef;
+  } catch {
+    return input.fallback; // route table unavailable != render failure
+  }
 }
 
 /** Operator-safe rollback. The former active remains as `previous`, so the
@@ -757,15 +808,61 @@ async function evaluateCandidateJob(job: TrainingJobRow): Promise<{
   }
 
   const current = await readActiveMusicModelRoute();
+  const currentDev = await readDevMusicModelRoute();
+  // MEASURED AUDIO (trainlegal item 3): an optional, candidate-bound receipt
+  // persisted by the audio-metrics harness. Absent/unbound => text-only path.
+  const audioMetricsRow = await prisma.systemSetting.findUnique({
+    where: { key: `${MUSIC_TRAINING_AUDIO_METRICS_PREFIX}${job.id}` },
+  });
   // SHARED GATE (single source of truth in @afrohit/ai): minGain resolution,
-  // the win-by-minGain rule, the already-active hold, and route construction
-  // are decided by the same pure code the API admin seam runs.
+  // the win-by-minGain rule, the already-active hold, the LICENSE LANE split
+  // (cc-by-nc/unknown bases can only win the isolated dev pointer), the audio
+  // referee, and route construction are decided by the same pure code the API
+  // admin seam runs.
   const decision = decideMusicCandidatePromotion({
-    candidate: { providerJobId: job.id, candidateModelRef, trainingId, datasetHash },
+    candidate: {
+      providerJobId: job.id,
+      candidateModelRef,
+      trainingId,
+      datasetHash,
+      trainerModel: typeof input.trainerModel === "string" ? input.trainerModel : null,
+    },
     evaluation,
     currentRoute: current,
+    currentDevRoute: currentDev,
+    audioMetrics: parseMusicAudioMetricsReceipt(audioMetricsRow?.value),
   });
   const evaluatedOutput = { ...output, evaluation: decision.evaluationSummary };
+
+  // DEV-LANE PROMOTION: a real measured win, but the base model's license is
+  // non-commercial — the PRODUCTION pointer is untouched by construction
+  // (decision.route stays null); only the isolated dev pointer moves.
+  if (decision.verdict === "promoted_dev" && decision.devRoute) {
+    const devRoute = decision.devRoute;
+    await prisma.$transaction([
+      prisma.systemSetting.upsert({
+        where: { key: MUSIC_DEV_MODEL_SETTING_KEY },
+        create: { key: MUSIC_DEV_MODEL_SETTING_KEY, value: JSON.stringify(devRoute) },
+        update: { value: JSON.stringify(devRoute) },
+      }),
+      prisma.providerJob.update({
+        where: { id: job.id },
+        data: {
+          outputJson: {
+            ...evaluatedOutput,
+            phase: "promoted_dev",
+            devModelRef: devRoute.active?.modelRef,
+            previousDevModelRef: devRoute.previous?.modelRef ?? null,
+            licenseReceipt: decision.licenseReceipt,
+            promotedAt: devRoute.updatedAt,
+          } as never,
+          finishedAt: new Date(),
+        },
+      }),
+    ]);
+    console.log(`[flywheel] promoted ${candidateModelRef} to the DEV lane only — ${decision.licenseReceipt}`);
+    return { pending: false, reason: decision.reason, candidateModelRef };
+  }
 
   if (decision.verdict !== "promoted" || !decision.route) {
     await prisma.providerJob.update({
@@ -793,6 +890,7 @@ async function evaluateCandidateJob(job: TrainingJobRow): Promise<{
           phase: "promoted",
           activeModelRef: route.active?.modelRef,
           previousModelRef: route.previous?.modelRef ?? null,
+          licenseReceipt: decision.licenseReceipt,
           promotedAt: route.updatedAt,
         } as never,
         finishedAt: new Date(),

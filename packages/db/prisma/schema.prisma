@@ -843,6 +843,34 @@ model SoundReference {
   @@index([workspaceId, analysisState])
 }
 
+/// AFROREF — the rights-clean audio REFERENCE set (trainlegal wave): the
+/// measuring stick FAD-CLAP compares training candidates against. Ingestion is
+/// gated by afroRefEligibility (@afrohit/shared training-corpus.ts): ONLY
+/// own-engine renders and consented user-original uploads — MiniMax/Suno/
+/// ACE-step/Eleven renders are refused unconditionally (no operator override).
+/// Scalar refs (no FK) like SoundReference, so the reference set survives
+/// catalog churn and stays decoupled.
+model AfroRefClip {
+  id          String   @id @default(cuid())
+  workspaceId String?
+  songId      String?
+  materialId  String?
+  url         String
+  genre       String
+  language    String?
+  /// TrainingOrigin recorded at ingest ('own-master' | 'user-original') — the
+  /// gate's verdict, persisted so the set stays provably rights-clean.
+  provenance  String
+  /// Engine stamp checked by the gate (provable, not asserted).
+  engine      String?
+  contentHash String?
+  addedAt     DateTime @default(now()) @db.Timestamptz(6)
+
+  @@unique([contentHash])
+  @@index([genre, language])
+  @@index([songId])
+}
+
 // Queryable proof that a real material file was present in a rendered beat.
 // Beat.meta keeps the human-readable receipt; this table is the auditable,
 // aggregateable source of truth for "where was my loop used?".
