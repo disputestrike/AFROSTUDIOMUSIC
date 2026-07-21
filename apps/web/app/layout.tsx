@@ -19,9 +19,9 @@ export const metadata: Metadata = {
     ],
     apple: '/apple-touch-icon.png',
   },
-  title: 'AfroHits Studio - the AI production house',
+  title: 'AfroHits Studio — turn your idea into a finished release',
   description:
-    'Bring your beat, finish the whole record. Hooks, lyrics, vocals, industry mastering, cover art and release - one AI production house built for African and diaspora artists.',
+    'Create original songs, professional vocals, mastered audio, cinematic video, and social content — ready to release. Built for independent African and diaspora artists.',
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
