@@ -222,13 +222,17 @@ const TRAINED_LAYER_GAIN = 0.6;
  *  and the old stock-musicgen topping (0.85). */
 const MELODY_LEAD_GAIN = 0.7;
 
-/** Bounded fan-out width for the two forge loops (SOUNDCORE item 3). ~4 keeps
- *  well inside Replicate's creation rate while collapsing 8 serial multi-minute
- *  renders into ~2 waves; the 429 backoff inside processForgeMaterial still
- *  absorbs throttling. Override via OWN_ENGINE_FORGE_CONCURRENCY. */
+/** Bounded fan-out width for the two forge loops (SOUNDCORE item 3). Forge
+ *  renders are I/O-bound Replicate polls (submit → prefer:wait → poll), NOT CPU
+ *  work — the same profile as the video shot lane, which already runs at 12. At
+ *  width 4 a fresh-lane song forges 8 instruments in 2 slow waves (~2-6 min);
+ *  width 8 collapses those 8 forges into ONE wave, halving the single biggest
+ *  wall-clock sink of a first-in-lane song. The 429 backoff inside
+ *  processForgeMaterial still absorbs Replicate's ~6/min creation throttle.
+ *  Override via OWN_ENGINE_FORGE_CONCURRENCY (bump toward 12 if throttle allows). */
 const FORGE_FANOUT_CONCURRENCY = Math.max(
   1,
-  Number(process.env.OWN_ENGINE_FORGE_CONCURRENCY ?? 4) || 4
+  Number(process.env.OWN_ENGINE_FORGE_CONCURRENCY ?? 8) || 8
 );
 
 /** A bounded-concurrency pool: run `fn` over `items` at most `concurrency` at a
