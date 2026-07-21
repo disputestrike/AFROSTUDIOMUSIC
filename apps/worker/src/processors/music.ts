@@ -17,6 +17,7 @@ import {
 import { genreSignature, planFills, scoreLaneCompliance, scoreLyricAudioAlignment, engineAdequacy, structureMatch, blueprintFromMeasured, isFirstPartyWorkspace, resolveEngineForWorkspace, promotionEligible, selectMaterialRows, materialGenreMatches, normalizeMaterialGenre, type LaneComplianceScore, type LyricAudioAlignmentScore, type MeasuredAnalysis, type SongBlueprint } from '@afrohit/shared';
 import { enqueueJob } from '../lib/enqueue';
 import { enqueueReleaseKit } from '../lib/release-kit';
+import { enqueueGenerateVisuals } from '../lib/visuals';
 
 /** Minimum measured coverage before a lane score is allowed to influence ranking. */
 const MIN_COVERAGE_FOR_RANKING = 0.5;
@@ -1055,6 +1056,9 @@ export async function processMusic(p: MusicPayload) {
     // no click. Fail-soft inside enqueueReleaseKit — never touches this render.
     if (p.songId && masteredUrl && !placeholder) {
       await enqueueReleaseKit({ songId: p.songId, workspaceId: p.workspaceId, reason: 'song-mastered' });
+      // AUTO-VISUALS (Phase 3): a real mastered song — build the lyric video +
+      // visualizer + thumbnails off it. Fail-soft; never touches this render.
+      await enqueueGenerateVisuals({ songId: p.songId, workspaceId: p.workspaceId, reason: 'song-mastered' });
     }
 
     await markSucceeded(

@@ -26,6 +26,7 @@ import { renderMelodyGuide } from '../lib/melody-guide';
 import { uploadBytes } from '../lib/storage';
 import { markRunning, markSucceeded, markFailed } from '../lib/jobs';
 import { enqueueReleaseKit } from '../lib/release-kit';
+import { enqueueGenerateVisuals } from '../lib/visuals';
 
 interface ProducePayload {
   jobId: string;
@@ -253,6 +254,10 @@ export async function processProduce(p: ProducePayload): Promise<void> {
       // background so opening the song shows the kit already there, no click.
       // Idempotent + fail-soft; a later master refresh is a no-op if still fresh.
       await enqueueReleaseKit({ songId: p.songId, workspaceId: p.workspaceId, reason: 'song-demo' });
+      // AUTO-VISUALS (Phase 3): the demo has words + audio — build the visuals
+      // off them. Idempotent + fail-soft; a later master refresh is a no-op if
+      // the set is still fresh, and it never touches this render.
+      await enqueueGenerateVisuals({ songId: p.songId, workspaceId: p.workspaceId, reason: 'song-demo' });
     } else {
       await prisma.song.update({ where: { id: p.songId }, data: { title: title || 'Revise', quarantined: true, quarantineReason: `pipeline: ${decision}`, proofPack: state as never } });
     }

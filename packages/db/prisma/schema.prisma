@@ -53,6 +53,7 @@ model Workspace {
   brandKits            BrandKit[]
   songs                Song[]
   songClips            SongClip[]
+  songVisuals          SongVisual[]
   jobs                 ProviderJob[]
   rightsReceipts       RightsReceipt[]
   releaseAttestations  ReleaseAttestation[]
@@ -628,6 +629,15 @@ model Song {
   // (ffmpeg was absent or every clip failed — the video render is never
   // affected). Null = never triggered (legacy songs / no video yet).
   clipsStatus      String?
+  // AUTO-VISUALS LIFECYCLE (Phase 3, 2026-07-21). On SONG completion (audio +
+  // lyrics + cover are enough — NO video needed) the studio auto-generates a
+  // lyric video, an audio-reactive visualizer, and 3-5 thumbnails, ALL by cheap
+  // ffmpeg/image EDITS off the master audio + lyrics + cover ("generate once,
+  // repurpose many", users charged $0). This lets the tab show "creating
+  // visuals…": creating (a completion hook enqueued it) | ready (SongVisual rows
+  // exist) | unavailable (ffmpeg/font absent or every asset failed — the render
+  // is never affected). Null = never triggered (legacy songs).
+  visualsStatus    String?
   createdAt        DateTime   @default(now()) @db.Timestamptz(6)
 
   workspace           Workspace            @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
@@ -648,6 +658,7 @@ model Song {
   shareLinks          ShareLink[]
   videoConcepts       VideoConcept[]       @relation("SongVideoConcept")
   clips               SongClip[]
+  visuals             SongVisual[]
   release             Release?             @relation("ReleaseSong")
   album               Album?               @relation(fields: [albumId], references: [id], onDelete: SetNull)
   benchmarkPairs      BenchmarkPair[]
@@ -1129,6 +1140,43 @@ model SongClip {
 
   @@index([songId, createdAt(sort: Desc)])
   @@index([sourceVideoId])
+  @@index([workspaceId])
+}
+
+/// AUTO-VISUALS (Phase 3, 2026-07-21) — a lyric video, an audio-reactive
+/// visualizer, or a thumbnail, ALL auto-generated on SONG completion by cheap
+/// ffmpeg/image EDITS off the master audio + lyrics + cover. NO new song/video
+/// render, no paid model — "generate once, repurpose many", users charged $0.
+/// Unlike SongClip, a visual is NOT cut from a music video: it needs only
+/// audio+lyrics+cover, so it exists the moment the song is mastered (long before
+/// any video). kind = 'lyric_video' (1080x1920, evenly-paged lyrics over a
+/// ken-burns cover + master audio + "afro" watermark) | 'visualizer' (1080x1920,
+/// audio-reactive waveform over the cover — the shareable for instrumentals) |
+/// 'thumbnail' (a CTR still: cover + bold title/hook overlay, or an AI cover
+/// variant when the operator enables it). meta carries the honest per-asset
+/// receipt (dims, edit recipe, timing caveat, costUsd).
+model SongVisual {
+  id          String   @id @default(cuid())
+  songId      String
+  workspaceId String
+  /// 'lyric_video' | 'visualizer' | 'thumbnail'.
+  kind        String
+  /// Presigned/canonical storage ref of the rendered asset (private s3://...).
+  url         String
+  /// '9:16' for the vertical lyric video + visualizer, '16:9' (or '1:1') for a
+  /// thumbnail — kept explicit so the UI never guesses the frame.
+  aspect      String   @default("9:16")
+  /// Honest per-asset receipt: { width, height, edit, costUsd, ... } and, for a
+  /// lyric video, the EVEN-PAGING timing caveat (true karaoke sync needs a
+  /// timing pass — stated, never faked).
+  meta        Json?
+  createdAt   DateTime @default(now()) @db.Timestamptz(6)
+
+  song      Song      @relation(fields: [songId], references: [id], onDelete: Cascade)
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@index([songId, createdAt(sort: Desc)])
+  @@index([songId, kind])
   @@index([workspaceId])
 }
 
