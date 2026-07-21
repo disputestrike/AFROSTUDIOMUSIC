@@ -24,6 +24,10 @@ export const QUEUES = {
   // Recut of the master into vertical shorts (the auto path fires from the
   // worker's own video-completion hook).
   clips: 'clips',
+  // AUTO-VISUALS (Phase 3) — the worker's visuals lane, so the API can enqueue a
+  // Regenerate of the lyric video + visualizer + thumbnails (the auto path fires
+  // from the worker's own song-completion hooks).
+  visuals: 'visuals',
 } as const;
 export type QueueName = (typeof QUEUES)[keyof typeof QUEUES];
 

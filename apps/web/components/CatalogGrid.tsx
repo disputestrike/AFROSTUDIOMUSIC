@@ -369,6 +369,20 @@ type ClipRow = {
 /** Clip lifecycle the server reports: cutting → ready (or unavailable). */
 type ClipsStatus = "cutting" | "ready" | "unavailable";
 
+/** ONE auto-generated visual — GET /songs/:id/visuals (url presigned). The lyric
+ *  video + audio-reactive visualizer + thumbnails are built the moment a SONG
+ *  finishes (audio+lyrics+cover are enough — no video needed), by cheap
+ *  ffmpeg/image EDITS off the master, $0. */
+type VisualRow = {
+  id: string;
+  kind: "lyric_video" | "visualizer" | "thumbnail";
+  url: string;
+  aspect: string;
+  meta?: Record<string, unknown> | null;
+};
+/** Visuals lifecycle the server reports: creating → ready (or unavailable). */
+type VisualsStatus = "creating" | "ready" | "unavailable";
+
 const PLATFORM_LABEL: Record<KitCaption["platform"], string> = {
   youtube: "YouTube (long)",
   tiktok: "TikTok / Reels",
@@ -569,6 +583,24 @@ export default function CatalogGrid({ initial }: { initial: SongRow[] }) {
   const clipsPollTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const clipsPollSong = useRef<string>("");
   const clipsPollCount = useRef<number>(0);
+  // AUTO-VISUALS — the lyric video + visualizer + thumbnail grid, keyed by
+  // songId (same stale-guard discipline as the kit/clips). It auto-fills the
+  // moment the song's visuals finish; while status is "creating" it polls until
+  // they land, no click.
+  const [visuals, setVisuals] = useState<{
+    songId: string;
+    state: "loading" | "ready";
+    lyricVideo: VisualRow | null;
+    visualizer: VisualRow | null;
+    thumbnails: VisualRow[];
+    status?: VisualsStatus | null;
+    regenerating?: boolean;
+  } | null>(null);
+  const visualsPollTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const visualsPollSong = useRef<string>("");
+  const visualsPollCount = useRef<number>(0);
+  // Which visual's link just landed on the clipboard ("Copied ✓").
+  const [copiedVisual, setCopiedVisual] = useState<string>("");
   // Which clip's link just landed on the clipboard ("Copied ✓").
   const [copiedClip, setCopiedClip] = useState<string>("");
   // One-tap copy — which block just landed on the clipboard ("Copied ✓").
@@ -1663,6 +1695,12 @@ export default function CatalogGrid({ initial }: { initial: SongRow[] }) {
       clipsPollTimer.current = null;
       clipsPollSong.current = "";
     }
+    // Same for the auto-visuals poll — no orphan timer after the modal closes.
+    if (!editing && visualsPollTimer.current) {
+      clearTimeout(visualsPollTimer.current);
+      visualsPollTimer.current = null;
+      visualsPollSong.current = "";
+    }
   }, [editing]);
   // Stop watching the moment a NEW assembled full cut lands — the Wave-9
   // panel below renders it (playable <video> + download); nothing duplicated.
@@ -1990,6 +2028,7 @@ export default function CatalogGrid({ initial }: { initial: SongRow[] }) {
       void loadVideoConcept(s.id);
       void loadSocials(s.id);
       void loadClips(s.id);
+      void loadVisuals(s.id);
     } catch (e) {
       flash((e as Error).message || "Could not load lyrics");
     } finally {
@@ -2169,6 +2208,94 @@ export default function CatalogGrid({ initial }: { initial: SongRow[] }) {
     }
   }
 
+  /** The stored auto-visuals — built on song completion, so this usually returns
+   *  a ready set with zero clicks. While the server is still building them
+   *  (status "creating"), keep polling until they land — no button. */
+  async function loadVisuals(songId: string, opts?: { poll?: boolean }) {
+    if (!opts?.poll) {
+      visualsPollSong.current = songId;
+      visualsPollCount.current = 0;
+      if (visualsPollTimer.current) clearTimeout(visualsPollTimer.current);
+      setVisuals({
+        songId,
+        state: "loading",
+        lyricVideo: null,
+        visualizer: null,
+        thumbnails: [],
+      });
+    }
+    try {
+      const r = await api.get<{
+        lyricVideo: VisualRow | null;
+        visualizer: VisualRow | null;
+        thumbnails: VisualRow[];
+        count: number;
+        status?: VisualsStatus | null;
+      }>(`/songs/${songId}/visuals`);
+      if (visualsPollSong.current !== songId) return;
+      const status = r.status ?? null;
+      setVisuals(cur => ({
+        songId,
+        state: "ready",
+        lyricVideo: r.lyricVideo ?? null,
+        visualizer: r.visualizer ?? null,
+        thumbnails: r.thumbnails ?? [],
+        status,
+        regenerating: cur?.songId === songId ? cur.regenerating : false,
+      }));
+      // Still creating server-side (or a regenerate in flight) → poll again.
+      if (status === "creating" && visualsPollCount.current < 30) {
+        visualsPollCount.current += 1;
+        visualsPollTimer.current = setTimeout(
+          () => void loadVisuals(songId, { poll: true }),
+          4000
+        );
+      }
+    } catch {
+      if (visualsPollSong.current !== songId) return;
+      setVisuals({
+        songId,
+        state: "ready",
+        lyricVideo: null,
+        visualizer: null,
+        thumbnails: [],
+        status: null,
+      });
+    }
+  }
+
+  /** REGENERATE — a fresh lyric video + visualizer + thumbnails on demand (the
+   *  auto path already built them). Cheap ffmpeg/image EDITS off the master
+   *  server-side, no credits. */
+  async function regenerateVisuals(songId: string) {
+    if (visualsPollTimer.current) clearTimeout(visualsPollTimer.current);
+    setVisuals(cur =>
+      cur?.songId === songId ? { ...cur, regenerating: true } : cur
+    );
+    try {
+      await api.post(`/songs/${songId}/visuals/regenerate`, {});
+      flash("Recreating your visuals — they’ll refresh here automatically.");
+      // Kick the poll: the worker flips status to "creating", we watch it land.
+      void loadVisuals(songId);
+    } catch {
+      setVisuals(cur =>
+        cur?.songId === songId ? { ...cur, regenerating: false } : cur
+      );
+      flash("Couldn’t start a regenerate — try again in a moment.");
+    }
+  }
+
+  /** Copy a single visual's shareable (presigned) link. */
+  async function copyVisualLink(id: string, url: string) {
+    try {
+      await navigator.clipboard.writeText(url);
+      setCopiedVisual(id);
+      setTimeout(() => setCopiedVisual(cur => (cur === id ? "" : cur)), 1600);
+    } catch {
+      flash("Copy failed — long-press the visual to copy its link.");
+    }
+  }
+
   /** The auto-cut vertical shorts grid inside the Release Kit tab. Renders
    *  nothing until a video's clips start cutting (keeps the tab clean for songs
    *  with no video yet); then shows "cutting clips…" and finally the 9:16 grid
@@ -2260,6 +2387,152 @@ export default function CatalogGrid({ initial }: { initial: SongRow[] }) {
             <p className="mt-1.5 text-[11px] text-slate-500">
               {items.length} shorts, hook-first, captions burned in — cut from
               your master video (no re-render).
+            </p>
+          </>
+        )}
+      </div>
+    );
+  }
+
+  /** The auto-generated visuals inside the Release Kit tab: the lyric video +
+   *  audio-reactive visualizer (9:16 players) and the thumbnail options (image
+   *  grid). Self-fills the moment the song finishes; shows "creating visuals…"
+   *  while the worker builds them, then the players + grid with per-asset Save +
+   *  Copy-link, plus a Regenerate. Renders nothing until visuals exist or are in
+   *  flight (keeps the tab clean for a song that never triggered them). */
+  function visualsPanel(songId: string) {
+    const v = visuals?.songId === songId ? visuals : null;
+    const creating = v?.status === "creating";
+    const hasAny = !!(v && (v.lyricVideo || v.visualizer || v.thumbnails.length));
+    if (!v || (!hasAny && !creating && v.status !== "unavailable")) return null;
+    return (
+      <div className="rounded-lg border border-white/10 bg-black/20 p-2.5">
+        <div className="mb-2 flex items-center justify-between gap-2">
+          <span className="text-[11px] font-medium text-slate-300">
+            Visuals — lyric video, visualizer &amp; thumbnails
+          </span>
+          {hasAny && (
+            <button
+              onClick={() => void regenerateVisuals(songId)}
+              disabled={!!v.regenerating || creating}
+              className="shrink-0 rounded-full border border-white/15 px-2.5 py-1 text-[11px] text-slate-300 hover:bg-white/10 disabled:opacity-50"
+            >
+              {v.regenerating || creating ? "Creating…" : "↻ Regenerate"}
+            </button>
+          )}
+        </div>
+        {!hasAny && creating && (
+          <div className="flex items-center gap-2 py-2 text-sm text-slate-300">
+            <Loader2 className="h-4 w-4 animate-spin" /> Creating visuals…
+            <span className="text-[11px] text-slate-500">
+              A lyric video, a visualizer and thumbnails are being made from your
+              song — they appear here automatically, no click.
+            </span>
+          </div>
+        )}
+        {!hasAny && !creating && v.status === "unavailable" && (
+          <p className="py-1 text-xs text-slate-400">
+            The visuals maker was briefly busy. It retries on its own — or tap
+            Regenerate to build them now.
+          </p>
+        )}
+        {hasAny && (
+          <>
+            {(v.lyricVideo || v.visualizer) && (
+              <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
+                {[
+                  v.lyricVideo && { label: "Lyric video", asset: v.lyricVideo },
+                  v.visualizer && { label: "Visualizer", asset: v.visualizer },
+                ]
+                  .filter((x): x is { label: string; asset: VisualRow } => !!x)
+                  .map(({ label, asset }) => (
+                    <div key={asset.id} className="space-y-1">
+                      <div
+                        className="relative overflow-hidden rounded-lg bg-black"
+                        style={{ aspectRatio: "9 / 16" }}
+                      >
+                        <video
+                          src={asset.url}
+                          controls
+                          playsInline
+                          preload="metadata"
+                          className="h-full w-full object-cover"
+                        />
+                        <span className="pointer-events-none absolute left-1 top-1 rounded bg-black/60 px-1 text-[10px] text-white">
+                          {label}
+                        </span>
+                      </div>
+                      <div className="flex items-center justify-between gap-1">
+                        <a
+                          href={asset.url}
+                          download={`${asset.kind}.mp4`}
+                          className="inline-flex items-center gap-1 rounded-full border border-white/15 px-2 py-0.5 text-[10px] text-slate-300 hover:bg-white/10"
+                        >
+                          <Download className="h-3 w-3" /> Save
+                        </a>
+                        <button
+                          onClick={() => void copyVisualLink(asset.id, asset.url)}
+                          className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] transition-colors ${
+                            copiedVisual === asset.id
+                              ? "border-emerald-400/50 bg-emerald-400/15 text-emerald-300"
+                              : "border-white/15 text-slate-300 hover:bg-white/10"
+                          }`}
+                        >
+                          <Copy className="h-3 w-3" />{" "}
+                          {copiedVisual === asset.id ? "Copied ✓" : "Link"}
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+              </div>
+            )}
+            {v.thumbnails.length > 0 && (
+              <>
+                <p className="mt-2 mb-1 text-[11px] font-medium text-slate-300">
+                  Thumbnails — pick the one that gets the click
+                </p>
+                <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
+                  {v.thumbnails.map(thumb => (
+                    <div key={thumb.id} className="space-y-1">
+                      <div
+                        className="overflow-hidden rounded-lg bg-black"
+                        style={{ aspectRatio: "16 / 9" }}
+                      >
+                        <img
+                          src={thumb.url}
+                          alt="Thumbnail option"
+                          loading="lazy"
+                          className="h-full w-full object-cover"
+                        />
+                      </div>
+                      <div className="flex items-center justify-between gap-1">
+                        <a
+                          href={thumb.url}
+                          download="thumbnail.jpg"
+                          className="inline-flex items-center gap-1 rounded-full border border-white/15 px-2 py-0.5 text-[10px] text-slate-300 hover:bg-white/10"
+                        >
+                          <Download className="h-3 w-3" /> Save
+                        </a>
+                        <button
+                          onClick={() => void copyVisualLink(thumb.id, thumb.url)}
+                          className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] transition-colors ${
+                            copiedVisual === thumb.id
+                              ? "border-emerald-400/50 bg-emerald-400/15 text-emerald-300"
+                              : "border-white/15 text-slate-300 hover:bg-white/10"
+                          }`}
+                        >
+                          <Copy className="h-3 w-3" />{" "}
+                          {copiedVisual === thumb.id ? "Copied ✓" : "Link"}
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </>
+            )}
+            <p className="mt-1.5 text-[11px] text-slate-500">
+              Made from your song&apos;s audio, lyrics &amp; cover — no re-render.
+              Lyric timing is evenly paced (not karaoke-synced yet).
             </p>
           </>
         )}
@@ -3213,6 +3486,11 @@ export default function CatalogGrid({ initial }: { initial: SongRow[] }) {
               completion. Rendered first in the Release Kit tab so the shorts sit
               at the top of the kit; self-fills with no click. */}
           {wordsTab === "socials" && clipsPanel(editing.id)}
+
+          {/* AUTO-VISUALS — the lyric video + visualizer + thumbnails, built off
+              the master audio + lyrics + cover on song completion (no video
+              needed). Self-fills with no click. */}
+          {wordsTab === "socials" && visualsPanel(editing.id)}
 
           {wordsTab === "socials" &&
             (socials?.songId !== editing.id ||

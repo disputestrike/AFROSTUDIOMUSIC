@@ -3259,3 +3259,498 @@ export function postConformTempoVerdict(
     reason: `measured ~${Math.round(verifiedBpm)} BPM, ${Math.round(dev * 100)}% off at every octave — no stable grid`,
   };
 }
+
+// ---------------------------------------------------------------------------
+// AUTO-VISUALS (Phase 3, 2026-07-21) — a lyric video, an audio-reactive
+// visualizer, and 3-5 thumbnails, ALL cheap ffmpeg/image EDITS off the EXISTING
+// master audio + lyrics + cover. HARD ECONOMIC RULE: no new song/video render,
+// no provider call, no charge — "generate once, repurpose many", users charged
+// $0. Each asset is a SINGLE ffmpeg invocation reusing the exact ASSEMBLY_ENCODE
+// preset + Anton font + "afro" watermark the video pipeline already uses.
+// ---------------------------------------------------------------------------
+
+/** The vertical target the lyric video + visualizer conform to (9:16 primary —
+ *  social feeds punish anything else). */
+export const VISUAL_WIDTH = 1080;
+export const VISUAL_HEIGHT = 1920;
+/** The thumbnail target — 16:9 1280x720, the YouTube CTR still. */
+export const THUMB_WIDTH = 1280;
+export const THUMB_HEIGHT = 720;
+
+/** drawtext file-path escape — the exact rule the credit/watermark/clip builders
+ *  use (backslashes → forward, colons escaped) so a Windows path or a lyric with
+ *  a colon can never break the filtergraph. Text always rides a textfile. */
+function escVisualPath(p: string): string {
+  return p.replace(/\\/g, '/').replace(/:/g, '\\:');
+}
+
+/** Tasteful dark 2-stop gradients per genre for the NO-COVER fallback — a song
+ *  with no cover still ships a branded backdrop, never a black void. Unmapped
+ *  lanes fall back to the default (deep indigo). Colors are ffmpeg 0xRRGGBB. */
+const VISUAL_GRADIENTS: Record<string, [string, string]> = {
+  afrobeats: ['0x2A1A08', '0x0B0B12'],
+  afro_fusion: ['0x1A0B2E', '0x0B0B12'],
+  amapiano: ['0x2A1206', '0x0B0B12'],
+  afro_dancehall: ['0x06222A', '0x0B0B12'],
+  gospel: ['0x2A2410', '0x0B0B12'],
+  afro_rnb: ['0x101836', '0x0B0B12'],
+  street_pop: ['0x2A2206', '0x0B0B12'],
+  hip_hop: ['0x161616', '0x000000'],
+};
+const DEFAULT_VISUAL_GRADIENT: [string, string] = ['0x101828', '0x0B0B12'];
+
+/** The genre's gradient pair (see VISUAL_GRADIENTS); default when unmapped. */
+export function resolveVisualGradient(genre: string | null | undefined): [string, string] {
+  const key = (genre ?? '').toLowerCase().trim();
+  return VISUAL_GRADIENTS[key] ?? DEFAULT_VISUAL_GRADIENT;
+}
+
+/** Background input flags for a visual: a still cover looped for the whole song,
+ *  or the genre gradient from lavfi when there is no cover. Input 0 either way. */
+function visualBackgroundInput(opts: {
+  coverPath: string | null;
+  gradient: [string, string];
+  width: number;
+  height: number;
+  fps: number;
+  durationS: number;
+  /** A single frame (thumbnails) needs no -t/-loop timing. */
+  still?: boolean;
+}): string[] {
+  const dur = opts.durationS.toFixed(3);
+  if (opts.coverPath) {
+    return opts.still
+      ? ['-i', opts.coverPath]
+      : ['-loop', '1', '-framerate', String(opts.fps), '-t', dur, '-i', opts.coverPath];
+  }
+  const grad =
+    `gradients=s=${opts.width}x${opts.height}:c0=${opts.gradient[0]}:c1=${opts.gradient[1]}` +
+    `:x0=0:y0=0:x1=0:y1=${opts.height}` +
+    (opts.still ? '' : `:r=${opts.fps}:d=${dur}:speed=0.006`);
+  return opts.still ? ['-f', 'lavfi', '-i', grad] : ['-f', 'lavfi', '-t', dur, '-i', grad];
+}
+
+/** The audio tail chain shared by the lyric video + visualizer: trim to the
+ *  song length and fade the last ~1.2s so a bounded cut never ends on a cliff. */
+function visualAudioChain(label: string, durationS: number, outLabel: string): string {
+  const dur = Math.max(0.5, durationS);
+  const fadeDur = Math.min(1.2, dur / 2);
+  const fadeStart = Math.max(0, dur - fadeDur);
+  return (
+    `[${label}]atrim=0:${dur.toFixed(3)},asetpts=PTS-STARTPTS,` +
+    `afade=t=out:st=${fadeStart.toFixed(3)}:d=${fadeDur.toFixed(3)},` +
+    `aformat=sample_rates=44100:channel_layouts=stereo[${outLabel}]`
+  );
+}
+
+// --- 1) LYRIC VIDEO --------------------------------------------------------
+
+/** Font size / spacing law for the lyric video (fractions of frame height). */
+export const LYRIC_FONT_RATIO = 0.05; // ~96px on a 1920-tall frame
+
+/**
+ * PURE (unit-testable): the FULL single-invocation argv for the lyric video —
+ * the master audio + a ken-burns-zoomed cover (or the genre gradient) + the
+ * lyrics EVENLY PAGED as large centered text + the "afro" watermark, all in one
+ * filtergraph, encoded with the exact ASSEMBLY_ENCODE preset.
+ *
+ * HONEST TIMING: the pages tile the song on a FIXED cadence (see visuals-plan's
+ * planLyricPages) — this is NOT karaoke sync, and it is not pretending to be.
+ * True per-line sync needs a forced-alignment timing pass (owner follow-up).
+ *
+ * The lyrics ride textfiles (one per page) so a line with a quote/colon can
+ * never break the filter — the same mechanism as the credit/caption builders.
+ */
+export function buildLyricVideoArgs(opts: {
+  output: string;
+  audioPath: string;
+  fontPath: string;
+  coverPath: string | null;
+  gradient: [string, string];
+  /** One written textfile per page (the page's verbatim wrapped lines). */
+  pageTextPaths: string[];
+  /** The even-paced window for each page (same length as pageTextPaths). */
+  pageWindows: Array<{ startS: number; endS: number }>;
+  watermarkTextPath: string;
+  durationS: number;
+  width?: number;
+  height?: number;
+  fps?: number;
+}): string[] {
+  const W = opts.width ?? VISUAL_WIDTH;
+  const H = opts.height ?? VISUAL_HEIGHT;
+  const fps = opts.fps ?? ASSEMBLY_FPS;
+  const dur = Math.max(1, opts.durationS);
+  const font = escVisualPath(opts.fontPath);
+
+  // Ken-burns: oversize to 110% then slowly zoom in to 112% over the whole
+  // record (gentle, ≤12% travel). No cover → a static gradient (already WxH).
+  const big = (n: number) => Math.round((n * 1.1) / 2) * 2;
+  const kb = opts.coverPath
+    ? `scale=${big(W)}:${big(H)}:force_original_aspect_ratio=increase,crop=${big(W)}:${big(H)},` +
+      `zoompan=z='min(1.0+0.00016*on,1.12)':d=1:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':s=${W}x${H}:fps=${fps},setsar=1`
+    : `scale=${W}:${H},setsar=1`;
+
+  const size = Math.round(H * LYRIC_FONT_RATIO);
+  const boxBorder = Math.round(size * 0.4);
+  const filters: string[] = [
+    kb,
+    // Legibility scrim so white lyrics read over any cover.
+    `drawbox=x=0:y=0:w=${W}:h=${H}:color=black@0.42:t=fill`,
+  ];
+  for (let i = 0; i < opts.pageTextPaths.length; i++) {
+    const win = opts.pageWindows[i]!;
+    filters.push(
+      `drawtext=fontfile='${font}':textfile='${escVisualPath(opts.pageTextPaths[i]!)}'` +
+        `:fontcolor=white:fontsize=${size}:line_spacing=${Math.round(size * 0.28)}` +
+        `:x=(w-text_w)/2:y=(h-text_h)/2` +
+        `:box=1:boxcolor=black@0.38:boxborderw=${boxBorder}` +
+        `:shadowcolor=black@0.65:shadowx=2:shadowy=2` +
+        `:enable='between(t,${win.startS.toFixed(3)},${win.endS.toFixed(3)})'`
+    );
+  }
+  filters.push(
+    ...buildBrandWatermarkFilters({ fontPath: opts.fontPath, textPath: opts.watermarkTextPath, width: W, height: H })
+  );
+
+  const filterComplex =
+    `[0:v]${filters.join(',')}[v];` + visualAudioChain('1:a', dur, 'a');
+  return [
+    ...visualBackgroundInput({ coverPath: opts.coverPath, gradient: opts.gradient, width: W, height: H, fps, durationS: dur }),
+    '-i', opts.audioPath,
+    '-filter_complex', filterComplex,
+    '-map', '[v]', '-map', '[a]',
+    '-t', dur.toFixed(3),
+    ...ASSEMBLY_ENCODE,
+    '-r', String(fps),
+    '-c:a', 'aac', '-b:a', '192k',
+    '-movflags', '+faststart',
+    opts.output,
+  ];
+}
+
+/** Render the lyric video (see buildLyricVideoArgs): write one textfile per page
+ *  + the wordmark, run ONE ffmpeg invocation, leave the mp4 at `output`. */
+export async function renderLyricVideo(opts: {
+  output: string;
+  audioPath: string;
+  fontPath: string;
+  coverPath: string | null;
+  gradient: [string, string];
+  pages: Array<{ text: string; startS: number; endS: number }>;
+  durationS: number;
+  width?: number;
+  height?: number;
+  fps?: number;
+}): Promise<void> {
+  const dir = await mkdtemp(join(tmpdir(), 'lyricvid-'));
+  try {
+    const pageTextPaths: string[] = [];
+    for (let i = 0; i < opts.pages.length; i++) {
+      const p = join(dir, `page-${i}.txt`);
+      await writeFile(p, opts.pages[i]!.text?.trim() ? opts.pages[i]!.text : ' ');
+      pageTextPaths.push(p);
+    }
+    const watermarkTextPath = join(dir, 'wordmark.txt');
+    await writeFile(watermarkTextPath, WATERMARK_TEXT);
+    await runFfmpeg(
+      buildLyricVideoArgs({
+        output: opts.output,
+        audioPath: opts.audioPath,
+        fontPath: opts.fontPath,
+        coverPath: opts.coverPath,
+        gradient: opts.gradient,
+        pageTextPaths,
+        pageWindows: opts.pages.map((p) => ({ startS: p.startS, endS: p.endS })),
+        watermarkTextPath,
+        durationS: opts.durationS,
+        width: opts.width,
+        height: opts.height,
+        fps: opts.fps,
+      })
+    );
+  } finally {
+    await rm(dir, { recursive: true, force: true }).catch(() => {});
+  }
+}
+
+// --- 2) VISUALIZER (audio-reactive) ---------------------------------------
+
+/**
+ * PURE (unit-testable): the FULL single-invocation argv for the audio-reactive
+ * visualizer — the master audio drives an ffmpeg showwaves waveform composited
+ * over the cover (or the genre gradient) with the "afro" watermark. This is the
+ * shareable visual for INSTRUMENTALS (which carry no lyrics) and an alt for any
+ * song. The waveform is keyed onto the cover with lumakey+overlay so the cover's
+ * own color is preserved (a screen blend would tint the whole frame).
+ */
+export function buildVisualizerArgs(opts: {
+  output: string;
+  audioPath: string;
+  fontPath: string;
+  coverPath: string | null;
+  gradient: [string, string];
+  watermarkTextPath: string;
+  durationS: number;
+  width?: number;
+  height?: number;
+  fps?: number;
+}): string[] {
+  const W = opts.width ?? VISUAL_WIDTH;
+  const H = opts.height ?? VISUAL_HEIGHT;
+  const fps = opts.fps ?? ASSEMBLY_FPS;
+  const dur = Math.max(1, opts.durationS);
+
+  const bgChain = opts.coverPath
+    ? `scale=${W}:${H}:force_original_aspect_ratio=increase,crop=${W}:${H},setsar=1,eq=brightness=-0.08:saturation=1.05`
+    : `scale=${W}:${H},setsar=1`;
+  const watermark = buildBrandWatermarkFilters({
+    fontPath: opts.fontPath,
+    textPath: opts.watermarkTextPath,
+    width: W,
+    height: H,
+  }).join(',');
+
+  const filterComplex =
+    `[1:a]asplit=2[aw][ao];` +
+    `[0:v]${bgChain},format=yuv420p[bg];` +
+    // showwaves → a centered waveform on black; lumakey drops the black to
+    // transparent so overlay draws ONLY the waveform over the untouched cover.
+    `[aw]showwaves=s=${W}x${H}:mode=cline:rate=${fps}:colors=white:draw=full,` +
+    `format=yuva420p,lumakey=threshold=0.08:tolerance=0.06[wav];` +
+    `[bg][wav]overlay=0:0:shortest=1[mix];` +
+    `[mix]${watermark}[v];` +
+    visualAudioChain('ao', dur, 'a');
+  return [
+    ...visualBackgroundInput({ coverPath: opts.coverPath, gradient: opts.gradient, width: W, height: H, fps, durationS: dur }),
+    '-i', opts.audioPath,
+    '-filter_complex', filterComplex,
+    '-map', '[v]', '-map', '[a]',
+    '-t', dur.toFixed(3),
+    ...ASSEMBLY_ENCODE,
+    '-r', String(fps),
+    '-c:a', 'aac', '-b:a', '192k',
+    '-movflags', '+faststart',
+    opts.output,
+  ];
+}
+
+/** Render the visualizer (see buildVisualizerArgs): write the wordmark, run ONE
+ *  ffmpeg invocation, leave the mp4 at `output`. */
+export async function renderVisualizer(opts: {
+  output: string;
+  audioPath: string;
+  fontPath: string;
+  coverPath: string | null;
+  gradient: [string, string];
+  durationS: number;
+  width?: number;
+  height?: number;
+  fps?: number;
+}): Promise<void> {
+  const dir = await mkdtemp(join(tmpdir(), 'visualizer-'));
+  try {
+    const watermarkTextPath = join(dir, 'wordmark.txt');
+    await writeFile(watermarkTextPath, WATERMARK_TEXT);
+    await runFfmpeg(
+      buildVisualizerArgs({
+        output: opts.output,
+        audioPath: opts.audioPath,
+        fontPath: opts.fontPath,
+        coverPath: opts.coverPath,
+        gradient: opts.gradient,
+        watermarkTextPath,
+        durationS: opts.durationS,
+        width: opts.width,
+        height: opts.height,
+        fps: opts.fps,
+      })
+    );
+  } finally {
+    await rm(dir, { recursive: true, force: true }).catch(() => {});
+  }
+}
+
+// --- 3) THUMBNAILS (images) ------------------------------------------------
+
+export type ThumbnailCrop = 'center' | 'top' | 'bottom';
+export type ThumbnailTextPos = 'bottom' | 'top' | 'center' | 'none';
+
+/** Title font size for a thumbnail (fraction of the 720-tall frame). */
+export const THUMB_FONT_RATIO = 0.11; // ~79px
+
+/**
+ * PURE (unit-testable): the FULL single-invocation argv for ONE thumbnail image
+ * — the cover (or gradient) cropped at the variant's anchor, a legibility scrim,
+ * a bold title/hook overlay at the variant's position, and the small "afro"
+ * wordmark bottom-right. One frame out (-frames:v 1), JPEG. An EDIT off the
+ * cover, never a render.
+ */
+export function buildThumbnailArgs(opts: {
+  output: string;
+  coverPath: string | null;
+  gradient: [string, string];
+  fontPath: string;
+  /** null / textPos 'none' → the text-free clean-cover variant. */
+  titleTextPath: string | null;
+  watermarkTextPath: string;
+  crop: ThumbnailCrop;
+  textPos: ThumbnailTextPos;
+  accent: boolean;
+  width?: number;
+  height?: number;
+}): string[] {
+  const W = opts.width ?? THUMB_WIDTH;
+  const H = opts.height ?? THUMB_HEIGHT;
+  const font = escVisualPath(opts.fontPath);
+  const cropXY: Record<ThumbnailCrop, string> = {
+    center: '(iw-ow)/2:(ih-oh)/2',
+    top: '(iw-ow)/2:0',
+    bottom: '(iw-ow)/2:(ih-oh)',
+  };
+  const filters: string[] = [
+    opts.coverPath
+      ? `scale=${W}:${H}:force_original_aspect_ratio=increase,crop=${W}:${H}:${cropXY[opts.crop]},setsar=1`
+      : `scale=${W}:${H},setsar=1`,
+  ];
+  const hasText = !!opts.titleTextPath && opts.textPos !== 'none';
+  if (hasText) {
+    if (opts.textPos === 'bottom') {
+      filters.push(`drawbox=x=0:y=${Math.round(H * 0.58)}:w=${W}:h=${Math.round(H * 0.42)}:color=black@0.5:t=fill`);
+    } else if (opts.textPos === 'top') {
+      filters.push(`drawbox=x=0:y=0:w=${W}:h=${Math.round(H * 0.42)}:color=black@0.5:t=fill`);
+    } else {
+      filters.push(`drawbox=x=0:y=0:w=${W}:h=${H}:color=black@0.3:t=fill`);
+    }
+    const size = Math.round(H * THUMB_FONT_RATIO);
+    const pad = Math.round(H * 0.08);
+    const y =
+      opts.textPos === 'bottom' ? `h-text_h-${pad}` : opts.textPos === 'top' ? `${pad}` : '(h-text_h)/2';
+    const box = opts.accent
+      ? `:box=1:boxcolor=0xE0512D@0.85:boxborderw=${Math.round(size * 0.28)}`
+      : `:box=1:boxcolor=black@0.35:boxborderw=${Math.round(size * 0.3)}`;
+    filters.push(
+      `drawtext=fontfile='${font}':textfile='${escVisualPath(opts.titleTextPath!)}'` +
+        `:fontcolor=white:fontsize=${size}:line_spacing=${Math.round(size * 0.2)}` +
+        `:x=(w-text_w)/2:y=${y}${box}:shadowcolor=black@0.6:shadowx=2:shadowy=2`
+    );
+  }
+  // The small persistent "afro" mark only (bottom-right) — NOT the video's
+  // first-3s bottom-left thumbnail mark, which would clash with the title.
+  const margin = Math.round(W * WATERMARK_MARGIN_RATIO);
+  const wmSize = Math.round(H * WATERMARK_HEIGHT_RATIO);
+  filters.push(
+    `drawtext=fontfile='${font}':textfile='${escVisualPath(opts.watermarkTextPath)}'` +
+      `:fontcolor=white@${WATERMARK_OPACITY}:fontsize=${wmSize}` +
+      `:x=W-text_w-${margin}:y=H-text_h-${margin}`
+  );
+
+  return [
+    ...visualBackgroundInput({
+      coverPath: opts.coverPath,
+      gradient: opts.gradient,
+      width: W,
+      height: H,
+      fps: ASSEMBLY_FPS,
+      durationS: 1,
+      still: true,
+    }),
+    '-frames:v', '1',
+    '-vf', filters.join(','),
+    '-q:v', '3',
+    opts.output,
+  ];
+}
+
+/** One thumbnail's variant spec (from visuals-plan.planThumbnailVariants). */
+export interface ThumbnailRenderRequest {
+  id: string;
+  text: string;
+  crop: ThumbnailCrop;
+  textPos: ThumbnailTextPos;
+  accent: boolean;
+}
+export interface ThumbnailOk {
+  id: string;
+  path: string;
+  request: ThumbnailRenderRequest;
+}
+export interface ThumbnailFailure {
+  id: string;
+  error: string;
+}
+
+/** Render ONE thumbnail (see buildThumbnailArgs): write the title + wordmark
+ *  textfiles, run one ffmpeg invocation, leave the jpg at `output`. */
+export async function renderThumbnail(opts: {
+  output: string;
+  coverPath: string | null;
+  gradient: [string, string];
+  fontPath: string;
+  request: ThumbnailRenderRequest;
+  width?: number;
+  height?: number;
+}): Promise<void> {
+  const dir = await mkdtemp(join(tmpdir(), 'thumb-'));
+  try {
+    const watermarkTextPath = join(dir, 'wordmark.txt');
+    await writeFile(watermarkTextPath, WATERMARK_TEXT);
+    let titleTextPath: string | null = null;
+    if (opts.request.text?.trim() && opts.request.textPos !== 'none') {
+      titleTextPath = join(dir, 'title.txt');
+      await writeFile(titleTextPath, opts.request.text);
+    }
+    await runFfmpeg(
+      buildThumbnailArgs({
+        output: opts.output,
+        coverPath: opts.coverPath,
+        gradient: opts.gradient,
+        fontPath: opts.fontPath,
+        titleTextPath,
+        watermarkTextPath,
+        crop: opts.request.crop,
+        textPos: opts.request.textPos,
+        accent: opts.request.accent,
+        width: opts.width,
+        height: opts.height,
+      })
+    );
+  } finally {
+    await rm(dir, { recursive: true, force: true }).catch(() => {});
+  }
+}
+
+/** FAIL-SOFT BATCH: render every requested thumbnail, one cheap pass each,
+ *  collecting the successes + failures. A single thumbnail that errors NEVER
+ *  kills the batch — the rest still come back (mirrors cutClips). */
+export async function renderThumbnails(opts: {
+  workDir: string;
+  coverPath: string | null;
+  gradient: [string, string];
+  fontPath: string;
+  requests: ThumbnailRenderRequest[];
+  width?: number;
+  height?: number;
+}): Promise<{ ok: ThumbnailOk[]; failed: ThumbnailFailure[] }> {
+  const ok: ThumbnailOk[] = [];
+  const failed: ThumbnailFailure[] = [];
+  for (let i = 0; i < opts.requests.length; i++) {
+    const request = opts.requests[i]!;
+    const output = join(opts.workDir, `thumb-${i}-${request.id}.jpg`);
+    try {
+      await renderThumbnail({
+        output,
+        coverPath: opts.coverPath,
+        gradient: opts.gradient,
+        fontPath: opts.fontPath,
+        request,
+        width: opts.width,
+        height: opts.height,
+      });
+      ok.push({ id: request.id, path: output, request });
+    } catch (err) {
+      failed.push({ id: request.id, error: (err as Error).message.slice(0, 200) });
+    }
+  }
+  return { ok, failed };
+}

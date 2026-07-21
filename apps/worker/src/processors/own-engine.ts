@@ -98,6 +98,7 @@ import {
 import { measureAudio, dspAvailable } from "../lib/dsp";
 import { markRunning, markSucceeded, markFailed, emitJobEvent } from "../lib/jobs";
 import { enqueueReleaseKit } from "../lib/release-kit";
+import { enqueueGenerateVisuals } from "../lib/visuals";
 import { runSynthBedPreview } from "../lib/bed-first-stream";
 import { assessLaneCompliance } from "../lib/lane-assess";
 import { processSynthMaterial } from "./synth-material";
@@ -2588,6 +2589,14 @@ export async function processOwnEngine(p: OwnEnginePayload): Promise<void> {
     // render is already committed and is never touched by a kit failure.
     if (p.songId) {
       await enqueueReleaseKit({
+        songId: p.songId,
+        workspaceId: p.workspaceId,
+        reason: "song-rendered",
+      });
+      // AUTO-VISUALS (Phase 3): the lyric video + visualizer + thumbnails need
+      // only audio+lyrics+cover — all present now — so build them here too. Same
+      // fail-soft discipline; this render is committed and never touched by it.
+      await enqueueGenerateVisuals({
         songId: p.songId,
         workspaceId: p.workspaceId,
         reason: "song-rendered",

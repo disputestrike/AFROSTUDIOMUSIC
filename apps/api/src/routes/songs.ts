@@ -891,6 +891,73 @@ export default async function songs(app: FastifyInstance) {
     }
   );
 
+  // ---- AUTO-VISUALS (Phase 3): lyric video + visualizer + thumbnails ----
+  // Auto-generated the moment a SONG finishes (audio+lyrics+cover are enough —
+  // NO video needed), by cheap ffmpeg/image EDITS off the master, $0. Reading
+  // NEVER generates — it lists what the worker built, presigned for the <video>
+  // players + <img> grid, plus the lifecycle so the tab can show "creating
+  // visuals…" (creating) then the finished set (ready).
+  app.get<{ Params: { id: string } }>('/:id/visuals', async (req, reply) => {
+    const { workspaceId } = requireAuth(req);
+    const song = await prisma.song.findFirst({
+      where: { id: req.params.id, workspaceId },
+      select: { id: true, visualsStatus: true },
+    });
+    if (!song) return reply.code(404).send({ error: 'song_not_found' });
+    const rows = await prisma.songVisual.findMany({
+      where: { songId: song.id, workspaceId },
+      orderBy: [{ kind: 'asc' }, { createdAt: 'asc' }],
+      select: { id: true, kind: true, url: true, aspect: true, meta: true, createdAt: true },
+    });
+    const present = await Promise.all(
+      rows.map(async row => ({
+        id: row.id,
+        kind: row.kind,
+        // Presigned — a storage URI must never reach a <video>/<img>/<a download>.
+        url: await presignAssetRef(row.url, 3600),
+        aspect: row.aspect,
+        meta: row.meta,
+        createdAt: row.createdAt,
+      }))
+    );
+    const lyricVideo = present.find(v => v.kind === 'lyric_video') ?? null;
+    const visualizer = present.find(v => v.kind === 'visualizer') ?? null;
+    const thumbnails = present.filter(v => v.kind === 'thumbnail');
+    // A stored visual means "ready" even on a row whose status column lagged; a
+    // creating/unavailable status with nothing yet is reported as-is.
+    const status = song.visualsStatus ?? (present.length ? 'ready' : null);
+    return { lyricVideo, visualizer, thumbnails, count: present.length, status };
+  });
+
+  /**
+   * REGENERATE — a fresh lyric video + visualizer + thumbnails on demand (the
+   * auto path already built them on song completion). Enqueues the SAME worker
+   * 'generate-visuals' job the completion hooks fire, forced so it replaces the
+   * current set. Cheap ffmpeg/image EDITS off the existing master — NO new
+   * render, no credits.
+   */
+  app.post<{ Params: { id: string } }>(
+    '/:id/visuals/regenerate',
+    { config: { rateLimit: { max: 5, timeWindow: '1 minute' } } },
+    async (req, reply) => {
+      const { workspaceId } = requireMinRole(req, 'PRODUCER');
+      const song = await prisma.song.findFirst({
+        where: { id: req.params.id, workspaceId, deletedAt: null },
+        select: { id: true },
+      });
+      if (!song) return reply.code(404).send({ error: 'song_not_found' });
+      await prisma.song
+        .updateMany({ where: { id: song.id }, data: { visualsStatus: 'creating' } })
+        .catch(() => undefined);
+      await app.queues.visuals.add(
+        'generate-visuals',
+        { songId: song.id, workspaceId, force: true, reason: 'regenerate' },
+        { jobId: `generate-visuals-${song.id}-force`, removeOnComplete: 200, removeOnFail: 500 }
+      );
+      return reply.code(202).send({ status: 'creating' });
+    }
+  );
+
   // ---- Lyrics: view + EDIT (persist) ----
   app.get<{ Params: { id: string } }>('/:id/lyrics', async (req, reply) => {
     const { workspaceId } = requireAuth(req);

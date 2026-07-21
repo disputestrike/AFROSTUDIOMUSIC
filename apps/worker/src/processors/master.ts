@@ -12,6 +12,7 @@ import {
 import { markFailed, markRunning } from '../lib/jobs';
 import { deleteObjectByUrl, downloadToBuffer } from '../lib/storage';
 import { enqueueReleaseKit } from '../lib/release-kit';
+import { enqueueGenerateVisuals } from '../lib/visuals';
 
 interface MasterPayload {
   jobId: string;
@@ -273,6 +274,9 @@ export async function processMaster(payload: MasterPayload): Promise<void> {
     // build its full release kit in the background so the tab opens populated.
     // Idempotent + fail-soft; never fails this master.
     await enqueueReleaseKit({ songId: payload.songId, workspaceId: payload.workspaceId, reason: 'song-mastered' });
+    // AUTO-VISUALS (Phase 3): the song is mastered — build the lyric video +
+    // visualizer + thumbnails off it. Fail-soft; never fails this master.
+    await enqueueGenerateVisuals({ songId: payload.songId, workspaceId: payload.workspaceId, reason: 'song-mastered' });
   } catch (error) {
     await Promise.allSettled(uploaded.map((url) => deleteObjectByUrl(url)));
     await markFailed(payload.jobId, error);

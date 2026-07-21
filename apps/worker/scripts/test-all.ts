@@ -341,6 +341,7 @@ async function runOfflineTests(): Promise<void> {
     ["Video assembly gating (full/teaser)", "test-video-assembly.ts"],
     ["Video assembly speed (pool + folded brand pass)", "test-video-assembly-speed.ts"],
     ["Auto-clip (hook-first vertical shorts off the master)", "test-clips.ts"],
+    ["Auto-visuals (lyric video + visualizer + thumbnails off the master)", "test-visuals.ts"],
     ["Lip-sync laws (engine body/offsets/gate)", "test-lipsync.ts"],
     ["Video render evidence", "test-video-evidence.ts"],
     ["Brand wave (AfroHits/BXP/splash/watermark)", "test-brand-splash.ts"],
