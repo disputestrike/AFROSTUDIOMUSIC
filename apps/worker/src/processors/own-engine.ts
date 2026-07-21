@@ -96,6 +96,7 @@ import {
 } from "../lib/training-flywheel";
 import { measureAudio, dspAvailable } from "../lib/dsp";
 import { markRunning, markSucceeded, markFailed, emitJobEvent } from "../lib/jobs";
+import { runSynthBedPreview } from "../lib/bed-first-stream";
 import { assessLaneCompliance } from "../lib/lane-assess";
 import { processSynthMaterial } from "./synth-material";
 import { processAssembleBeat, processForgeMaterial } from "./material";
@@ -148,7 +149,14 @@ async function pickKit(
   key: string,
   varietySeed: number,
   requestedRoles: readonly MaterialRole[] = [],
-  lockedMaterialIds: readonly string[] = []
+  lockedMaterialIds: readonly string[] = [],
+  // BED-FIRST STREAMING isolation: preview-only synth loops (synth-material.ts,
+  // previewOnly:true) exist ONLY to carry the fast synth preview bed. Every
+  // real-bed pick EXCLUDES them (default), so the forged bed is byte-identical
+  // to today — no synth primitive is ever layered under the real instruments.
+  // The preview's own pick opts in with includePreviewOnly=true. When the flag
+  // is off no such loops exist, so this filter is a no-op on the current path.
+  includePreviewOnly = false
 ) {
   // GENRE MATCHING IN JS (source-truth wave item 8): the Prisma exact-equality
   // `genre` filter hid 'Afrobeats'-tagged material from an 'afrobeats' lane —
@@ -171,6 +179,12 @@ async function pickKit(
   const rows = shelf
     .filter((row: { genre: string | null }) => materialGenreMatches(row.genre, genre))
     .filter((row: { id: string }) => !locked.size || locked.has(row.id))
+    // Exclude preview-only synth loops from the real forged bed (see param note).
+    .filter(
+      (row: { meta?: unknown }) =>
+        includePreviewOnly ||
+        !(row.meta as { previewOnly?: boolean } | null)?.previewOnly
+    )
     .slice(0, 240);
   const exactRequested = new Set<string>(requestedRoles);
   const eligibleRows = rows.filter(
@@ -770,7 +784,16 @@ export async function conformMelodyTempoToGrid(
 }
 
 export async function processOwnEngine(p: OwnEnginePayload): Promise<void> {
+  // TIME-TO-FIRST-AUDIO metric anchor: seconds from here to the bed_preview emit
+  // is the headline number the synth-bed-first stream is optimizing (logged +
+  // put on the receipt). markRunning also emits the 'running' JobEvent.
+  const jobStartedAt = Date.now();
   await markRunning(p.jobId);
+  // FLAG-GATED, DEFAULT OFF (SONG_BED_FIRST_STREAMING). When off, the render is
+  // byte-identical to today: the forge/synth barrier, then ONE terminal
+  // bed_ready with no `stage` field. When on, the fast synth-only preview bed is
+  // emitted up front (bed_preview) and the terminal bed_ready carries stage:'forged'.
+  const bedFirstStreaming = process.env.SONG_BED_FIRST_STREAMING === "1";
   const notes: string[] = [];
   try {
     const bpm = p.bpm ?? genreSignature(p.genre).bpm ?? 112;
@@ -841,6 +864,139 @@ export async function processOwnEngine(p: OwnEnginePayload): Promise<void> {
       }
       notes.push(`replay: locked ${p.lockedMaterialIds!.length} material receipt(s)`);
     }
+
+    // ── STAGE 1: SYNTH-BED-FIRST PREVIEW (flag-gated, fail-soft) ──────────────
+    // The default render forges 8 real instruments (2-6 min) and BLOCKS on all
+    // of them before assembling, so the user hears NOTHING for minutes. When
+    // SONG_BED_FIRST_STREAMING is on, run the FAST synth-only bed UP FRONT — for
+    // the full kit, not as a post-forge gap-filler — assemble a provisional bed,
+    // upload it, and emit `bed_preview {stage:'synth'}` so the player streams it
+    // in ~15-20s. Then the existing forge fan-out + real-bed assembly + master
+    // run exactly as before, and the player hot-swaps synth -> forged -> master.
+    //
+    // ISOLATION: the preview synth loops are stamped previewOnly (excluded from
+    // every real-bed pickKit), so the FORGED bed is byte-identical to today — no
+    // synth primitive is ever layered under the real instruments. Replay-locked
+    // renders never preview (they must reproduce exactly). NEVER fatal: any
+    // failure falls straight back to the barrier path with a disclosed note.
+    if (bedFirstStreaming && !replayLocked) {
+      let previewPicks: Awaited<ReturnType<typeof pickKit>> = [];
+      const preview = await runSynthBedPreview(jobStartedAt, {
+        synthFullKit: async () => {
+          // WARM-LANE FAST PATH + shelf hygiene: if the REAL shelf already covers
+          // a bed (a lane that has forged/collected material from prior renders),
+          // skip the synth pass entirely — the preview assembles straight from the
+          // real material (faster, and no preview-only rows accumulate). Only a
+          // thin/cold lane synthesizes a starter kit for the preview.
+          const realNow = await pickKit(
+            p.workspaceId,
+            p.genre,
+            bpm,
+            homeKey,
+            varietySeed,
+            requestedRoles,
+            p.lockedMaterialIds ?? []
+          );
+          if (materialCoverage(realNow).ready) return;
+          const synthJob = await prisma.providerJob.create({
+            data: {
+              workspaceId: p.workspaceId,
+              kind: "material",
+              provider: "synth",
+              status: "QUEUED",
+              inputJson: {
+                genre: p.genre,
+                auto: "own-engine-bed-preview",
+              } as never,
+            },
+            select: { id: true },
+          });
+          await processSynthMaterial({
+            jobId: synthJob.id,
+            workspaceId: p.workspaceId,
+            genre: p.genre,
+            bpm,
+            keySignature: homeKey,
+            // FULL synth kit up front (+ any synthable requested role) so the
+            // preview bed is a real groove, not one loop. Per-job material ids
+            // (the dedicated synthJob) keep these distinct from the lane's
+            // persistent gap-fill synth, and previewOnly keeps them off the
+            // forged bed.
+            roles: [...new Set([...synthKitFor(p.genre), ...requestedRoles])],
+            previewOnly: true,
+          });
+        },
+        pickPreviewKit: async () => {
+          previewPicks = await pickKit(
+            p.workspaceId,
+            p.genre,
+            bpm,
+            homeKey,
+            varietySeed,
+            requestedRoles,
+            [],
+            true // include previewOnly loops for the provisional bed
+          );
+          return previewPicks;
+        },
+        assemblePreview: async () => {
+          const previewSections = sectionsFrom(
+            p.blueprint ?? null,
+            previewPicks.map(pick => pick.role)
+          );
+          const previewChild = await prisma.providerJob.create({
+            data: {
+              workspaceId: p.workspaceId,
+              projectId: p.projectId,
+              kind: "music",
+              provider: "material",
+              status: "QUEUED",
+              inputJson: {
+                ownEngineChild: p.jobId,
+                assemble: true,
+                bedPreview: true,
+              } as never,
+            },
+            select: { id: true },
+          });
+          await processAssembleBeat({
+            jobId: previewChild.id,
+            workspaceId: p.workspaceId,
+            projectId: p.projectId,
+            songId: undefined, // provisional bed — never tied to the song
+            bpm,
+            genre: p.genre,
+            picks: previewPicks,
+            sections: previewSections,
+            withStems: false,
+          } as never);
+          const previewDone = await prisma.providerJob.findUnique({
+            where: { id: previewChild.id },
+            select: { status: true, outputJson: true },
+          });
+          const previewOut = (previewDone?.outputJson ?? {}) as {
+            beatId?: string;
+            url?: string;
+          };
+          if (
+            previewDone?.status !== "SUCCEEDED" ||
+            !previewOut.beatId ||
+            !previewOut.url
+          )
+            return null;
+          return { beatId: previewOut.beatId, url: previewOut.url };
+        },
+        emit: (phase, payload) => emitJobEvent(p.jobId, phase, payload),
+        now: () => Date.now(),
+        log: message => console.warn(message),
+      });
+      if (preview.note) notes.push(preview.note);
+      if (preview.emitted)
+        console.log(
+          `[own-engine] ${p.genre} bed_preview — time-to-first-audio ~${preview.ttfaS}s`
+        );
+    }
+
     let haveRoles = new Set(picks.map(x => x.role));
     // REAL-INSTRUMENT FORGING IS THE AUTOMATIC DEFAULT NOW (owner order
     // 2026-07-20, explicit + emphatic: "Turn on the forging. Let it forge
@@ -1459,9 +1615,16 @@ export async function processOwnEngine(p: OwnEnginePayload): Promise<void> {
     // the vocal/master finish. Emit it so the player streams it immediately and
     // hot-swaps to the master when the job completes. Fail-soft — emitJobEvent
     // never throws into the render.
+    //
+    // STAGE 2 of the three-stage stream: when SONG_BED_FIRST_STREAMING is on this
+    // is the REAL-instrument bed (the player upgrades from the synth bed_preview
+    // to this forged bed), so it carries stage:'forged'. Flag OFF → the payload
+    // is exactly {url, beatId} as today (no preview ever fired; this is the one
+    // terminal bed_ready), and the player treats a stage-less bed_ready as forged.
     await emitJobEvent(p.jobId, "bed_ready", {
       url: out.url,
       beatId: out.beatId,
+      ...(bedFirstStreaming ? { stage: "forged" as const } : {}),
     });
 
     // P2 FEEDBACK LOOP (write side): the plan + its measured outcome live on

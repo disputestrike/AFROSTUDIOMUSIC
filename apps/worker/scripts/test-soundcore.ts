@@ -84,7 +84,8 @@ async function main() {
   // BEFORE the synth backfill (processSynthMaterial) in processOwnEngine.
   const idxLaneKit = ownEngineSrc.indexOf("laneSampleKit(genre)");
   const idxFloorMap = ownEngineSrc.indexOf("sampleKitFloorRows(laneSampleKit(genre))");
-  const idxSynthBackfill = ownEngineSrc.indexOf("processSynthMaterial({");
+  // lastIndexOf: the MAIN backfill (past the earlier flag-gated preview synth).
+  const idxSynthBackfill = ownEngineSrc.lastIndexOf("processSynthMaterial({");
   assert.ok(idxLaneKit > 0, "pickKit calls laneSampleKit(genre)");
   assert.ok(idxFloorMap > 0, "pickKit maps the kit through sampleKitFloorRows FIRST");
   assert.ok(
@@ -187,7 +188,10 @@ async function main() {
   // The re-pick barrier is the FIRST coverage recompute AFTER the pool settles
   // (the initial `let coverage = ...` precedes the pool by construction).
   const idxRepick = ownEngineSrc.indexOf("coverage = materialCoverage(picks);", idxAutoPool);
-  const idxAssemble = ownEngineSrc.indexOf("processAssembleBeat({");
+  // lastIndexOf: the MAIN grid-assembly dispatch. The synth-bed-first preview
+  // adds an EARLIER, flag-gated processAssembleBeat for the provisional bed; this
+  // "assembly is AFTER the coverage barrier" check targets the real assembly.
+  const idxAssemble = ownEngineSrc.lastIndexOf("processAssembleBeat({");
   assert.ok(idxAutoPool > 0 && idxRepick > idxAutoPool, "coverage is recomputed AFTER the whole forge pool settles");
   assert.ok(idxAssemble > idxRepick, "assembly dispatch is AFTER the coverage barrier");
   // The assemble download loop is parallel too.

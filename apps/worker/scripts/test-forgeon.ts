@@ -162,7 +162,10 @@ function main() {
   const idxRichForge = ownEngineSrc.indexOf(
     "await forEachPool(richMissing, FORGE_FANOUT_CONCURRENCY"
   );
-  const idxSynthBackfill = ownEngineSrc.indexOf("processSynthMaterial({");
+  // lastIndexOf: the MAIN synth gap-filler backfill (the synth-bed-first preview
+  // adds an EARLIER, flag-gated processSynthMaterial call up front; this ordering
+  // check targets the post-forge backfill, which is the last such call).
+  const idxSynthBackfill = ownEngineSrc.lastIndexOf("processSynthMaterial({");
   const idxRichDef = ownEngineSrc.indexOf(
     "const richMissing = [...requestedRoles, ...forgeKitFor(p.genre, 12)]"
   );

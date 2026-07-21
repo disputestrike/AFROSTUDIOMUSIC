@@ -1,5 +1,13 @@
 'use client';
-import { genreSignature } from '@afrohit/shared';
+import {
+  genreSignature,
+  BED_STAGE_RANK,
+  bedStageOfEvent,
+  shouldApplyBedStage,
+  planBedSwap,
+  type BedStage,
+  type BedStreamCursor,
+} from '@afrohit/shared';
 
 /**
  * The front door — THREE CREATOR DOORS (owner spec, 2026-07-16):
@@ -118,7 +126,7 @@ const STEPS = ['Setting up your session', 'Writing hooks + A&R picking the best'
 // yet the generic step copy still shows (honest fallback, never fabricated).
 const PHASE_STEP: Record<string, number> = {
   drop_started: 0, brief_ready: 1, hooks_done: 1, lyrics_done: 2,
-  render_queued: 3, running: 3, bed_ready: 3, singing: 3, mastering: 3, render_done: 3,
+  render_queued: 3, running: 3, bed_preview: 3, bed_ready: 3, singing: 3, mastering: 3, render_done: 3,
 };
 const PHASE_LABEL: Record<string, string> = {
   drop_started: 'Setting up the session',
@@ -127,6 +135,9 @@ const PHASE_LABEL: Record<string, string> = {
   lyrics_done: 'Writing and polishing the lyrics',
   render_queued: 'Building the beat',
   running: 'Building the beat',
+  // SYNTH-BED-FIRST: the synth preview is audible in ~15-20s while the real
+  // instruments forge; be explicit that what's playing is provisional.
+  bed_preview: 'Playing preview - final mix rendering...',
   bed_ready: 'Beat is ready - singing over it now',
   singing: 'Singing your song',
   mastering: 'Mastering the mix',
@@ -236,7 +247,9 @@ export default function CreatePage() {
     void (async () => {
       const dropJobId = saved!.dropJobId; let renderJobId = saved!.renderJobId; let projectId = saved!.projectId;
       let hook = saved!.hook ?? ''; let score = saved!.score ?? null; let title = saved!.title ?? 'Your song';
-      const bedPlayed = { current: false };
+      // Resuming straight onto a known render job: own the stage cursor so its
+      // bed_preview/bed_ready events drive the player.
+      if (renderJobId) beginRenderWatch(renderJobId);
       let sideWatchStarted = false;
       try {
         for (let i = 0; i < 200; i++) {
@@ -244,7 +257,7 @@ export default function CreatePage() {
           let j: { status: string; phase?: string | null; partial?: unknown; error?: string | null; errorJson?: { message?: string } | null; outputJson?: { drop?: Array<{ jobId?: string; projectId?: string; title?: string; hookText?: string; score: number | null }> } };
           try { j = await api.get(`/jobs/${id}`); } catch { await sleep(6000); continue; }
           applyPhase(j.phase);
-          playBedIfReady(j.phase, j.partial, title, bedPlayed);
+          if (renderJobId) playBedIfReady(renderJobId, j.phase, j.partial, title);
           // EARLY CHILD ID on resume too: while still watching the drop parent,
           // start a BACKGROUND child watcher for the bed/early master. The drop
           // parent stays authoritative (so the auto re-sing is never misread).
@@ -252,7 +265,7 @@ export default function CreatePage() {
             const p = j.partial as { renderJobId?: string; projectId?: string } | null;
             if (p?.renderJobId) {
               sideWatchStarted = true;
-              void watchRenderChild(p.renderJobId, p.projectId ?? projectId ?? '', title, bedPlayed);
+              void watchRenderChild(p.renderJobId, p.projectId ?? projectId ?? '', title);
             }
           }
           if (j.status === 'FAILED') { setErr(`That render failed — ${j.errorJson?.message ?? j.error ?? 'no reason recorded'}. Start another take.`); setPhase('error'); clearProduce(); return; }
@@ -261,6 +274,7 @@ export default function CreatePage() {
               const item = j.outputJson?.drop?.[0];
               if (!item?.jobId) { setSong({ title, hook, score, url: '', projectId: projectId ?? '' }); setPhase('finishing'); clearProduce(); return; }
               renderJobId = item.jobId; projectId = item.projectId ?? projectId; hook = item.hookText ?? hook; score = item.score ?? score; title = item.title ?? title;
+              beginRenderWatch(renderJobId);
               saveProduce({ renderJobId, projectId, title, hook, score }); setStepIdx(3); continue;
             }
             let url = '';
@@ -271,7 +285,7 @@ export default function CreatePage() {
               } catch { /* land in Catalog */ }
             }
             setSong({ title, hook, score, url, projectId: projectId ?? '' });
-            if (url) { setNowPlaying({ title, url }); setLibRefresh((n) => n + 1); setPhase('form'); }
+            if (url) { if (renderJobId) applyBedStage(renderJobId, 'master', url, title); else setNowPlaying({ title, url }); setLibRefresh((n) => n + 1); setPhase('form'); }
             else setPhase('finishing');
             clearProduce(); return;
           }
@@ -392,6 +406,15 @@ export default function CreatePage() {
   const [nowPlaying, setNowPlaying] = useState<{ title: string; url: string } | null>(null);
   const [libRefresh, setLibRefresh] = useState(0);
   const playerRef = useRef<HTMLAudioElement | null>(null);
+  // SYNTH-BED-FIRST HOT-SWAP state. `bedStageRef` is the monotonic stage cursor
+  // for the ACTIVE render (synth -> forged -> master, never downgraded);
+  // `activeRenderJobRef` keys every stage decision to the current render so a
+  // late event from a previous take is ignored; `resumeRef` carries the
+  // position + play/pause captured just before a source swap, re-applied on the
+  // new source's loadedmetadata so playback never restarts or jumps.
+  const bedStageRef = useRef<BedStreamCursor | null>(null);
+  const activeRenderJobRef = useRef<string | null>(null);
+  const resumeRef = useRef<{ time: number; playing: boolean } | null>(null);
 
   useEffect(() => {
     if (phase !== 'producing' || renderStartedAt === null) return;
@@ -552,37 +575,78 @@ export default function CreatePage() {
     if (label) setLiveStatus(label);
   }
 
-  // BED-FIRST: the render emits 'bed_ready' with a playable instrumental bed URL
-  // minutes before the vocal finishes. Play it immediately; the render's
-  // SUCCEEDED then hot-swaps this to the final master. Idempotent per render.
-  function playBedIfReady(
-    phase: string | null | undefined,
-    partial: unknown,
-    title: string,
-    played: { current: boolean },
-  ) {
-    if (played.current || phase !== 'bed_ready') return;
-    const url = (partial as { url?: string } | null)?.url;
-    if (typeof url === 'string' && url) {
-      played.current = true;
-      setNowPlaying({ title: `${title} (instrumental bed)`, url });
-      setLiveStatus('Beat is ready - playing the bed while the vocal renders');
+  // SYNTH-BED-FIRST HOT-SWAP. The render streams three stages on the SAME job's
+  // event tail: bed_preview{synth} in ~15-20s, bed_ready{forged} when the real
+  // instruments land, then the master on SUCCEEDED. The player only ever UPGRADES
+  // synth -> forged -> master and preserves the listener's position + play/pause
+  // across each swap. Naming for the honest label the console shows per stage.
+  function stageTitle(stage: BedStage, title: string): string {
+    if (stage === 'synth') return `${title} (instrumental preview)`;
+    if (stage === 'forged') return `${title} (instrumental bed)`;
+    return title;
+  }
+
+  // Mark which render owns the stage cursor. A NEW render resets the cursor so a
+  // late event from the previous take can never move this player.
+  function beginRenderWatch(jobId: string) {
+    if (activeRenderJobRef.current !== jobId) {
+      activeRenderJobRef.current = jobId;
+      bedStageRef.current = null;
     }
   }
 
+  // Upgrade the console player to a higher bed stage — glitch-free. The guards
+  // (shared, unit-tested): ignore a stale event for another render, and never
+  // downgrade or re-apply the same stage. On an UPGRADE we capture the live
+  // position + play/pause into resumeRef; the <audio>'s onLoadedMetadata
+  // re-applies it to the new source so playback continues from exactly where the
+  // listener was (a paused listener stays paused). The FIRST audible stage loads
+  // fresh (autoPlay from 0).
+  function applyBedStage(jobId: string, stage: BedStage, url: string, title: string) {
+    if (!url) return;
+    const rank = BED_STAGE_RANK[stage];
+    const cursor = bedStageRef.current;
+    if (!shouldApplyBedStage(cursor, activeRenderJobRef.current, jobId, rank)) return;
+    const isUpgrade = !!(cursor && cursor.jobId === jobId);
+    if (isUpgrade) {
+      const el = playerRef.current;
+      if (el) resumeRef.current = { time: el.currentTime || 0, playing: !el.paused && !el.ended };
+    } else {
+      resumeRef.current = null;
+    }
+    bedStageRef.current = { jobId, rank };
+    setNowPlaying({ title: stageTitle(stage, title), url });
+    if (stage === 'synth') setLiveStatus('Playing preview - final mix rendering...');
+    else if (stage === 'forged') setLiveStatus('Beat is ready - playing the bed while the vocal renders');
+  }
+
+  // Map a render job's latest event to a bed stage and (maybe) hot-swap to it.
+  // A stage-less bed_ready (flag OFF / legacy) maps to 'forged' — unchanged.
+  function playBedIfReady(
+    jobId: string,
+    phase: string | null | undefined,
+    partial: unknown,
+    title: string,
+  ) {
+    const stage = bedStageOfEvent(phase, partial);
+    if (!stage) return;
+    const url = (partial as { url?: string } | null)?.url;
+    if (typeof url === 'string' && url) applyBedStage(jobId, stage, url, title);
+  }
+
   // BACKGROUND CHILD WATCHER (bed-first, non-authoritative): started the moment
-  // the drop announces the render child id. It plays the instrumental bed on
-  // 'bed_ready' and the final master the instant the child render succeeds —
-  // minutes before the drop parent finishes its A&R/quality gates. It NEVER
-  // surfaces an error: the drop parent stays the source of truth for
+  // the drop announces the render child id. It plays the synth preview, upgrades
+  // to the forged bed, and swaps to the final master the instant the child render
+  // succeeds — minutes before the drop parent finishes its A&R/quality gates. It
+  // NEVER surfaces an error: the drop parent stays the source of truth for
   // success/failure (and the server's auto re-sing fallback), so a child failure
   // here is silent and the main flow reports the real outcome.
   async function watchRenderChild(
     jobId: string,
     projectId: string,
     title: string,
-    bedPlayed: { current: boolean },
   ) {
+    beginRenderWatch(jobId);
     let netFails = 0;
     for (let i = 0; i < 200; i++) {
       await sleep(5000);
@@ -590,13 +654,13 @@ export default function CreatePage() {
       try { job = await api.get(`/jobs/${jobId}`); netFails = 0; }
       catch { if (++netFails >= 24) return; continue; }
       applyPhase(job.phase);
-      playBedIfReady(job.phase, job.partial, title, bedPlayed);
+      playBedIfReady(jobId, job.phase, job.partial, title);
       if (job.status === 'SUCCEEDED') {
         if (projectId) {
           try {
             const beats = await api.get<Array<{ url: string; createdAt: string }>>(`/projects/${projectId}/beats`);
             const url = beats.sort((a, b) => +new Date(b.createdAt) - +new Date(a.createdAt))[0]?.url;
-            if (url) { setNowPlaying({ title, url }); setLibRefresh((n) => n + 1); }
+            if (url) { applyBedStage(jobId, 'master', url, title); setLibRefresh((n) => n + 1); }
           } catch { /* the main flow will fetch the master on drop success */ }
         }
         return;
@@ -681,8 +745,8 @@ export default function CreatePage() {
       // terminal). We start a BACKGROUND watcher on that child so the bed plays
       // and the master lands minutes early — but we keep the DROP PARENT as the
       // authoritative success/failure signal, so the server's auto re-sing
-      // fallback can't be misread as a failure. The bed is shared so it plays once.
-      const bedPlayed = { current: false };
+      // fallback can't be misread as a failure. The stage cursor keeps the bed
+      // playing once and only ever upgrading (synth -> forged -> master).
       let sideWatchStarted = false;
       for (let i = 0; i < 192; i++) {
         await sleep(5000);
@@ -695,7 +759,7 @@ export default function CreatePage() {
           const p = j.partial as { renderJobId?: string; projectId?: string } | null;
           if (p?.renderJobId) {
             sideWatchStarted = true;
-            void watchRenderChild(p.renderJobId, p.projectId ?? project.id, title, bedPlayed);
+            void watchRenderChild(p.renderJobId, p.projectId ?? project.id, title);
           }
         }
         // Top-level error carries WHY when no take rendered (brain down, no hooks).
@@ -725,12 +789,16 @@ export default function CreatePage() {
       }
       saveProduce({ renderJobId: item.jobId, projectId: project.id, title, hook: item.hookText, score: item.score });
       setStepIdx(3);
+      // This poll owns the stage cursor for the authoritative render child (the
+      // background watcher may drive the same job — the shared guards make the
+      // two idempotent: only strictly-higher stages ever move the player).
+      beginRenderWatch(item.jobId);
       // Poll for the rendered audio. Real sung renders take 3-12 min (best-of-N +
       // the provider's rate limit), so wait up to ~12 min — then hand off calmly to
       // the Catalog rather than showing a scary error for a song that IS finishing.
-      // BED-FIRST: the background watcher above already plays the bed on
-      // 'bed_ready'; this loop confirms the authoritative child and hot-swaps to
-      // the final master (bedPlayed is shared so the bed never double-plays).
+      // BED-FIRST: the background watcher above already plays the synth preview and
+      // upgrades to the forged bed; this loop confirms the authoritative child and
+      // hot-swaps to the final master (the stage cursor keeps it monotonic).
       let url: string | null = null;
       let renderFailed = false;
       let lastJobError: string | null = null;
@@ -741,7 +809,7 @@ export default function CreatePage() {
         try { job = await api.get(`/jobs/${item.jobId}`); lastJobError = job.errorJson?.message ?? job.error ?? lastJobError; netFails = 0; }
         catch { if (++netFails >= 24) break; continue; } // network blip → retry, render keeps going
         applyPhase(job.phase);
-        playBedIfReady(job.phase, job.partial, title, bedPlayed);
+        playBedIfReady(item.jobId, job.phase, job.partial, title);
         if (job.status === 'SUCCEEDED') {
           try {
             const beats = await api.get<Array<{ url: string; createdAt: string }>>(`/projects/${project.id}/beats`);
@@ -760,9 +828,10 @@ export default function CreatePage() {
         return; // storage kept — reopening resumes the watch
       }
       setSong({ title, hook: item.hookText, score: item.score, url, projectId: project.id });
-      // CONSOLE FLOW (T2): play the finished song INLINE under the Create button
-      // (console flow) instead of a takeover page; the library refreshes to show it.
-      setNowPlaying({ title, url });
+      // CONSOLE FLOW (T2): hot-swap to the finished master INLINE under the Create
+      // button (preserving the listener's position from the bed), and refresh the
+      // library to show it.
+      applyBedStage(item.jobId, 'master', url, title);
       setLibRefresh((n) => n + 1);
       setPhase('form');
       clearProduce();
@@ -922,8 +991,9 @@ export default function CreatePage() {
       try { job = await api.get(`/jobs/${jobId}`); lastJobError = job.errorJson?.message ?? job.error ?? lastJobError; netFails = 0; }
       catch { if (++netFails >= 24) break; continue; } // network blip → retry, render keeps going
       // Honest phase copy for the instrumental/film doors — the beat IS the
-      // deliverable here, so skip the song-only bed/singing lines.
-      if (job.phase && job.phase !== 'bed_ready' && job.phase !== 'singing') applyPhase(job.phase);
+      // deliverable here (no mid-render preview player), so skip the song-only
+      // bed/preview/singing lines.
+      if (job.phase && job.phase !== 'bed_preview' && job.phase !== 'bed_ready' && job.phase !== 'singing') applyPhase(job.phase);
       if (job.status === 'SUCCEEDED') {
         try {
           const beats = await api.get<Array<{ url: string; createdAt: string }>>(`/projects/${projectId}/beats`);
@@ -1349,9 +1419,31 @@ export default function CreatePage() {
               <X aria-hidden />
             </button>
           </div>
-          {/* key on the URL: when the bed hot-swaps to the final master, React
-              remounts the element so the new source loads and plays cleanly. */}
-          <audio key={nowPlaying.url} ref={playerRef} controls autoPlay src={nowPlaying.url} className="mt-3 w-full" />
+          {/* SYNTH-BED-FIRST HOT-SWAP: NO `key` — the element is NOT remounted on
+              a source change (a remount restarts from 0, the glitch we're killing).
+              When applyBedStage upgrades the stage it captures the listener's
+              position + play/pause into resumeRef just before changing the src;
+              this onLoadedMetadata re-applies it to the new source (planBedSwap,
+              shared + unit-tested) so playback continues seamlessly. A fresh play
+              (resumeRef null) just autoPlays from 0 as before. */}
+          <audio
+            ref={playerRef}
+            controls
+            autoPlay
+            src={nowPlaying.url}
+            onLoadedMetadata={(e) => {
+              const el = e.currentTarget;
+              const resume = resumeRef.current;
+              if (!resume) return; // fresh load — autoPlay handles it
+              resumeRef.current = null;
+              const dur = Number.isFinite(el.duration) ? el.duration : 0;
+              const plan = planBedSwap(resume, dur);
+              try { el.currentTime = plan.time; } catch { /* seek not ready — leave at 0 */ }
+              if (plan.play) void el.play().catch(() => undefined);
+              else el.pause();
+            }}
+            className="mt-3 w-full"
+          />
           <button type="button" onClick={() => router.push('/catalog')} className="studio-secondary-button mt-4 w-full justify-center">
             <Download aria-hidden /> Open Catalog for stems and DAW export
           </button>
