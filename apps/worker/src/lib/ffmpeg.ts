@@ -2113,6 +2113,40 @@ const ASSEMBLY_ENCODE = [
   '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '19', '-pix_fmt', 'yuv420p',
 ];
 
+/** Bounded fan-out width for per-clip normalization. Every normalizeVideoClip
+ *  is an INDEPENDENT full re-encode with NO cross-clip dependency, so the
+ *  timeline's shots conform in ~ceil(N/width) waves instead of N serial
+ *  re-encodes — the dominant assembly cost. ~4 keeps CPU/RAM sane on the
+ *  worker host; override via VIDEO_NORMALIZE_CONCURRENCY. */
+const VIDEO_NORMALIZE_CONCURRENCY = Math.max(
+  1,
+  Number(process.env.VIDEO_NORMALIZE_CONCURRENCY ?? 4) || 4
+);
+
+/** A bounded-concurrency pool — mirrors the forge fan-out helper in
+ *  processors/own-engine.ts, kept local so this lib never imports a processor.
+ *  Runs `fn` over `items` at most `concurrency` at a time; the caller awaits
+ *  ALL of them. Deterministic COMPLETION is NOT guaranteed — order-sensitive
+ *  callers write each result into a pre-sized, index-keyed slot INSIDE `fn`
+ *  (never push-on-complete), so the downstream stage still consumes items in
+ *  the original order regardless of which unit finishes first. */
+async function forEachPool<T>(
+  items: readonly T[],
+  concurrency: number,
+  fn: (item: T, index: number) => Promise<void>
+): Promise<void> {
+  let cursor = 0;
+  const width = Math.min(Math.max(1, concurrency), items.length);
+  const workers = Array.from({ length: width }, async () => {
+    while (true) {
+      const i = cursor++;
+      if (i >= items.length) break;
+      await fn(items[i]!, i);
+    }
+  });
+  await Promise.all(workers);
+}
+
 /** ffprobe duration in PRECISE seconds (float, no rounding) — the assembly
  *  math (xfade offsets, min(video,audio) law) needs sub-second truth, unlike
  *  probeDurationS above which rounds for display. Local paths only; 0 = unknown. */
@@ -2261,13 +2295,74 @@ export async function ensureDisplayFont(): Promise<string | undefined> {
   }
 }
 
+/** The opening credit's cue window (seconds) ON THE ASSEMBLED TIMELINE — it
+ *  lights up 0.8s in and holds to 5.2s. When a logo splash rides in FRONT of
+ *  the cut, the window is shifted by the splash length (see
+ *  overlayCreditsAndWatermark) so the credit still cues 0.8s into the FIRST
+ *  SCENE, exactly as it did when it was burned before the splash. */
+export const CREDIT_CUE_START_S = 0.8;
+export const CREDIT_CUE_END_S = 5.2;
+
+/** PURE (no ffmpeg): the three credit lines — TITLE / artist / producer — with
+ *  their frame-relative font sizes and vertical offsets. Producer is optional
+ *  (older concepts carry no producer). Split out so the credit can be folded
+ *  into other drawtext passes without duplicating the layout law. */
+export function buildVideoCreditLines(opts: {
+  title: string;
+  artist: string;
+  producer?: string;
+  height: number;
+}): Array<{ text: string; size: number; dy: number }> {
+  return [
+    { text: opts.title.toUpperCase(), size: Math.round(opts.height * 0.052), dy: 0 },
+    { text: opts.artist, size: Math.round(opts.height * 0.034), dy: Math.round(opts.height * 0.066) },
+    ...(opts.producer
+      ? [{ text: `Prod. ${opts.producer}`, size: Math.round(opts.height * 0.024), dy: Math.round(opts.height * 0.112) }]
+      : []),
+  ];
+}
+
+/** PURE (unit-testable): the drawtext filter per credit line, given already-
+ *  written textfile paths (text rides textfiles so titles with quotes/colons
+ *  can never break the filter). The cue window is a parameter so the SAME
+ *  builder serves the standalone credit pass (0.8-5.2) and the folded brand
+ *  pass (shifted by the splash in front of it). */
+export function buildVideoCreditFilters(opts: {
+  lines: Array<{ text: string; size: number; dy: number }>;
+  textPaths: string[];
+  fontPath: string;
+  width: number;
+  height: number;
+  enableStartS: number;
+  enableEndS: number;
+}): string[] {
+  const escape = (p: string) => p.replace(/\\/g, '/').replace(/:/g, '\\:');
+  const font = escape(opts.fontPath);
+  const cue = (n: number) => (Math.round(n * 1000) / 1000).toString();
+  const x = Math.round(opts.width * 0.055);
+  const enable = `enable='between(t,${cue(opts.enableStartS)},${cue(opts.enableEndS)})'`;
+  const filters: string[] = [];
+  for (let i = 0; i < opts.lines.length; i++) {
+    const line = opts.lines[i]!;
+    const y = Math.round(opts.height * 0.7) + line.dy;
+    filters.push(
+      `drawtext=fontfile='${font}':textfile='${escape(opts.textPaths[i]!)}'` +
+        `:fontcolor=white:fontsize=${line.size}:x=${x}:y=${y}` +
+        `:shadowcolor=black@0.75:shadowx=2:shadowy=2:${enable}`
+    );
+  }
+  return filters;
+}
+
 /**
  * VIDEO NAMING LAW ("name the video — name and producer" — owner): burn a
  * broadcast-style opening credit into an assembled cut. Lower-left, three
- * lines — TITLE / artist / producer — visible ~0.8s-5.2s with a drop shadow;
- * text rides textfiles so titles with quotes/colons can never break the
- * filter. One extra encode pass; the input file is left untouched (the
- * native-master law applies to finished cuts too).
+ * lines — TITLE / artist / producer — visible ~0.8s-5.2s with a drop shadow.
+ * One extra encode pass; the input file is left untouched (the native-master
+ * law applies to finished cuts too). NOTE: the shipping assembler folds this
+ * credit INTO the watermark pass (overlayCreditsAndWatermark) to save a
+ * re-encode; this standalone pass is kept for any caller that needs the credit
+ * alone and shares the exact builders, so both paths are pixel-identical.
  */
 export async function overlayVideoCredits(opts: {
   input: string;
@@ -2281,26 +2376,27 @@ export async function overlayVideoCredits(opts: {
 }): Promise<void> {
   const dir = await mkdtemp(join(tmpdir(), 'credits-'));
   try {
-    const lines = [
-      { text: opts.title.toUpperCase(), size: Math.round(opts.height * 0.052), dy: 0 },
-      { text: opts.artist, size: Math.round(opts.height * 0.034), dy: Math.round(opts.height * 0.066) },
-      ...(opts.producer
-        ? [{ text: `Prod. ${opts.producer}`, size: Math.round(opts.height * 0.024), dy: Math.round(opts.height * 0.112) }]
-        : []),
-    ];
-    const filters: string[] = [];
+    const lines = buildVideoCreditLines({
+      title: opts.title,
+      artist: opts.artist,
+      producer: opts.producer,
+      height: opts.height,
+    });
+    const textPaths: string[] = [];
     for (let i = 0; i < lines.length; i++) {
-      const line = lines[i]!;
       const textPath = join(dir, `line-${i}.txt`);
-      await writeFile(textPath, line.text);
-      const x = Math.round(opts.width * 0.055);
-      const y = Math.round(opts.height * 0.7) + line.dy;
-      filters.push(
-        `drawtext=fontfile='${opts.fontPath.replace(/\\/g, '/').replace(/:/g, '\\:')}':textfile='${textPath.replace(/\\/g, '/').replace(/:/g, '\\:')}'` +
-          `:fontcolor=white:fontsize=${line.size}:x=${x}:y=${y}` +
-          `:shadowcolor=black@0.75:shadowx=2:shadowy=2:enable='between(t,0.8,5.2)'`
-      );
+      await writeFile(textPath, lines[i]!.text);
+      textPaths.push(textPath);
     }
+    const filters = buildVideoCreditFilters({
+      lines,
+      textPaths,
+      fontPath: opts.fontPath,
+      width: opts.width,
+      height: opts.height,
+      enableStartS: CREDIT_CUE_START_S,
+      enableEndS: CREDIT_CUE_END_S,
+    });
     await runFfmpeg([
       '-i', opts.input,
       '-vf', filters.join(','),
@@ -2480,6 +2576,93 @@ export async function overlayBrandWatermark(opts: {
   }
 }
 
+/**
+ * FOLDED BRAND PASS (vidspeed 2026-07-20): the opening credit and the
+ * persistent "afro" watermark are BOTH drawtext on the identical frame, so
+ * they need ONE decode/encode — not two. This collapses the credit pass and
+ * the watermark pass into a SINGLE full-length re-encode (the logo splash
+ * stays its own structural concat, since it is different frames prepended).
+ *
+ * PIXEL-IDENTICAL to the old two-pass order (credit → splash → watermark):
+ *  - the credit filters draw FIRST, the watermark filters ON TOP, matching the
+ *    old z-order (the watermark pass always ran last, over the credit);
+ *  - the credit's cue window is shifted by `creditOffsetS` — the splash seconds
+ *    now sitting in front of the cut — so it lights up at the same wall-clock
+ *    moment it did when it was burned before the splash was prepended;
+ *  - the watermark's own timing is unchanged: persistent 0s→end + the first-3s
+ *    thumbnail, measured from the FINAL frame 0 (splash included), exactly as
+ *    when it ran as the last pass over the splashed cut.
+ *
+ * `credit: null` (no bound song) drops the credit and still burns the
+ * watermark, mirroring the old independent credit skip. Fail-soft is the
+ * CALLER's job (its try/catch ships the splashed cut and records each
+ * feature's applied/skip receipt); this throws on any ffmpeg failure.
+ */
+export async function overlayCreditsAndWatermark(opts: {
+  input: string;
+  output: string;
+  width: number;
+  height: number;
+  fontPath: string;
+  /** null → no bound song: the credit is skipped, the watermark still burns. */
+  credit: { title: string; artist: string; producer?: string } | null;
+  /** Seconds the credit cue is delayed by the splash now in front of it
+   *  (SPLASH_DURATION_S when the splash shipped, 0 when it was skipped). */
+  creditOffsetS: number;
+}): Promise<void> {
+  const dir = await mkdtemp(join(tmpdir(), 'branded-'));
+  try {
+    const filters: string[] = [];
+    // Credit drawtext FIRST — under the watermark (old z-order preserved).
+    if (opts.credit) {
+      const lines = buildVideoCreditLines({
+        title: opts.credit.title,
+        artist: opts.credit.artist,
+        producer: opts.credit.producer,
+        height: opts.height,
+      });
+      const textPaths: string[] = [];
+      for (let i = 0; i < lines.length; i++) {
+        const textPath = join(dir, `credit-${i}.txt`);
+        await writeFile(textPath, lines[i]!.text);
+        textPaths.push(textPath);
+      }
+      filters.push(
+        ...buildVideoCreditFilters({
+          lines,
+          textPaths,
+          fontPath: opts.fontPath,
+          width: opts.width,
+          height: opts.height,
+          enableStartS: CREDIT_CUE_START_S + opts.creditOffsetS,
+          enableEndS: CREDIT_CUE_END_S + opts.creditOffsetS,
+        })
+      );
+    }
+    // Watermark drawtext ON TOP — persistent bottom-right + first-3s thumbnail.
+    const wordmarkPath = join(dir, 'wordmark.txt');
+    await writeFile(wordmarkPath, WATERMARK_TEXT);
+    filters.push(
+      ...buildBrandWatermarkFilters({
+        fontPath: opts.fontPath,
+        textPath: wordmarkPath,
+        width: opts.width,
+        height: opts.height,
+      })
+    );
+    await runFfmpeg([
+      '-i', opts.input,
+      '-vf', filters.join(','),
+      '-c:a', 'copy',
+      ...ASSEMBLY_ENCODE,
+      '-movflags', '+faststart',
+      opts.output,
+    ]);
+  } finally {
+    await rm(dir, { recursive: true, force: true }).catch(() => {});
+  }
+}
+
 export interface AssemblyTimelineClip {
   /** LOCAL path to the downloaded rendered shot. */
   path: string;
@@ -2556,30 +2739,51 @@ export async function assembleMusicVideoTimeline(opts: {
 
   // 1) NORMALIZE — common geometry/fps, slot trims (+ crossfade handle on the
   //    last clip of each non-final sequence; see HANDLE LAW above).
+  //
+  //    PARALLEL NORMALIZE (vidspeed 2026-07-20): every clip's conform is an
+  //    INDEPENDENT full re-encode, so flatten ALL (group,clip) units into one
+  //    task list and fan them out through a bounded pool instead of the old
+  //    N serial re-encodes. ORDER is preserved deterministically: each result
+  //    is written into a pre-sized slot by its (g,c) coordinate — never
+  //    push-on-complete — so the concat/xfade below still consumes clips in
+  //    strict EDL order no matter which unit finishes first.
   await opts.onStage?.('normalizing');
-  const normalized: string[][] = [];
+  const normalized: string[][] = groups.map(group => new Array<string>(group.length));
+  const normalizeTasks: Array<{
+    g: number;
+    c: number;
+    input: string;
+    output: string;
+    trimS: number;
+  }> = [];
   for (let g = 0; g < groups.length; g++) {
     const group = groups[g]!;
-    const files: string[] = [];
     for (let c = 0; c < group.length; c++) {
       const clip = group[c]!;
       const handleS =
         crossfade && groups.length > 1 && g < groups.length - 1 && c === group.length - 1
           ? ASSEMBLY_XFADE_S
           : 0;
-      const output = join(opts.workDir, `norm-${g}-${c}.mp4`);
-      await normalizeVideoClip({
+      normalizeTasks.push({
+        g,
+        c,
         input: clip.path,
-        output,
-        width: target.width,
-        height: target.height,
-        fit: target.fit,
+        output: join(opts.workDir, `norm-${g}-${c}.mp4`),
         trimS: clip.slotS + handleS,
       });
-      files.push(output);
     }
-    normalized.push(files);
   }
+  await forEachPool(normalizeTasks, VIDEO_NORMALIZE_CONCURRENCY, async task => {
+    await normalizeVideoClip({
+      input: task.input,
+      output: task.output,
+      width: target.width,
+      height: target.height,
+      fit: target.fit,
+      trimS: task.trimS,
+    });
+    normalized[task.g]![task.c] = task.output;
+  });
 
   // 2) CONCAT within each sequence (hard cuts), then crossfade the sequences
   //    together ('full'); the teaser is one hard-cut reel.
