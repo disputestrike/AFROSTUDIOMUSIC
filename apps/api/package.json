@@ -57,6 +57,7 @@
     "test:song-edit-lyrics": "tsx scripts/test-song-edit-lyrics.ts",
     "test:socials-and-lock": "tsx scripts/test-socials-and-lock.mjs",
     "test:release-kit": "tsx scripts/test-release-kit.mjs",
+    "test:release-page": "tsx scripts/test-release-page.mjs",
     "test:scene-edit-propagation": "tsx scripts/test-scene-edit-propagation.mjs"
   },
   "dependencies": {
