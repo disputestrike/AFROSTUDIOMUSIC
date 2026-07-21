@@ -27,6 +27,16 @@ export interface MusicGenerationInput {
   keySignature?: string;
   durationS: number;
   vibePrompt?: string;
+  /**
+   * ARTIST/PRODUCTION LANE reference (owner directive 2026-07-21: "feel like
+   * Dre → feel like Dre"). FIRST-CLASS so composeStyleTags can FRONT-LOAD it as
+   * its own token (production feel: tempo / groove / instrument palette /
+   * energy) that survives the char cap, instead of burying it at the tail of a
+   * 160-char vibe where it was routinely truncated away. STYLE steering only —
+   * never a voice clone, never a named artifact. The Eleven policy scrub strips
+   * it before it reaches ElevenLabs (artist-imitation policy).
+   */
+  influence?: string;
   withStems: boolean;
   artistTone?: string[];
   languages?: string[];

@@ -49,6 +49,8 @@ ARRANGEMENT LAWS:
 - Every groove section needs a rhythm or low-end anchor. Deliberate breakdowns may drop anchors for ONE short section.
 - The energy arc must MOVE (0..1): sparse opens, building verses, full-band hooks, a strip-back somewhere. No two adjacent sections identical in roles+energy.
 - Density is arrangement: at most ${PRODUCTION_PLAN_LIMITS.sectionRoleCap} roles at once; fewer roles with intent beats a wall of sound.
+- MOOD is STRUCTURE, not a label. When a mood is given, let it shape the form and dynamics: heartbreak / sad / melancholy → slower-leaning feel, sparser verses, a minor-key lean, a longer strip-back and a restrained peak; party / hype / celebration / joy → fuller hooks, denser full-band sections, a brighter major lean, a higher peak energy; tense / dark / menacing → sparse and restrained, minor, space over density. Express the tempo/key lean via bpm/keySignature, but bias WITHIN the lane's natural range — NEVER break the genre's tempo band.
+- ARTIST/PRODUCTION LANE — when ARTIST_PRODUCTION_LANE is present it is STYLE steering only (never a clone, never a named artifact, never imitate a living person's voice): let its tempo feel, groove pocket, instrument palette, energy arc and section dynamics shape the arrangement and role choices. Capture the PRODUCTION feel, never a person.
 - If LAST_OUTCOMES are provided, FIX what they flag: "flat" → widen the energy arc and thin the verses; "sparse" → lean on the roles that exist most; low LUFS or "weak" → fuller hooks, stronger anchors. Repeat NOTHING that failed.
 
 Return ONLY strict JSON:
@@ -63,6 +65,11 @@ export async function planProduction(opts: {
   /** Full-song bar budget (lane durationS * bpm / 240) — the audit's "own
    *  renders are short" fix: the brain plans to the lane's REAL length. */
   targetBars?: number;
+  /** ARTIST/PRODUCTION LANE steering — the owner's "feel like Dre" reference as
+   *  a PRODUCTION-STYLE directive (tempo feel / groove / instrument palette /
+   *  energy). STYLE only: the caller builds it with influenceDirective(), so the
+   *  never-a-voice-clone guard is already baked in. */
+  influenceLane?: string | null;
   /** The lane's Sound-DNA arrangement wisdom (groove feel + section map) —
    *  "everything we've built feeds the engine" (owner 2026-07-19). */
   laneDna?: string | null;
@@ -89,6 +96,7 @@ export async function planProduction(opts: {
           ...(opts.targetBars
             ? { TOTAL_BAR_BUDGET: `${opts.targetBars} bars (±20%) — this is the lane's FULL-SONG length; plan the whole record, not a sketch` }
             : {}),
+          ...(opts.influenceLane ? { ARTIST_PRODUCTION_LANE: opts.influenceLane } : {}),
           ...(opts.laneDna ? { LANE_DNA: opts.laneDna } : {}),
           ...(opts.learnedLessons?.length
             ? { LEARNED_FROM_LISTENING: opts.learnedLessons }

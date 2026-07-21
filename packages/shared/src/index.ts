@@ -25,6 +25,7 @@ export * from "./training-consent";
 export * from "./seed-plan";
 export * from "./blueprint";
 export * from "./genre-signatures";
+export * from "./reference-steering";
 export * from "./material-roles";
 export * from "./producer-kit";
 export * from "./material-select";

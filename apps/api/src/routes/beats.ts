@@ -7,6 +7,7 @@ import {
   AFROONE_ONTOLOGY_VERSION,
   afroOneDirectionsForRequest,
   deriveAfroOneSeed,
+  enrichedOwnMelodyPrompt,
   genreSignature,
   isAfroOneRenderSpecification,
   requestedMaterialRoleContract,
@@ -68,13 +69,17 @@ export function unsupportedOwnEngineControls(
 ): string[] {
   return [
     input.fusionGenres?.length ? 'fusionGenres' : null,
-    input.mood?.trim() ? 'mood' : null,
-    input.influence?.trim() ? 'influence' : null,
+    // mood, influence and vibePrompt are now HONORED by the own engine
+    // (reference-steering, 2026-07-21): the enqueue sites thread them into the
+    // payload as the ENRICHED melody prompt + raw cues, the Producer Brain
+    // steers the arrangement on the mood + artist production lane, and the
+    // melody layer renders the enriched brief. "Feel like Dre" reaches the
+    // sound instead of being dropped. durationS was already honored (length
+    // contract, 2026-07-19). fusionGenres/keySignature/pinnedReferenceId/
+    // trainingReferences remain genuinely unsupported by the own worker.
     input.keySignature?.trim() ? 'keySignature' : null,
     input.pinnedReferenceId ? 'pinnedReferenceId' : null,
     trainingReferenceCount > 0 ? 'trainingReferences' : null,
-    // durationS is now HONORED by the own engine (length contract, 2026-07-19).
-    input.vibePrompt?.trim() ? 'vibePrompt' : null,
   ].filter((control): control is string => control !== null);
 }
 
@@ -86,9 +91,10 @@ export function resolveOwnEngineRouting(
   if (input.songEngine === 'own') {
     // Owner directive (2026-07-19): "Our Engine is the default and must work for
     // anything." When it's EXPLICITLY chosen it must ALWAYS render — it simply
-    // ignores the controls it can't honor yet (mood/vibePrompt/trainingReferences;
-    // the own-engine worker never reads them) instead of rejecting the job. The
-    // ignored controls are still reported so the UI can note them, softly.
+    // ignores the controls it can't honor yet (now only fusionGenres/keySignature/
+    // pinnedReferenceId/trainingReferences; mood/influence/vibePrompt are HONORED
+    // as production-style steering since 2026-07-21) instead of rejecting the job.
+    // The ignored controls are still reported so the UI can note them, softly.
     return { mode: 'own', unsupportedControls };
   }
   if (input.songEngine || input.withVocals || unsupportedControls.length) {
@@ -592,7 +598,21 @@ export default async function beats(app: FastifyInstance) {
               genre,
               bpm: ownBpm,
               durationS,
-              melodyPrompt: genreSignature(genre).melodyPrompt,
+              // REFERENCE HONORED (owner: "feel like Dre → feel like Dre"): the
+              // own engine used to render the bare per-genre table string and
+              // DROP the mood/influence/vibe. The enriched prompt carries them
+              // (lane brief first, then mood + the never-clone production-lane
+              // directive + vibe) into planProduction + the melody layer; the
+              // raw fields ride too so the Producer Brain steers on them.
+              melodyPrompt: enrichedOwnMelodyPrompt({
+                genre,
+                mood: input.mood,
+                influence: input.influence,
+                vibePrompt: input.vibePrompt,
+              }),
+              mood: input.mood,
+              influence: input.influence,
+              vibePrompt: input.vibePrompt,
               renderSeed: directionSeed,
               direction,
               deterministicMode,
@@ -706,9 +726,12 @@ export default async function beats(app: FastifyInstance) {
             durationS: input.durationS ?? (input.withVocals ? genreSignature(genre).durationS : 60),
             // ANTI-SOUP: styleHints are TAGS (they join dnaTags), not sentence glue —
             // an ever-growing vibePrompt used to drown the genre identity.
-            // Influence = artist LANE (energy/tempo/production feel), same
-            // semantics as the drop path — never a copy, never named.
-            vibePrompt: [input.vibePrompt, input.influence ? `in the vibe/lane of ${input.influence} (capture the energy and production feel, never copy)` : null].filter(Boolean).join('. ') || undefined,
+            // INFLUENCE is now a FIRST-CLASS field (carried by ...input above):
+            // composeStyleTags FRONT-LOADS it as its own production-lane token so
+            // it survives the char cap, instead of being baked into the vibe tail
+            // where it was routinely truncated. vibePrompt stays the user's text.
+            vibePrompt: input.vibePrompt || undefined,
+            influence: input.influence,
             artistTone: project.artist.vocalTone,
             languages: langs,
             dnaTags: finalDnaTags,

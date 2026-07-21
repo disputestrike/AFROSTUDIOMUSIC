@@ -22,7 +22,7 @@ import {
   type MusicAdapterResolution,
   type RouteLane,
 } from '../music-license';
-import { getGenreKit } from '@afrohit/shared';
+import { getGenreKit, influenceStyleToken } from '@afrohit/shared';
 import { detectAfricanLanguage, annotateLyricsForSinging } from '../african-g2p';
 
 function provider(): string {
@@ -345,6 +345,12 @@ export function composeStyleTags(
   const instrumentation = input.instruments?.length
     ? `instrumentation: ${input.instruments.slice(0, 8).map((i) => deLatin(i.trim())).filter(Boolean).join(', ')} — feature these instruments prominently`
     : null;
+  // ARTIST/PRODUCTION LANE (owner directive 2026-07-21): "feel like Dre" is
+  // PRODUCTION-STYLE steering. It rides as its OWN front-loaded token (parallel
+  // to instrumentation, index <= 3) so it survives the 700-char cap — the old
+  // path buried it at the tail of a 160-char vibe where it was truncated away.
+  // STYLE only: influenceStyleToken() bakes in the never-a-voice-clone guard.
+  const influenceToken = influenceStyleToken(input.influence);
   // SWING / MICRO-TIMING (item 3): front-load the measured per-genre pocket token
   // so the engine is pulled off a stiff Western 4/4 onto the correct African feel.
   const swingToken = swingPocketToken(input.genre);
@@ -368,6 +374,7 @@ export function composeStyleTags(
     genreLine,
     swingToken,
     instrumentation,
+    influenceToken,
     melodyContour,
     toneNotes,
     afro ? afro.signature : null,
@@ -723,7 +730,10 @@ function elevenPolicySafeInput(input: MusicGenerationInput): MusicGenerationInpu
     .filter((part) => !/\b(?:in the vibe\/lane of|in the (?:style|vibe|lane) of|inspired by|sounds? like|similar to)\b/i.test(part))
     .join('. ')
     .trim();
-  return { ...input, vibePrompt: vibePrompt || undefined };
+  // ElevenLabs forbids artist-imitation references, so the first-class artist
+  // production lane is DROPPED here too (mirrors the vibe scrub above) — its
+  // front-loaded influenceToken must never reach the Eleven prompt.
+  return { ...input, vibePrompt: vibePrompt || undefined, influence: undefined };
 }
 
 function elevenPositiveStyle(style: string): string {
