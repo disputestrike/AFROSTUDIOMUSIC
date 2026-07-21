@@ -11,8 +11,7 @@ import {
   computeClipAudioOffsets,
   ensureDisplayFont,
   ffmpegAvailable,
-  overlayBrandWatermark,
-  overlayVideoCredits,
+  overlayCreditsAndWatermark,
   prependLogoSplash,
   resolveBrandLogoPath,
   sliceAudioWav,
@@ -252,11 +251,12 @@ export async function processAssembleVideo(p: AssembleVideoPayload) {
     });
 
     // 2b) VIDEO NAMING LAW ("name the video — name and producer" — owner):
-    //     burn the opening credit — TITLE / artist / producer — into the cut.
-    //     Best-effort by design: no font or no song row → the cut ships
-    //     uncredited rather than failing paid work; meta.credits says which.
-    let creditedPath = result.path;
-    let credits: { title: string; artist: string; producer: string } | null =
+    //     resolve the opening credit — TITLE / artist / producer. Best-effort:
+    //     no bound song → the cut ships uncredited (the folded brand pass below
+    //     still burns the watermark); meta.credits records which. The BURN
+    //     itself is deferred to 2d so it shares ONE re-encode with the
+    //     watermark instead of taking a full-length pass of its own.
+    let credit: { title: string; artist: string; producer: string } | null =
       null;
     try {
       const song = p.audio.songId
@@ -270,47 +270,36 @@ export async function processAssembleVideo(p: AssembleVideoPayload) {
           })
         : null;
       if (song) {
-        const credit = {
+        credit = {
           title: (song.lyric?.title || song.title || "Untitled").trim(),
           artist: song.project.artist.stageName?.trim() || "AfroHits Artist",
           producer: "AfroHits Studio",
         };
-        const fontPath = await ensureDisplayFont();
-        if (fontPath) {
-          const withCredits = join(workDir, `credited-${p.kind}.mp4`);
-          await overlayVideoCredits({
-            input: result.path,
-            output: withCredits,
-            ...credit,
-            fontPath,
-            width: result.width,
-            height: result.height,
-          });
-          creditedPath = withCredits;
-          credits = credit;
-        }
       }
     } catch (creditError) {
       console.warn(
-        `[assemble ${p.jobId}] credits overlay skipped:`,
+        `[assemble ${p.jobId}] credit lookup skipped:`,
         (creditError as Error).message
       );
     }
 
     // 2c) LOGO SPLASH ("show our logo at the start of the video — then it
     //     disappears after a splash" — owner): prepend ~1.8s of the AfroHits
-    //     mark AFTER the credit burn, so the splash is the very first thing
-    //     seen and the credit still cues 0.8s into the first scene. Same
-    //     fail-soft doctrine as the credit: a missing logo or failed encode
-    //     ships the un-splashed cut and the receipt says so.
-    let splashedPath = creditedPath;
+    //     mark FIRST, so the splash is the very first thing seen. A structural
+    //     concat (different frames) kept as its OWN pass — independent of the
+    //     drawtext fold below — so its fail-soft receipt stays isolated: a
+    //     missing logo or a failed encode ships the un-splashed cut and the
+    //     receipt says so. The credit is burned AFTER the splash now (2d) with
+    //     its cue window shifted by the splash length, so it still cues 0.8s
+    //     into the first scene exactly as before.
+    let splashedPath = result.path;
     let splash: { applied: boolean; durationS: number; error?: string };
     try {
       const logoPath = resolveBrandLogoPath();
       if (!logoPath) throw new Error("brand logo asset not found");
       const withSplash = join(workDir, `splashed-${p.kind}.mp4`);
       await prependLogoSplash({
-        input: creditedPath,
+        input: result.path,
         output: withSplash,
         logoPath,
         width: result.width,
@@ -330,34 +319,45 @@ export async function processAssembleVideo(p: AssembleVideoPayload) {
       );
     }
 
-    // 2d) PERSISTENT "afro" WATERMARK (owner, VEVO reference): bottom-right
-    //     for the whole runtime — riding the splash and the credit too — plus
-    //     the bigger bottom-left thumbnail-style mark on the first 3 seconds.
-    //     Last video pass so it sits on top of everything; fail-soft like the
-    //     splash and the credit.
+    // 2d) FOLDED BRAND PASS (vidspeed 2026-07-20): the opening credit AND the
+    //     persistent "afro" watermark (owner, VEVO reference) are BOTH drawtext
+    //     on the identical frame, so ONE re-encode burns both — where the
+    //     pipeline used to spend two full-length passes. Watermark rides the
+    //     whole runtime (splash + credit included) plus the first-3s bottom-left
+    //     thumbnail mark; the credit cue is shifted by SPLASH_DURATION_S only
+    //     when the splash actually shipped, landing it on the first scene as
+    //     before. Same fail-soft doctrine: a failure (no font, bad encode)
+    //     ships the splashed cut untouched and the receipts report each
+    //     feature's applied/skip honestly — branding never fails paid work.
     let finalPath = splashedPath;
+    let credits: { title: string; artist: string; producer: string } | null =
+      null;
     let watermark: { applied: boolean; error?: string };
     try {
       const fontPath = await ensureDisplayFont();
       if (!fontPath) throw new Error("display font unavailable");
-      const withWatermark = join(workDir, `watermarked-${p.kind}.mp4`);
-      await overlayBrandWatermark({
+      const branded = join(workDir, `branded-${p.kind}.mp4`);
+      await overlayCreditsAndWatermark({
         input: splashedPath,
-        output: withWatermark,
-        fontPath,
+        output: branded,
         width: result.width,
         height: result.height,
+        fontPath,
+        credit,
+        creditOffsetS: splash.applied ? SPLASH_DURATION_S : 0,
       });
-      finalPath = withWatermark;
+      finalPath = branded;
+      credits = credit;
       watermark = { applied: true };
-    } catch (watermarkError) {
+    } catch (brandError) {
+      credits = null;
       watermark = {
         applied: false,
-        error: (watermarkError as Error).message,
+        error: (brandError as Error).message,
       };
       console.warn(
-        `[assemble ${p.jobId}] brand watermark skipped:`,
-        (watermarkError as Error).message
+        `[assemble ${p.jobId}] brand overlays skipped:`,
+        (brandError as Error).message
       );
     }
 
