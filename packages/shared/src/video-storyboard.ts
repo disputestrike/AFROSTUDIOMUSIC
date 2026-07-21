@@ -585,6 +585,140 @@ export function normalizeVideoTreatment(
   };
 }
 
+export type TreatmentReviewMode = "critic" | "repair";
+
+/**
+ * COMPACT TREATMENT FOR REVIEW — the prompt SHRINK that keeps the critic and
+ * repair calls under the bulk brain's ~28k-char context guard so they actually
+ * resolve to the fast Cerebras tier instead of silently escalating up the
+ * paid-brain ladder (packages/ai generate.ts routes a bulk prompt > 28k chars
+ * UP, and under a forced-bulk run "up" tops out at the OpenAI draft — never
+ * Sonnet — but Cerebras is the goal, so we stay under the guard).
+ *
+ * The raw model treatment (up to MAX_TREATMENT_SHOTS shots, each a long
+ * render-ready prompt + verbatim cast subjects + craft) plus the song lyrics
+ * routinely blows past 28k on a full-song plan. Two modes, by what the call
+ * needs:
+ *  - "critic": the critic only SCORES a fixed rubric and never returns a
+ *    treatment, so it gets an AGGRESSIVE projection — top-level creative +
+ *    per-sequence intent/setting/continuity/performers + per-shot prompt +
+ *    subjects only (≤3 shots/sequence, short caps). Nothing here is persisted,
+ *    so the trim costs no output fidelity.
+ *  - "repair": the repair must RETURN a corrected treatment that re-normalizes,
+ *    so it gets a HIGH-FIDELITY projection — a generous prompt cap that leaves
+ *    realistic shot prompts untouched, plus motion/lighting/durationS/
+ *    negativePrompt and the teaser — bounded to the same MAX_TREATMENT_SHOTS
+ *    the normalizer keeps anyway. Only pathologically long prompts (>800 chars,
+ *    which the normalizer would itself cap at 2000) lose tail detail.
+ *
+ * Both bound the shot budget to MAX_TREATMENT_SHOTS across the whole treatment
+ * (one shot minimum per sequence) so a runaway model can't reinflate the prompt,
+ * and both re-anchor sequences to the authoritative sections (label +
+ * sectionIndex) exactly as normalizeVideoTreatment does.
+ */
+export function compactTreatmentForReview(
+  raw: unknown,
+  sections: TreatmentSection[],
+  mode: TreatmentReviewMode
+): Record<string, unknown> {
+  const full = mode === "repair";
+  const root = asRecord(raw);
+  const rawSequences = Array.isArray(root.sequences) ? root.sequences : [];
+  const perSequence = full ? MAX_SEQUENCE_SHOTS : 3;
+  const promptCap = full ? 800 : 200;
+  const subjectCap = full ? 120 : 80;
+  const metaCap = full ? 300 : 140;
+
+  let shotBudgetUsed = 0;
+  const sequences = sections.map((section, index) => {
+    const src = asRecord(
+      rawSequences.find(seq => {
+        const declared = Number(asRecord(seq).sectionIndex ?? asRecord(seq).index);
+        return Number.isInteger(declared) && declared === index;
+      }) ?? rawSequences[index]
+    );
+    // Same one-shot-per-remaining-sequence budgeting the normalizer uses, so the
+    // review sees the same coverage the stored treatment will keep.
+    const remaining = sections.length - index - 1;
+    const budget = Math.max(
+      1,
+      Math.min(perSequence, MAX_TREATMENT_SHOTS - shotBudgetUsed - remaining)
+    );
+    const rawShots = Array.isArray(src.shots) ? src.shots.slice(0, budget) : [];
+    const shots: Record<string, unknown>[] = [];
+    for (const item of rawShots) {
+      const shot = asRecord(item);
+      const prompt = cleanText(shot.prompt, promptCap);
+      if (!prompt) continue;
+      const subjects = Array.isArray(shot.subjects)
+        ? shot.subjects
+            .map(subject => cleanText(subject, subjectCap))
+            .filter((subject): subject is string => Boolean(subject))
+            .slice(0, full ? 6 : 4)
+        : undefined;
+      const durationS = Number(shot.durationS ?? shot.duration_s);
+      const motion = full ? cleanText(shot.motion, 120) : undefined;
+      const lighting = full ? cleanText(shot.lighting, 120) : undefined;
+      const negativePrompt = full ? cleanText(shot.negativePrompt, 160) : undefined;
+      shots.push({
+        prompt,
+        ...(subjects?.length ? { subjects } : {}),
+        ...(motion ? { motion } : {}),
+        ...(lighting ? { lighting } : {}),
+        ...(full && Number.isFinite(durationS) ? { durationS } : {}),
+        ...(negativePrompt ? { negativePrompt } : {}),
+      });
+    }
+    shotBudgetUsed += shots.length;
+
+    const performers = Array.isArray(src.performers)
+      ? src.performers
+          .map(entry => cleanText(entry, 40))
+          .filter((entry): entry is string => Boolean(entry))
+          .slice(0, 6)
+      : undefined;
+    const intent = cleanText(src.intent, metaCap);
+    const setting = cleanText(src.setting ?? src.visualBeat, metaCap);
+    const continuity = cleanText(src.continuity ?? src.continuityNotes, metaCap);
+    return {
+      sectionIndex: index,
+      label: section.label,
+      ...(intent ? { intent } : {}),
+      ...(setting ? { setting } : {}),
+      ...(continuity ? { continuity } : {}),
+      ...(performers?.length ? { performers } : {}),
+      shots,
+    };
+  });
+
+  const motifs = Array.isArray(root.motifs)
+    ? root.motifs
+        .map(motif => cleanText(motif, 200))
+        .filter((motif): motif is string => Boolean(motif))
+        .slice(0, 5)
+    : undefined;
+  const title = cleanText(root.title, 200);
+  const concept = cleanText(root.concept, 300);
+  const logline = cleanText(root.logline, 500);
+  const visualWorld = full ? cleanText(root.visualWorld, 800) : undefined;
+  const colorStory = cleanText(root.colorStory, 500);
+  const castingNotes = cleanText(root.castingNotes, 500);
+  const balance = cleanText(root.balance ?? root.performanceNarrativeBalance, 300);
+  const teaser = asRecord(root.teaserCut);
+  return {
+    ...(title ? { title } : {}),
+    ...(concept ? { concept } : {}),
+    ...(logline ? { logline } : {}),
+    ...(visualWorld ? { visualWorld } : {}),
+    ...(motifs?.length ? { motifs } : {}),
+    ...(colorStory ? { colorStory } : {}),
+    ...(castingNotes ? { castingNotes } : {}),
+    ...(balance ? { balance } : {}),
+    sequences,
+    ...(full && Object.keys(teaser).length ? { teaserCut: teaser } : {}),
+  };
+}
+
 /**
  * FLAT SHOTS from either storage shape — the legacy array or the treatment
  * object's compatibility view. Every reader of VideoConcept.storyboard that

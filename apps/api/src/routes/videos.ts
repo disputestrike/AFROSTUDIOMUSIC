@@ -16,7 +16,7 @@ import {
   videoRenderAllUsage,
   videoRenderUsage,
 } from "@afrohit/shared";
-import { prompts, generateJson } from "@afrohit/ai";
+import { prompts, generateJson, runWithBrainContext } from "@afrohit/ai";
 import { requireAuth } from "../middleware/auth";
 import { presignAssetRef } from "../lib/storage";
 import {
@@ -302,42 +302,52 @@ export default async function videos(app: FastifyInstance) {
       // ---- mode:'short' — the legacy 8-60s shot list, unchanged behavior ----
       if (input.mode === "short") {
         const shortDurationS = input.durationS ?? 15;
-        const result = await generateJson<{
-          title: string;
-          shots: Array<{
-            index: number;
-            prompt: string;
-            duration_s: number;
-            motion?: string;
-            lighting?: string;
-            subjects?: string[];
-            negativePrompt?: string;
-          }>;
-        }>({
-          task: "storyboard",
-          system: prompts.STORYBOARD_SYSTEM,
-          user: JSON.stringify({
-            artist: {
-              stageName: project.artist.stageName,
-              lane: project.artist.laneSummary,
-            },
-            brief: project.briefs[0] ?? {},
-            song: songPayload,
-            totalDurationS: shortDurationS,
-            format: input.format,
-            extraPrompt: input.prompt,
-            ...(input.vision?.trim()
-              ? {
-                  artistVision: {
-                    text: input.vision.trim(),
-                    mode: input.visionMode,
-                  },
-                }
-              : {}),
-          }),
-          temperature: 0.7,
-          maxTokens: 1_500,
-        });
+        // CEREBRAS BULK ROUTING (perf 2026-07-20): the short shot-list is
+        // structuring work (STORYBOARD_SYSTEM ≈ 2.6k chars — always well under
+        // the ~28k bulk guard). Run it under a forced-bulk context so it resolves
+        // to fast Cerebras with Claude disabled on the ladder too (never Sonnet);
+        // the explicit tier:'bulk' documents intent if the wrap is ever removed.
+        const result = await runWithBrainContext(
+          { forceTier: "bulk", runId: `video-storyboard:${song?.id ?? project.id}` },
+          () =>
+            generateJson<{
+              title: string;
+              shots: Array<{
+                index: number;
+                prompt: string;
+                duration_s: number;
+                motion?: string;
+                lighting?: string;
+                subjects?: string[];
+                negativePrompt?: string;
+              }>;
+            }>({
+              task: "storyboard",
+              system: prompts.STORYBOARD_SYSTEM,
+              user: JSON.stringify({
+                artist: {
+                  stageName: project.artist.stageName,
+                  lane: project.artist.laneSummary,
+                },
+                brief: project.briefs[0] ?? {},
+                song: songPayload,
+                totalDurationS: shortDurationS,
+                format: input.format,
+                extraPrompt: input.prompt,
+                ...(input.vision?.trim()
+                  ? {
+                      artistVision: {
+                        text: input.vision.trim(),
+                        mode: input.visionMode,
+                      },
+                    }
+                  : {}),
+              }),
+              tier: "bulk",
+              temperature: 0.7,
+              maxTokens: 1_500,
+            })
+        );
 
         const storyboard = normalizeStoryboardShots(result.shots, shortDurationS);
         if (!storyboard.length) {

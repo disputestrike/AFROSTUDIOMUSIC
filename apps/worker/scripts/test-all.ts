@@ -367,6 +367,7 @@ async function runOfflineTests(): Promise<void> {
     ["Catalogue QA (blocks the garbage)", "test-lyric-qa.ts"],
     ['SONG_STATE (no AI "mastered")', "test-song-state.ts"],
     ["Night law (bulk run never bills Claude)", "test-night-law.ts"],
+    ["Video treatment brain-tier (Cerebras bulk)", "test-video-brain-tier.ts"],
     ["Hit concept gate (emotion, not scenery)", "test-concept-gate.ts"],
     ["Producer Brain (plan referee + wiring)", "test-producer-plan.ts"],
     ["Training flywheel (P3: gates+rights+wiring)", "test-training-flywheel.ts"],
