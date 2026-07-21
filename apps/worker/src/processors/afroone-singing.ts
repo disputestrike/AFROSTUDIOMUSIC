@@ -761,10 +761,60 @@ export async function processAfroOneSinging(
             },
           })
         : null;
+      // AUTO-MASTER (owner: "every song has to be mastered"): the sung mix above
+      // already ran through the SAME two-pass ffmpeg master chain the instrumental
+      // beds get (mixdown → master() → certified `finishedMix`). So an approved
+      // mastered mix is release-ready AUDIO that only lacks the Master ROW the
+      // release gate reads — promote it into an approved Master and land the song
+      // at MASTERED. No re-master (the DSP already happened), $0 local ffmpeg, no
+      // user click. Same shape as the provider full-song master (music.ts:935).
+      // HONESTY / FAIL-SOFT: only when the chain actually ran (vocalForward.mastered)
+      // AND the mix passed approval — a fail-open un-mastered mix is NEVER dressed
+      // up as a Master; that song honestly stays MIXED. One Master per singing
+      // completion, in this same transaction → idempotent by construction.
+      let promotedMaster: { id: string } | null = null;
+      if (mix && finishedMix && payload.songId && mix.approved && vocalForward?.mastered) {
+        promotedMaster = await tx.master.create({
+          data: {
+            projectId: payload.projectId,
+            songId: payload.songId,
+            mixId: mix.id,
+            preset: vocalForward.masterPreset ?? 'afro_stream_-9',
+            url: finishedMix.url,
+            loudness: finishedMix.qc.integratedLufs ?? null,
+            qualityState: 'passed',
+            contentHash: finishedMix.contentHash,
+            verifiedAt: finishedMix.verifiedAt,
+            approved: true,
+            meta: {
+              qc: finishedMix.qc,
+              // Own full-song bytes are canonical PLAYBACK, not release lineage —
+              // the explicit source-claim gate still governs distribution.
+              releaseLineageCertified: false,
+              sourceMixId: mix.id,
+              sourceContentHash: finishedMix.contentHash,
+              contentHash: finishedMix.contentHash,
+              verifiedAt: finishedMix.verifiedAt.toISOString(),
+              // No separate mp3 rendered on the singing path — the mastered wav
+              // IS the master; never fabricate a deliveryMp3 url the file lacks.
+              autoMaster: {
+                path: 'own-engine-vocal',
+                promotedFromMixId: mix.id,
+                note: 'sung mix promoted to approved master (mastered inline by the vocal-forward chain; no re-master, free ffmpeg)',
+              },
+              vocalAlignment: alignment
+                ? { state: alignment.state, overall: alignment.overall }
+                : { state: 'unmeasured' },
+            } as never,
+          },
+        });
+      }
       if (mix && payload.songId) {
         await tx.song.update({
           where: { id: payload.songId },
-          data: { status: mix.approved ? 'MIXED' : 'DEMO' },
+          // MASTERED when we just promoted an approved Master; otherwise the
+          // prior MIXED/DEMO truth.
+          data: { status: promotedMaster ? 'MASTERED' : mix.approved ? 'MIXED' : 'DEMO' },
         });
       }
       const finalApproved = mix ? mix.approved : approved;
@@ -785,6 +835,7 @@ export async function processAfroOneSinging(
             isolatedVocalUrl: created.url,
             url: mix?.url ?? created.url,
             mixId: mix?.id ?? null,
+            masterId: promotedMaster?.id ?? null,
             instrumentalBeatId: instrumental?.id ?? null,
             assetKind: 'isolated_vocal',
             performanceKind: 'sung_vocal',

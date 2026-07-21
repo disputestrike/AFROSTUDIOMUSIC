@@ -857,13 +857,21 @@ export async function processMusic(p: MusicPayload) {
     // A&R read itself was flagging "not mastered"). Master inline right here
     // (same host, same ffmpeg): wrap the render as the source Mix, run the
     // streaming chain, shelve an approved Master. The catalog serves the
-    // MASTERED file from now on. A full-song job only succeeds after this exact
-    // artifact passes QC; the raw source remains unapproved audit evidence.
+    // MASTERED file from now on.
+    // EVERY-SONG-MASTERED (owner: "every song has to be mastered"): the gate used
+    // to be `wantsVocals` only, so a provider INSTRUMENTAL shipped with no Master
+    // row and could never reach the release gate. It now masters instrumentals
+    // too. Local ffmpeg = $0. The FAIL BEHAVIOUR stays asymmetric by design: a
+    // sung record is not "done" until its full mix masters (the vocal path still
+    // hard-fails the render on a master miss, unchanged), whereas an instrumental
+    // beat is ALREADY a committed, approved, certified asset — an auto-master miss
+    // there is FAIL-SOFT (the render still succeeds; the song can be mastered
+    // later) and never destroys a good beat.
     let masteredUrl: string | null = null;
     // WAV master URL kept for the self-feeding harvest below — Demucs separates
     // the lossless artifact, not the delivery mp3.
     let masteredWavUrl: string | null = null;
-    if (wantsVocals && !placeholder && p.songId) {
+    if (!placeholder && p.songId) {
       let uncommittedMasterUrls: string[] = [];
       try {
         if (!(await ffmpegAvailable())) throw new Error('master_qc_failed: ffmpeg is unavailable');
@@ -919,15 +927,17 @@ export async function processMusic(p: MusicPayload) {
                 songId: p.songId,
                 preset: 'source',
                 url: ingestedMain,
-                notes: 'Full-song source for automatic mastering',
+                notes: wantsVocals ? 'Full-song source for automatic mastering' : 'Instrumental source for automatic mastering',
                 qualityState: quality?.verdict === 'pass' ? 'passed' : quality?.verdict ?? 'unmeasured',
                 contentHash: sourceContentHash,
                 verifiedAt: new Date(),
                 meta: {
                   qc: quality,
-                  assetKind: 'full_mix',
+                  assetKind: wantsVocals ? 'full_mix' : 'instrumental',
                   releaseLineageCertified,
-                  vocalAlignment: winner.alignment ?? { state: 'unmeasured', required: alignmentRequired },
+                  vocalAlignment: wantsVocals
+                    ? winner.alignment ?? { state: 'unmeasured', required: alignmentRequired }
+                    : { state: 'not_applicable' },
                 } as never,
                 approved: quality?.verdict === 'pass',
               },
@@ -952,7 +962,9 @@ export async function processMusic(p: MusicPayload) {
                   contentHash: wavHash,
                   deliveryMp3: { url: mp3Url, contentHash: mp3Hash },
                   sourceContentHash,
-                  vocalAlignment: winner.alignment ?? { state: 'unmeasured', required: alignmentRequired },
+                  vocalAlignment: wantsVocals
+                    ? winner.alignment ?? { state: 'unmeasured', required: alignmentRequired }
+                    : { state: 'not_applicable' },
                 } as never,
               },
             });
@@ -965,7 +977,16 @@ export async function processMusic(p: MusicPayload) {
           masteredWavUrl = wavUrl;
       } catch (err) {
         await Promise.allSettled(uncommittedMasterUrls.map((url) => deleteObjectByUrl(url)));
-        throw new Error(`music_generation_failed: ${(err as Error)?.message || 'automatic mastering failed'}`);
+        // VOCAL (unchanged): a sung record is not "done" until its full mix
+        // masters — fail the render so it is never silently shipped un-mastered.
+        if (wantsVocals) {
+          throw new Error(`music_generation_failed: ${(err as Error)?.message || 'automatic mastering failed'}`);
+        }
+        // INSTRUMENTAL (auto-master, owner order): the beat is already a
+        // committed, approved, certified asset. A master miss must NEVER fail it
+        // — the render succeeds, the song stays un-mastered and can be mastered
+        // later. Fail-soft, $0, no lost work.
+        console.warn(`[music] instrumental auto-master skipped (render kept): ${(err as Error)?.message || 'automatic mastering failed'}`);
       }
     }
 
