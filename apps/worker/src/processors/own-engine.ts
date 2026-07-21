@@ -103,6 +103,7 @@ import { runSynthBedPreview } from "../lib/bed-first-stream";
 import { assessLaneCompliance } from "../lib/lane-assess";
 import { processSynthMaterial } from "./synth-material";
 import { processAssembleBeat, processForgeMaterial } from "./material";
+import { processMaster } from "./master";
 import { forgePromptFor } from "../lib/forge-prompts";
 import { replicateToken } from "@afrohit/ai";
 import { processAfroOneSinging } from "./afroone-singing";
@@ -2601,6 +2602,132 @@ export async function processOwnEngine(p: OwnEnginePayload): Promise<void> {
         workspaceId: p.workspaceId,
         reason: "song-rendered",
       });
+    }
+    // AUTO-MASTER (owner: "every song has to be mastered") — GAP 1: the own-engine
+    // INSTRUMENTAL path shelved an approved, certified BeatAsset but NEVER a Mix or
+    // Master, so an instrumental song stayed SKETCH and could never pass the release
+    // gate (which needs a Master row with approved=true). Close it here: wrap the
+    // finished beat as an approved 'source' Mix (mirroring the API's manual master
+    // at songs.ts:1663) and run processMaster INLINE with that mixId — free local
+    // ffmpeg — which shelves the approved Master and lands the song at MASTERED.
+    //  * `!singing`  — a SUNG song's release audio is the vocal mix, which the
+    //    singing processor (afroone-singing.ts) already promotes to an approved
+    //    Master; never master the bare instrumental for a vocal song.
+    //  * idempotent  — skip when an approved Master already exists for the song.
+    //  * fail-soft   — this runs AFTER markSucceeded; processMaster marks only its
+    //    OWN job and never rethrows, so a master miss can never fail this render.
+    if (p.songId && !singing) {
+      try {
+        const alreadyMastered = await prisma.master.findFirst({
+          where: { songId: p.songId, approved: true },
+          select: { id: true },
+        });
+        if (!alreadyMastered) {
+          const beat = await prisma.beatAsset.findUnique({
+            where: { id: finalBeatId },
+            select: {
+              url: true,
+              contentHash: true,
+              verifiedAt: true,
+              qualityState: true,
+              approved: true,
+            },
+          });
+          // Only a certified, approved, QC-passed beat can seed a source Mix — the
+          // exact certification triple (url↔contentHash↔verifiedAt) processMaster
+          // re-asserts against the stored bytes. Anything short of that skips.
+          if (
+            beat?.approved &&
+            beat.qualityState === "passed" &&
+            beat.contentHash &&
+            beat.verifiedAt &&
+            beat.url === finalUrl
+          ) {
+            // Reuse an identical approved 'source' wrapper if one is already
+            // shelved (never stack rows); else create it — mirrors songs.ts:1663.
+            const existingSource = await prisma.mix.findFirst({
+              where: {
+                projectId: p.projectId,
+                songId: p.songId,
+                preset: "source",
+                url: beat.url,
+                approved: true,
+                qualityState: "passed",
+                contentHash: beat.contentHash,
+                verifiedAt: { not: null },
+              },
+              select: { id: true },
+            });
+            const sourceMix =
+              existingSource ??
+              (await prisma.mix.create({
+                data: {
+                  projectId: p.projectId,
+                  songId: p.songId,
+                  preset: "source",
+                  url: beat.url,
+                  notes: "Master source copied from the finished own-engine beat",
+                  qualityState: "passed",
+                  contentHash: beat.contentHash,
+                  verifiedAt: beat.verifiedAt,
+                  meta: {
+                    source: {
+                      beatId: finalBeatId,
+                      beatContentHash: beat.contentHash,
+                      vocalRenderIds: [],
+                      vocalRenderContentHashes: [],
+                    },
+                    sourceContentHash: beat.contentHash,
+                  } as never,
+                  approved: true,
+                },
+                select: { id: true },
+              }));
+            // A dedicated internal master job so processMaster can mark its own
+            // lifecycle (never touching this render's job). Unique key per render.
+            const masterJob = await prisma.providerJob.create({
+              data: {
+                workspaceId: p.workspaceId,
+                projectId: p.projectId,
+                kind: "master",
+                provider: "internal",
+                status: "QUEUED",
+                idempotencyKey: `${p.jobId}:automaster`,
+                inputJson: {
+                  songId: p.songId,
+                  mixId: sourceMix.id,
+                  preset: "afro_stream_-9",
+                  autoMaster: "own-engine-instrumental",
+                } as never,
+              },
+              select: { id: true },
+            });
+            // LOUDNESS LAW v2 default (-9 LUFS / -1.0 dBTP). preset='source' (not
+            // 'uploaded'/'imported') → the FULL EQ+glue master chain runs on the
+            // raw own-engine bed. processMaster shelves the approved Master and
+            // sets Song.status = MASTERED.
+            await processMaster({
+              jobId: masterJob.id,
+              workspaceId: p.workspaceId,
+              projectId: p.projectId,
+              songId: p.songId,
+              mixId: sourceMix.id,
+              preset: "afro_stream_-9",
+            });
+            // markSucceeded already persisted `notes`; log for observability.
+            console.log(
+              `[own-engine] auto-mastered instrumental for song ${p.songId} — approved master shelved (free ffmpeg)`
+            );
+          }
+        }
+      } catch (masterErr) {
+        // Fail-soft, always: the render already shipped and is committed. A QC or
+        // master miss leaves the song un-mastered (masterable later), never fails.
+        console.warn(
+          "[own-engine] auto-master skipped (render kept):",
+          (masterErr as Error)?.message
+        );
+      }
     }
   } catch (err) {
     await markFailed(

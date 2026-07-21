@@ -388,6 +388,7 @@ async function runOfflineTests(): Promise<void> {
     ["Durable jobs + billing receipts", "test-durable-workflows.ts"],
     ["Job redelivery + refund durability", "test-job-durability.ts"],
     ["Master report (density/match-EQ)", "test-master-report.ts"],
+    ["Auto-master every song (own instrumental+vocal+provider -> approved master)", "test-auto-master.ts"],
     ["Mix source lineage", "test-mix-lineage.ts"],
     ["Generated full-song lineage", "test-generated-full-song-lineage.ts"],
     ["Voice singing lineage", "test-voice-sing-lineage.ts"],
