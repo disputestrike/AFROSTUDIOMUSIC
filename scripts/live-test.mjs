@@ -49,7 +49,7 @@ function hasFlag(name) {
 function help() {
   console.log(
     [
-      "AfroHit production acceptance",
+      "AfroHits production acceptance",
       "",
       "Required:",
       "  API_URL=https://... AUTH_TOKEN=<JWT>",

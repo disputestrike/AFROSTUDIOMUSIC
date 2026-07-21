@@ -11,10 +11,14 @@ import {
   computeClipAudioOffsets,
   ensureDisplayFont,
   ffmpegAvailable,
+  overlayBrandWatermark,
   overlayVideoCredits,
+  prependLogoSplash,
+  resolveBrandLogoPath,
   sliceAudioWav,
   ASSEMBLY_FPS,
   ASSEMBLY_XFADE_S,
+  SPLASH_DURATION_S,
   type AssemblyTimelineClip,
 } from "../lib/ffmpeg";
 import { inspectVideoBytes } from "../lib/video-inspection";
@@ -268,8 +272,8 @@ export async function processAssembleVideo(p: AssembleVideoPayload) {
       if (song) {
         const credit = {
           title: (song.lyric?.title || song.title || "Untitled").trim(),
-          artist: song.project.artist.stageName?.trim() || "AfroHit Artist",
-          producer: "AfroHit Studio",
+          artist: song.project.artist.stageName?.trim() || "AfroHits Artist",
+          producer: "AfroHits Studio",
         };
         const fontPath = await ensureDisplayFont();
         if (fontPath) {
@@ -293,13 +297,82 @@ export async function processAssembleVideo(p: AssembleVideoPayload) {
       );
     }
 
+    // 2c) LOGO SPLASH ("show our logo at the start of the video — then it
+    //     disappears after a splash" — owner): prepend ~1.8s of the AfroHits
+    //     mark AFTER the credit burn, so the splash is the very first thing
+    //     seen and the credit still cues 0.8s into the first scene. Same
+    //     fail-soft doctrine as the credit: a missing logo or failed encode
+    //     ships the un-splashed cut and the receipt says so.
+    let splashedPath = creditedPath;
+    let splash: { applied: boolean; durationS: number; error?: string };
+    try {
+      const logoPath = resolveBrandLogoPath();
+      if (!logoPath) throw new Error("brand logo asset not found");
+      const withSplash = join(workDir, `splashed-${p.kind}.mp4`);
+      await prependLogoSplash({
+        input: creditedPath,
+        output: withSplash,
+        logoPath,
+        width: result.width,
+        height: result.height,
+      });
+      splashedPath = withSplash;
+      splash = { applied: true, durationS: SPLASH_DURATION_S };
+    } catch (splashError) {
+      splash = {
+        applied: false,
+        durationS: 0,
+        error: (splashError as Error).message,
+      };
+      console.warn(
+        `[assemble ${p.jobId}] logo splash skipped:`,
+        (splashError as Error).message
+      );
+    }
+
+    // 2d) PERSISTENT "afro" WATERMARK (owner, VEVO reference): bottom-right
+    //     for the whole runtime — riding the splash and the credit too — plus
+    //     the bigger bottom-left thumbnail-style mark on the first 3 seconds.
+    //     Last video pass so it sits on top of everything; fail-soft like the
+    //     splash and the credit.
+    let finalPath = splashedPath;
+    let watermark: { applied: boolean; error?: string };
+    try {
+      const fontPath = await ensureDisplayFont();
+      if (!fontPath) throw new Error("display font unavailable");
+      const withWatermark = join(workDir, `watermarked-${p.kind}.mp4`);
+      await overlayBrandWatermark({
+        input: splashedPath,
+        output: withWatermark,
+        fontPath,
+        width: result.width,
+        height: result.height,
+      });
+      finalPath = withWatermark;
+      watermark = { applied: true };
+    } catch (watermarkError) {
+      watermark = {
+        applied: false,
+        error: (watermarkError as Error).message,
+      };
+      console.warn(
+        `[assemble ${p.jobId}] brand watermark skipped:`,
+        (watermarkError as Error).message
+      );
+    }
+
+    // The delivered file's honest duration: the cut plus the splash (if it
+    // actually shipped) — QC and the receipt both measure the same truth.
+    const finalDurationS =
+      result.durationS + (splash.applied ? SPLASH_DURATION_S : 0);
+
     // 3) UPLOAD to owned storage + honest measured metadata. inspectVideoBytes
     //    is the same QC every provider render passes: h264/mp4/aspect/decode.
     await stage("uploading");
-    const bytes = await readFile(creditedPath);
+    const bytes = await readFile(finalPath);
     const inspection = await inspectVideoBytes(bytes, {
       format: p.kind === "full" ? "landscape" : "vertical",
-      expectedDurationS: result.durationS,
+      expectedDurationS: finalDurationS,
       maxBytes: MAX_ASSEMBLY_BYTES,
     });
     const url = await uploadBytes({
@@ -318,7 +391,7 @@ export async function processAssembleVideo(p: AssembleVideoPayload) {
       providerJobId: p.jobId,
       kind: p.kind,
       url,
-      durationS: result.durationS,
+      durationS: finalDurationS,
       coveredS: result.coveredS,
       plannedS: p.plannedS,
       songDurationS: p.audio.songDurationS,
@@ -333,6 +406,14 @@ export async function processAssembleVideo(p: AssembleVideoPayload) {
       // VIDEO NAMING provenance — what the opening credit says (null = the
       // cut shipped uncredited: no font or no bound song).
       credits,
+      // BRAND SPLASH receipt — applied:true means the cut opens on the
+      // AfroHits logo splash (durationS seconds prepended); applied:false
+      // carries the honest reason it was skipped.
+      splash,
+      // WATERMARK receipt — applied:true means the persistent bottom-right
+      // "afro" mark (plus the first-3s bottom-left thumbnail mark) is burned
+      // in; applied:false carries the reason.
+      watermark,
       // LIP-SYNC receipt (null = pass disabled): clips synced vs kept, and
       // the honest engine spend estimate.
       lipSync,
@@ -355,7 +436,7 @@ export async function processAssembleVideo(p: AssembleVideoPayload) {
 
     assertAssemblyEvidenceComplete({
       url,
-      durationS: result.durationS,
+      durationS: finalDurationS,
       provider: "assembler",
       meta: { assembly },
     });
@@ -365,7 +446,7 @@ export async function processAssembleVideo(p: AssembleVideoPayload) {
         projectId: p.projectId,
         conceptId: p.conceptId,
         url,
-        durationS: result.durationS,
+        durationS: finalDurationS,
         provider: "assembler",
         meta: { assembly } as never,
       },

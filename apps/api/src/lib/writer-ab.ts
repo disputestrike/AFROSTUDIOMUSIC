@@ -24,7 +24,7 @@ interface AbInput {
 interface LyricOut { title: string; body: string; cleanVersion?: string }
 
 async function writeOnBrain(brain: 'claude' | 'openai', input: AbInput, hookText: string, soundDna: string): Promise<LyricOut | null> {
-  const artist = { stageName: 'BENXP', languages: input.languages ?? ['pcm', 'en'], vocalTone: ['smooth'], laneSummary: `${input.genre} lane` };
+  const artist = { stageName: 'BXP', languages: input.languages ?? ['pcm', 'en'], vocalTone: ['smooth'], laneSummary: `${input.genre} lane` };
   const user = prompts.lyricUserPrompt({
     artist: artist as never,
     brief: { mood: input.mood ?? 'love', rawIdea: input.theme ?? '' } as never,

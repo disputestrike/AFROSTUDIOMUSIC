@@ -161,7 +161,7 @@ export async function ensureTrainingDestination(token: string, explicit?: string
         name,
         visibility: 'private', // our weights, our corpus — never public by default
         hardware: 'gpu-l40s',
-        description: 'AfroHit own music model — fine-tuned ONLY on the rights-clean corpus (own-master/licensed/live).',
+        description: 'AfroHits own music model — fine-tuned ONLY on the rights-clean corpus (own-master/licensed/live).',
       }),
     });
     return created.ok ? dest : null;

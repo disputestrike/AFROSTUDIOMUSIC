@@ -340,6 +340,7 @@ async function runOfflineTests(): Promise<void> {
     ["Video assembly gating (full/teaser)", "test-video-assembly.ts"],
     ["Lip-sync laws (engine body/offsets/gate)", "test-lipsync.ts"],
     ["Video render evidence", "test-video-evidence.ts"],
+    ["Brand wave (AfroHits/BXP/splash/watermark)", "test-brand-splash.ts"],
     ["Media adapters fail closed", "test-media-adapter-safety.ts"],
     ["Email delivery truth", "test-email-delivery.ts"],
     ["Distribution lifecycle contract", "test-distribution-contract.ts"],
@@ -440,7 +441,7 @@ async function runOfflineTests(): Promise<void> {
 
 async function main() {
   console.log(
-    `AfroHit test harness: ${formatDuration(leafTimeoutMs)} per standard leaf ` +
+    `AfroHits test harness: ${formatDuration(leafTimeoutMs)} per standard leaf ` +
       `(${leafTimeoutEnv}), ${formatDuration(dspTimeoutMs)} per ear/DSP path ` +
       `(${dspTimeoutEnv}).`
   );
@@ -502,7 +503,7 @@ async function main() {
           ? "[SKIP]"
           : "[INFO]";
   console.log(
-    "\n============== AfroHit - Lane pipeline test suite =============="
+    "\n============== AfroHits - Lane pipeline test suite =============="
   );
   for (const r of results)
     console.log(`${icon(r.status)} ${r.name.padEnd(32)} ${r.note}`);

@@ -129,7 +129,7 @@ export async function presignDownload(
       Bucket: bucket,
       Key: key,
       // NAMED DOWNLOADS ("name the video" — owner): the saved file carries the
-      // record's real name ("BENXP - A.I Baddie (Official Video).mp4"), not a
+      // record's real name ("BXP - A.I Baddie (Official Video).mp4"), not a
       // storage hash. Cross-origin `download` attributes are ignored by
       // browsers; the disposition header is the only reliable way.
       ...(downloadName

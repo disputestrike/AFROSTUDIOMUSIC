@@ -448,7 +448,7 @@ async function phase10_gates(state) {
 // ---------- Run ------------------------------------------------------------
 
 (async () => {
-  console.log('# AfroHit Studio — integration suite');
+  console.log('# AfroHits Studio — integration suite');
   console.log(`# API=${API}`);
 
   await phase5_apiSurface();

@@ -1121,8 +1121,8 @@ export default async function benchmark(app: FastifyInstance) {
       claimReady,
       statisticalClaimReady,
       claim: claimReady
-        ? "AfroHit outperformed suno in this controlled listening benchmark."
-        : "No evidence-backed claim that AfroHit outperforms suno is permitted yet.",
+        ? "AfroHits outperformed suno in this controlled listening benchmark."
+        : "No evidence-backed claim that AfroHits outperforms suno is permitted yet.",
       evidenceHash,
       corpus,
       gates: {

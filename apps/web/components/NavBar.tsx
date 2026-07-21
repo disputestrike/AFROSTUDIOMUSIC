@@ -169,7 +169,7 @@ export function NavBar() {
             className="h-8 w-8 shrink-0 rounded-xl shadow-glow transition-transform group-hover:scale-105"
           />
           <span className="font-display text-lg tracking-tight sm:text-xl">
-            AFRO<span className="text-gradient">HIT</span><span className="hidden sm:inline"> STUDIO</span>
+            AFRO<span className="text-gradient">HITS</span><span className="hidden sm:inline"> STUDIO</span>
           </span>
         </Link>
 

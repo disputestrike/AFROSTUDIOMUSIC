@@ -620,7 +620,7 @@ function BenchmarkPageInner() {
               </div>
               <div className="grid gap-3 sm:grid-cols-2">
                 <label className="text-sm text-slate-300">
-                  AfroHit song
+                  AfroHits song
                   <select
                     value={songId}
                     onChange={event => setSongId(event.target.value)}
@@ -822,7 +822,7 @@ function BenchmarkPageInner() {
               </div>
               {activePair?.reveal && (
                 <p className="text-sm text-slate-300">
-                  AfroHit was{" "}
+                  AfroHits was{" "}
                   <strong>{activePair.reveal.afrohitSide.toUpperCase()}</strong>{" "}
                   ({activePair.reveal.afrohitTitle}); reference:{" "}
                   {activePair.reveal.competitor}.
@@ -845,7 +845,7 @@ function BenchmarkPageInner() {
                         </h3>
                         {activePair.reveal?.afrohitSide === side && (
                           <span className="rounded bg-cyan-400 px-2 py-1 text-xs font-semibold text-slate-950">
-                            AfroHit
+                            AfroHits
                           </span>
                         )}
                         {activePair.reveal &&

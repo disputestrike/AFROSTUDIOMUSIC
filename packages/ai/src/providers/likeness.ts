@@ -253,7 +253,7 @@ export async function ensureDestinationModel(
       visibility: "private",
       hardware: "cpu",
       description:
-        "AfroHit Studio own-face likeness LoRA (user-attested-likeness)",
+        "AfroHits Studio own-face likeness LoRA (user-attested-likeness)",
     }),
   });
   if (created.ok) {

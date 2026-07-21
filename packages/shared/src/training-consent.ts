@@ -26,18 +26,21 @@
  * COMPARE a supplied hash, which needs no crypto.
  */
 
-/** Bump on any material change to the grant → forces re-acceptance. */
-export const TRAINING_LICENSE_VERSION = 'tl-2026-07-18';
+/** Bump on any material change to the grant → forces re-acceptance.
+ *  tl-2026-07-20: brand correction (AfroHit → AfroHits) — the licensor name in
+ *  the clause changed, so the clause hash changed; prior acceptances resolve
+ *  fail-closed until re-accepted, exactly as the hash check is designed to. */
+export const TRAINING_LICENSE_VERSION = 'tl-2026-07-20';
 
 /** The grant a signed-up user accepts (operator + counsel own final wording). */
 export const TRAINING_LICENSE_CLAUSE = [
   'TRAINING LICENSE.',
-  'You grant AfroHit Studio a worldwide, non-exclusive, royalty-free license to',
+  'You grant AfroHits Studio a worldwide, non-exclusive, royalty-free license to',
   'use content you upload that is YOUR OWN original work (including your voice,',
-  'recordings, stems and masters) to train, fine-tune and improve AfroHit’s',
+  'recordings, stems and masters) to train, fine-tune and improve AfroHits’',
   'audio, voice and video models and the services built on them.',
   'You retain ownership of your work; this license does not transfer it.',
-  'This grant does NOT extend to material you do not own, and AfroHit does not',
+  'This grant does NOT extend to material you do not own, and AfroHits does not',
   'train its models on the outputs of third-party generation engines.',
   'You may withdraw this grant for future training at any time; content already',
   'incorporated into a trained model cannot be retroactively removed from it.',

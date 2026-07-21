@@ -16,7 +16,7 @@
 export const LIKENESS_CONSENT_VERSION = "2026-07-16.v1" as const;
 
 export const LIKENESS_CONSENT_TEXT =
-  "I confirm that I am the person shown in the submitted photos and videos, or that I am legally authorized by that person to act for them. I authorize AfroHit Studio to process the submitted images to create and use a visual likeness model for this workspace, so that generated artwork and music-video scenes can feature this likeness. I will not upload images of any other person, and I will not use the model to deceive, impersonate without disclosure, violate another person's rights, or create unlawful or intimate content. I understand that I can revoke this consent, which disables the likeness and starts deletion of the workspace copies and supported provider copies." as const;
+  "I confirm that I am the person shown in the submitted photos and videos, or that I am legally authorized by that person to act for them. I authorize AfroHits Studio to process the submitted images to create and use a visual likeness model for this workspace, so that generated artwork and music-video scenes can feature this likeness. I will not upload images of any other person, and I will not use the model to deceive, impersonate without disclosure, violate another person's rights, or create unlawful or intimate content. I understand that I can revoke this consent, which disables the likeness and starts deletion of the workspace copies and supported provider copies." as const;
 
 /** Rights basis recorded on every trained likeness model and every render made with one. */
 export const LIKENESS_RIGHTS_BASIS = "user-attested-likeness" as const;

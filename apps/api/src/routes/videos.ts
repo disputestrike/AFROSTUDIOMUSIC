@@ -890,8 +890,8 @@ export default async function videos(app: FastifyInstance) {
           })
         : null;
       const displayBase = creditSong
-        ? `${creditSong.project.artist.stageName?.trim() || "AfroHit Artist"} - ${(creditSong.lyric?.title || creditSong.title || "Untitled").trim()}`
-        : "AfroHit Video";
+        ? `${creditSong.project.artist.stageName?.trim() || "AfroHits Artist"} - ${(creditSong.lyric?.title || creditSong.title || "Untitled").trim()}`
+        : "AfroHits Video";
       for (const kind of ["full", "teaser"] as const) {
         const artifact = assemblies[kind];
         if (!artifact) continue;
