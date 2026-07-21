@@ -1,10 +1,19 @@
 import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import { z } from 'zod';
-import { structureBrief, genreSignature, perShotRenders, type SongBlueprint } from '@afrohit/shared';
+import {
+  structureBrief,
+  genreSignature,
+  perShotRenders,
+  buildPhotorealisticCoverPrompt,
+  generateSongCoverSchema,
+  parseStorageUri,
+  MAX_IMAGE_UPLOAD_BYTES,
+  type SongBlueprint,
+} from '@afrohit/shared';
 import { prisma, Prisma } from '@afrohit/db';
 import { predictHit, researchTrends, enrichLyricsForVocals, cleanLyricsForMinimax } from '@afrohit/ai';
 import { laneDna, laneDnaBrief } from '../lib/lane-pipeline';
-import { requireAuth, requireRole } from '../middleware/auth';
+import { requireAuth, requireMinRole, requireRole } from '../middleware/auth';
 import { createQueuedProviderJob, scopedRequestKey } from '../lib/queued-job';
 import { musicRouteCapabilities, validateMusicRoute } from '../lib/music-capabilities';
 import { learnedReferenceBrief } from '../lib/learned';
@@ -17,7 +26,12 @@ import { languageVocalTag } from '../services/chat-tools';
 import { hasAdminAccess, requireAdmin } from './admin';
 import { isFirstPartyBilling } from '../middleware/credits';
 import { readFeaturedSongIds, writeFeaturedSongIds } from '../lib/landing-featured';
-import { presignAssetRef } from '../lib/storage';
+import {
+  assertWorkspaceAsset,
+  canonicalAssetRef,
+  presignAssetRef,
+  verifyUploadedImage,
+} from '../lib/storage';
 import { safeFetch } from '../lib/url-guard';
 import { operationErrorBody, runIdempotentOperation } from '../lib/idempotent-operation';
 import { registerBeatForInspection } from '../lib/beat-ingest';
@@ -41,6 +55,7 @@ type CatalogRow = {
   status: string;
   projectId: string;
   displayArtist: string | null;
+  coverUrl: string | null;
   instrumentalUrl: string | null;
   releaseReady: boolean;
   hitScore: number | null;
@@ -125,6 +140,16 @@ function masterReportSummary(
  * only knows a songId) and resolve the project server-side.
  */
 export default async function songs(app: FastifyInstance) {
+  // RBAC (identity wave, 2026-07-20): every mutation in this plugin is
+  // PRODUCER-and-up — VIEWER (and WRITER/VOCALIST for now) read + play only.
+  // Individual routes keep their own STRICTER gates (delete/restore stay
+  // OWNER/ADMIN). Reads are untouched.
+  app.addHook('preHandler', async (req) => {
+    if (['POST', 'PUT', 'PATCH', 'DELETE'].includes(req.method)) {
+      requireMinRole(req, 'PRODUCER');
+    }
+  });
+
   // ---- List (with per-asset ids/urls so the UI can target the right file) ----
   app.get<{ Querystring: { all?: string } }>('/', async (req) => {
     const { workspaceId } = requireAuth(req);
@@ -282,6 +307,18 @@ export default async function songs(app: FastifyInstance) {
     const coverByProject = new Map<string, string>();
     for (const c of covers) if (c.projectId && !coverByProject.has(c.projectId)) coverByProject.set(c.projectId, c.url);
 
+    // PER-SONG COVER (identity wave): Song.coverUrl wins over the project's
+    // cover ImageAsset fallback. Stored as a private canonical ref, so it is
+    // presigned here — a storage URI must never reach an <img> tag.
+    const coverBySong = new Map<string, string>();
+    await Promise.all(
+      rows
+        .filter((s: CatalogRow) => !!s.coverUrl)
+        .map(async (s: CatalogRow) => {
+          coverBySong.set(s.id, await presignAssetRef(s.coverUrl!, 3600));
+        }),
+    );
+
     return rows.map((s: CatalogRow) => {
       const currentAudio = currentPlayableAsset(s);
       return {
@@ -316,7 +353,7 @@ export default async function songs(app: FastifyInstance) {
         videoScenesReady: videoScenesBySong.get(s.id) ?? 0,
         hitScore: s.hitScore,
         viralScore: s.viralScore,
-        coverUrl: coverByProject.get(s.projectId) ?? null,
+        coverUrl: coverBySong.get(s.id) ?? coverByProject.get(s.projectId) ?? null,
         createdAt: s.createdAt,
         // Newest master's measured report card (null when it carries none).
         masterReport: masterReportSummary(s.masters[0] as (PlayableAssetRow & { preset?: string | null }) | undefined),
@@ -356,7 +393,11 @@ export default async function songs(app: FastifyInstance) {
       artist: song.displayArtist || song.project.artist.stageName,
       audioUrl: currentAudio?.url ?? null,
       currentAudio: playableAssetRef(currentAudio),
-      coverUrl: cover?.url ?? null,
+      // PER-SONG COVER wins (presigned — never a raw storage ref); the
+      // project's cover ImageAsset stays as the legacy fallback.
+      coverUrl: song.coverUrl
+        ? await presignAssetRef(song.coverUrl, 3600)
+        : cover?.url ?? null,
       // Newest master's measured report card (null when it carries none).
       masterReport: masterReportSummary(song.masters[0] as (PlayableAssetRow & { preset?: string | null }) | undefined),
     };
@@ -492,6 +533,11 @@ export default async function songs(app: FastifyInstance) {
     artistName: z.string().max(80).nullable().optional(),
     versionLabel: z.string().max(60).nullable().optional(),
     status: z.enum(['SKETCH', 'DEMO', 'FULL', 'MIXED', 'MASTERED', 'RELEASED']).optional(),
+    // PER-SONG COVER (identity wave): a reference into the workspace's OWN
+    // storage prefix — never an arbitrary URL. Validated below (canonical ref
+    // + workspace prefix + real image bytes). null clears back to the
+    // project-cover fallback.
+    coverUrl: z.string().min(4).max(1024).nullable().optional(),
     // QA quarantine toggle (operator + the QA gate). Reversible; hides the song
     // from the catalogue/release/public without deleting it.
     quarantined: z.boolean().optional(),
@@ -499,7 +545,7 @@ export default async function songs(app: FastifyInstance) {
   });
   app.patch<{ Params: { id: string } }>('/:id', async (req, reply) => {
     const { workspaceId } = requireAuth(req);
-    const { artistName, ...rest } = patchSchema.parse(req.body);
+    const { artistName, coverUrl, ...rest } = patchSchema.parse(req.body);
     // WORKSPACE SCOPE — the song must belong to the caller's workspace, or the
     // update never runs (a cross-workspace id reads as not_found, never edits).
     const found = await prisma.song.findFirst({ where: { id: req.params.id, workspaceId }, select: { id: true } });
@@ -508,12 +554,110 @@ export default async function songs(app: FastifyInstance) {
     // string means "use the workspace default" → store NULL.
     const data: Prisma.SongUpdateInput =
       artistName === undefined ? rest : { ...rest, displayArtist: artistName?.trim() ? artistName.trim() : null };
+    if (coverUrl !== undefined) {
+      if (coverUrl === null) data.coverUrl = null;
+      else {
+        // THE COVER LAW: only this workspace's own private storage. An
+        // arbitrary external URL is a 400; another workspace's storage ref is
+        // a 403 (assertWorkspaceAsset). Then the BYTES are proven to be a
+        // real PNG/JPEG/WebP ≤5MB (sniff + full hash) before the row points
+        // at them — same doctrine as likeness photos.
+        if (!assertWorkspaceAsset(workspaceId, coverUrl)) {
+          return reply.code(400).send({
+            error: 'cover_must_be_workspace_storage',
+            note: 'Upload the image first (POST /uploads/presign-image), then attach the returned reference.',
+          });
+        }
+        const canonical = canonicalAssetRef(coverUrl)!;
+        const key = parseStorageUri(canonical)!.key;
+        await verifyUploadedImage(workspaceId, key, MAX_IMAGE_UPLOAD_BYTES);
+        data.coverUrl = canonical;
+      }
+    }
     const updated = await prisma.song.update({ where: { id: found.id }, data });
     // The catalog displays lyric.title ahead of song.title — keep them in step
     // on rename, or the new name "never sticks" on screen.
     if (rest.title) await prisma.lyricDraft.updateMany({ where: { songId: found.id }, data: { title: rest.title } });
-    return updated;
+    return {
+      ...updated,
+      // Presigned display link — a private storage ref never reaches a client.
+      coverUrl: updated.coverUrl ? await presignAssetRef(updated.coverUrl, 3600) : null,
+    };
   });
+
+  /**
+   * AI PHOTOREALISTIC COVER (identity wave, 2026-07-20). Builds an identity-
+   * safe photorealistic prompt from the song's OWN facts (title/genre/mood —
+   * celebrity names stripped, "no real person's likeness" pinned; the shared
+   * buildPhotorealisticCoverPrompt is the one law), charges the same
+   * cover-art credit keys the project cover flow uses, and rides the existing
+   * image queue. The worker stores the result in THIS workspace's storage,
+   * files the ImageAsset, and stamps Song.coverUrl (payload.songId).
+   */
+  app.post<{ Params: { id: string } }>(
+    '/:id/cover/generate',
+    {
+      config: { rateLimit: { max: 5, timeWindow: '1 minute' } },
+      schema: { body: generateSongCoverSchema },
+    },
+    async (req, reply) => {
+      const { workspaceId } = requireMinRole(req, 'PRODUCER');
+      const input = generateSongCoverSchema.parse(req.body ?? {});
+      const song = await prisma.song.findFirst({
+        where: { id: req.params.id, workspaceId, deletedAt: null },
+        select: { id: true, title: true, projectId: true, project: { select: { genre: true } } },
+      });
+      if (!song) return reply.code(404).send({ error: 'song_not_found' });
+      const brief = await prisma.songBrief.findFirst({
+        where: { projectId: song.projectId },
+        orderBy: { createdAt: 'desc' },
+        select: { mood: true },
+      });
+      const { prompt, stripped } = buildPhotorealisticCoverPrompt({
+        title: song.title,
+        genre: song.project.genre,
+        mood: brief?.mood ?? null,
+      });
+
+      const idempotencyKey = scopedRequestKey(req.headers as Record<string, unknown>, 'song-cover');
+      const charge = await app.chargeCredits({
+        workspaceId,
+        key: input.quality === 'high' ? 'cover_art_high' : 'cover_art_low',
+        refTable: 'Song',
+        refId: song.id,
+        idempotencyKey,
+      });
+      if (!charge.ok) return reply.code(402).send({ error: 'insufficient_credits', ...charge });
+
+      const job = await createQueuedProviderJob({
+        app,
+        queue: app.queues.image,
+        jobName: 'generate-image',
+        workspaceId,
+        projectId: song.projectId,
+        kind: 'image',
+        provider: process.env.IMAGE_PROVIDER ?? 'openai',
+        // strippedNames rides the job receipt — provenance that the likeness
+        // law actually fired, not a promise that it would have.
+        inputJson: { songId: song.id, prompt, quality: input.quality, strippedNames: stripped },
+        charge,
+        idempotencyKey,
+        payload: (jobId) => ({
+          jobId,
+          workspaceId,
+          projectId: song.projectId,
+          songId: song.id,
+          prompt,
+          size: '1024x1024' as const,
+          quality: input.quality,
+          kind: 'cover' as const,
+        }),
+      });
+
+      reply.code(202);
+      return { jobId: job.jobId, replayed: job.replayed, strippedNames: stripped };
+    }
+  );
 
   /**
    * Resolve THIS song's lyric, and only this song's.

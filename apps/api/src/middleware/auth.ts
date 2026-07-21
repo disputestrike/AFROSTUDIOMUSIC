@@ -1,6 +1,7 @@
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import fp from "fastify-plugin";
 import { prisma } from "@afrohit/db";
+import { hasMinRole, type WorkspaceRole } from "@afrohit/shared";
 import { runWithLlmUsageContext, setLlmUsageContext } from "@afrohit/ai";
 import {
   assertSessionConfiguration,
@@ -102,7 +103,13 @@ function isPublicPath(url: string): boolean {
     // reachable unauthenticated. They carry their own anti-enumeration + single-
     // use + rate-limit defenses in routes/auth.ts.
     path === "/api/v1/auth/request-reset" ||
-    path === "/api/v1/auth/reset-password"
+    path === "/api/v1/auth/reset-password" ||
+    // Workspace-invite acceptance: an invited user may not have an account yet
+    // (invited signup is NOT public signup, so this stays open even when
+    // ALLOW_PUBLIC_SIGNUP is off). Both carry the reset-token defenses:
+    // hashed single-use tokens, uniform errors, rate limits (routes/auth.ts).
+    path === "/api/v1/auth/invite-info" ||
+    path === "/api/v1/auth/accept-invite"
   );
 }
 
@@ -155,7 +162,9 @@ export const authPlugin = fp(async function auth(app: FastifyInstance) {
         (url.startsWith("/api/v1/auth/signup") ||
           url.startsWith("/api/v1/auth/login") ||
           url.startsWith("/api/v1/auth/request-reset") ||
-          url.startsWith("/api/v1/auth/reset-password"))
+          url.startsWith("/api/v1/auth/reset-password") ||
+          url.startsWith("/api/v1/auth/invite-info") ||
+          url.startsWith("/api/v1/auth/accept-invite"))
       ) {
         if (
           !originAllowed(
@@ -271,6 +280,24 @@ export function requireRole(req: FastifyRequest, allowed: readonly string[]) {
     throw Object.assign(new Error("insufficient workspace role"), {
       statusCode: 403,
     });
+  }
+  return auth;
+}
+
+/**
+ * RBAC ladder gate (identity wave, 2026-07-20): the caller's workspace role
+ * must meet or beat `minRole` on the shared ladder (@afrohit/shared rbac.ts —
+ * OWNER > ADMIN > PRODUCER > WRITER/VOCALIST > VIEWER). Prefer this over
+ * requireRole's explicit lists for privileges that are naturally "this rank
+ * and up": the ladder can't drift between routes.
+ */
+export function requireMinRole(req: FastifyRequest, minRole: WorkspaceRole) {
+  const auth = requireAuth(req);
+  if (!hasMinRole(auth.role, minRole)) {
+    throw Object.assign(
+      new Error(`requires the ${minRole} role or higher`),
+      { statusCode: 403 }
+    );
   }
   return auth;
 }

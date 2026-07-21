@@ -143,6 +143,36 @@ export function useApi() {
       return { key, publicUrl: assetRef, playbackUrl };
     },
     /**
+     * Upload an IMAGE (avatar / song cover) straight to object storage via a
+     * presigned PUT. jpeg/png/webp only, ≤5MB (the server re-checks the real
+     * bytes at attach time). Returns the storage key + canonical reference.
+     */
+    async uploadImageToStorage(
+      file: Blob,
+      kind: 'avatar' | 'cover'
+    ): Promise<{ key: string; assetRef: string; playbackUrl: string }> {
+      const type = (file.type || '').toLowerCase();
+      if (!/^image\/(png|jpe?g|webp)$/.test(type)) {
+        throw new Error('Use a JPEG, PNG, or WebP image.');
+      }
+      if (file.size > 5 * 1024 * 1024) {
+        throw new Error('Image is too large — keep it under 5MB.');
+      }
+      const ext = type.includes('png') ? 'png' : type.includes('webp') ? 'webp' : 'jpg';
+      const { url, key, assetRef, playbackUrl } = await apiFetch<{
+        url: string;
+        key: string;
+        assetRef: string;
+        playbackUrl: string;
+      }>('/uploads/presign-image', {
+        method: 'POST',
+        body: JSON.stringify({ kind, contentType: type, ext, sizeBytes: file.size }),
+      });
+      const put = await fetch(url, { method: 'PUT', headers: { 'content-type': type }, body: file });
+      if (!put.ok) throw new Error(`upload failed: ${put.status}`);
+      return { key, assetRef, playbackUrl };
+    },
+    /**
      * Upload small audio (e.g. a mic capture) THROUGH the API to storage.
      * Avoids the browser→R2 cross-origin PUT (which needs R2 CORS) — the browser
      * only talks to our API, whose CORS is already configured.

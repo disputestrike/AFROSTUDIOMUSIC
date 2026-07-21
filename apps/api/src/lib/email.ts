@@ -105,6 +105,27 @@ export function passwordResetEmail(resetUrl: string) {
   };
 }
 
+export function workspaceInviteEmail(
+  workspaceName: string,
+  role: string,
+  inviteUrl: string
+) {
+  const link = safeHttpUrl(inviteUrl);
+  return {
+    subject: `You're invited to ${workspaceName} on AfroHit Studio`,
+    html: wrap(`
+      <p>You've been invited to join <strong>${escapeHtml(workspaceName)}</strong> as <strong>${escapeHtml(role)}</strong>.</p>
+      ${
+        link
+          ? `<p><a href="${escapeHtml(link)}" style="color:#EA580C;font-weight:700">Accept the invite</a></p>
+      <p style="font-size:12px;color:#888">This link expires in seven days and can be used once. New here? You'll set a password as you accept.</p>`
+          : ""
+      }
+      <p>If you weren't expecting this, you can safely ignore this email.</p>
+    `),
+  };
+}
+
 export function creditReceiptEmail(amountUsd: string, balanceUsd: string) {
   return {
     subject: `Credits added — ${amountUsd}`,

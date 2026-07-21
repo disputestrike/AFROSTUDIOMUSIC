@@ -79,9 +79,17 @@ export function NavBar() {
         onClick={() => setAccountOpen((o) => !o)}
         aria-label="Account menu"
         aria-expanded={accountOpen}
-        className="inline-flex h-8 w-8 items-center justify-center rounded-full border border-white/10 bg-white/5 font-grotesk text-sm text-slate-200 hover:bg-white/10"
+        className="inline-flex h-8 w-8 items-center justify-center overflow-hidden rounded-full border border-white/10 bg-white/5 font-grotesk text-sm text-slate-200 hover:bg-white/10"
       >
-        {view.loading ? <User className="h-4 w-4 text-slate-400" /> : initial}
+        {/* Profile picture when set (presigned link from /auth/me);
+            initial letter otherwise. */}
+        {view.me?.avatarUrl ? (
+          <img src={view.me.avatarUrl} alt="Your avatar" className="h-full w-full object-cover" />
+        ) : view.loading ? (
+          <User className="h-4 w-4 text-slate-400" />
+        ) : (
+          initial
+        )}
       </button>
       {accountOpen && (
         <>

@@ -2,7 +2,7 @@ import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { prisma } from "@afrohit/db";
 import { genreSchema } from "@afrohit/shared";
-import { requireAuth, requireRole } from "../middleware/auth";
+import { requireAuth, requireMinRole, requireRole } from "../middleware/auth";
 import { queueAssetDeletion, uniqueAssetRefs } from "../lib/asset-lifecycle";
 
 const createProjectSchema = z.object({
@@ -14,6 +14,15 @@ const createProjectSchema = z.object({
 });
 
 export default async function projects(app: FastifyInstance) {
+  // RBAC (identity wave, 2026-07-20): project mutations are PRODUCER-and-up;
+  // reads stay open to every member. Delete keeps its stricter OWNER/ADMIN
+  // gate below.
+  app.addHook("preHandler", async req => {
+    if (["POST", "PUT", "PATCH", "DELETE"].includes(req.method)) {
+      requireMinRole(req, "PRODUCER");
+    }
+  });
+
   app.get("/", async req => {
     const { workspaceId } = requireAuth(req);
     return prisma.project.findMany({

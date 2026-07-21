@@ -5,6 +5,7 @@ import { Prisma, prisma } from '@afrohit/db';
 import {
   MAX_PRESIGNED_UPLOAD_BYTES,
   presignUploadSchema,
+  imageUploadPresignSchema,
   importUrlSchema,
   audioUploadSchema,
 } from '@afrohit/shared';
@@ -324,6 +325,11 @@ async function referencedUploadRefs(
         WHERE song."workspaceId" = ${workspaceId}
       UNION ALL SELECT song."acapellaUrl" FROM "Song" song
         WHERE song."workspaceId" = ${workspaceId}
+      UNION ALL SELECT song."coverUrl" FROM "Song" song
+        WHERE song."workspaceId" = ${workspaceId}
+      UNION ALL SELECT member_user."avatarUrl" FROM "User" member_user
+        JOIN "WorkspaceMember" membership ON membership."userId" = member_user."id"
+        WHERE membership."workspaceId" = ${workspaceId}
       UNION ALL SELECT beat."url" FROM "BeatAsset" beat
         JOIN "Project" project ON project."id" = beat."projectId"
         WHERE project."workspaceId" = ${workspaceId}
@@ -720,6 +726,50 @@ export default async function uploads(app: FastifyInstance) {
         const reservation = await reserveUploadBytes(
           workspaceId,
           { objectKey: signed.key, assetRef: signed.assetRef, kind, sizeBytes },
+          policy
+        );
+        return { ...signed, reservation };
+      } catch (error) {
+        return uploadPolicyErrorResponse(reply, error);
+      }
+    }
+  );
+
+  /**
+   * IMAGE PRESIGN (identity wave, 2026-07-20): avatar + song-cover uploads.
+   * Same browser→storage PUT flow as audio, but with the image claim screen
+   * (image/png|jpeg|webp, ≤5MB). The real content check happens at ATTACH
+   * time — verifyUploadedImage sniffs magic bytes and hashes every byte
+   * before an avatarUrl/coverUrl ever points at the object.
+   */
+  app.post(
+    '/presign-image',
+    { schema: { body: imageUploadPresignSchema } },
+    async (req, reply) => {
+      const { workspaceId } = requireAuth(req);
+      const input = imageUploadPresignSchema.parse(req.body);
+      try {
+        const policy = uploadPolicyFromEnv();
+        await enforceDistributedUploadRate(
+          app.rateLimitRedis,
+          workspaceId,
+          policy
+        );
+        const signed = await presignUpload({
+          workspaceId,
+          kind: 'uploads/' + input.kind,
+          contentType: input.contentType,
+          ext: input.ext,
+          sizeBytes: input.sizeBytes,
+        });
+        const reservation = await reserveUploadBytes(
+          workspaceId,
+          {
+            objectKey: signed.key,
+            assetRef: signed.assetRef,
+            kind: input.kind,
+            sizeBytes: input.sizeBytes,
+          },
           policy
         );
         return { ...signed, reservation };
