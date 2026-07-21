@@ -1,6 +1,6 @@
 {
-  "name": "AfroHit Studio",
-  "short_name": "AfroHit",
+  "name": "AfroHits Studio",
+  "short_name": "AfroHits",
   "description": "Your AI executive producer. Afro-born. World-ready. Songs with receipts.",
   "start_url": "/",
   "display": "standalone",

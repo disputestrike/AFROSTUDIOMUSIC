@@ -324,7 +324,7 @@ async function bootstrap() {
   });
   await app.register(swagger, {
     openapi: {
-      info: { title: "AfroHit Studio API", version: "0.1.0" },
+      info: { title: "AfroHits Studio API", version: "0.1.0" },
       servers: [{ url: process.env.API_URL ?? "http://localhost:4000" }],
       components: {
         securitySchemes: {

@@ -1,7 +1,7 @@
 import { prisma } from './index';
 
 async function main() {
-  console.log('Seeding AfroHit Studio...');
+  console.log('Seeding AfroHits Studio...');
 
   // A demo workspace + owner — replace clerkId with a real one once Clerk is wired.
   const workspace = await prisma.workspace.upsert({
@@ -36,7 +36,7 @@ async function main() {
     data: {
       workspaceId: workspace.id,
       name: 'Demo',
-      stageName: 'BENXP',
+      stageName: 'BXP',
       bio: 'Afro-fusion artist with Pidgin/Yoruba/English delivery.',
       vocalRangeLow: 'A2',
       vocalRangeHigh: 'F5',

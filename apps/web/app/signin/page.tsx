@@ -99,7 +99,7 @@ export default function SignInPage() {
     return (
       <main className="studio-auth-shell">
         <section className="studio-auth-panel" aria-labelledby="reset-sent-title">
-          <div className="studio-auth-brand"><img src="/logo.png" alt="" aria-hidden="true" className="studio-auth-logo" /> AfroStudioMusic</div>
+          <div className="studio-auth-brand"><img src="/logo.png" alt="" aria-hidden="true" className="studio-auth-logo" /> AfroHits</div>
           <div className="mt-8 flex h-12 w-12 items-center justify-center rounded-lg border border-emerald-400/30 bg-emerald-400/10 text-emerald-300">
             <Mail className="h-6 w-6" aria-hidden="true" />
           </div>
@@ -124,7 +124,7 @@ export default function SignInPage() {
     return (
       <main className="studio-auth-shell">
         <section className="studio-auth-panel" aria-labelledby="next-step-title">
-          <div className="studio-auth-brand"><img src="/logo.png" alt="" aria-hidden="true" className="studio-auth-logo" /> AfroStudioMusic</div>
+          <div className="studio-auth-brand"><img src="/logo.png" alt="" aria-hidden="true" className="studio-auth-logo" /> AfroHits</div>
           <div className="studio-step-row" aria-label="Signup progress">
             <span className="is-complete"><Check aria-hidden="true" /> Account</span>
             <span className="is-current">2 of 2: Start</span>
@@ -178,7 +178,7 @@ export default function SignInPage() {
     <main className="studio-auth-shell">
       <section className="studio-auth-panel" aria-labelledby="auth-title">
         <div className="flex items-center justify-between gap-4">
-          <div className="studio-auth-brand"><img src="/logo.png" alt="" aria-hidden="true" className="studio-auth-logo" /> AfroStudioMusic</div>
+          <div className="studio-auth-brand"><img src="/logo.png" alt="" aria-hidden="true" className="studio-auth-logo" /> AfroHits</div>
           {mode === 'signup' && <div className="studio-step-row"><span className="is-current">1 of 2: Account</span></div>}
         </div>
 

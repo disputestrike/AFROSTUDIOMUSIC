@@ -228,7 +228,7 @@ export default async function workspaces(app: FastifyInstance) {
         where: { id: auth.workspaceId },
         select: { name: true },
       });
-      const mail = workspaceInviteEmail(workspace?.name ?? 'an AfroHit studio', invite.role, inviteUrl);
+      const mail = workspaceInviteEmail(workspace?.name ?? 'an AfroHits studio', invite.role, inviteUrl);
       await sendEmail({ to: email, subject: mail.subject, html: mail.html }).catch((err) =>
         req.log.warn({ err }, 'workspace-invite email send failed (link still returned)'),
       );

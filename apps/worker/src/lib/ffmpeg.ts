@@ -2314,6 +2314,172 @@ export async function overlayVideoCredits(opts: {
   }
 }
 
+// ---------------------------------------------------------------------------
+// BRAND WAVE (2026-07-20) — the logo splash + the persistent "afro" watermark.
+// ---------------------------------------------------------------------------
+
+/** LOGO SPLASH LAW ("show our logo at the start of the video — then it
+ *  disappears after a splash" — owner): every assembled cut opens on ~1.8s of
+ *  the AfroHits mark on a dark frame, fading in and out, before the first
+ *  scene (and therefore before the opening credit's 0.8s cue). Best-effort by
+ *  the same doctrine as the credit: a missing logo or a failed encode ships
+ *  the un-splashed cut honestly — branding never fails paid work. */
+export const SPLASH_DURATION_S = 1.8;
+export const SPLASH_FADE_IN_S = 0.25;
+export const SPLASH_FADE_OUT_S = 0.35;
+/** Logo height as a fraction of the frame height (centered). */
+export const SPLASH_LOGO_HEIGHT_RATIO = 0.35;
+
+/** The official AfroHits logo shipped as a repo asset (apps/worker/assets/).
+ *  The Docker build copies the whole monorepo, so the file rides into the
+ *  image untouched; resolution covers both the compiled layout (dist/lib →
+ *  ../../assets) and every realistic cwd (apps/worker or the repo root). */
+export function resolveBrandLogoPath(): string | undefined {
+  const candidates = [
+    join(__dirname, '..', '..', 'assets', 'afrohits-logo.png'),
+    join(process.cwd(), 'assets', 'afrohits-logo.png'),
+    join(process.cwd(), 'apps', 'worker', 'assets', 'afrohits-logo.png'),
+  ];
+  for (const candidate of candidates) {
+    if (existsSync(candidate)) return candidate;
+  }
+  return undefined;
+}
+
+/** Pure builder (unit-testable without ffmpeg): the full argv that prepends
+ *  the branded splash to a finished cut. One invocation: a lavfi black frame
+ *  carries the logo (fade in 0.25s / hold / fade out 0.35s), a silent
+ *  anullsrc keeps A/V concat in sync, and both segments re-encode with the
+ *  exact ASSEMBLY_ENCODE + AAC settings the pipeline already uses. */
+export function buildLogoSplashArgs(opts: {
+  input: string;
+  output: string;
+  logoPath: string;
+  width: number;
+  height: number;
+  fps?: number;
+}): string[] {
+  const fps = opts.fps ?? ASSEMBLY_FPS;
+  // Even pixel count — yuv420p subsampling dislikes odd overlay geometry.
+  const logoHeight = Math.max(
+    2,
+    Math.round((opts.height * SPLASH_LOGO_HEIGHT_RATIO) / 2) * 2
+  );
+  const fadeOutStartS = SPLASH_DURATION_S - SPLASH_FADE_OUT_S;
+  const audioFormat =
+    'aformat=sample_fmts=fltp:sample_rates=44100:channel_layouts=stereo';
+  const filter =
+    `[1:v]scale=-2:${logoHeight}[logo];` +
+    `[0:v][logo]overlay=(W-w)/2:(H-h)/2,` +
+    `fade=t=in:st=0:d=${SPLASH_FADE_IN_S.toFixed(2)},` +
+    `fade=t=out:st=${fadeOutStartS.toFixed(2)}:d=${SPLASH_FADE_OUT_S.toFixed(2)},` +
+    `format=yuv420p,fps=${fps},setsar=1[sv];` +
+    `[2:a]atrim=0:${SPLASH_DURATION_S.toFixed(2)},asetpts=PTS-STARTPTS,${audioFormat}[sa];` +
+    `[3:v]format=yuv420p,fps=${fps},setsar=1[mv];` +
+    `[3:a]${audioFormat}[ma];` +
+    `[sv][sa][mv][ma]concat=n=2:v=1:a=1[v][a]`;
+  return [
+    '-f', 'lavfi',
+    '-i', `color=c=black:s=${opts.width}x${opts.height}:r=${fps}:d=${SPLASH_DURATION_S.toFixed(2)}`,
+    '-i', opts.logoPath,
+    '-f', 'lavfi', '-t', SPLASH_DURATION_S.toFixed(2),
+    '-i', 'anullsrc=r=44100:cl=stereo',
+    '-i', opts.input,
+    '-filter_complex', filter,
+    '-map', '[v]', '-map', '[a]',
+    ...ASSEMBLY_ENCODE,
+    '-c:a', 'aac', '-b:a', '192k',
+    '-movflags', '+faststart',
+    opts.output,
+  ];
+}
+
+/** Prepend the branded splash to a finished cut (see buildLogoSplashArgs). */
+export async function prependLogoSplash(opts: {
+  input: string;
+  output: string;
+  logoPath: string;
+  width: number;
+  height: number;
+  fps?: number;
+}): Promise<void> {
+  await runFfmpeg(buildLogoSplashArgs(opts));
+}
+
+/** PERSISTENT WATERMARK LAW (owner, VEVO reference): a small lowercase "afro"
+ *  wordmark rides the bottom-RIGHT corner of the WHOLE video — splash, credit
+ *  and every scene — at ~4.5% frame height, white at 75% opacity, 2.5% frame
+ *  width off both edges. The first 3 seconds ALSO carry a bigger fully-opaque
+ *  bottom-LEFT "afro" (~8.5% height) so paused/preview frames read like a
+ *  VEVO thumbnail — the pipeline generates no poster image today, so the
+ *  opening frames stand in honestly. Same font mechanism as the credit. */
+export const WATERMARK_TEXT = 'afro';
+export const WATERMARK_HEIGHT_RATIO = 0.045;
+export const WATERMARK_MARGIN_RATIO = 0.025;
+export const WATERMARK_OPACITY = 0.75;
+export const WATERMARK_THUMB_HEIGHT_RATIO = 0.085;
+export const WATERMARK_THUMB_WINDOW_S = 3;
+
+/** Pure builder (unit-testable): the two drawtext filters — persistent
+ *  bottom-right + first-3s bottom-left. Text rides a textfile exactly like
+ *  the credit so the filter can never be broken by escaping. */
+export function buildBrandWatermarkFilters(opts: {
+  fontPath: string;
+  textPath: string;
+  width: number;
+  height: number;
+}): string[] {
+  const escape = (p: string) => p.replace(/\\/g, '/').replace(/:/g, '\\:');
+  const font = escape(opts.fontPath);
+  const text = escape(opts.textPath);
+  const margin = Math.round(opts.width * WATERMARK_MARGIN_RATIO);
+  const smallSize = Math.round(opts.height * WATERMARK_HEIGHT_RATIO);
+  const thumbSize = Math.round(opts.height * WATERMARK_THUMB_HEIGHT_RATIO);
+  return [
+    // Persistent bottom-right — the whole runtime, no enable window.
+    `drawtext=fontfile='${font}':textfile='${text}'` +
+      `:fontcolor=white@${WATERMARK_OPACITY}:fontsize=${smallSize}` +
+      `:x=W-text_w-${margin}:y=H-text_h-${margin}`,
+    // Thumbnail-style bottom-left — first WATERMARK_THUMB_WINDOW_S seconds only.
+    `drawtext=fontfile='${font}':textfile='${text}'` +
+      `:fontcolor=white:fontsize=${thumbSize}` +
+      `:x=${margin}:y=H-text_h-${margin}` +
+      `:enable='between(t,0,${WATERMARK_THUMB_WINDOW_S})'`,
+  ];
+}
+
+/** Burn the "afro" watermark pair into a finished cut — one encode pass,
+ *  audio stream copied, same encode settings as every other assembly pass. */
+export async function overlayBrandWatermark(opts: {
+  input: string;
+  output: string;
+  fontPath: string;
+  width: number;
+  height: number;
+}): Promise<void> {
+  const dir = await mkdtemp(join(tmpdir(), 'watermark-'));
+  try {
+    const textPath = join(dir, 'wordmark.txt');
+    await writeFile(textPath, WATERMARK_TEXT);
+    const filters = buildBrandWatermarkFilters({
+      fontPath: opts.fontPath,
+      textPath,
+      width: opts.width,
+      height: opts.height,
+    });
+    await runFfmpeg([
+      '-i', opts.input,
+      '-vf', filters.join(','),
+      '-c:a', 'copy',
+      ...ASSEMBLY_ENCODE,
+      '-movflags', '+faststart',
+      opts.output,
+    ]);
+  } finally {
+    await rm(dir, { recursive: true, force: true }).catch(() => {});
+  }
+}
+
 export interface AssemblyTimelineClip {
   /** LOCAL path to the downloaded rendered shot. */
   path: string;

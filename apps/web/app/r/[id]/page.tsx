@@ -63,7 +63,7 @@ export default async function PublicReleasePage({ params }: { params: Promise<{ 
 
         <div className="mt-6 border-t border-white/10 pt-4 text-[11px] text-slate-500">
           {r.isrc && <div>ISRC {r.isrc}</div>}
-          <div className="mt-1">Made with AfroHit Studio · GenAI-assisted, human-directed</div>
+          <div className="mt-1">Made with AfroHits Studio · GenAI-assisted, human-directed</div>
         </div>
       </div>
     </main>

@@ -55,7 +55,7 @@ function hasFlag(name) {
 function help() {
   console.log(
     [
-      "AfroHit blind benchmark corpus",
+      "AfroHits blind benchmark corpus",
       "",
       "Validate only:",
       "  node scripts/benchmark-corpus.mjs --manifest ./benchmark.json --validate-only",
@@ -397,7 +397,7 @@ async function parseManifest(path) {
     );
     assert(
       !songIds.has(entry.songId),
-      "each AfroHit song may appear only once: " + entry.songId
+      "each AfroHits song may appear only once: " + entry.songId
     );
     songIds.add(entry.songId);
     assert(
@@ -504,7 +504,7 @@ async function parseManifest(path) {
       entry.normalizationEvidence.afrohit.contentHash.toLowerCase();
     assert(
       !afrohitHashes.has(afrohitHash),
-      "AfroHit audio bytes are duplicated: " + afrohitHash
+      "AfroHits audio bytes are duplicated: " + afrohitHash
     );
     afrohitHashes.add(afrohitHash);
     entries.push({

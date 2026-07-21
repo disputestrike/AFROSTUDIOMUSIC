@@ -1,6 +1,6 @@
 import { redirect } from 'next/navigation';
 
-export const metadata = { title: 'Pricing — AfroHit Studio' };
+export const metadata = { title: 'Pricing — AfroHits Studio' };
 
 /**
  * ONE SOURCE OF PRICING TRUTH. This page used to hand-write five tiers

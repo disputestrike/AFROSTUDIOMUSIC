@@ -96,7 +96,7 @@ export async function createSubscription(opts: {
     plan_id: opts.planId,
     custom_id: opts.intentId,
     application_context: {
-      brand_name: opts.brandName ?? 'AfroHit Studio',
+      brand_name: opts.brandName ?? 'AfroHits Studio',
       user_action: 'SUBSCRIBE_NOW',
       payment_method: { payer_selected: 'PAYPAL', payee_preferred: 'IMMEDIATE_PAYMENT_REQUIRED' },
       return_url: opts.returnUrl,
@@ -137,13 +137,13 @@ export async function createOrder(opts: {
     purchase_units: [
       {
         amount: { currency_code: 'USD', value: opts.amountUsd.toFixed(2) },
-        description: `AfroHit Studio credits — ${opts.packKey}`,
+        description: `AfroHits Studio credits — ${opts.packKey}`,
         // Opaque server-owned intent id; prices and credits never ride metadata.
         custom_id: opts.intentId,
       },
     ],
     application_context: {
-      brand_name: 'AfroHit Studio',
+      brand_name: 'AfroHits Studio',
       user_action: 'PAY_NOW',
       return_url: opts.returnUrl,
       cancel_url: opts.cancelUrl,

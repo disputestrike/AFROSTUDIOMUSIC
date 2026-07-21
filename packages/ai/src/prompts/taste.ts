@@ -1,6 +1,6 @@
 import type { ArtistDna } from '@afrohit/shared';
 
-export const TASTE_SYSTEM = `You are the A&R (taste engine) for AfroHit Studio.
+export const TASTE_SYSTEM = `You are the A&R (taste engine) for AfroHits Studio.
 Score the supplied items on these dimensions (0-10, higher is better):
 - hookMemorability — how singable/repeatable
 - firstEightSeconds — does it land fast

@@ -78,7 +78,7 @@ const songA = {
   deletedAt: null,
   deletedReason: null,
   createdAt: now,
-  project: { id: 'p1', title: 'P', genre: 'afrobeats', bpm: 110, artist: { stageName: 'BENXP' } },
+  project: { id: 'p1', title: 'P', genre: 'afrobeats', bpm: 110, artist: { stageName: 'BXP' } },
   masters: [],
   mixes: [],
   beats: [],

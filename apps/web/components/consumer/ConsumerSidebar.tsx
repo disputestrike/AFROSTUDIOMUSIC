@@ -149,7 +149,7 @@ export function ConsumerSidebar({
           <img src="/logo.png" alt="" aria-hidden className="h-8 w-8 shrink-0 rounded-xl shadow-glow" />
           {!collapsed && (
             <span className="truncate font-display text-lg tracking-tight">
-              AFRO<span className="text-gradient">HIT</span>
+              AFRO<span className="text-gradient">HITS</span>
             </span>
           )}
         </Link>

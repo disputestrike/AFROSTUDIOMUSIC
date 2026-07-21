@@ -5,7 +5,7 @@
 import { escapeHtml, safeHttpUrl } from "@afrohit/shared";
 
 const FROM = () =>
-  process.env.EMAIL_FROM ?? "AfroHit Studio <noreply@afrohit.studio>";
+  process.env.EMAIL_FROM ?? "AfroHits Studio <noreply@afrohit.studio>";
 
 export type EmailDelivery =
   | { ok: true; id?: string }
@@ -48,14 +48,14 @@ export async function sendEmail(opts: {
 
 const wrap = (body: string) => `
 <div style="font-family:Inter,system-ui,sans-serif;max-width:560px;margin:0 auto;padding:24px;color:#111">
-  <div style="font-size:22px;font-weight:800;letter-spacing:-0.5px;margin-bottom:16px">AFROHIT STUDIO</div>
+  <div style="font-size:22px;font-weight:800;letter-spacing:-0.5px;margin-bottom:16px">AFROHITS STUDIO</div>
   ${body}
-  <p style="margin-top:32px;font-size:12px;color:#888">You're receiving this because you have an AfroHit Studio account.</p>
+  <p style="margin-top:32px;font-size:12px;color:#888">You're receiving this because you have an AfroHits Studio account.</p>
 </div>`;
 
 export function welcomeEmail(name: string | null) {
   return {
-    subject: "Welcome to AfroHit Studio 🎧",
+    subject: "Welcome to AfroHits Studio 🎧",
     html: wrap(`
       <p>Hey ${escapeHtml(name ?? "there")},</p>
       <p>Your studio is live. You've got <b>$5 in onboarding credits</b> to play with.</p>
@@ -79,7 +79,7 @@ export function jobDoneEmail(
   };
   const link = safeHttpUrl(url);
   return {
-    subject: `${kindLabel[kind] ?? "Your render is ready"} — ${projectTitle ?? "AfroHit Studio"}`,
+    subject: `${kindLabel[kind] ?? "Your render is ready"} — ${projectTitle ?? "AfroHits Studio"}`,
     html: wrap(`
       <p>${escapeHtml(kindLabel[kind] ?? "A render finished")} on <b>${escapeHtml(projectTitle ?? "your project")}</b>.</p>
       ${link ? `<p><a href="${escapeHtml(link)}" style="color:#EA580C">Listen / view it here</a></p>` : ""}
@@ -91,9 +91,9 @@ export function jobDoneEmail(
 export function passwordResetEmail(resetUrl: string) {
   const link = safeHttpUrl(resetUrl);
   return {
-    subject: "Reset your AfroHit Studio password",
+    subject: "Reset your AfroHits Studio password",
     html: wrap(`
-      <p>We got a request to reset the password on your AfroHit Studio account.</p>
+      <p>We got a request to reset the password on your AfroHits Studio account.</p>
       ${
         link
           ? `<p><a href="${escapeHtml(link)}" style="color:#EA580C;font-weight:700">Choose a new password</a></p>
@@ -112,7 +112,7 @@ export function workspaceInviteEmail(
 ) {
   const link = safeHttpUrl(inviteUrl);
   return {
-    subject: `You're invited to ${workspaceName} on AfroHit Studio`,
+    subject: `You're invited to ${workspaceName} on AfroHits Studio`,
     html: wrap(`
       <p>You've been invited to join <strong>${escapeHtml(workspaceName)}</strong> as <strong>${escapeHtml(role)}</strong>.</p>
       ${

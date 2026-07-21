@@ -83,7 +83,7 @@ export default function InvitePage() {
   return (
     <main className="studio-auth-shell">
       <section className="studio-auth-panel" aria-labelledby="invite-title">
-        <div className="studio-auth-brand"><Music2 aria-hidden="true" /> AfroStudioMusic</div>
+        <div className="studio-auth-brand"><Music2 aria-hidden="true" /> AfroHits</div>
         <div className="mt-9">
           <h1 id="invite-title" className="font-display text-3xl text-white">Join the studio</h1>
           {info ? (

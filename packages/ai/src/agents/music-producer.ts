@@ -109,7 +109,7 @@ function resolveGenreBrief(
 }
 
 const SYSTEM = [
-  'You are the MUSIC PRODUCER, agent #2 in AfroHit\'s multi-agent producer studio',
+  'You are the MUSIC PRODUCER, agent #2 in AfroHits\' multi-agent producer studio',
   '(owner spec, 2026-07-12). You receive ONE creative brief and design the BEAT DNA',
   'and the ARRANGEMENT for a single record. You do NOT write lyrics, topline, or mix —',
   'only how the record GROOVES and how it is SHAPED in time.',

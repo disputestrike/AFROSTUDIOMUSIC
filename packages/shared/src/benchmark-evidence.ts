@@ -474,8 +474,8 @@ export function evaluateCompetitorBenchmark(
     verdict,
     claimReady,
     claim: claimReady
-      ? `AfroHit outperformed ${competitor} in this controlled listening benchmark.`
-      : `No evidence-backed claim that AfroHit outperforms ${competitor} is permitted yet.`,
+      ? `AfroHits outperformed ${competitor} in this controlled listening benchmark.`
+      : `No evidence-backed claim that AfroHits outperforms ${competitor} is permitted yet.`,
     sample: {
       submittedJudgments: valid.length,
       eligibleJudgments: eligible.length,

@@ -35,7 +35,7 @@ export function ConsumerShell({ children }: { children: React.ReactNode }) {
                   </svg>
                 </span>
                 <span className="font-display text-base tracking-tight">
-                  AFRO<span className="text-gradient">HIT</span>
+                  AFRO<span className="text-gradient">HITS</span>
                 </span>
               </Link>
               <button

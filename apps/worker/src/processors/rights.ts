@@ -1241,7 +1241,7 @@ export async function processRights(payload: RightsPayload): Promise<void> {
       lineage.originKind === 'direct_owned_upload'
         ? {
             distroDisclosure:
-              'Artist-supplied finished recording; production origin not inferred by AfroHit',
+              'Artist-supplied finished recording; production origin not inferred by AfroHits',
             credits: {
               lyrics: 'AI-assisted, human-edited',
               production: 'Artist-supplied finished recording',

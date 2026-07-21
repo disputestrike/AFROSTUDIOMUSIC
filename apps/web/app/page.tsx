@@ -116,7 +116,7 @@ export default function Landing() {
       <header className="sticky top-0 z-40 glass-strong">
         <div className="mx-auto flex max-w-6xl items-center justify-between gap-3 px-5 py-3 sm:px-6">
           <Link href="/" className="font-display text-xl tracking-tight sm:text-2xl">
-            <span className="text-gradient">AFROHIT</span> STUDIO
+            <span className="text-gradient">AFROHITS</span> STUDIO
           </Link>
           <nav className="flex items-center gap-1 text-sm sm:gap-2">
             <a href="#wall" className="hidden rounded-full px-3 py-1.5 text-slate-300 hover:bg-white/5 hover:text-white sm:block">
@@ -312,7 +312,7 @@ export default function Landing() {
         <div className="mx-auto flex max-w-6xl flex-col items-center justify-between gap-4 px-5 py-10 text-sm text-slate-500 sm:flex-row sm:px-6">
           <div>
             <div className="font-display text-lg tracking-tight text-slate-300">
-              <span className="text-gradient">AFROHIT</span> STUDIO
+              <span className="text-gradient">AFROHITS</span> STUDIO
             </div>
             <p className="mt-1 text-xs">GenAI-assisted, human-directed.</p>
           </div>
@@ -330,7 +330,7 @@ export default function Landing() {
               Sign in
             </Link>
           </nav>
-          <div className="text-xs">© 2026 AfroHit Studio</div>
+          <div className="text-xs">© 2026 AfroHits Studio</div>
         </div>
       </footer>
     </main>
