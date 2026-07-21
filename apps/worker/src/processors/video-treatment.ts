@@ -18,6 +18,7 @@
 import { prisma } from "@afrohit/db";
 import {
   assumedThreeActSections,
+  compactTreatmentForReview,
   missingDuetLeads,
   normalizeVideoTreatment,
   performersFromVoice,
@@ -27,7 +28,7 @@ import {
   playableAssetHistory,
   type TreatmentSection,
 } from "@afrohit/shared";
-import { prompts, generateJson } from "@afrohit/ai";
+import { prompts, generateJson, runWithBrainContext } from "@afrohit/ai";
 import { markRunning, markSucceeded } from "../lib/jobs";
 
 type TreatmentInput = {
@@ -204,32 +205,59 @@ export async function processVideoTreatment(
     return { ...section, vocal };
   });
 
-  const result = await generateJson<Record<string, unknown>>({
-    task: "video-treatment",
-    system: prompts.VIDEO_TREATMENT_SYSTEM + "\n\n" + prompts.SCENE_GRAMMAR,
-    user: JSON.stringify({
-      artist: {
-        stageName: project.artist.stageName,
-        lane: project.artist.laneSummary,
-      },
-      brief: project.briefs[0] ?? {},
-      song: songPayload,
-      structure: {
-        source: structureSource,
-        durationS: targetDurationS,
-        sections: sectionsForBrain,
-      },
-      format: input.format,
-      teaser: { allowedDurations: [15, 30], format: "vertical" },
-      extraPrompt: input.prompt,
-      ...(input.vision?.trim()
-        ? { artistVision: { text: input.vision.trim(), mode: input.visionMode } }
-        : {}),
-    }),
-    temperature: 0.7,
-    maxTokens: 6_000,
-    timeoutMs: 120_000,
-  });
+  // CEREBRAS BULK ROUTING (perf 2026-07-20). The treatment's three-call text
+  // chain (main + critic + repair) ran on the slow PAID brain — up to ~300s of
+  // Sonnet latency plus silent Anthropic spend per full-video attempt, none of
+  // it passing a tier. It now runs under a FORCED-BULK context (mirrors the
+  // 'lake' lane in index.ts): brain-context.ts + generate.ts NIGHT LAW disable
+  // Claude on BOTH the first attempt AND the failure ladder inside a
+  // forceTier:'bulk' run, so worst case tops out at the OpenAI draft — never
+  // Sonnet. Prompts are shrunk under the ~28k-char guard (critic/repair use
+  // compactTreatmentForReview below) so the calls actually resolve to Cerebras
+  // instead of being routed UP and skipping it.
+  const runId = `video-treatment:${jobId}`;
+  // The MAIN pass carries the mildly-creative concept/logline. VIDEO_TREATMENT_MAIN_BULK
+  // (default '1' = on, since the owner wants speed) forces it Cerebras-first too;
+  // set it to '0' to A/B the plan quality on the paid brain — then this pass runs
+  // OUTSIDE the forced-bulk context, so its tier-less options route to the
+  // judgment brain (Claude). The critic + repair below are ALWAYS forced-bulk.
+  const mainOnBulk = process.env.VIDEO_TREATMENT_MAIN_BULK !== "0";
+  const runMainPass = () =>
+    generateJson<Record<string, unknown>>({
+      task: "video-treatment",
+      system: prompts.VIDEO_TREATMENT_SYSTEM + "\n\n" + prompts.SCENE_GRAMMAR,
+      user: JSON.stringify({
+        artist: {
+          stageName: project.artist.stageName,
+          lane: project.artist.laneSummary,
+        },
+        brief: project.briefs[0] ?? {},
+        song: songPayload,
+        structure: {
+          source: structureSource,
+          durationS: targetDurationS,
+          sections: sectionsForBrain,
+        },
+        format: input.format,
+        teaser: { allowedDurations: [15, 30], format: "vertical" },
+        extraPrompt: input.prompt,
+        ...(input.vision?.trim()
+          ? { artistVision: { text: input.vision.trim(), mode: input.visionMode } }
+          : {}),
+      }),
+      // No `tier` here on purpose: the forced-bulk wrap (when on) overrides the
+      // tier to 'bulk' anyway, and leaving it off keeps the flag-'0' path a clean
+      // judgment-brain (Claude) run for the A/B. The song's full words stay in
+      // the prompt (owner law: THE SONG IS THE SUBJECT) — for representative and
+      // even long-lyric songs this stays under the 28k guard and runs on
+      // Cerebras; only a pathologically long lyric routes UP to the OpenAI draft.
+      temperature: 0.7,
+      maxTokens: 6_000,
+      timeoutMs: 120_000,
+    });
+  const result = mainOnBulk
+    ? await runWithBrainContext({ forceTier: "bulk", runId }, runMainPass)
+    : await runMainPass();
 
   const treatment = normalizeVideoTreatment(result, {
     durationS: targetDurationS,
@@ -261,75 +289,108 @@ export async function processVideoTreatment(
   // lyrics it grounded in is discarded. One minimal repair round max; the repair
   // re-passes the same normalize + duet gates. Best-effort — critic trouble
   // never blocks the artist; the original plan stands.
-  let finalTreatment = treatment;
-  let finalResult: Record<string, unknown> = result;
-  let criticReport: Record<string, unknown> | null = null;
-  try {
-    const lyricsText = songPayload?.lyrics ?? "";
-    if (lyricsText) {
-      const review = await generateJson<{
-        lyricsRead?: string;
-        scores?: Record<string, number>;
-        verdict?: string;
-        fixes?: string[];
-      }>({
-        task: "video-treatment-critic",
-        system: prompts.TREATMENT_CRITIC_SYSTEM,
-        user: JSON.stringify({ lyrics: lyricsText, performers, treatment: finalResult }),
-        temperature: 0.2,
-        maxTokens: 1_200,
-        timeoutMs: 60_000,
-      });
-      const quoted = (review.lyricsRead ?? "").trim();
-      const grounded =
-        quoted.length > 10 &&
-        !/i assume/i.test(quoted) &&
-        quoted
-          .split(/\n|\|/)
-          .some(line => line.trim() && lyricsText.includes(line.trim().slice(0, 24)));
-      if (grounded) {
-        criticReport = {
-          lyricsRead: quoted.slice(0, 500),
-          scores: review.scores ?? {},
-          verdict: review.verdict === "revise" ? "revise" : "pass",
-          fixes: (review.fixes ?? []).slice(0, 8),
-        };
-        if (
-          criticReport.verdict === "revise" &&
-          (criticReport.fixes as string[]).length
-        ) {
-          const repaired = await generateJson<Record<string, unknown>>({
-            task: "video-treatment-repair",
-            system: prompts.TREATMENT_REPAIR_SYSTEM,
-            user: JSON.stringify({ original: finalResult, fixes: criticReport.fixes }),
-            temperature: 0.3,
-            maxTokens: 6_000,
-            timeoutMs: 120_000,
+  // ALWAYS forced-bulk: the critic (rubric scoring) and the repair (apply the
+  // critic's named fixes) are mechanical text work — Cerebras-first, Claude off
+  // on both the attempt and the ladder — regardless of the MAIN pass flag above.
+  // The treatment JSON handed to each is shrunk under the ~28k guard by
+  // compactTreatmentForReview so these calls resolve to Cerebras, not the ladder;
+  // the explicit tier:'bulk' documents intent and keeps them bulk even if this
+  // wrap is ever removed. The closure RETURNS the (possibly repaired) trio — a
+  // callback can't feed TypeScript's outer control-flow, so we reassign here.
+  const reviewed = await runWithBrainContext(
+    { forceTier: "bulk", runId },
+    async (): Promise<{
+      finalTreatment: typeof treatment;
+      finalResult: Record<string, unknown>;
+      criticReport: Record<string, unknown> | null;
+    }> => {
+      let finalTreatment = treatment;
+      let finalResult: Record<string, unknown> = result;
+      let criticReport: Record<string, unknown> | null = null;
+      try {
+        const lyricsText = songPayload?.lyrics ?? "";
+        if (lyricsText) {
+          // The critic must quote VERBATIM lyric lines, but the grounding check
+          // below still validates those quotes against the FULL lyricsText — so
+          // capping the copy handed to the critic keeps the call under the guard
+          // without weakening the anti-assumption tripwire.
+          const lyricsForCritic = lyricsText.slice(0, 3_200);
+          const review = await generateJson<{
+            lyricsRead?: string;
+            scores?: Record<string, number>;
+            verdict?: string;
+            fixes?: string[];
+          }>({
+            task: "video-treatment-critic",
+            system: prompts.TREATMENT_CRITIC_SYSTEM,
+            user: JSON.stringify({
+              lyrics: lyricsForCritic,
+              performers,
+              treatment: compactTreatmentForReview(finalResult, sections, "critic"),
+            }),
+            tier: "bulk",
+            temperature: 0.2,
+            maxTokens: 1_200,
+            timeoutMs: 60_000,
           });
-          const repairedTreatment = normalizeVideoTreatment(repaired, {
-            durationS: targetDurationS,
-            sections,
-            structureSource,
-          });
-          if (
-            repairedTreatment &&
-            !missingDuetLeads(performers, repairedTreatment).length
-          ) {
-            finalTreatment = repairedTreatment;
-            finalResult = repaired;
-            criticReport.repaired = true;
-          } else {
-            criticReport.repairFailed = true; // honest: original stands
+          const quoted = (review.lyricsRead ?? "").trim();
+          const grounded =
+            quoted.length > 10 &&
+            !/i assume/i.test(quoted) &&
+            quoted
+              .split(/\n|\|/)
+              .some(line => line.trim() && lyricsText.includes(line.trim().slice(0, 24)));
+          if (grounded) {
+            criticReport = {
+              lyricsRead: quoted.slice(0, 500),
+              scores: review.scores ?? {},
+              verdict: review.verdict === "revise" ? "revise" : "pass",
+              fixes: (review.fixes ?? []).slice(0, 8),
+            };
+            if (
+              criticReport.verdict === "revise" &&
+              (criticReport.fixes as string[]).length
+            ) {
+              const repaired = await generateJson<Record<string, unknown>>({
+                task: "video-treatment-repair",
+                system: prompts.TREATMENT_REPAIR_SYSTEM,
+                user: JSON.stringify({
+                  original: compactTreatmentForReview(finalResult, sections, "repair"),
+                  fixes: criticReport.fixes,
+                }),
+                tier: "bulk",
+                temperature: 0.3,
+                maxTokens: 6_000,
+                timeoutMs: 120_000,
+              });
+              const repairedTreatment = normalizeVideoTreatment(repaired, {
+                durationS: targetDurationS,
+                sections,
+                structureSource,
+              });
+              if (
+                repairedTreatment &&
+                !missingDuetLeads(performers, repairedTreatment).length
+              ) {
+                finalTreatment = repairedTreatment;
+                finalResult = repaired;
+                criticReport.repaired = true;
+              } else {
+                criticReport.repairFailed = true; // honest: original stands
+              }
+            }
           }
         }
+      } catch (criticError) {
+        console.warn(
+          "[video-treatment] critic skipped — the original plan stands:",
+          (criticError as Error)?.message
+        );
       }
+      return { finalTreatment, finalResult, criticReport };
     }
-  } catch (criticError) {
-    console.warn(
-      "[video-treatment] critic skipped — the original plan stands:",
-      (criticError as Error)?.message
-    );
-  }
+  );
+  const { finalTreatment, finalResult, criticReport } = reviewed;
 
   const title =
     typeof finalResult.title === "string" && (finalResult.title as string).trim()
