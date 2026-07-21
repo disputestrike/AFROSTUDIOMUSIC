@@ -516,6 +516,64 @@ interface ReplicatePrediction {
 }
 
 /**
+ * FORGE MODEL-VERSION MEMO (songspeed perf). meta/musicgen's version id is the
+ * SAME for every forge in a render, but each forge builds a FRESH adapter and
+ * re-ran the /models lookup — up to 8 lookups (~0.2-0.5s each) on a fresh-lane
+ * song's forge fan-out. Cache the RESOLVED version per model slug so N forges do
+ * ONE lookup, not N. Fail-soft: ONLY a successful resolve caches, so a failed
+ * lookup never poisons the cache (the next forge retries cleanly). Pinning
+ * REPLICATE_MUSIC_VERSION skips the lookup ENTIRELY (operator errand) — this memo
+ * only helps when the version is unset.
+ */
+const musicVersionCache = new Map<string, string>();
+
+/** Test-only: reset the forge model-version memo between cases. */
+export function __resetMusicVersionCache(): void {
+  musicVersionCache.clear();
+}
+
+/** Resolve (and memoize) a Replicate model's latest version id. Never throws the
+ *  cache into a bad state: a failed resolve returns an error and caches nothing. */
+async function resolveMusicGenVersion(
+  auth: { authorization: string },
+  slug: string
+): Promise<{ version?: string; error?: string }> {
+  const cached = musicVersionCache.get(slug);
+  if (cached) return { version: cached };
+  const mres = await fetch(`https://api.replicate.com/v1/models/${slug}`, { headers: auth });
+  if (!mres.ok) {
+    return { error: `replicate model lookup ${mres.status}: ${(await mres.text()).slice(0, 160)}` };
+  }
+  const mdata = (await mres.json()) as { latest_version?: { id?: string } };
+  const version = mdata.latest_version?.id;
+  if (!version) return { error: 'replicate: model has no version' };
+  musicVersionCache.set(slug, version); // only successful resolves cache
+  return { version };
+}
+
+/**
+ * FORGE PREWARM (songspeed perf) — fire-and-forget at worker boot. Resolves +
+ * caches the forge model version BEFORE the first real forge, so a fresh-lane
+ * song's forge fan-out skips the per-forge /models lookup (already memoized
+ * above). FREE and safe: a single metadata GET, never a paid prediction, and
+ * fully fail-soft — any error is swallowed and the normal per-forge resolve still
+ * runs. A no-op when REPLICATE_MUSIC_VERSION is pinned (nothing to look up) or no
+ * Replicate token is reachable. The Replicate container's own scale-to-zero cold
+ * start is infra latency the operator removes by pinning REPLICATE_MUSIC_VERSION.
+ */
+export async function prewarmForgeModel(): Promise<void> {
+  try {
+    if (process.env.REPLICATE_MUSIC_VERSION) return; // pinned: no lookup to warm
+    const token = replicateToken();
+    if (!token) return;
+    const slug = process.env.REPLICATE_MUSIC_MODEL ?? 'meta/musicgen';
+    await resolveMusicGenVersion({ authorization: `Bearer ${token}` }, slug);
+  } catch {
+    /* prewarm is best-effort — it must never block or fail worker boot */
+  }
+}
+
+/**
  * Replicate MusicGen adapter for explicitly requested short instrumental loops.
  * Full-length songs and instrumentals use the MiniMax route on the same account.
  */
@@ -532,17 +590,15 @@ class ReplicateMusicGenAdapter implements MusicProviderAdapter {
 
     // meta/musicgen is a community model → use the versioned /predictions
     // endpoint (the /models/{owner}/{name}/predictions path is official-only,
-    // hence the 404). Resolve the current version unless one is pinned.
+    // hence the 404). Resolve the current version unless one is pinned — the
+    // resolve is MEMOIZED per slug (resolveMusicGenVersion), so a fresh-lane
+    // song's 8-forge fan-out pays the lookup ONCE, not 8×.
     let version = process.env.REPLICATE_MUSIC_VERSION;
     if (!version) {
       const slug = process.env.REPLICATE_MUSIC_MODEL ?? 'meta/musicgen';
-      const mres = await fetch(`https://api.replicate.com/v1/models/${slug}`, { headers: auth });
-      if (!mres.ok) {
-        return { status: 'failed', error: `replicate model lookup ${mres.status}: ${(await mres.text()).slice(0, 160)}` };
-      }
-      const mdata = (await mres.json()) as { latest_version?: { id?: string } };
-      version = mdata.latest_version?.id;
-      if (!version) return { status: 'failed', error: 'replicate: model has no version' };
+      const resolved = await resolveMusicGenVersion(auth, slug);
+      if (resolved.error) return { status: 'failed', error: resolved.error };
+      version = resolved.version;
     }
 
     const duration = Math.min(Math.max(Math.round(input.durationS ?? 30), 5), 30);
