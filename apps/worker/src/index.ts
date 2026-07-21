@@ -313,6 +313,19 @@ async function runManagedAttempt(
   });
 }
 
+// Per-lane concurrency. The default (WORKER_CONCURRENCY ?? 4) is right for the
+// CPU-heavy lanes (music/demucs/mix/master), but the VIDEO lane is almost pure
+// remote-poll I/O: a shot-render job holds its slot only to submit → poll →
+// download from Replicate/fal, costing the worker near-nothing. At concurrency
+// 4 a 12-shot concept renders in ceil(12/4)=3 serial waves for no reason. Give
+// the video lane its own high knob so an entire concept's shots render in ONE
+// wave. Shots are I/O-bound polls, so 10+ concurrent is safe on one worker.
+function laneConcurrency(queue: string): number {
+  if (queue === "video")
+    return Number(process.env.VIDEO_CONCURRENCY ?? 12);
+  return Number(process.env.WORKER_CONCURRENCY ?? 4);
+}
+
 function makeWorker(queue: string, handler: (job: never) => Promise<void>) {
   const guarded = async (job: never) => {
     await secretsReady;
@@ -322,7 +335,7 @@ function makeWorker(queue: string, handler: (job: never) => Promise<void>) {
   };
   const w = new Worker(queue, guarded as never, {
     connection,
-    concurrency: Number(process.env.WORKER_CONCURRENCY ?? 4),
+    concurrency: laneConcurrency(queue),
   });
   w.on("completed", job => {
     log.info({ queue, jobId: job.id }, "job ok");
