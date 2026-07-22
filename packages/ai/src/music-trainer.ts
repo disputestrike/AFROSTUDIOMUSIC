@@ -249,10 +249,30 @@ export async function kickoffMusicTraining(opts: {
     return { started: false, reason: `corpus too small (${dataset.size} < ${minCorpusSize()}) — keep accumulating`, datasetSize: dataset.size };
   }
 
+  // MUSIC_TRAINER_VERSION=latest → resolve the trainer's newest pushed version
+  // at kickoff, so re-pushing the Cog image never needs a hash-paste errand.
+  // Fail-closed: an unresolvable 'latest' refuses instead of guessing.
+  let version = cfg.version;
+  if (version.toLowerCase() === 'latest') {
+    try {
+      const res = await fetch(`https://api.replicate.com/v1/models/${cfg.model}`, {
+        headers: { authorization: `Bearer ${token}` },
+      });
+      const data = res.ok ? ((await res.json()) as { latest_version?: { id?: string } }) : null;
+      const resolved = data?.latest_version?.id;
+      if (!resolved) {
+        return { started: false, reason: `could not resolve latest version of ${cfg.model} (HTTP ${res.status}) — has the trainer image been pushed?` };
+      }
+      version = resolved;
+    } catch (err) {
+      return { started: false, reason: `latest-version lookup failed: ${(err as Error).message.slice(0, 120)}` };
+    }
+  }
+
   const input = { [cfg.datasetKey]: opts.datasetZipUrl, ...cfg.extraInput };
   const url =
     cfg.kind === 'training'
-      ? `https://api.replicate.com/v1/models/${cfg.model}/versions/${cfg.version}/trainings`
+      ? `https://api.replicate.com/v1/models/${cfg.model}/versions/${version}/trainings`
       : 'https://api.replicate.com/v1/predictions';
   // Destination auto-resolve (owner: "we have a setup already — check first"):
   // the account IS the setup. When no MUSIC_TRAINER_DESTINATION is set, the
@@ -265,7 +285,7 @@ export async function kickoffMusicTraining(opts: {
       return { started: false, reason: 'could not resolve/create the destination model in the Replicate account (set MUSIC_TRAINER_DESTINATION to override)' };
     }
   }
-  const body = cfg.kind === 'training' ? { destination, input } : { version: cfg.version, input };
+  const body = cfg.kind === 'training' ? { destination, input } : { version, input };
   const res = await fetch(url, {
     method: 'POST',
     headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
@@ -281,7 +301,7 @@ export async function kickoffMusicTraining(opts: {
     started: true,
     trainingId: data.id,
     model: cfg.model,
-    version: cfg.version,
+    version,
     kind: cfg.kind,
     destination,
     datasetSize: dataset.size,

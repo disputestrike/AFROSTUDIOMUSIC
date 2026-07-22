@@ -46,6 +46,11 @@ export const MODEL_LICENSES: Readonly<Record<string, ModelLicense>> = {
   ace_step: 'apache-2.0',
   acestep: 'apache-2.0', // hyphen-less trainer slugs (e.g. owner/acestep-1.5-lora)
   yue: 'apache-2.0',
+  // OUR OWN Cog trainer (services/music-trainer): the image pins the ACE-Step
+  // v1 base at build time (cog.yaml clones ace-step/ACE-Step) — same permissive
+  // family as 'acestep' above. Without this entry the slug classified 'unknown'
+  // and every adapter we train was dev-lane-locked (found on the maiden run).
+  'afrohit-music-trainer': 'apache-2.0',
 };
 
 /** Licenses that permit backing COMMERCIAL renders. The list is intentionally

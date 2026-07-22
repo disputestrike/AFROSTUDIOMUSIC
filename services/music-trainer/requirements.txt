@@ -7,7 +7,6 @@
 # gradio kept so `import acestep` never trips on a UI import.
 datasets==3.4.1
 diffusers>=0.33.0
-gradio
 librosa==0.11.0
 loguru==0.7.3
 matplotlib==3.10.1
@@ -25,7 +24,12 @@ tqdm
 transformers==4.50.0
 hangul-romanize==0.1.0
 num2words==0.5.14
-spacy==3.8.4
+# PYDANTIC-1 WORLD (live failure 7bjtwdrh…): cog 0.9.8's runtime is pydantic v1;
+# spacy 3.8's thinc imports pydantic-2-only API (GetCoreSchemaHandler) and the
+# trainer died at import. spacy 3.7.x + thinc 8.2.x run on pydantic 1. gradio
+# dropped for the same reason (v4+ demands pydantic 2; nothing headless uses it).
+pydantic>=1.10,<2
+spacy==3.7.4
 accelerate==1.6.0
 cutlet
 fugashi[unidic-lite]

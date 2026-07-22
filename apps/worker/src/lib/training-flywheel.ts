@@ -1163,6 +1163,11 @@ export async function runTrainingFlywheel(): Promise<FlywheelResult> {
     holdout.exclusions.sourceFamilyIds.has(asset.sourceFamilyId.toLowerCase()) ||
     holdout.exclusions.contentHashes.has(asset.contentFingerprint.toLowerCase());
   const selected: TrainingSource[] = manifest.eligible
+    // NO LOOPS IN THE SONG TRAINER (live run 7bjtwdrh…): 17 of 21 zipped files
+    // were 5-second synth loops the trainer skips as too short — they only
+    // crowd out full-length songs. Materials stay rights-accounted in the
+    // manifest; they just never ride the song-model zip.
+    .filter(asset => !asset.id.startsWith("material:"))
     .map(asset => {
       const source = sources.get(asset.id);
       return source ? { ...asset, ...source } : null;
