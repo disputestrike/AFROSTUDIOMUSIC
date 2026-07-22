@@ -76,6 +76,17 @@ interface AssembleVideoPayload {
 
 /** Per-shot render ceiling (mirrors processors/video.ts MAX_VIDEO_BYTES). */
 const MAX_CLIP_BYTES = 256 * 1024 * 1024;
+/** Lip-sync pass bounds. Lip-sync is one Replicate render per clip and runs
+ *  INSIDE the assemble job. The old code fired every clip's sync at once with a
+ *  10-min download each, so a full video's assemble could run far past the UI's
+ *  ~10-min poll window — the free "Assemble" button looked broken (regression
+ *  from turning lip-sync on for every video, 2026-07-21). Cap the fan-out AND
+ *  give the whole pass a wall-clock budget; any clip we can't reach in time
+ *  keeps its original render (best-effort — a mouth is never worth a stalled
+ *  cut). The teaser cut is short and skips this pass entirely. */
+const LIPSYNC_MAX_CONCURRENCY = 4;
+const LIPSYNC_PASS_BUDGET_MS = 5 * 60_000;
+const LIPSYNC_CLIP_DOWNLOAD_TIMEOUT_MS = 3 * 60_000;
 /** The mastered song — WAV masters of long records are big. */
 const MAX_AUDIO_BYTES = 512 * 1024 * 1024;
 /** Assembled release file ceiling — a full 1080p video of a whole song. */
@@ -83,6 +94,7 @@ const MAX_ASSEMBLY_BYTES = 1024 * 1024 * 1024;
 
 type AssemblyStage =
   | "downloading"
+  | "lip-sync"
   | "normalizing"
   | "concatenating"
   | "muxing"
@@ -185,11 +197,16 @@ export async function processAssembleVideo(p: AssembleVideoPayload) {
     //     shorts are cut FROM this full cut, so they inherit the synced mouths.
     //     First cycle only under the full-song loop law (hooks repeat their
     //     words, so looped hook clips still roughly match).
-    let lipSync: { synced: number; failed: number; estimatedUsd: number } | null =
-      null;
+    let lipSync: {
+      synced: number;
+      failed: number;
+      skipped: number;
+      estimatedUsd: number;
+    } | null = null;
     if (process.env.LIPSYNC_ENABLED !== "0" && p.kind === "full" && workDir) {
+      await stage("lip-sync");
       const syncDir = workDir;
-      lipSync = { synced: 0, failed: 0, estimatedUsd: 0 };
+      lipSync = { synced: 0, failed: 0, skipped: 0, estimatedUsd: 0 };
       const offsets = computeClipAudioOffsets(
         p.clips.map(clip => ({
           slotS: clip.slotS,
@@ -197,46 +214,69 @@ export async function processAssembleVideo(p: AssembleVideoPayload) {
         })),
         ASSEMBLY_XFADE_S
       );
-      await Promise.all(
-        localClips.map(async (clip, index) => {
-          try {
-            const sliceOut = join(syncDir, `sync-slice-${index}.wav`);
-            await sliceAudioWav(
-              audioPath,
-              p.audio.startS + offsets[index]!,
-              clip.slotS,
-              sliceOut
-            );
-            const sliceRef = await uploadBytes({
-              workspaceId: p.workspaceId,
-              kind: "videos/sync-slices",
-              bytes: await readFile(sliceOut),
-              contentType: "audio/wav",
-              ext: "wav",
-            });
-            const result = await lipSyncClip({
-              videoUrl: await resolveAssetForProvider(p.clips[index]!.url, 3600),
-              audioUrl: await resolveAssetForProvider(sliceRef, 3600),
-            });
-            if (result.status !== "succeeded" || !result.videoUrl) {
-              throw new Error(result.error ?? "lip-sync failed");
-            }
-            const syncedBytes = await downloadToBuffer(result.videoUrl, {
-              maxBytes: MAX_CLIP_BYTES,
-              timeoutMs: 10 * 60_000,
-            });
-            if (!syncedBytes.length) throw new Error("empty synced clip");
-            await writeFile(clip.path, syncedBytes);
-            lipSync!.synced += 1;
-            lipSync!.estimatedUsd += clip.slotS * 0.014;
-          } catch (syncError) {
-            lipSync!.failed += 1;
-            console.warn(
-              `[assemble ${p.jobId}] lip-sync kept the original for clip ${index}:`,
-              (syncError as Error).message
-            );
+      // Wall-clock budget for the WHOLE pass, checked before each clip starts.
+      // Guarantees the assemble finishes inside the UI's poll window even if
+      // Replicate is slow: clips we cannot reach in time keep their original.
+      const deadline = Date.now() + LIPSYNC_PASS_BUDGET_MS;
+      const syncOneClip = async (clip: AssemblyTimelineClip, index: number) => {
+        if (Date.now() >= deadline) {
+          lipSync!.skipped += 1;
+          return;
+        }
+        try {
+          const sliceOut = join(syncDir, `sync-slice-${index}.wav`);
+          await sliceAudioWav(
+            audioPath,
+            p.audio.startS + offsets[index]!,
+            clip.slotS,
+            sliceOut
+          );
+          const sliceRef = await uploadBytes({
+            workspaceId: p.workspaceId,
+            kind: "videos/sync-slices",
+            bytes: await readFile(sliceOut),
+            contentType: "audio/wav",
+            ext: "wav",
+          });
+          const result = await lipSyncClip({
+            videoUrl: await resolveAssetForProvider(p.clips[index]!.url, 3600),
+            audioUrl: await resolveAssetForProvider(sliceRef, 3600),
+          });
+          if (result.status !== "succeeded" || !result.videoUrl) {
+            throw new Error(result.error ?? "lip-sync failed");
           }
-        })
+          const syncedBytes = await downloadToBuffer(result.videoUrl, {
+            maxBytes: MAX_CLIP_BYTES,
+            timeoutMs: LIPSYNC_CLIP_DOWNLOAD_TIMEOUT_MS,
+          });
+          if (!syncedBytes.length) throw new Error("empty synced clip");
+          await writeFile(clip.path, syncedBytes);
+          lipSync!.synced += 1;
+          lipSync!.estimatedUsd += clip.slotS * 0.014;
+        } catch (syncError) {
+          lipSync!.failed += 1;
+          console.warn(
+            `[assemble ${p.jobId}] lip-sync kept the original for clip ${index}:`,
+            (syncError as Error).message
+          );
+        }
+      };
+      // Fixed-size worker pool: a shared cursor over the clips, N workers pull
+      // the next index until the list is exhausted. Bounds the fan-out to
+      // Replicate (was: one prediction per clip, all in flight at once).
+      let cursor = 0;
+      const runWorker = async () => {
+        for (;;) {
+          const index = cursor++;
+          if (index >= localClips.length) return;
+          await syncOneClip(localClips[index]!, index);
+        }
+      };
+      await Promise.all(
+        Array.from(
+          { length: Math.min(LIPSYNC_MAX_CONCURRENCY, localClips.length) },
+          () => runWorker()
+        )
       );
       lipSync.estimatedUsd = Math.round(lipSync.estimatedUsd * 1000) / 1000;
     }
