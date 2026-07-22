@@ -59,10 +59,15 @@ jobs:
       - name: Push trainer
         working-directory: services/music-trainer
         env:
-          # cog reads REPLICATE_API_TOKEN directly for r8.im pushes — no
-          # `cog login` (that wants a separate CLI auth token, not the API token).
           REPLICATE_API_TOKEN: ${{ secrets.REPLICATE_API_TOKEN }}
+        # The env var covers cog's API calls, but the r8.im DOCKER REGISTRY push
+        # needs the stored login — without it the layer upload dies with
+        # "authorization failed" AFTER a full 30-min build (proven twice).
+        # `cog login --token-stdin` with the API token is Replicate's own
+        # documented CI flow.
         run: |
+          cog --version
+          echo "$REPLICATE_API_TOKEN" | cog login --token-stdin
           cog push r8.im/${{ steps.model.outputs.owner }}/afrohit-music-trainer
       - name: Next steps
         run: |
