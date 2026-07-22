@@ -255,7 +255,7 @@ export async function processGenerateVisuals(
           width: VISUAL_WIDTH,
           height: VISUAL_HEIGHT,
         });
-        stored += await storeVisual({
+        await storeVisual({
           songId: p.songId,
           workspaceId: p.workspaceId,
           kind: "lyric_video",
@@ -278,6 +278,7 @@ export async function processGenerateVisuals(
             costUsd: 0,
           },
         });
+        stored += 1;
       } catch (err) {
         failures.push("lyric_video");
         log.warn({ err, songId: p.songId }, "lyric video failed (batch continues)");
@@ -297,7 +298,7 @@ export async function processGenerateVisuals(
         width: VISUAL_WIDTH,
         height: VISUAL_HEIGHT,
       });
-      stored += await storeVisual({
+      await storeVisual({
         songId: p.songId,
         workspaceId: p.workspaceId,
         kind: "visualizer",
@@ -315,18 +316,20 @@ export async function processGenerateVisuals(
           costUsd: 0,
         },
       });
+      stored += 1;
     } catch (err) {
       failures.push("visualizer");
       log.warn({ err, songId: p.songId }, "visualizer failed (batch continues)");
     }
 
-    // --- 3) THUMBNAILS (3-5 CTR stills off the cover) ---
+    // --- 3) THUMBNAILS (3-5 CTR stills off the cover, incl. the branded POSTER) ---
     const requests: ThumbnailRenderRequest[] = thumbVariants.map((v) => ({
       id: v.id,
       text: v.text,
       crop: v.crop,
       textPos: v.textPos,
       accent: v.accent,
+      poster: v.poster,
     }));
     const { ok: thumbOk, failed: thumbFailed } = await renderThumbnails({
       workDir,
@@ -337,9 +340,15 @@ export async function processGenerateVisuals(
       width: THUMB_WIDTH,
       height: THUMB_HEIGHT,
     });
+    // The canonical branded poster — the clean cover + the big "AFRO" mark —
+    // resolved as the thumbnails store, then pinned to Song.posterUrl below so
+    // the OG image, the video's poster attribute, and every social post share
+    // one branded identity. Fail-soft: no poster row → the release falls back to
+    // the bare cover (never a failed render).
+    let posterUrl: string | null = null;
     for (const thumb of thumbOk) {
       try {
-        stored += await storeVisual({
+        const url = await storeVisual({
           songId: p.songId,
           workspaceId: p.workspaceId,
           kind: "thumbnail",
@@ -353,15 +362,29 @@ export async function processGenerateVisuals(
             variant: thumb.id,
             crop: thumb.request.crop,
             textPos: thumb.request.textPos,
-            edit: "ffmpeg-cover-drawtext",
+            // The canonical branded poster carries meta.poster so the visuals UI
+            // (and any query) can find the before-play still directly.
+            poster: !!thumb.request.poster,
+            edit: thumb.request.poster ? "ffmpeg-cover-poster-mark" : "ffmpeg-cover-drawtext",
             costUsd: 0,
           },
         });
+        stored += 1;
+        if (thumb.request.poster) posterUrl = url;
       } catch (err) {
         log.warn({ err, songId: p.songId, variant: thumb.id }, "a thumbnail could not be stored (batch continues)");
       }
     }
     if (thumbFailed.length) failures.push(`thumbnails:${thumbFailed.length}`);
+
+    // Pin the branded poster as the song's canonical before-play identity (used
+    // by the release-page OG image, the video poster, and social posts). Never
+    // fatal — a missing poster just leaves the cover as the fallback.
+    if (posterUrl) {
+      await prisma.song
+        .updateMany({ where: { id: p.songId }, data: { posterUrl } })
+        .catch(() => undefined);
+    }
 
     // OPTIONAL AI COVER VARIANTS — reuse the existing image provider + the
     // identity-safe cover prompt (celebrity names stripped, no real likeness).
@@ -402,8 +425,9 @@ export async function processGenerateVisuals(
   }
 }
 
-/** Upload one rendered asset + file a SongVisual row. Returns 1 on success, 0 on
- *  an empty/failed file (the caller keeps counting the rest — fail-soft). */
+/** Upload one rendered asset + file a SongVisual row. Returns the canonical
+ *  storage ref of the stored visual (so the caller can pin a poster); throws on
+ *  an empty/failed file (the caller's try/catch keeps the batch alive). */
 async function storeVisual(opts: {
   songId: string;
   workspaceId: string;
@@ -413,7 +437,7 @@ async function storeVisual(opts: {
   ext: string;
   aspect: string;
   meta: Record<string, unknown>;
-}): Promise<number> {
+}): Promise<string> {
   const bytes = await readFile(opts.path);
   if (!bytes.length) throw new Error("empty visual file");
   const url = await uploadBytes({
@@ -433,7 +457,7 @@ async function storeVisual(opts: {
       meta: { ...opts.meta, sizeBytes: bytes.length } as never,
     },
   });
-  return 1;
+  return url;
 }
 
 /**

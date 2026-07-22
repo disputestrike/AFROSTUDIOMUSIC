@@ -44,6 +44,14 @@ export class AyrshareAdapter implements DistributionAdapter {
         platforms: [post.platform],
       };
       if (post.mediaUrls.length) body.mediaUrls = post.mediaUrls;
+      // BRANDED POSTER as the post thumbnail — YouTube is the platform whose API
+      // takes a custom video thumbnail (Ayrshare's youTubeOptions.thumbNail), so
+      // a shared upload leads with the AfroHits "AFRO" still. Other platforms
+      // derive their own frame; attaching it only where it's honoured keeps the
+      // payload clean.
+      if (post.posterUrl && post.platform === "youtube") {
+        body.youTubeOptions = { thumbNail: post.posterUrl };
+      }
       if (post.scheduledAt) body.scheduleDate = post.scheduledAt;
       // Business-plan multi-account posting keys off the profile ref.
       if (post.externalRef) body.profileKeys = [post.externalRef];

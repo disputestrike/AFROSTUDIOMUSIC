@@ -24,6 +24,7 @@ import {
   buildLyricVideoArgs,
   buildVisualizerArgs,
   buildThumbnailArgs,
+  buildPosterBrandFilters,
   ensureDisplayFont,
   ffmpegAvailable,
   probeDurationS,
@@ -37,6 +38,9 @@ import {
   THUMB_HEIGHT,
   THUMB_WIDTH,
   WATERMARK_TEXT,
+  WATERMARK_HEIGHT_RATIO,
+  POSTER_MARK_TEXT,
+  POSTER_MARK_HEIGHT_RATIO,
   type ThumbnailRenderRequest,
 } from "../src/lib/ffmpeg";
 import {
@@ -299,6 +303,76 @@ async function main() {
     console.log("[thumb] buildThumbnailArgs: single image edit → 1280x720 still, title+wordmark, clean-cover has wordmark only");
   }
 
+  // --- BRANDED POSTER MARK: the big VEVO-style "AFRO" on the still ----------
+  {
+    // The pure poster-mark builder: one big bottom-left drawtext, from a textfile.
+    const marks = buildPosterBrandFilters({
+      fontPath: "C:/fonts/anton.ttf",
+      textPath: "C:/tmp/afro.txt",
+      width: THUMB_WIDTH,
+      height: THUMB_HEIGHT,
+    });
+    assert.equal(marks.length, 1, "the poster mark is a single drawtext (the brand, not clutter)");
+    const mark = marks[0]!;
+    assert.ok(/textfile='[^']*afro\.txt'/.test(mark), "the mark text rides a textfile (escaping can never break the filter)");
+    const markSize = Math.round(THUMB_HEIGHT * POSTER_MARK_HEIGHT_RATIO);
+    assert.ok(new RegExp(`fontsize=${markSize}`).test(mark), `the mark is ~${(POSTER_MARK_HEIGHT_RATIO * 100).toFixed(0)}% frame height (fontsize ${markSize})`);
+    // VEVO-style bottom-LEFT (x is the small margin, not W-text_w-*), and BIGGER
+    // than the in-video watermark (POSTER_MARK vs WATERMARK height ratio).
+    assert.ok(/:x=\d+:y=H-text_h-\d+/.test(mark), "the mark sits bottom-LEFT (not the watermark's bottom-right)");
+    assert.ok(POSTER_MARK_HEIGHT_RATIO > WATERMARK_HEIGHT_RATIO * 1.5, `the poster mark (${POSTER_MARK_HEIGHT_RATIO}) is far bigger than the in-video watermark (${WATERMARK_HEIGHT_RATIO})`);
+    assert.ok(POSTER_MARK_HEIGHT_RATIO >= 0.09 && POSTER_MARK_HEIGHT_RATIO <= 0.12, "the poster mark height is in the VEVO band (~9–12%)");
+    assert.ok(/fontcolor=white/.test(mark) && /shadowcolor=/.test(mark), "white + drop shadow so it reads over any cover");
+    assert.equal(POSTER_MARK_TEXT, "AFRO", "the poster mark says AFRO — the same identity as the 'afro' watermark, bigger");
+
+    // buildThumbnailArgs({ poster: true }) → the big mark, NO title band/text.
+    const posterArgs = buildThumbnailArgs({
+      output: "/tmp/poster.jpg",
+      coverPath: "C:/tmp/cover.png",
+      gradient: resolveVisualGradient("afrobeats"),
+      fontPath: "C:/fonts/anton.ttf",
+      titleTextPath: "C:/tmp/title.txt", // supplied, but a poster must ignore it
+      watermarkTextPath: "C:/tmp/afro.txt",
+      crop: "center",
+      textPos: "bottom",
+      accent: true,
+      poster: true,
+    });
+    assert.equal(posterArgs.filter(a => a === "-i").length, 1, "the poster is a single cover image edit");
+    assert.ok(posterArgs.includes("-frames:v"), "the poster outputs ONE still frame");
+    const pvf = posterArgs[posterArgs.indexOf("-vf") + 1]!;
+    assert.equal((pvf.match(/drawtext=/g) ?? []).length, 1, "the poster carries ONLY the brand mark — no title, no small wordmark");
+    assert.ok(!/title\.txt/.test(pvf), "the poster ignores the title (clean cover + brand, no clutter)");
+    assert.ok(new RegExp(`fontsize=${markSize}`).test(pvf), "the poster's mark is the big VEVO-size mark");
+    // The poster mark is bigger than a NORMAL thumbnail's small bottom-right wordmark.
+    const normalArgs = buildThumbnailArgs({
+      output: "/tmp/n.jpg", coverPath: "C:/tmp/cover.png", gradient: resolveVisualGradient("afrobeats"),
+      fontPath: "C:/fonts/anton.ttf", titleTextPath: null, watermarkTextPath: "C:/tmp/afro.txt",
+      crop: "center", textPos: "none", accent: false,
+    });
+    const nvf = normalArgs[normalArgs.indexOf("-vf") + 1]!;
+    const posterFont = Number(pvf.match(/fontsize=(\d+)/)![1]);
+    const normalFont = Number(nvf.match(/fontsize=(\d+)/)![1]);
+    assert.ok(posterFont > normalFont, `the poster mark (${posterFont}px) is bigger than a normal thumbnail's wordmark (${normalFont}px)`);
+    console.log(`[poster] buildPosterBrandFilters: one big bottom-left AFRO mark (${posterFont}px vs the ${normalFont}px watermark), poster thumbnail is clean cover + brand only`);
+  }
+
+  // --- PRIMARY POSTER designation: exactly one, always produced ------------
+  {
+    for (const count of [3, 4, 5]) {
+      const variants = planThumbnailVariants({ title: "Oléku", hook: "We dey ball tonight", count });
+      const posters = variants.filter(v => v.poster);
+      assert.equal(posters.length, 1, `count=${count}: exactly ONE branded poster is planned`);
+      const poster = posters[0]!;
+      assert.ok(poster.text === "" && poster.textPos === "none", "the branded poster is a clean cover (no title clutter)");
+      assert.ok(variants.some(v => !v.poster && v.text), `count=${count}: the titled CTR thumbnails are kept too`);
+    }
+    // The poster survives even the smallest set — it is never sliced off.
+    const three = planThumbnailVariants({ title: "T", count: 3 });
+    assert.ok(three.some(v => v.poster), "the branded poster is ALWAYS included, even at the minimum count");
+    console.log("[poster] planThumbnailVariants: exactly one branded poster, always produced (never sliced), titled CTR variants kept");
+  }
+
   // =====================================================================
   // B) SOURCE-SCAN LAWS — the auto-trigger + mirror + registration (pure)
   // =====================================================================
@@ -333,7 +407,26 @@ async function main() {
     // Each asset in its OWN try/catch — one failing never kills the others.
     assert.ok((proc.match(/batch continues/g) ?? []).length >= 2, "each asset fails soft independently (batch continues)");
 
-    console.log("[wire] own-engine/music/master/produce → enqueueGenerateVisuals, visuals.ts mirrors clips, visuals lane registered, processor idempotent + $0 + honest caveat");
+    // BRANDED POSTER wiring: the processor pins the poster + marks it in meta,
+    // fail-soft (a poster problem never fails the visuals build).
+    assert.ok(/poster:\s*v\.poster/.test(proc), "the poster variant flows into the thumbnail render request");
+    assert.ok(/poster:\s*!!thumb\.request\.poster/.test(proc), "the stored thumbnail carries meta.poster (the before-play still is findable)");
+    assert.ok(/if\s*\(thumb\.request\.poster\)\s*posterUrl\s*=\s*url/.test(proc), "the branded poster's canonical url is captured");
+    assert.ok(/data:\s*\{\s*posterUrl\s*\}/.test(proc) && /\.catch\(\(\)\s*=>\s*undefined\)/.test(proc), "Song.posterUrl is pinned fail-soft (missing poster → falls back to the cover)");
+
+    // The release payload + page + social seam all reach for the branded poster.
+    const pub = await readFile("../api/src/routes/public.ts", "utf8");
+    assert.ok(/song\.posterUrl\s*\?\?\s*posterVisualRef/.test(pub), "the release payload resolves the pinned poster (legacy fallback to the poster thumbnail)");
+    assert.ok(/posterUrl:\s*posterUrl\s*\?\?\s*coverUrl/.test(pub), "the release payload returns the branded poster (cover fallback)");
+    const page = await readFile("../web/app/r/[id]/page.tsx", "utf8");
+    assert.ok(/const\s+ogImage\s*=\s*r\.posterUrl\s*\?\?\s*r\.coverUrl/.test(page), "the OG/Twitter image is the branded poster (cover fallback) — shared links preview with the AFRO brand");
+    assert.ok(/const\s+videoPoster\s*=\s*r\.posterUrl\s*\?\?\s*r\.coverUrl/.test(page), "the video's poster attribute is the branded poster");
+    const socShared = await readFile("../../packages/shared/src/social-distribution.ts", "utf8");
+    assert.ok(/posterUrl:\s*input\.posterUrl\s*\?\?\s*null/.test(socShared), "every built social post carries the branded poster");
+    const socPub = await readFile("src/processors/social-publish.ts", "utf8");
+    assert.ok(/posterUrl,/.test(socPub) && /song\.posterUrl/.test(socPub), "the publish job resolves + passes the branded poster to the post builder");
+
+    console.log("[wire] own-engine/music/master/produce → enqueueGenerateVisuals, visuals.ts mirrors clips, visuals lane registered, processor idempotent + $0 + honest caveat; branded poster pinned (fail-soft) → OG image + video poster + social posts");
   }
 
   // =====================================================================
@@ -428,10 +521,10 @@ async function main() {
     assert.ok(band.luma > 30, `the audio-reactive waveform is drawn across the frame (centerline luma ${band.luma.toFixed(1)})`);
     console.log("[viz] rendered a real audio-reactive 1080x1920 visualizer (showwaves centerline lit over the cover)");
 
-    // ---- C3) THUMBNAILS: 3-5 real 1280x720 images, title burned ----------
+    // ---- C3) THUMBNAILS: 3-5 real 1280x720 images, title burned + the poster ----
     const variants = planThumbnailVariants({ title: "Oléku", hook: "We dey ball tonight" });
     const requests: ThumbnailRenderRequest[] = variants.map(v => ({
-      id: v.id, text: v.text, crop: v.crop, textPos: v.textPos, accent: v.accent,
+      id: v.id, text: v.text, crop: v.crop, textPos: v.textPos, accent: v.accent, poster: v.poster,
     }));
     const good = await renderThumbnails({
       workDir: dir, coverPath, gradient: resolveVisualGradient("afrobeats"),
@@ -445,12 +538,24 @@ async function main() {
       assert.ok((await stat(t.path)).size > 500, `thumbnail ${t.id} is a real non-empty image`);
     }
     // The bold title band lights up over the dark cover on a titled variant.
-    const titled = good.ok.find(t => t.request.textPos === "bottom");
+    const titled = good.ok.find(t => t.request.textPos === "bottom" && !t.request.poster);
     if (titled) {
       const band = await imageMeanRgb(titled.path, { w: 900, h: 140, x: 190, y: 560 });
       assert.ok(band.luma > 15, `the thumbnail title is burned in (band luma ${band.luma.toFixed(1)})`);
     }
-    console.log(`[thumb] rendered ${good.ok.length} real 1280x720 thumbnail images, title burned over the cover`);
+    // ---- C3b) THE BRANDED POSTER: the big "AFRO" mark lit bottom-LEFT ------
+    const poster = good.ok.find(t => t.request.poster);
+    assert.ok(poster, "the branded poster thumbnail was produced");
+    // The white AFRO mark lights the bottom-LEFT over the dark cover, while the
+    // bottom-RIGHT (no small wordmark on a poster) stays the dark cover — proof
+    // the mark is present, prominent, and VEVO-positioned left.
+    const markL = await imageMeanRgb(poster!.path, { w: 260, h: 110, x: 58, y: 560 });
+    const cornerR = await imageMeanRgb(poster!.path, { w: 260, h: 110, x: 962, y: 560 });
+    assert.ok(markL.luma > 35, `the big AFRO poster mark is burned bottom-left (mark luma ${markL.luma.toFixed(1)})`);
+    assert.ok(markL.luma > cornerR.luma + 8, `the mark is bottom-LEFT (left ${markL.luma.toFixed(1)} > right ${cornerR.luma.toFixed(1)}), not the watermark's bottom-right`);
+    // The poster is a CLEAN cover: no title band mid-frame like the CTR variants.
+    console.log(`[poster] rendered the branded poster still: big AFRO mark lit bottom-left (luma ${markL.luma.toFixed(1)} vs right ${cornerR.luma.toFixed(1)}) — clean cover, no title clutter`);
+    console.log(`[thumb] rendered ${good.ok.length} real 1280x720 thumbnail images (title burned + the branded poster)`);
 
     // ---- C4) FAIL-SOFT BATCH: one asset errors, the batch returns the rest.
     // Pre-create a DIRECTORY at exactly one thumbnail's output path so that ONE
@@ -475,6 +580,28 @@ async function main() {
       console.log(`[thumb] FAIL-SOFT batch: 1 poisoned render failed, the other ${mixed.ok.length} still came back (no throw)`);
     } finally {
       await rm(dir2, { recursive: true, force: true }).catch(() => {});
+    }
+
+    // ---- C4b) THE POSTER ITSELF is fail-soft: poison the branded poster and
+    //           the rest of the set still comes back — poster branding NEVER
+    //           fails the visuals build (the processor just leaves posterUrl null).
+    {
+      const posterIdx = requests.findIndex(r => r.poster);
+      assert.ok(posterIdx >= 0, "the branded poster is in the request set");
+      const dir3 = await mkdtemp(join(tmpdir(), "visuals-poster-fail-"));
+      try {
+        await mkdir(join(dir3, `thumb-${posterIdx}-${requests[posterIdx]!.id}.jpg`));
+        const mixed = await renderThumbnails({
+          workDir: dir3, coverPath, gradient: resolveVisualGradient("afrobeats"),
+          fontPath, requests, width: THUMB_WIDTH, height: THUMB_HEIGHT,
+        });
+        assert.ok(mixed.failed.some(f => f.id === requests[posterIdx]!.id), "the poisoned POSTER failed (isolated)");
+        assert.ok(!mixed.ok.some(t => t.request.poster), "no poster came back from the poisoned run");
+        assert.ok(mixed.ok.length >= 3, "FAIL-SOFT: a poster failure never kills the other thumbnails");
+        console.log("[poster] FAIL-SOFT: the poster render failing leaves the rest intact (poster branding never fails the build)");
+      } finally {
+        await rm(dir3, { recursive: true, force: true }).catch(() => {});
+      }
     }
 
     console.log("test-visuals: PASS");

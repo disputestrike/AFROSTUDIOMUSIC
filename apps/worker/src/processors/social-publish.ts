@@ -73,6 +73,7 @@ export async function processSocialPublish(
         status: true,
         releaseReady: true,
         socialsJson: true,
+        posterUrl: true,
       },
     });
     if (!song) {
@@ -133,6 +134,20 @@ export async function processSocialPublish(
       if (clipUrl) media.push({ kind: "clip", url: clipUrl, durationS: clip.durationS });
     }
 
+    // The BRANDED POSTER (cover + big "AFRO" mark) — the pinned pointer wins; a
+    // legacy song with no pinned poster falls back to its poster-marked
+    // thumbnail. Presigned like every other asset; null → no poster attached.
+    let posterRef = song.posterUrl ?? null;
+    if (!posterRef) {
+      const posterVisual = await prisma.songVisual.findFirst({
+        where: { songId: song.id, kind: "thumbnail", meta: { path: ["poster"], equals: true } },
+        orderBy: { createdAt: "desc" },
+        select: { url: true },
+      });
+      posterRef = posterVisual?.url ?? null;
+    }
+    const posterUrl = await publicMediaUrl(posterRef);
+
     const releaseUrl = process.env.WEB_URL
       ? `${process.env.WEB_URL.split(",")[0]}/r/${song.id}`
       : null;
@@ -143,6 +158,7 @@ export async function processSocialPublish(
       media,
       title: song.title,
       releaseUrl,
+      posterUrl,
     });
     const results = await publishReleaseToSocials({ posts, adapter });
 
@@ -172,6 +188,7 @@ export async function processSocialPublish(
             meta: {
               provider: adapter.provider,
               mediaCount: post.mediaUrls.length,
+              hasPoster: !!post.posterUrl,
               hashtags: post.hashtags,
             } as never,
           },

@@ -1,0 +1,14 @@
+-- BRANDED POSTER (owner, 2026-07-21, VEVO reference): every song/video needs the
+-- ONE permanent branded still shown BEFORE playback — the cover art + a prominent
+-- "AFRO" wordmark — exactly like the VEVO logo sitting on a feed thumbnail. The
+-- auto-visuals pass (generate-visuals) bakes it off the existing cover by cheap
+-- ffmpeg/image EDITS (no new render, $0) as a SongVisual thumbnail carrying
+-- meta.poster=true, and pins the canonical private storage ref here.
+--
+-- Song.posterUrl is the ONE canonical pointer the release page (OG/Twitter image
+-- + the video's poster attribute) and social distribution use, so a shared link
+-- previews with the Afro brand and every post carries the branded image. Like
+-- coverUrl it is a private s3:// reference, always presigned before it reaches a
+-- client. Nullable — legacy songs (and any song whose poster never rendered)
+-- simply fall back to the bare cover.
+ALTER TABLE "Song" ADD COLUMN "posterUrl" TEXT;

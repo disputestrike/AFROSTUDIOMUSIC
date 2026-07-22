@@ -640,6 +640,15 @@ model Song {
   // exist) | unavailable (ffmpeg/font absent or every asset failed — the render
   // is never affected). Null = never triggered (legacy songs).
   visualsStatus    String?
+  // BRANDED POSTER (owner, 2026-07-21, VEVO reference): the ONE permanent branded
+  // still people see BEFORE a video plays — the cover + a prominent "AFRO" mark,
+  // baked by the auto-visuals pass (generate-visuals) as a SongVisual thumbnail
+  // with meta.poster=true, and pinned here as the canonical pointer. Like
+  // coverUrl this is a private storage ref (s3://...), ALWAYS presigned before it
+  // reaches a client. It is the video's poster/thumbnail, the release-page OG
+  // image, and the social post image — one branded identity across all socials.
+  // Null falls back to coverUrl (legacy songs / a poster that never rendered).
+  posterUrl        String?
   createdAt        DateTime   @default(now()) @db.Timestamptz(6)
 
   workspace           Workspace            @relation(fields: [workspaceId], references: [id], onDelete: Cascade)

@@ -125,6 +125,9 @@ installFakePrisma({
   songVisual: [
     { id: 'sv1', songId: 'song-pub', kind: 'visualizer', url: S('visuals/vis.mp4'), createdAt: now },
     { id: 'sv2', songId: 'song-pub', kind: 'lyric_video', url: S('visuals/lyric.mp4'), createdAt: now },
+    // The BRANDED POSTER (cover + big "AFRO" mark), marked meta.poster — a legacy
+    // song with no pinned Song.posterUrl still resolves its poster from here.
+    { id: 'svP', songId: 'song-pub', kind: 'thumbnail', url: S('visuals/poster.jpg'), meta: { poster: true }, aspect: '16:9', createdAt: now },
     { id: 'sv3', songId: 'song-inst', kind: 'visualizer', url: S('visuals/inst-vis.mp4'), createdAt: now },
   ],
   songClip: [
@@ -165,6 +168,7 @@ assert.equal(r.isrc, 'US-ABC-26-00001', 'public-safe ISRC');
 // ---- (d) every asset URL is a presigned public URL -------------------------
 for (const [name, u] of [
   ['coverUrl', r.coverUrl],
+  ['posterUrl', r.posterUrl],
   ['audioUrl', r.audioUrl],
   ['musicVideoUrl', r.musicVideoUrl],
   ['visualizerUrl', r.visualizerUrl],
@@ -175,6 +179,10 @@ for (const [name, u] of [
 }
 // The per-song cover (song.coverUrl) wins over the legacy project cover.
 assert.ok(r.coverUrl.includes('cover/pub.jpg'), 'per-song cover is served, not the project fallback');
+// The BRANDED POSTER (VEVO-style before-play still) is served as posterUrl — the
+// OG/Twitter image + the video's poster. Resolved from the meta.poster SongVisual
+// here (no pinned Song.posterUrl), presigned, distinct from the bare cover.
+assert.ok(r.posterUrl.includes('visuals/poster.jpg'), 'the branded poster is served as posterUrl (meta.poster SongVisual)');
 
 // ---- (c) NOTHING private is in the payload ---------------------------------
 const raw = JSON.stringify(r);
@@ -195,7 +203,7 @@ for (const bad of [
 // Only the whitelisted keys leave the API — nothing internal rides along.
 assert.deepEqual(
   Object.keys(r).sort(),
-  ['artist', 'audioUrl', 'clips', 'coverUrl', 'genre', 'hook', 'id', 'isrc', 'lyricVideoUrl', 'lyrics', 'musicVideoUrl', 'story', 'title', 'visualizerUrl'].sort(),
+  ['artist', 'audioUrl', 'clips', 'coverUrl', 'genre', 'hook', 'id', 'isrc', 'lyricVideoUrl', 'lyrics', 'musicVideoUrl', 'posterUrl', 'story', 'title', 'visualizerUrl'].sort(),
   'exactly the public fields, no more',
 );
 

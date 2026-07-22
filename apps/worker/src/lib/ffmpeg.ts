@@ -3579,6 +3579,56 @@ export type ThumbnailTextPos = 'bottom' | 'top' | 'center' | 'none';
 /** Title font size for a thumbnail (fraction of the 720-tall frame). */
 export const THUMB_FONT_RATIO = 0.11; // ~79px
 
+// ---------------------------------------------------------------------------
+// BRANDED POSTER MARK (owner, 2026-07-21, VEVO reference) — the PERMANENT brand
+// mark baked onto the POSTER/THUMBNAIL still people see BEFORE a video plays,
+// like the VEVO logo on a feed thumbnail. This is DISTINCT from the in-video
+// watermark (buildBrandWatermarkFilters, untouched): that small ~4.5% wordmark
+// rides the moving video; THIS is a big, prominent mark on the still image that
+// becomes the poster/OG/social image. Same 'afro' identity + same Anton font as
+// the watermark, just MUCH bigger (~11% frame height vs 4.5%) and on the poster.
+// ---------------------------------------------------------------------------
+
+/** The poster's brand text — the SAME 'afro' identity as the in-video watermark,
+ *  set in the display caps the mark reads best in (VEVO-style, prominent). */
+export const POSTER_MARK_TEXT = 'AFRO';
+/** Poster mark height as a fraction of the frame — ~11%, comfortably bigger than
+ *  the in-video watermark's 4.5% so it reads at feed-thumbnail size. */
+export const POSTER_MARK_HEIGHT_RATIO = 0.11;
+/** Poster mark inset from the bottom-left corner (fraction of frame width). */
+export const POSTER_MARK_MARGIN_RATIO = 0.045;
+
+/**
+ * PURE (unit-testable): the drawtext filter(s) for the big bottom-LEFT "AFRO"
+ * poster mark. White, bold, with a strong drop shadow and a subtle backing box
+ * so it reads on ANY cover — dark or bright — while still looking like a logo,
+ * not a caption. Bottom-LEFT deliberately: the in-video watermark owns the
+ * bottom-RIGHT, so a poster reusing this mark never collides with it. The text
+ * rides a textfile exactly like the watermark/credit builders, so escaping can
+ * never break the filtergraph.
+ */
+export function buildPosterBrandFilters(opts: {
+  fontPath: string;
+  /** A written textfile whose content is POSTER_MARK_TEXT ('AFRO'). */
+  textPath: string;
+  width: number;
+  height: number;
+}): string[] {
+  const escape = (p: string) => p.replace(/\\/g, '/').replace(/:/g, '\\:');
+  const font = escape(opts.fontPath);
+  const text = escape(opts.textPath);
+  const margin = Math.round(opts.width * POSTER_MARK_MARGIN_RATIO);
+  const size = Math.round(opts.height * POSTER_MARK_HEIGHT_RATIO);
+  const boxBorder = Math.round(size * 0.22);
+  return [
+    `drawtext=fontfile='${font}':textfile='${text}'` +
+      `:fontcolor=white:fontsize=${size}` +
+      `:x=${margin}:y=H-text_h-${margin}` +
+      `:box=1:boxcolor=black@0.28:boxborderw=${boxBorder}` +
+      `:shadowcolor=black@0.65:shadowx=3:shadowy=3`,
+  ];
+}
+
 /**
  * PURE (unit-testable): the FULL single-invocation argv for ONE thumbnail image
  * — the cover (or gradient) cropped at the variant's anchor, a legibility scrim,
@@ -3593,10 +3643,16 @@ export function buildThumbnailArgs(opts: {
   fontPath: string;
   /** null / textPos 'none' → the text-free clean-cover variant. */
   titleTextPath: string | null;
+  /** A written textfile: the mark's content — 'afro' (small watermark) for a
+   *  normal thumbnail, 'AFRO' (POSTER_MARK_TEXT) when `poster` is set. */
   watermarkTextPath: string;
   crop: ThumbnailCrop;
   textPos: ThumbnailTextPos;
   accent: boolean;
+  /** POSTER variant (the branded still shown before playback): the big VEVO-
+   *  style "AFRO" mark bottom-LEFT instead of the small bottom-right wordmark,
+   *  and NO title (a clean cover + brand). */
+  poster?: boolean;
   width?: number;
   height?: number;
 }): string[] {
@@ -3613,6 +3669,34 @@ export function buildThumbnailArgs(opts: {
       ? `scale=${W}:${H}:force_original_aspect_ratio=increase,crop=${W}:${H}:${cropXY[opts.crop]},setsar=1`
       : `scale=${W}:${H},setsar=1`,
   ];
+  // BRANDED POSTER: the clean cover + the big "AFRO" mark, no title clutter —
+  // the permanent still that stands in for the video in every feed. It carries
+  // ONLY the prominent poster mark (bottom-left), never the small wordmark.
+  if (opts.poster) {
+    filters.push(
+      ...buildPosterBrandFilters({
+        fontPath: opts.fontPath,
+        textPath: opts.watermarkTextPath,
+        width: W,
+        height: H,
+      }),
+    );
+    return [
+      ...visualBackgroundInput({
+        coverPath: opts.coverPath,
+        gradient: opts.gradient,
+        width: W,
+        height: H,
+        fps: ASSEMBLY_FPS,
+        durationS: 1,
+        still: true,
+      }),
+      '-frames:v', '1',
+      '-vf', filters.join(','),
+      '-q:v', '3',
+      opts.output,
+    ];
+  }
   const hasText = !!opts.titleTextPath && opts.textPos !== 'none';
   if (hasText) {
     if (opts.textPos === 'bottom') {
@@ -3669,6 +3753,10 @@ export interface ThumbnailRenderRequest {
   crop: ThumbnailCrop;
   textPos: ThumbnailTextPos;
   accent: boolean;
+  /** The BRANDED POSTER variant: the clean cover + the big "AFRO" mark, no
+   *  title — the permanent still shown before playback (used as the canonical
+   *  poster/OG/social image). Exactly one variant carries this. */
+  poster?: boolean;
 }
 export interface ThumbnailOk {
   id: string;
@@ -3693,10 +3781,12 @@ export async function renderThumbnail(opts: {
 }): Promise<void> {
   const dir = await mkdtemp(join(tmpdir(), 'thumb-'));
   try {
+    // The mark textfile: the big 'AFRO' brand for a poster, else the small
+    // 'afro' wordmark — the SAME identity as the in-video watermark either way.
     const watermarkTextPath = join(dir, 'wordmark.txt');
-    await writeFile(watermarkTextPath, WATERMARK_TEXT);
+    await writeFile(watermarkTextPath, opts.request.poster ? POSTER_MARK_TEXT : WATERMARK_TEXT);
     let titleTextPath: string | null = null;
-    if (opts.request.text?.trim() && opts.request.textPos !== 'none') {
+    if (!opts.request.poster && opts.request.text?.trim() && opts.request.textPos !== 'none') {
       titleTextPath = join(dir, 'title.txt');
       await writeFile(titleTextPath, opts.request.text);
     }
@@ -3711,6 +3801,7 @@ export async function renderThumbnail(opts: {
         crop: opts.request.crop,
         textPos: opts.request.textPos,
         accent: opts.request.accent,
+        poster: opts.request.poster,
         width: opts.width,
         height: opts.height,
       })
