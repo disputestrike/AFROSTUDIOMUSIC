@@ -153,6 +153,27 @@ export const queuePlugin = fp(async function (app) {
   app.decorate('queues', queues);
 
   const dispatchPendingJobs = async () => {
+    // REAP STALE FIRST — ahead of any dispatch. A healthy row dispatches within
+    // one 15s tick, so a row still undispatched 6h+ later is dead (poison payload
+    // / a queue that never came up). Running this BEFORE the dispatch loop is why
+    // it matters: the loop can stall on a poison row, and a reap placed after it
+    // then never runs (exactly why the 22h phantom never cleared). Own try/catch
+    // so a reap error can't abort dispatch.
+    try {
+      await prisma.jobOutbox.updateMany({
+        where: {
+          status: { in: ['PENDING', 'FAILED'] },
+          createdAt: { lt: new Date(Date.now() - 6 * 60 * 60_000) },
+        },
+        data: {
+          status: 'DISPATCHED',
+          dispatchedAt: new Date(),
+          lastError: 'reaped: stale (undispatched > 6h)',
+        },
+      });
+    } catch (error) {
+      app.log.warn({ err: error }, 'job outbox stale-reap failed');
+    }
     const rows = await prisma.jobOutbox.findMany({
       where: {
         status: { in: ['PENDING', 'FAILED'] },
