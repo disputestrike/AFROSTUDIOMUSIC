@@ -7,10 +7,13 @@ import { markFailed, markRunning } from '../lib/jobs';
 import { deleteObjectByUrl, downloadToBuffer, uploadBytes } from '../lib/storage';
 import { assertStoredContentHash } from '../lib/certified-assets';
 import {
+  afroOneVocalOffsetDb,
   ffmpegAvailable,
+  measureAudioBufferQuality,
   measureAudioQuality,
-  mixdown,
   mixdownConsole,
+  mixdownVocalForward,
+  vocalGainDbFromLufs,
   type ConsoleTrack,
 } from '../lib/ffmpeg';
 
@@ -217,13 +220,28 @@ export async function processMix(payload: MixPayload): Promise<void> {
     ]);
     assertStoredContentHash(beatBytes, beat.contentHash, 'mix_source_beat');
     assertStoredContentHash(vocalBytes, vocal.contentHash, 'mix_source_vocal');
-    const mixed = await mixdown({ beat: beatBytes, vocal: vocalBytes, preset: payload.preset });
+    // VOCAL-FORWARD LAW, unified (owner, SHIMIRI 2026-07-22: "the voice is
+    // behind — you can't hear the voice"; measured 9 dB of bass over the vocal
+    // band). The AfroOne singing path already measures both stems and ducks
+    // the bed under the voice (A1/A2); this generic path still summed with
+    // static amix weights and no ducking. Same law everywhere now: measure →
+    // LUFS-match the vocal above the bed → sidechain-duck the bed.
+    const [bedQc, vocalQc] = await Promise.all([
+      measureAudioBufferQuality(beatBytes).catch(() => null),
+      measureAudioBufferQuality(vocalBytes).catch(() => null),
+    ]);
+    const { gainDb, matched } = vocalGainDbFromLufs(
+      bedQc?.integratedLufs ?? null,
+      vocalQc?.integratedLufs ?? null,
+      afroOneVocalOffsetDb()
+    );
+    const mixed = await mixdownVocalForward({ beat: beatBytes, vocal: vocalBytes, vocalGainDb: gainDb });
     await persistSuccess({
       payload,
       songTitle: song.title,
       preset: payload.preset,
       bytes: mixed,
-      notes: `Verified FFmpeg mixdown - beat ${beat.id.slice(-6)}, vocal ${vocal.id.slice(-6)}.`,
+      notes: `Vocal-forward mixdown (vocal ${gainDb >= 0 ? '+' : ''}${gainDb} dB${matched ? ', LUFS-matched' : ', unmeasured stems — 0 dB fallback'}) - beat ${beat.id.slice(-6)}, vocal ${vocal.id.slice(-6)}.`,
       source,
     });
   } catch (error) {
