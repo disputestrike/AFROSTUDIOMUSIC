@@ -269,6 +269,7 @@ function AdminPageInner() {
  * page's Training utilization table a few minutes later.
  */
 const LAKE_TASKS = [
+  { task: 'nightly-compound', label: 'Nightly compound (train now)', what: 'the full nightly pass INCLUDING the training flywheel — sweep rights-clean catalog, zip, fire the fine-tune' },
   { task: 'measure-backfill', label: 'Measure backfill', what: 'deep-measure owned references + beats the ear missed' },
   { task: 'learn-backfill', label: 'Learn backfill', what: 'learn uploaded songs that never got a listen' },
   { task: 'listen-back', label: 'Listen back', what: 're-score the back-catalog; retro-promote QC passes' },
