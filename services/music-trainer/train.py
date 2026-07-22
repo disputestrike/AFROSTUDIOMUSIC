@@ -17,9 +17,9 @@ image-build time. The repo's headless entrypoints are exercised by the first CI
 push run; if its internal API moved, this file fails LOUDLY with the exact
 import/call that broke — never a fake success.
 """
-from cog import BaseModel, Input, Path as CogPath
+import cog
+from cog import BaseModel, Input
 import os
-import shutil
 import subprocess
 import sys
 import tempfile
@@ -28,7 +28,7 @@ from pathlib import Path
 
 
 class TrainingOutput(BaseModel):
-    weights: CogPath
+    weights: cog.Path
 
 
 AUDIO_EXTS = {".wav", ".mp3", ".flac", ".ogg", ".opus"}
@@ -61,7 +61,7 @@ def _conform(src: Path, dst_dir: Path, index: int, max_seg_s: int = 110) -> list
 
 
 def train(
-    dataset_zip: CogPath = Input(description="Zip of rights-clean training audio (flywheel manifest zip)"),
+    dataset_zip: cog.Path = Input(description="Zip of rights-clean training audio (flywheel manifest zip)"),
     method: str = Input(description="lokr (fast, minutes) or lora", default="lokr", choices=["lokr", "lora"]),
     epochs: int = Input(description="Training epochs", default=500, ge=10, le=2000),
     learning_rate: float = Input(description="LR (LoKr default 0.03; use 1e-4 for lora)", default=0.03),
@@ -134,4 +134,4 @@ def train(
         for p in produced:
             z.write(p, p.relative_to(out_dir))
     print(f"[trainer] weights: {weights_zip.stat().st_size} bytes across {len(produced)} file(s)")
-    return TrainingOutput(weights=CogPath(str(weights_zip)))
+    return TrainingOutput(weights=cog.Path(str(weights_zip)))

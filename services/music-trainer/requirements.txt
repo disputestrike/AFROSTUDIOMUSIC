@@ -1,0 +1,6 @@
+torch==2.4.0
+torchaudio==2.4.0
+pytorch-lightning>=2.0
+requests
+soundfile
+librosa
