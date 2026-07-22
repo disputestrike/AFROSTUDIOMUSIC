@@ -1,6 +1,29 @@
-torch==2.4.0
-torchaudio==2.4.0
-pytorch-lightning>=2.0
-requests
-soundfile
-librosa
+# ACE-Step v1 training deps (verbatim from ace-step/ACE-Step requirements.txt).
+# torch/torchaudio/torchvision stay UNPINNED so Cog's cuda:"12.1" pulls matching
+# wheels. gradio kept so `import acestep` never trips on a UI import.
+datasets==3.4.1
+diffusers>=0.33.0
+gradio
+librosa==0.11.0
+loguru==0.7.3
+matplotlib==3.10.1
+numpy
+pypinyin==0.53.0
+pytorch_lightning==2.5.1
+soundfile==0.13.1
+torch
+torchaudio
+torchvision
+tqdm
+transformers==4.50.0
+py3langid==0.3.0
+hangul-romanize==0.1.0
+num2words==0.5.14
+spacy==3.8.4
+accelerate==1.6.0
+cutlet
+fugashi[unidic-lite]
+click
+peft
+tensorboard
+tensorboardX

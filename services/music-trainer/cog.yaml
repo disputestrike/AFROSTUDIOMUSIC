@@ -1,20 +1,26 @@
-# AfroHit MUSIC TRAINER — ACE-Step 1.5 LoKr/LoRA fine-tune as a Replicate
+# AfroHit MUSIC TRAINER — ACE-Step v1 (3.5B, MIT) LoRA fine-tune as a Replicate
 # DESTINATION training. Pushed to r8.im/<owner>/afrohit-music-trainer. The
 # nightly flywheel points MUSIC_TRAINER_MODEL/VERSION here and training finally
 # fires (it has refused nightly since ship — no legal hosted trainer existed:
-# MusicGen is non-commercial; ACE-Step is MIT but has no hosted trainer, so we
+# MusicGen is non-commercial; ACE-Step is MIT but ships no hosted trainer, so we
 # host our own).
+#
+# WHY v1, NOT 1.5: ACE-Step 1.5 pins torch==2.10.0+cu128 (PyTorch-index-only) and
+# builds flash-attn from source, and its training is a FastAPI service, not a CLI —
+# an unbuildable, unwrappable research stack. ACE-Step v1 has clean unpinned
+# torch/torchaudio/torchvision, no flash-attn, and a documented single-file
+# trainer.py LoRA CLI. Permissive license (repo README MIT / setup.py Apache-2.0),
+# same commercial-safe adapter output.
 build:
   gpu: true
   cuda: "12.1"
   python_version: "3.11"
   python_requirements: requirements.txt
   run:
-    - "apt-get update && apt-get install -y ffmpeg git"
-    # ACE-Step declares nano-vllm, which is NOT on PyPI — install from its git
-    # source FIRST so the ACE-Step editable install below can resolve it.
-    - "pip install git+https://github.com/GeeeekExplorer/nano-vllm.git"
-    # Pin the official MIT repo at build time. Bump the ref deliberately.
-    - "git clone https://github.com/ace-step/ACE-Step-1.5 /src/ACE-Step-1.5"
-    - "pip install -e /src/ACE-Step-1.5"
+    - "apt-get update && apt-get install -y ffmpeg git && rm -rf /var/lib/apt/lists/*"
+    # Pin the official MIT repo at build time (shallow — we only need HEAD).
+    - "git clone --depth 1 https://github.com/ace-step/ACE-Step /src/ACE-Step"
+    # --no-deps: every dependency is already pinned in requirements.txt above
+    # (cuda-matched torch included); this only wires `import acestep` onto the path.
+    - "pip install -e /src/ACE-Step --no-deps"
 train: "train.py:train"
