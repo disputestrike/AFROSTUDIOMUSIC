@@ -2510,11 +2510,17 @@ export async function prependLogoSplash(opts: {
  *  VEVO thumbnail — the pipeline generates no poster image today, so the
  *  opening frames stand in honestly. Same font mechanism as the credit. */
 export const WATERMARK_TEXT = 'afro';
-export const WATERMARK_HEIGHT_RATIO = 0.045;
+// VISIBILITY BUMP (owner, 2026-07-22, Vevo side-by-side: "our video is not
+// showing afro"): 4.5% @ 75% white with no shadow disappeared on bright scenes
+// once social re-compression ate the edges. Bigger, near-opaque, and shadowed —
+// the mark must READ on a phone feed, not merely exist.
+export const WATERMARK_HEIGHT_RATIO = 0.065;
 export const WATERMARK_MARGIN_RATIO = 0.025;
-export const WATERMARK_OPACITY = 0.75;
+export const WATERMARK_OPACITY = 0.92;
 export const WATERMARK_THUMB_HEIGHT_RATIO = 0.085;
 export const WATERMARK_THUMB_WINDOW_S = 3;
+/** Drop shadow keeps the wordmark legible over white/bright footage. */
+export const WATERMARK_SHADOW = 'shadowcolor=black@0.45:shadowx=2:shadowy=2';
 
 /** Pure builder (unit-testable): the two drawtext filters — persistent
  *  bottom-right + first-3s bottom-left. Text rides a textfile exactly like
@@ -2535,10 +2541,12 @@ export function buildBrandWatermarkFilters(opts: {
     // Persistent bottom-right — the whole runtime, no enable window.
     `drawtext=fontfile='${font}':textfile='${text}'` +
       `:fontcolor=white@${WATERMARK_OPACITY}:fontsize=${smallSize}` +
+      `:${WATERMARK_SHADOW}` +
       `:x=W-text_w-${margin}:y=H-text_h-${margin}`,
     // Thumbnail-style bottom-left — first WATERMARK_THUMB_WINDOW_S seconds only.
     `drawtext=fontfile='${font}':textfile='${text}'` +
       `:fontcolor=white:fontsize=${thumbSize}` +
+      `:${WATERMARK_SHADOW}` +
       `:x=${margin}:y=H-text_h-${margin}` +
       `:enable='between(t,0,${WATERMARK_THUMB_WINDOW_S})'`,
   ];
@@ -3726,6 +3734,7 @@ export function buildThumbnailArgs(opts: {
   filters.push(
     `drawtext=fontfile='${font}':textfile='${escVisualPath(opts.watermarkTextPath)}'` +
       `:fontcolor=white@${WATERMARK_OPACITY}:fontsize=${wmSize}` +
+      `:${WATERMARK_SHADOW}` +
       `:x=W-text_w-${margin}:y=H-text_h-${margin}`
   );
 
