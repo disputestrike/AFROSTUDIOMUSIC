@@ -1,0 +1,23 @@
+# AfroHit private MUSIC TRAINER — ACE-Step 1.5 LoKr/LoRA fine-tune as a
+# Replicate DESTINATION training. Pushed as r8.im/<owner>/afrohit-music-trainer
+# (private). The nightly flywheel points MUSIC_TRAINER_MODEL/VERSION here and
+# training finally fires (it has refused nightly since ship — no legal trainer
+# existed: MusicGen is non-commercial; ACE-Step is MIT but has no hosted
+# trainer anywhere, so we host our own).
+build:
+  gpu: true
+  cuda: "12.1"
+  python_version: "3.11"
+  python_packages:
+    - "torch==2.4.0"
+    - "torchaudio==2.4.0"
+    - "pytorch-lightning>=2.0"
+    - "requests"
+    - "soundfile"
+    - "librosa"
+  run:
+    # Pin the official MIT repo at build time. Bump the ref deliberately.
+    - "git clone https://github.com/ace-step/ACE-Step-1.5 /src/ACE-Step-1.5"
+    - "pip install -e /src/ACE-Step-1.5"
+    - "apt-get update && apt-get install -y ffmpeg"
+train: "train.py:train"

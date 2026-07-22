@@ -1,0 +1,35 @@
+# Build + push the private ACE-Step music trainer to Replicate.
+# One operator errand: add repo secret REPLICATE_API_TOKEN (Settings → Secrets),
+# then run this workflow (Actions → push-music-trainer → Run workflow).
+# Docker builds happen in CI — never on the dev PC (Docker Desktop is unreliable there).
+name: push-music-trainer
+on:
+  workflow_dispatch:
+    inputs:
+      owner:
+        description: "Replicate account owner (username/org)"
+        required: true
+        default: "disputestrike"
+jobs:
+  push:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install cog
+        run: |
+          sudo curl -o /usr/local/bin/cog -L https://github.com/replicate/cog/releases/latest/download/cog_$(uname -s)_$(uname -m)
+          sudo chmod +x /usr/local/bin/cog
+      - name: Push trainer (private)
+        working-directory: services/music-trainer
+        env:
+          REPLICATE_API_TOKEN: ${{ secrets.REPLICATE_API_TOKEN }}
+        run: |
+          echo "$REPLICATE_API_TOKEN" | cog login --token-stdin
+          cog push r8.im/${{ github.event.inputs.owner }}/afrohit-music-trainer
+      - name: Next steps
+        run: |
+          echo "Trainer pushed. Now on the Railway WORKER service set:"
+          echo "  MUSIC_TRAINER_ENABLED=1"
+          echo "  MUSIC_TRAINER_MODEL=${{ github.event.inputs.owner }}/afrohit-music-trainer"
+          echo "  MUSIC_TRAINER_VERSION=<version hash from the push output above>"
+          echo "The nightly flywheel fires on the next nightly-compound run."
