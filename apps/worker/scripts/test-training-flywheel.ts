@@ -19,29 +19,25 @@ delete process.env.MUSIC_TRAINER_MODEL;
 delete process.env.MUSIC_TRAINER_VERSION;
 delete process.env.MUSIC_TRAINER_EXTRA_INPUT;
 assert(musicTrainerEnabled() === false, 'unarmed: trainer disabled by default (the ONLY spend gate)');
-// The default trainer is LIVE-VERIFIED (sakemin/musicgen-fine-tuner, checked on
-// replicate.com 2026-07-19) — so the operator errand is ONE flag. A verified
-// default is not an armed default: ENABLED=1 still gates every naira.
-const dflt = musicTrainerConfig();
-assert(dflt?.model === 'sakemin/musicgen-fine-tuner', 'default trainer is the live-verified fine-tuner');
-assert(dflt?.version === 'b1ec6490e57013463006e928abc7acd8d623fe3e8321d3092e1231bf006898b1', 'default trainer pins the documented fine-tuning version');
-assert(dflt?.kind === 'training' && dflt?.datasetKey === 'dataset_path', 'default is destination-based with the verified dataset_path input');
-assert(
-  dflt?.extraInput.model_version === 'stereo-melody' &&
-    dflt?.extraInput.batch_size === 8 &&
-    dflt?.extraInput.epochs === 1 &&
-    dflt?.extraInput.updates_per_epoch === 25 &&
-    dflt?.extraInput.drop_vocals === false,
-  'default trainer fine-tunes stereo-melody (32kHz stereo, melody-conditioned) on memory-safe settings'
-);
-// LICENSE LAW (trainlegal): the default MusicGen fine-tuner classifies
-// cc-by-nc, so every adapter it produces is dev-lane-only by the promotion
-// gate — the stereo-melody default is reachable ONLY behind that gate.
-assert(dflt?.license === 'cc-by-nc', 'default MusicGen trainer classifies cc-by-nc (dev lane only)');
+// NO DEFAULT TRAINER (honest, 2026-07-21): no turnkey Apache-2.0 ACE-Step/YuE
+// LoRA fine-tuner exists as a callable Replicate/fal model, and shipping the
+// CC-BY-NC MusicGen fine-tuner as the default caps every result to the dev lane
+// forever ("approve does nothing" in production). So unconfigured → null: an
+// honest refusal, never a fabricated version hash.
+assert(musicTrainerConfig() === null, 'unconfigured trainer refuses (no MODEL/VERSION → null, no fake default)');
+// The APACHE-2.0 unlock: point MODEL/VERSION at a real ace-step/yue trainer and
+// the config classifies apache-2.0 — decideMusicCandidatePromotion then opens
+// the PRODUCTION lane (proven end-to-end in test-real-training.ts).
 process.env.MUSIC_TRAINER_ENABLED = '1';
-process.env.MUSIC_TRAINER_MODEL = 'owner/music-model';
+process.env.MUSIC_TRAINER_MODEL = 'owner/ace-step-lora-trainer';
 process.env.MUSIC_TRAINER_VERSION = 'abc123';
-assert(musicTrainerEnabled() === true && musicTrainerConfig()?.model === 'owner/music-model', 'explicit env overrides the default trainer');
+const apacheCfg = musicTrainerConfig();
+assert(musicTrainerEnabled() === true && apacheCfg?.model === 'owner/ace-step-lora-trainer', 'explicit env configures the trainer');
+assert(apacheCfg?.license === 'apache-2.0', 'an ace-step trainer classifies apache-2.0 (production-lane eligible)');
+assert(apacheCfg?.kind === 'training' && apacheCfg?.datasetKey === 'dataset_zip', 'a real fine-tuner defaults to a destination-based training');
+// A MusicGen trainer may still be set explicitly — but it stays cc-by-nc.
+process.env.MUSIC_TRAINER_MODEL = 'sakemin/musicgen-fine-tuner';
+assert(musicTrainerConfig()?.license === 'cc-by-nc', 'an explicit MusicGen trainer still classifies cc-by-nc (dev lane only)');
 assert(minCorpusSize() >= 1, 'corpus minimum present');
 
 // --- RIGHTS LAW (shared pure code — one law, api + worker) -------------------

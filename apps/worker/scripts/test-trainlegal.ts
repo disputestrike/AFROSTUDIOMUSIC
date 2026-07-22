@@ -433,10 +433,13 @@ async function main() {
   });
   assert.equal(rendered.modelRef, "afrohit/amapiano-adapter:g1g1g1g1g1g1", "providers/music routes renders through the same law");
 
-  // ── trainer default: stereo-melody, cc-by-nc classified ────────────────────
-  const config = musicTrainerConfig();
-  assert.equal(config?.extraInput.model_version, "stereo-melody", "default fine-tune is 32kHz stereo, melody-conditioned");
-  assert.equal(config?.license, "cc-by-nc", "the default trainer carries its non-commercial classification");
+  // ── trainer config: no fake default; an Apache trainer classifies apache-2.0 ─
+  assert.equal(musicTrainerConfig(), null, "unconfigured trainer refuses (no fabricated cc-by-nc default that never reaches production)");
+  process.env.MUSIC_TRAINER_MODEL = "owner/ace-step-lora-trainer";
+  process.env.MUSIC_TRAINER_VERSION = "v1v1v1";
+  assert.equal(musicTrainerConfig()?.license, "apache-2.0", "an explicit ace-step trainer classifies apache-2.0 (production-lane eligible)");
+  delete process.env.MUSIC_TRAINER_MODEL;
+  delete process.env.MUSIC_TRAINER_VERSION;
 
   // ── (f) AFROREF INGESTION LAW ──────────────────────────────────────────────
   const minimax = afroRefEligibility({ id: "clip-mm", engine: "minimax" });
@@ -523,7 +526,7 @@ async function main() {
   assert.ok(flywheel.includes("MUSIC_DEV_MODEL_SETTING_KEY"), "flywheel persists dev-lane promotions separately");
   assert.ok(flywheel.includes('"promoted_dev"'), "flywheel stamps the dev phase");
   assert.ok(flywheel.includes("parseMusicAudioMetricsReceipt"), "flywheel feeds bound audio receipts into the gate");
-  assert.ok(flywheel.includes('active.lane === "production"'), "production render pointer is lane-enforced");
+  assert.ok(flywheel.includes("activeProductionModelRef("), "production render pointer is lane-enforced via the shared resolver");
   assert.ok(flywheel.includes("resolveTrainedAdapterRefForRender"), "per-genre adapter resolver exists in the worker");
   assert.ok(flywheel.includes('process.env.MUSIC_ADAPTER_ROUTES_ENABLED !== "1"'), "adapter routes are flag-gated OFF");
   const ownEngine = readFileSync(join(root, "apps/worker/src/processors/own-engine.ts"), "utf8");
