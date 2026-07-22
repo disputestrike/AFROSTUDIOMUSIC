@@ -528,6 +528,17 @@ export default function CatalogGrid({ initial }: { initial: SongRow[] }) {
               s => (s.kind ?? "song") === "instrumental" || s.hasInstrumental
             )
           : songs.filter(s => (s.kind ?? "song") === typeFilter);
+  // LIVE COUNTS ON THE CHIPS (owner: "I should see total songs (1000),
+  // instrumentals (12)…"): same predicates as the filters above, so the number
+  // on a chip ALWAYS equals what clicking it shows. Recounts when Show All
+  // reveals hidden rows.
+  const typeCounts: Record<"all" | "song" | "instrumental" | "film_sound" | "with_video", number> = {
+    all: songs.length,
+    song: songs.filter(s => (s.kind ?? "song") === "song").length,
+    instrumental: songs.filter(s => (s.kind ?? "song") === "instrumental" || s.hasInstrumental).length,
+    film_sound: songs.filter(s => (s.kind ?? "song") === "film_sound").length,
+    with_video: songs.filter(s => s.video || (s.videoScenesReady ?? 0) > 0).length,
+  };
   const [openId, setOpenId] = useState<string | null>(null);
   const [busy, setBusy] = useState<string>(""); // `${id}:${action}`
   const [toast, setToast] = useState<string>("");
@@ -2804,7 +2815,7 @@ export default function CatalogGrid({ initial }: { initial: SongRow[] }) {
                   : "border-white/15 text-slate-400 hover:bg-white/10"
               }`}
             >
-              {label}
+              {label} ({typeCounts[key]})
             </button>
           ))}
         </div>
