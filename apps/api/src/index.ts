@@ -34,7 +34,7 @@ import {
   initObservability,
   sanitizeRequestUrl,
 } from "./lib/observability";
-import { assertStorageConfiguration } from "./lib/storage";
+import { assertStorageConfiguration, ensureBucketCors } from "./lib/storage";
 import {
   publicRuntimeReadiness,
   runtimeReadinessReport,
@@ -253,6 +253,9 @@ async function bootstrap() {
   assertProductionRuntimeSafety(process.env);
   assertSecretConfiguration();
   assertStorageConfiguration();
+  // Set the bucket's CORS so direct browser→R2 presigned uploads work
+  // ("bring a finished song"). Fire-and-forget + fail-soft — never blocks boot.
+  void ensureBucketCors();
   if (process.env.ENCRYPTION_KEY) {
     const migrated = await migratePlaintextWorkspaceSecrets();
     if (migrated)

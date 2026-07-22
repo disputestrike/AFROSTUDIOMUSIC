@@ -2,6 +2,7 @@ import {
   DeleteObjectCommand,
   GetObjectCommand,
   HeadObjectCommand,
+  PutBucketCorsCommand,
   PutObjectCommand,
   S3Client,
 } from "@aws-sdk/client-s3";
@@ -86,6 +87,58 @@ function client(): S3Client {
         : undefined,
   });
   return storageClient;
+}
+
+/**
+ * BROWSER UPLOAD CORS (owner 2026-07-22: "bring a finished song → upload network
+ * error"). Direct browser→R2 presigned PUTs were failing with a generic network
+ * error while a server-side curl PUT of the same file succeeded — the classic
+ * signature of a bucket with no CORS allowing browser PUT. All songs so far were
+ * GENERATED (server-side), so this browser-PUT path was never exercised. The app
+ * holds the R2 credentials, so it sets its OWN bucket CORS at boot rather than
+ * depending on a manual Cloudflare dashboard step. Idempotent, fail-soft — a
+ * CORS-set failure (e.g. a provider that doesn't support PutBucketCors) never
+ * blocks boot; the log says so. Allowed origins come from WEB_URL + the known
+ * web hosts + localhost for dev.
+ */
+export async function ensureBucketCors(): Promise<void> {
+  try {
+    if (!(process.env.S3_BUCKET || process.env.R2_BUCKET)) return;
+    const origins = [
+      process.env.WEB_URL,
+      process.env.WEB_ORIGIN,
+      "https://afrohitweb-production.up.railway.app",
+      "http://localhost:3000",
+      "http://localhost:3001",
+    ]
+      .map((o) => o?.replace(/\/+$/, ""))
+      .filter((o): o is string => !!o);
+    const allowedOrigins = [...new Set(origins)];
+    await client().send(
+      new PutBucketCorsCommand({
+        Bucket: bucket,
+        CORSConfiguration: {
+          CORSRules: [
+            {
+              AllowedOrigins: allowedOrigins,
+              AllowedMethods: ["PUT", "GET", "HEAD"],
+              AllowedHeaders: ["*"],
+              ExposeHeaders: ["ETag"],
+              MaxAgeSeconds: 3600,
+            },
+          ],
+        },
+      })
+    );
+    console.log(
+      `[storage] bucket CORS ensured for browser uploads (${allowedOrigins.length} origin(s))`
+    );
+  } catch (err) {
+    console.warn(
+      "[storage] could not set bucket CORS (browser uploads may fail; set it in the R2 dashboard):",
+      (err as Error)?.message
+    );
+  }
 }
 
 export async function presignUpload(opts: {
