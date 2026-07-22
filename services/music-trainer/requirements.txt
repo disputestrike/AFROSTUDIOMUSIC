@@ -6,7 +6,10 @@
 # separate CLI auth token). numpy<2: torch 2.3-era wheels crash on numpy 2.x.
 # gradio kept so `import acestep` never trips on a UI import.
 datasets==3.4.1
-diffusers>=0.33.0
+# 0.33.1 exactly (run d4jw2m5w… failed): newer diffusers imports
+# torch.nn.attention.flex_attention — a torch 2.5 API; this image is the
+# cog-0.9.8 matrix ceiling torch 2.3. ACE-Step v1 needs >=0.33.0; 0.33.1 is it.
+diffusers==0.33.1
 librosa==0.11.0
 loguru==0.7.3
 matplotlib==3.10.1
