@@ -475,7 +475,7 @@ function TrainingCandidatesCard() {
           // The score WON — but the base model's license (non-commercial /
           // unknown) confines it to the isolated dev lane; it can never back a
           // paying render. This is why "approve did nothing" on a MusicGen base.
-          ? `BLOCKED from production — base model is ${r.license ?? 'non-commercial'}; the adapter won the isolated DEV lane (${r.devModelRef ?? '—'}) but a non-commercial base can NEVER back a production render. Set MUSIC_TRAINER_MODEL to an Apache-2.0 trainer (ACE-Step / YuE) to reach production. ${r.licenseReceipt ?? ''}`
+          ? `BLOCKED from production — base model is ${r.license ?? 'non-commercial'}; the adapter won the isolated DEV lane (${r.devModelRef ?? '—'}) but a non-commercial base can NEVER back a production render. Set MUSIC_TRAINER_MODEL to an Apache-2.0-licensed trainer to reach production (see .env.example). ${r.licenseReceipt ?? ''}`
           : `HELD — ${r.reason}. Active model unchanged (${r.activeModelRef ?? 'none'}).`);
       await load();
     } catch (e) {
