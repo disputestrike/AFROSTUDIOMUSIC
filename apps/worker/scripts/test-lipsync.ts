@@ -47,8 +47,8 @@ const assemble = readFileSync(
 );
 assert.match(
   assemble,
-  /process\.env\.LIPSYNC_ENABLED === "1" && p\.kind === "full"/,
-  "flag-gated and full-cut only — never spends until the operator arms it"
+  /process\.env\.LIPSYNC_ENABLED !== "0" && p\.kind === "full"/,
+  "ON by default (owner order) and full-cut only — LIPSYNC_ENABLED=0 disables it"
 );
 assert.match(
   assemble,
