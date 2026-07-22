@@ -135,7 +135,9 @@ export function ReferenceListen({ projectId }: { projectId: string }) {
       const { jobId } = await api.post<{ jobId: string }>(`/projects/${projectId}/analyze`, {
         url: publicUrl,
         factsOnly: fullRightsConfirmed ? undefined : true,
-        rightsConfirmed: fullRightsConfirmed ? true : undefined,
+        // analyzeAudioSchema wants the rights OBJECT (a `rightsConfirmed` boolean
+        // is rejected by .strict()). Full-rights branch = expression-level listen.
+        rightsConfirmation: fullRightsConfirmed ? { version: 1, confirmed: true } : undefined,
       });
       const p = await poll(jobId);
       if (!p) {

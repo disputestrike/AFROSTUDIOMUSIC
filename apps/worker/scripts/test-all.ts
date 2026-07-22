@@ -335,6 +335,7 @@ async function runOfflineTests(): Promise<void> {
     ["Feature runtime readiness", "test-config-readiness.ts"],
     ["Video provider contracts", "test-video-providers.ts"],
     ["Video engine tiers (class wall + payloads)", "test-video-engine-tiers.ts"],
+    ["Upload rights contract (every bring-your-own caller)", "test-upload-rights-contract.ts"],
     ["Likeness laws (consent/photos/status)", "test-likeness-laws.ts"],
     ["Video shot billing", "test-video-storyboard.ts"],
     ["Video class pricing + render-all parity", "test-video-pricing.ts"],

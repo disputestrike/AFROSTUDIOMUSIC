@@ -59,7 +59,7 @@ export function FlagshipBridge({ songId, projectId, onClose, onDone }: Props) {
     setMsg('Uploading your file…');
     try {
       const { key } = await api.uploadToStorage(file, 'beat');
-      await api.post(`/projects/${projectId}/mixes/upload`, { key, songId, autoMaster: true });
+      await api.post(`/projects/${projectId}/mixes/upload`, { key, songId, autoMaster: true, rightsConfirmation: { version: 1, confirmed: true } });
       setPhase('done');
       setMsg('Got it — mastering + running Will-it-hit now. It updates in your Catalog in ~1 min.');
       onDone?.();

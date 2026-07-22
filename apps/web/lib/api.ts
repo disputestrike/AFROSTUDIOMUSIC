@@ -114,7 +114,15 @@ export function useApi() {
         .toLowerCase()
         .replace(/[^a-z0-9]/g, '')
         .slice(0, 8) || 'bin';
-      const contentType = file.type || 'application/octet-stream';
+      // Some browsers leave file.type EMPTY for .flac/.aiff/.wav — then the
+      // presign's audio-only content-type check rejects 'application/octet-stream'
+      // and the upload dies before it starts. Derive the type from the extension.
+      const EXT_MIME: Record<string, string> = {
+        wav: 'audio/wav', mp3: 'audio/mpeg', flac: 'audio/flac',
+        aiff: 'audio/aiff', aif: 'audio/aiff', m4a: 'audio/mp4',
+        aac: 'audio/aac', ogg: 'audio/ogg', opus: 'audio/opus',
+      };
+      const contentType = file.type || EXT_MIME[ext] || 'application/octet-stream';
       const { url, key, assetRef, playbackUrl } = await apiFetch<{
         url: string;
         key: string;

@@ -59,6 +59,9 @@ export function StudioUpload({ projectId }: { projectId: string }) {
         instrumental: kind === 'instrumental',
         ...(bpm ? { bpm: Number(bpm) } : {}),
         ...(keySig ? { keySignature: keySig } : {}),
+        // "Bring your own audio" is an ownership-premised flow; attachBeatUploadSchema
+        // requires this rights confirmation (.strict) — omitting it hard-400s.
+        rightsConfirmation: { version: 1, confirmed: true },
       });
       set(kind, { kind: 'uploading', msg: `Checking the ${kind} before it enters the mixer…` });
       await waitForQc(queued.jobId);
@@ -74,7 +77,7 @@ export function StudioUpload({ projectId }: { projectId: string }) {
     set('song', { kind: 'uploading', pct: 0 });
     try {
       const { key } = await api.uploadToStorage(file, 'reference', (f) => set('song', { kind: 'uploading', pct: Math.round(f * 100) }));
-      await api.post(`/projects/${projectId}/mixes/upload`, { key, title: baseName(file.name), autoMaster: true, masterPreset: 'afro_stream_-9' });
+      await api.post(`/projects/${projectId}/mixes/upload`, { key, title: baseName(file.name), autoMaster: true, masterPreset: 'afro_stream_-9', rightsConfirmation: { version: 1, confirmed: true } });
       set('song', { kind: 'done', msg: 'Song uploaded — mastering to streaming loudness now. Refresh Masters shortly.' });
       router.refresh();
     } catch (e) {
@@ -131,6 +134,8 @@ export function StudioUpload({ projectId }: { projectId: string }) {
         ...(importKind === 'vocal' ? { isolationConfirmed: true } : {}),
         ...(bpm && (importKind === 'beat' || importKind === 'instrumental') ? { bpm: Number(bpm) } : {}),
         ...(keySig && (importKind === 'beat' || importKind === 'instrumental') ? { keySignature: keySig } : {}),
+        // "Import from a link you own" — importUrlSchema requires this (.strict).
+        rightsConfirmation: { version: 1, confirmed: true },
       });
       if ((r.kind === 'beat' || r.kind === 'instrumental') && r.jobId) {
         set('import', { kind: 'uploading', msg: 'Import stored. Checking the audio before it enters the mixer…' });

@@ -166,6 +166,8 @@ export function BringYourOwn({ onChorusText }: { onChorusText: (lyrics: string) 
         ...(aSong ? { songId: aSong } : {}),
         ...(aBpm ? { bpm: clampAttachBpm(Number(aBpm)) } : {}),
         ...(aKey ? { keySignature: aKey } : {}),
+        // "My beat + my vocals" — attachBeatUploadSchema requires this (.strict).
+        rightsConfirmation: { version: 1, confirmed: true },
       });
       setASong(res.songId);
       setABeat({ kind: 'uploading', msg: 'Checking the exact beat file before it enters the mixer…' });
@@ -263,6 +265,8 @@ export function BringYourOwn({ onChorusText }: { onChorusText: (lyrics: string) 
         title: baseName(file.name),
         ...(bBpm ? { bpm: clampAttachBpm(Number(bBpm)) } : {}),
         ...(bKey ? { keySignature: bKey } : {}),
+        // "My beat — write for it" — attachBeatUploadSchema requires this (.strict).
+        rightsConfirmation: { version: 1, confirmed: true },
       });
       setBBeat({ kind: 'uploading', msg: 'Checking the exact beat file before the studio uses it…' });
       const qcJob = await pollJob(attached.jobId, 24);
@@ -282,7 +286,9 @@ export function BringYourOwn({ onChorusText }: { onChorusText: (lyrics: string) 
     setBProfile(null);
     bReferenceId.current = null;
     try {
-      const { jobId } = await api.post<{ jobId: string }>(`/projects/${pid}/analyze`, { url });
+      // A user's own beat measured to uncopyrightable NUMBERS — the facts-only
+      // branch of analyzeAudioSchema (needs factsOnly:true, no rights prose).
+      const { jobId } = await api.post<{ jobId: string }>(`/projects/${pid}/analyze`, { url, factsOnly: true });
       const j = await pollJob(jobId, 72, (i) =>
         setBAnalyze({ kind: 'listening', msg: `Listening… ${(i + 1) * 5}s (the first run can take a couple of minutes)` })
       );

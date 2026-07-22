@@ -59,7 +59,9 @@ export function MumbleBooth({ onPick }: { onPick: (lyric: string, title: string)
       setStatus('Uploading your take…');
       const { publicUrl } = await api.uploadAudioDirect(src as File, 'reference');
       setStatus('🎧 Hearing the rhythm and the phonetics…');
-      const { jobId } = await api.post<{ jobId: string }>(`/projects/${pid}/analyze`, { url: publicUrl });
+      // The user's own mumble → measured to NUMBERS only (facts-only branch of
+      // analyzeAudioSchema needs factsOnly:true); the { url } body alone 400s.
+      const { jobId } = await api.post<{ jobId: string }>(`/projects/${pid}/analyze`, { url: publicUrl, factsOnly: true });
       let heard = false;
       for (let i = 0; i < 72; i++) {
         await new Promise((r) => setTimeout(r, 5000));

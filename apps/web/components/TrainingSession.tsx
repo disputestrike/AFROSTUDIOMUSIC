@@ -52,7 +52,9 @@ export function TrainingSession({ projectId }: { projectId: string }) {
         url: publicUrl,
         purgeAfter: true,
         factsOnly: ownedCatalog ? undefined : true,
-        rightsConfirmed: ownedCatalog ? true : undefined,
+        // analyzeAudioSchema wants the rights OBJECT (not a `rightsConfirmed`
+        // boolean, which .strict() rejects). Owned-catalog branch = full learn.
+        rightsConfirmation: ownedCatalog ? { version: 1, confirmed: true } : undefined,
       });
       let succeeded = false;
       for (let i = 0; i < 90; i++) {
