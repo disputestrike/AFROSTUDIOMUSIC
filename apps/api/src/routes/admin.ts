@@ -435,7 +435,9 @@ export default async function admin(app: FastifyInstance) {
       provider: 'internal',
       inputJson: { task },
       idempotencyKey,
-      payload: (jobId) => ({ jobId, workspaceId }),
+      // force: an explicit admin tap always runs — the compound cooldown only
+      // guards ACCIDENTAL after-deploy re-spends, never a deliberate owner run.
+      payload: (jobId) => ({ jobId, workspaceId, force: true }),
     });
     reply.code(202);
     return { queued: task, jobId: job.jobId, replayed: job.replayed, note: 'Running on the worker now; results land in /lanes/inventory.' };

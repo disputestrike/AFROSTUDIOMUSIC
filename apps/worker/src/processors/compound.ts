@@ -2079,8 +2079,11 @@ export async function processMasterReferenceIngest(
   );
 }
 
-/** Roadmap #3 — the nightly compounding job. Cost-capped by the batch limits. */
-export async function processNightlyCompound(): Promise<void> {
+/** Roadmap #3 — the nightly compounding job. Cost-capped by the batch limits.
+ *  opts.force: an explicit owner tap on the Admin "train now" button bypasses
+ *  the deploy cooldown — that guard exists to stop ACCIDENTAL after-deploy
+ *  re-spends, never a deliberate manual run. */
+export async function processNightlyCompound(opts?: { force?: boolean }): Promise<void> {
   // NIGHT LAW (owner): the ENTIRE nightly pass — kits, report card, backfills,
   // refile, listen-back, lexicon — is bulk-brained (Cerebras-first on every LLM
   // call; the failure ladder stays as safety). Overnight work never burns taste
@@ -2105,19 +2108,23 @@ export async function processNightlyCompound(): Promise<void> {
         0,
         Number(process.env.COMPOUND_COOLDOWN_HOURS ?? 20)
       );
-      try {
-        const last = await prisma.systemSetting.findUnique({
-          where: { key: "compound.lastRunAt" },
-        });
-        const lastAt = last ? Date.parse(last.value) : 0;
-        if (lastAt && Date.now() - lastAt < cooldownH * 3_600_000) {
-          console.log(
-            `[nightly-compound] ran ${((Date.now() - lastAt) / 3_600_000).toFixed(1)}h ago (< ${cooldownH}h cooldown) — skipped`
-          );
-          return;
+      if (opts?.force) {
+        console.log("[nightly-compound] manual run — cooldown bypassed by owner");
+      } else {
+        try {
+          const last = await prisma.systemSetting.findUnique({
+            where: { key: "compound.lastRunAt" },
+          });
+          const lastAt = last ? Date.parse(last.value) : 0;
+          if (lastAt && Date.now() - lastAt < cooldownH * 3_600_000) {
+            console.log(
+              `[nightly-compound] ran ${((Date.now() - lastAt) / 3_600_000).toFixed(1)}h ago (< ${cooldownH}h cooldown) — skipped`
+            );
+            return;
+          }
+        } catch {
+          /* cooldown read failure never blocks the scheduled run */
         }
-      } catch {
-        /* cooldown read failure never blocks the scheduled run */
       }
       console.log("[nightly-compound] start");
       await ensureSignatureKits();

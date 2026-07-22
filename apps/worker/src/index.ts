@@ -410,7 +410,9 @@ const workers = [
                 else if (job.name === "analyze-audio")
                   await processAnalyze(job.data as never);
                 else if (job.name === "nightly-compound")
-                  await processNightlyCompound();
+                  await processNightlyCompound({
+                    force: (job.data as { force?: boolean } | undefined)?.force === true,
+                  });
                 else if (job.name === "measure-backfill")
                   await processMeasureBackfill();
                 else if (job.name === "learn-backfill")
