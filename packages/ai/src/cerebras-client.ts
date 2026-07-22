@@ -56,7 +56,12 @@ async function cerebrasCall<T>(key: string, opts: { system: string; user: string
       headers: { authorization: `Bearer ${key}`, 'content-type': 'application/json' },
       body: JSON.stringify({
         model: CEREBRAS_MODEL(),
-        max_tokens: opts.maxTokens ?? 2_000,
+        // 8k, not 2k: gpt-oss-120b is a REASONING model — its thinking spends
+        // completion budget BEFORE the JSON. 2k caused live truncation
+        // ("Unterminated string in JSON at position ~2000-2900") that burned
+        // the whole key rotation on one deterministic bug and laddered bulk
+        // work to the PAID brain. Tokens are only billed as used.
+        max_tokens: opts.maxTokens ?? 8_000,
         messages: [
           { role: 'system', content: opts.system },
           { role: 'user', content: opts.user },
@@ -72,13 +77,23 @@ async function cerebrasCall<T>(key: string, opts: { system: string; user: string
       const err = Object.assign(new Error(`cerebras ${res.status}: ${body}`), { status: res.status, retryable: res.status !== 400 });
       throw err;
     }
-    const data = (await res.json()) as { choices?: Array<{ message?: { content?: string } }>; usage?: { prompt_tokens?: number; completion_tokens?: number } };
+    const data = (await res.json()) as { choices?: Array<{ message?: { content?: string }; finish_reason?: string }>; usage?: { prompt_tokens?: number; completion_tokens?: number } };
     const text = data.choices?.[0]?.message?.content ?? '';
     lastCerebrasUsage = {
       inTokens: data.usage?.prompt_tokens ?? 0,
       outTokens: data.usage?.completion_tokens ?? 0,
       estCostUsd: ((data.usage?.prompt_tokens ?? 0) * IN_PER_M + (data.usage?.completion_tokens ?? 0) * OUT_PER_M) / 1_000_000,
     };
+    // Truncation is a REQUEST bug — identical on every key. Non-retryable stops
+    // the rotation from burning all keys (then laddering to the PAID brain) on
+    // one deterministic failure. Plain parse slips (model wrote prose) stay
+    // retryable: generation is stochastic, the next key may produce valid JSON.
+    if (data.choices?.[0]?.finish_reason === 'length') {
+      throw Object.assign(
+        new Error(`cerebras response truncated at max_tokens (${opts.maxTokens ?? 8_000}) — raise maxTokens for this call`),
+        { retryable: false },
+      );
+    }
     return JSON.parse(extractJson(text)) as T;
   } finally {
     clearTimeout(timer);

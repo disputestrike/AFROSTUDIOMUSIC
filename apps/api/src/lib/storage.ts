@@ -304,6 +304,30 @@ export function sniffAudioFormat(bytes: Uint8Array): AudioFormat | null {
   if (text(4, 8) === "ftyp") return "m4a";
   if (text(0, 4) === "FORM" && ["AIFF", "AIFC"].includes(text(8, 12)))
     return "aiff";
+  // JUNK-PREFIXED MP3 RESCUE (live: "OWOLOKE edit.mp3" 415'd as invalid):
+  // real-world exports open with APE tags, padding, or editor debris before
+  // the first MPEG frame. Scan the available prefix for a frame sync with
+  // valid version/layer/bitrate bits, CONFIRMED by a second plausible sync —
+  // one marker alone is too easy to hit in random bytes.
+  const scanEnd = Math.min(bytes.byteLength - 1, 64 * 1024);
+  const plausibleSyncAt = (i: number): boolean => {
+    if (bytes[i] !== 0xff || ((bytes[i + 1] ?? 0) & 0xe0) !== 0xe0) return false;
+    const b1 = bytes[i + 1]!;
+    const b2 = bytes[i + 2] ?? 0;
+    const version = (b1 >> 3) & 0x03; // 1 = reserved
+    const layer = (b1 >> 1) & 0x03; // 0 = reserved
+    const bitrate = (b2 >> 4) & 0x0f; // 0xF = bad
+    const sampleRate = (b2 >> 2) & 0x03; // 3 = reserved
+    return version !== 1 && layer !== 0 && bitrate !== 0x0f && sampleRate !== 3;
+  };
+  let syncsSeen = 0;
+  for (let i = 0; i < scanEnd; i++) {
+    if (plausibleSyncAt(i)) {
+      syncsSeen++;
+      if (syncsSeen >= 2) return "mp3";
+      i += 3; // skip past this header before hunting the next
+    }
+  }
   return null;
 }
 
@@ -339,7 +363,9 @@ export async function verifyUploadedAudio(
     });
   }
   const object = await client().send(
-    new GetObjectCommand({ Bucket: bucket, Key: ownedKey, Range: "bytes=0-63" })
+    // 64KB, not 64B: the sniff scans past junk prefixes (APE tags, editor
+    // debris) for a confirmed MPEG frame sync — 64 bytes starved that rescue.
+    new GetObjectCommand({ Bucket: bucket, Key: ownedKey, Range: "bytes=0-65535" })
   );
   if (!object.Body)
     throw Object.assign(new Error("uploaded_audio_unreadable"), {
@@ -361,9 +387,10 @@ export async function verifyUploadedAudio(
     throw Object.assign(new Error("unsupported_or_invalid_audio"), {
       statusCode: 415,
     });
-  // .mpeg/.mpg ARE the MP3 family (see the presign schema): the sniff reports
-  // MPEG audio frames as "mp3", so an "mpeg"/"mpg" expectation must compare as
-  // mp3 or a legitimate file fails on naming alone.
+  // SNIFF WINS (live: a valid WAV named .mp3 415'd at attach): the magic-byte
+  // sniff above IS the content check — once it positively identifies a
+  // supported format, rejecting over the FILENAME punishes users for a rename.
+  // Callers receive the detected format and must persist that, not the claim.
   const normalizedExpected =
     expectedFormat === "mp4"
       ? "m4a"
@@ -371,9 +398,8 @@ export async function verifyUploadedAudio(
         ? "mp3"
         : expectedFormat;
   if (normalizedExpected && normalizedExpected !== format) {
-    throw Object.assign(
-      new Error(`audio_format_mismatch_${normalizedExpected}_${format}`),
-      { statusCode: 415 }
+    console.warn(
+      `[storage] upload declared '${normalizedExpected}' but bytes are '${format}' — accepting as ${format} (sniff wins)`
     );
   }
   return { key: ownedKey, sizeBytes, format };

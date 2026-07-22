@@ -798,19 +798,18 @@ export default async function uploads(app: FastifyInstance) {
         return reply.code(400).send({ error: 'audio_too_small' });
       if (bytes.length > 30 * 1024 * 1024)
         return reply.code(413).send({ error: 'audio_too_large' });
-      const detected = sniffAudioFormat(bytes.subarray(0, 64));
+      // Full buffer, not 64 bytes — the sniff scans past junk prefixes for a
+      // confirmed MPEG sync. SNIFF WINS: a positively identified file is stored
+      // as its DETECTED type; a mismatched filename is corrected, not rejected
+      // (live: a valid WAV named .mp3 415'd the owner's own upload).
+      const detected = sniffAudioFormat(bytes);
       if (!detected)
         return reply.code(415).send({ error: 'unsupported_or_invalid_audio' });
-      const declaredFormat = ext;
-      if (declaredFormat !== detected) {
-        return reply.code(415).send({
-          error: 'audio_type_mismatch',
-          declared: declaredFormat,
-          detected,
-        });
+      if (ext !== detected) {
+        req.log.warn({ declared: ext, detected }, 'upload extension corrected by sniff');
       }
       const safeKind = /^[a-z0-9_-]{1,20}$/.test(kind) ? kind : 'reference';
-      const safeExt = /^[a-z0-9]{1,8}$/.test(ext) ? ext : 'webm';
+      const safeExt = detected;
       const key =
         workspaceId + '/uploads/' + safeKind + '/' + nanoid() + '.' + safeExt;
       try {
@@ -826,7 +825,13 @@ export default async function uploads(app: FastifyInstance) {
           { objectKey: key, assetRef, kind: safeKind, sizeBytes: bytes.length },
           policy
         );
-        const url = await putBytes(key, bytes, contentType || 'audio/webm');
+        // Content-type follows the DETECTED format (the claim may be wrong in
+        // exactly the renamed-file case the sniff just corrected).
+        const typeOf: Record<string, string> = {
+          mp3: 'audio/mpeg', wav: 'audio/wav', flac: 'audio/flac', ogg: 'audio/ogg',
+          webm: 'audio/webm', m4a: 'audio/mp4', aiff: 'audio/aiff',
+        };
+        const url = await putBytes(key, bytes, typeOf[detected] ?? contentType ?? 'audio/webm');
         return {
           key,
           assetRef: url,
@@ -939,13 +944,13 @@ export default async function uploads(app: FastifyInstance) {
       }
 
       const ext = extFromContentType(contentType, input.url);
-      const detected = sniffAudioFormat(bytes.subarray(0, 64));
+      // Full buffer + SNIFF WINS (same law as /audio): positively identified
+      // bytes are stored as their DETECTED type; a wrong claim is corrected.
+      const detected = sniffAudioFormat(bytes);
       if (!detected)
         return reply.code(415).send({ error: 'unsupported_or_invalid_audio' });
       if ((ext === 'm4a' ? 'm4a' : ext) !== detected) {
-        return reply
-          .code(415)
-          .send({ error: 'audio_type_mismatch', declared: ext, detected });
+        req.log.warn({ declared: ext, detected }, 'import extension corrected by sniff');
       }
       const key =
         workspaceId +
@@ -954,7 +959,7 @@ export default async function uploads(app: FastifyInstance) {
         '/' +
         nanoid() +
         '.' +
-        ext;
+        detected;
       try {
         await reserveUploadBytes(
           workspaceId,
@@ -969,7 +974,11 @@ export default async function uploads(app: FastifyInstance) {
       } catch (error) {
         return uploadPolicyErrorResponse(reply, error);
       }
-      const url = await putBytes(key, bytes, contentType);
+      const importTypeOf: Record<string, string> = {
+        mp3: 'audio/mpeg', wav: 'audio/wav', flac: 'audio/flac', ogg: 'audio/ogg',
+        webm: 'audio/webm', m4a: 'audio/mp4', aiff: 'audio/aiff',
+      };
+      const url = await putBytes(key, bytes, importTypeOf[detected] ?? contentType);
 
       // Register the imported asset just like an upload — authentic, approved.
       if (input.kind === 'vocal') {
