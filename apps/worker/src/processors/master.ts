@@ -13,6 +13,7 @@ import { markFailed, markRunning } from '../lib/jobs';
 import { deleteObjectByUrl, downloadToBuffer } from '../lib/storage';
 import { enqueueReleaseKit } from '../lib/release-kit';
 import { enqueueGenerateVisuals } from '../lib/visuals';
+import { maybeTranscribeImportedLyric } from '../lib/import-lyrics';
 
 interface MasterPayload {
   jobId: string;
@@ -270,6 +271,15 @@ export async function processMaster(payload: MasterPayload): Promise<void> {
     });
     void master;
     uploaded.length = 0;
+    // LYRICS-ON-IMPORT (owner 2026-07-22): if this mastered song still has no
+    // lyric (a bring-your-own / imported record), transcribe its audio into one
+    // so the video director has real words to anchor scenes to instead of
+    // inventing off-concept b-roll. Best-effort + only-when-missing; runs BEFORE
+    // the kit/visuals enqueue so those see the lyric. Never fails the master.
+    await maybeTranscribeImportedLyric({
+      songId: payload.songId,
+      audioUrl: certifiedMp3.url,
+    }).catch(() => undefined);
     // AUTO RELEASE KIT (owner: "we did not see it") — the song is now mastered;
     // build its full release kit in the background so the tab opens populated.
     // Idempotent + fail-soft; never fails this master.
