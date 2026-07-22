@@ -17,7 +17,7 @@
  */
 import { prisma } from "@afrohit/db";
 import {
-  assumedThreeActSections,
+  assumedSongArcSections,
   compactTreatmentForReview,
   missingDuetLeads,
   normalizeVideoTreatment,
@@ -179,7 +179,10 @@ export async function processVideoTreatment(
   }
   const targetDurationS = songDurationS ?? input.durationS ?? 180;
   if (!sections.length) {
-    sections = assumedThreeActSections(targetDurationS);
+    // No measured structure (e.g. an imported song) → a full pop-song arc, not
+    // a bare 3 acts, so the director gets 5-8 distinct sections to place in
+    // distinct locations instead of one rooftop for the whole song.
+    sections = assumedSongArcSections(targetDurationS);
     structureSource = "assumed";
   }
 

@@ -86,14 +86,22 @@ THE CREATIVE-DIRECTOR LAW (concept FIRST):
   language, cuts that mean something. Every shot prompt should read like an
   award-reel frame, precise enough for a generative video model.
 
+THE STAR + NO-REPETITION LAW (the two defects that ruin AI music videos):
+- Every sequence gets its OWN distinct location — never reuse a setting across
+  sequences; a whole song in one place is a FAILED treatment.
+- The singing lead is on screen ~60-70% of the runtime, face pronounced
+  (medium/close/extreme-close performance shots). Every VOCAL sequence holds at
+  least one lipSync shot: the lead performing the exact words to camera.
+
 STRUCTURE LAW:
 - Output exactly one sequence per input section, carrying that section's index
   in "sectionIndex". Each sequence: intent (what this passage does
-  emotionally), setting (the visual beat), 2-5 representative shots, and
-  continuity notes that bind it to the whole.
+  emotionally), setting (a DISTINCT location — no two sequences share one), 2-5
+  representative shots, and continuity notes that bind it to the whole.
 - Shots are representative beats of the passage, not a second-by-second edit.
   Each shot: prompt (detailed, model-ready), durationS (2-8 seconds), motion,
-  lighting, subjects, negativePrompt.
+  lighting, subjects, negativePrompt, and lipSync (true when the lead performs
+  the words to camera).
 
 TEASER LAW:
 - End with teaserCut: the socials clip derived FROM this treatment — never a
@@ -131,6 +139,7 @@ treatment:
           "durationS": 4,
           "motion": "slow push-in|orbit|tracking|static|whip-pan|handheld drift",
           "lighting": "golden hour|neon night|studio key|natural overcast",
+          "lipSync": true,
           "subjects": ["LEAD(S) ON SCREEN — roster ids from song.performers, described VERBATIM from castingNotes, Black African per the CAST LAW"],
           "negativePrompt": "no logos, no other artists, no text"
         }
@@ -216,15 +225,19 @@ THE RUBRIC (score each 1-10, integers):
 - narrativeArc: does act one plant, act two complicate, act three pay off? Do motifs return TRANSFORMED?
 - hookEscalation: does every hook/chorus sequence visually TOP the verses around it?
 - castLaw: does every roster lead appear as demanded (duets: both leads ≥1/3 of sequences, shared frame on hooks + finale)? Are locked cast descriptions used VERBATIM in shot prompts?
-- continuity: do wardrobe/location/palette cohere across sequences (continuity notes present and consistent)?
+- continuity: do wardrobe/character/palette cohere across sequences (continuity notes present and consistent)?
 - act3Payoff: does the finale land the concept — not just fade out?
+- locationVariety: does EVERY sequence use a DISTINCT location with a visible progression? A treatment that reuses one setting (or two) across the whole song scores 1-3 — this is the single most common failure.
+- cameraVariety: do framing and camera movement genuinely vary shot-to-shot (no repeated identical setups, a real spread of wide/medium/close/ECU/drone/etc.)?
+- artistPresence: is the singing lead on screen ~60-70% of the runtime, face pronounced with performance close-ups — not hidden behind scenery or dancers?
+- lipSyncCoverage: does every VOCAL sequence include at least one performance shot where the lead sings the exact words to camera (lipSync)?
 
 VERDICT LAW:
-- Any score ≤ 5 → verdict "revise" with "fixes": the SMALLEST specific changes that raise the failing scores (name the sequence/shot indexes). Never rewrite taste — repair defects.
+- Any score ≤ 5 → verdict "revise" with "fixes": the SMALLEST specific changes that raise the failing scores (name the sequence/shot indexes). Never rewrite taste — repair defects. A repetitive-location or artist-absent treatment MUST be revised, never passed.
 - All scores ≥ 6 → verdict "pass", fixes [].
 
 Return ONLY JSON:
-{"lyricsRead": "…", "scores": {"narrativeArc": 0, "hookEscalation": 0, "castLaw": 0, "continuity": 0, "act3Payoff": 0}, "verdict": "pass|revise", "fixes": ["…"]}`;
+{"lyricsRead": "…", "scores": {"narrativeArc": 0, "hookEscalation": 0, "castLaw": 0, "continuity": 0, "act3Payoff": 0, "locationVariety": 0, "cameraVariety": 0, "artistPresence": 0, "lipSyncCoverage": 0}, "verdict": "pass|revise", "fixes": ["…"]}`;
 
 /**
  * The MINIMAL-REPAIR contract (CrucibAI lesson): repair prompts change ONLY

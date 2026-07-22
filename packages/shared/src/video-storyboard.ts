@@ -257,7 +257,62 @@ export function treatmentSectionsFromBoundaries(
   }));
 }
 
-/** Honest fallback when no measurement exists: a standard 3-act arc. */
+/**
+ * Richer honest fallback when no measurement exists: a full pop-song arc
+ * (intro / verses / choruses / bridge / final chorus / outro) scaled to the
+ * song's duration. A 3-block arc hands the director only three settings — the
+ * top cause of one-location, repetitive imported-song videos (an imported song
+ * has no measured structure, so it fell here). This gives 5-8 DISTINCT sections
+ * so the NO-REPETITION LAW has room to travel. Still an ASSUMPTION
+ * (structureSource stays 'assumed'); a MEASURED structure always wins when we
+ * have one.
+ */
+export function assumedSongArcSections(durationS: number): TreatmentSection[] {
+  const total = Number.isFinite(durationS) && durationS > 0 ? durationS : 0;
+  if (!total) return [];
+  if (total < 24) {
+    return [{ index: 0, label: "Full song", startS: 0, endS: round3(total) }];
+  }
+  // (label, share of song) — shares sum to 1. Choruses carry the weight; intro
+  // and outro stay short. Shorter songs get fewer sections so no passage is too
+  // thin to stage.
+  const arc: Array<[string, number]> =
+    total < 75
+      ? [
+          ["Intro", 0.12],
+          ["Verse 1", 0.24],
+          ["Chorus 1", 0.24],
+          ["Bridge", 0.16],
+          ["Final Chorus", 0.16],
+          ["Outro", 0.08],
+        ]
+      : [
+          ["Intro", 0.08],
+          ["Verse 1", 0.15],
+          ["Chorus 1", 0.15],
+          ["Verse 2", 0.15],
+          ["Chorus 2", 0.15],
+          ["Bridge", 0.1],
+          ["Final Chorus", 0.15],
+          ["Outro", 0.07],
+        ];
+  const sections: TreatmentSection[] = [];
+  let cursor = 0;
+  arc.forEach(([label, share], index) => {
+    const startS = round3(cursor);
+    const endS =
+      index === arc.length - 1
+        ? round3(total)
+        : round3(Math.min(total, cursor + total * share));
+    sections.push({ index, label, startS, endS });
+    cursor = endS;
+  });
+  return sections;
+}
+
+/** Honest fallback when no measurement exists: a standard 3-act arc. Kept as
+ *  the last-resort tiler in sanitizeSections; the treatment path now prefers
+ *  the richer assumedSongArcSections above. */
 export function assumedThreeActSections(durationS: number): TreatmentSection[] {
   const total =
     Number.isFinite(durationS) && durationS > 0 ? durationS : 0;
