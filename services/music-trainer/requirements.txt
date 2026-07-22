@@ -1,6 +1,8 @@
-# ACE-Step v1 training deps (verbatim from ace-step/ACE-Step requirements.txt).
-# torch/torchaudio/torchvision stay UNPINNED so Cog's cuda:"12.1" pulls matching
-# wheels. gradio kept so `import acestep` never trips on a UI import.
+# ACE-Step v1 training deps (from ace-step/ACE-Step requirements.txt).
+# Cog REQUIRES an explicit torch version when cuda: is set — pinned to the
+# canonical cu121 triple (torch 2.5.1 / torchvision 0.20.1 / torchaudio 2.5.1),
+# which Cog resolves against cuda:"12.1". gradio kept so `import acestep` never
+# trips on a UI import.
 datasets==3.4.1
 diffusers>=0.33.0
 gradio
@@ -11,9 +13,9 @@ numpy
 pypinyin==0.53.0
 pytorch_lightning==2.5.1
 soundfile==0.13.1
-torch
-torchaudio
-torchvision
+torch==2.5.1
+torchvision==0.20.1
+torchaudio==2.5.1
 tqdm
 transformers==4.50.0
 py3langid==0.3.0
