@@ -166,6 +166,30 @@ export const queuePlugin = fp(async function (app) {
     for (const row of rows) {
       if (await dispatchRow(queues, row)) dispatched += 1;
     }
+    // REAP ORPHANS: an outbox row whose provider job has LEFT the QUEUED state
+    // (canceled, superseded, already terminal) can never be dispatched — the
+    // query above only ever selects QUEUED jobs. Left alone these rows linger as
+    // PENDING forever, inflating the /health backlog (the "11 stuck for 22h"
+    // that is really zero real work). Retire them to the terminal DISPATCHED
+    // state so the table and the metric stay honest.
+    const orphans = await prisma.jobOutbox.findMany({
+      where: {
+        status: { in: ['PENDING', 'FAILED'] },
+        providerJob: { status: { not: 'QUEUED' } },
+      },
+      select: { id: true },
+      take: 500,
+    });
+    if (orphans.length) {
+      await prisma.jobOutbox.updateMany({
+        where: { id: { in: orphans.map(o => o.id) } },
+        data: {
+          status: 'DISPATCHED',
+          dispatchedAt: new Date(),
+          lastError: 'reaped: provider job no longer QUEUED',
+        },
+      });
+    }
     return dispatched;
   };
   app.decorate('dispatchPendingJobs', dispatchPendingJobs);

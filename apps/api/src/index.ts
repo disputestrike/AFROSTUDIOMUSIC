@@ -413,11 +413,15 @@ async function bootstrap() {
             orderBy: { updatedAt: "desc" },
             take: 20,
           }),
+          // Only count rows the drainer can ACTUALLY dispatch — it filters on a
+          // QUEUED provider job (queue.ts), so an orphan whose job left QUEUED is
+          // not a backlog. Mirror that filter here or /health cries "11 stuck for
+          // 22h" when the real dispatchable backlog is zero.
           prisma.jobOutbox.count({
-            where: { status: { in: ["PENDING", "FAILED"] } },
+            where: { status: { in: ["PENDING", "FAILED"] }, providerJob: { status: "QUEUED" } },
           }),
           prisma.jobOutbox.findFirst({
-            where: { status: { in: ["PENDING", "FAILED"] } },
+            where: { status: { in: ["PENDING", "FAILED"] }, providerJob: { status: "QUEUED" } },
             orderBy: { createdAt: "asc" },
             select: { createdAt: true },
           }),
