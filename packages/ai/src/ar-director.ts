@@ -35,14 +35,22 @@ export async function writeAndScoreHooks(opts: {
   tasteMemory?: { approvedExamples: string[]; rejectedExamples: string[] };
   trends?: string;
   soundDna?: string;
+  /** Creative-director lane label ("hip hop", "afro r&b"). Defaults to
+   *  "Afrobeats" so existing callers are unchanged. */
+  genreLabel?: string;
+  /** The creative-director direction block — sets the genre/language/culture
+   *  lane so hooks stop defaulting to Afro when the brief is not African. */
+  creativeDirection?: string;
 }): Promise<ARHook[] | null> {
   if (!anthropicEnabled() || process.env.STUB_AI === '1' || bulkRun()) return null;
   const n = Math.max(3, Math.min(opts.count || 8, 12));
+  const lane = (opts.genreLabel || 'Afrobeats').trim();
   try {
     const out = await claudeJson<{ hooks: ARHook[] }>({
       system:
         AR_DIRECTOR_SYSTEM +
-        `\n\nYOU ARE ALSO THE WRITER: FIRST write ${n} distinct, original Afrobeats hooks, THEN score each as A&R in the SAME response. ` +
+        (opts.creativeDirection ? `\n\n${opts.creativeDirection}` : '') +
+        `\n\nYOU ARE ALSO THE WRITER: FIRST write ${n} distinct, original ${lane} hooks in the lane above, THEN score each as A&R in the SAME response. ` +
         'Each hook: text (2-4 chantable lines), language (codes present), score (0-10 overall), viralScore (0-10 short-form), reason (one line), needsNativeReview (bool), tiktokMoment (string or null). ' +
         'Return strict JSON {"hooks":[...]}. No two hooks may share the same core phrase; kill clichés.',
       user: arDirectorUserPrompt({ ...opts, drafts: [`Write ${n} fresh hooks from the brief above — do not refine an existing list, CREATE them.`] }),

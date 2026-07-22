@@ -16,6 +16,7 @@ export * from './singing-brain';
 export * from './melody-brain';
 export * from './sound-dna';
 export * from './african-g2p';
+export * from './creative-brief';
 export * from './release-kit';
 export * from './generate';
 export * from './brain-context';

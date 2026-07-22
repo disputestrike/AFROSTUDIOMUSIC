@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto';
 import { z } from 'zod';
 import { prisma } from '@afrohit/db';
 import { generateLyricsInputSchema, GENRES, pickLawfulTitle, lyricQaCheck, normalizeLyricBody } from '@afrohit/shared';
-import { prompts, generateJson } from '@afrohit/ai';
+import { prompts, generateJson, buildCreativeDirectorBrief } from '@afrohit/ai';
 import { laneDnaBrief } from '../lib/lane-pipeline';
 import { requireAuth } from '../middleware/auth';
 import { learnLyricCraft, findLearnedLyric } from '../lib/lyric-learn';
@@ -69,6 +69,14 @@ export default async function lyrics(app: FastifyInstance) {
       const reqLangs = Object.keys(mix).length
         ? Object.entries(mix).sort((a, b) => b[1] - a[1]).map(([k]) => k)
         : (project.artist.languages ?? []);
+      // CREATIVE-DIRECTOR LANE (owner directive 2026-07-21): set genre/language/
+      // culture so the WORDS follow the brief instead of defaulting to Afro.
+      const cdDirection = buildCreativeDirectorBrief({
+        genre: project.genre,
+        languages: reqLangs.length ? reqLangs : project.artist.languages,
+        mood: lmood,
+        themeText: hook.text,
+      }).directive;
       const lyricUser = prompts.lyricUserPrompt({
         artist: project.artist as never,
         brief: project.briefs[0] as never,
@@ -76,6 +84,7 @@ export default async function lyrics(app: FastifyInstance) {
         cleanVersion: input.cleanVersion,
         languageMix: input.languageMix as never,
         languages: reqLangs,
+        creativeDirection: cdDirection,
         // SPEED (audit 2026-07-17): these context lookups are independent —
         // run them concurrently instead of one-after-another before the
         // writer starts.

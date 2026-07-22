@@ -202,6 +202,10 @@ export async function produceVocal(opts: {
   hookCell: string;
   melodyRhythmMap?: MelodyRhythmMap;
   languages?: string[];
+  /** Creative-director guard: a note that forbids importing ad-libs / chants /
+   *  slang from a culture the words are not in (e.g. no Afro ad-libs on an
+   *  English rap). Optional — the Afrobeats/African-language path passes none. */
+  culturalDirective?: string;
 }): Promise<VocalProduction> {
   let raw: RawVocalProduction;
   try {
@@ -211,6 +215,7 @@ export async function produceVocal(opts: {
       system: VOCAL_PRODUCER_SYSTEM,
       user: [
         `LANGUAGES (never translate/drift): ${opts.languages?.join(', ') || 'english, pidgin'}`,
+        opts.culturalDirective ? `CULTURAL LANE (creative-director guard): ${opts.culturalDirective}` : null,
         `HOOK CELL (law — must recur, words never altered): "${opts.hookCell}"`,
         opts.melodyRhythmMap
           ? `MELODY RHYTHM MAP (honor breaths/held-vowels/pickups): ${JSON.stringify({
