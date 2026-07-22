@@ -10,8 +10,11 @@ build:
   python_version: "3.11"
   python_requirements: requirements.txt
   run:
+    - "apt-get update && apt-get install -y ffmpeg git"
+    # ACE-Step declares nano-vllm, which is NOT on PyPI — install from its git
+    # source FIRST so the ACE-Step editable install below can resolve it.
+    - "pip install git+https://github.com/GeeeekExplorer/nano-vllm.git"
     # Pin the official MIT repo at build time. Bump the ref deliberately.
     - "git clone https://github.com/ace-step/ACE-Step-1.5 /src/ACE-Step-1.5"
     - "pip install -e /src/ACE-Step-1.5"
-    - "apt-get update && apt-get install -y ffmpeg"
 train: "train.py:train"
