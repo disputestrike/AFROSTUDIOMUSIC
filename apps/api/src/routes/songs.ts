@@ -173,16 +173,15 @@ export default async function songs(app: FastifyInstance) {
         // repository view and surfaces them (flagged deleted) so any song ever
         // made can be found and restored.
         ...(showAll ? {} : { deletedAt: null }),
-        ...(showAll
-          ? {}
-          : {
-              OR: [
-                { beats: { some: {} } },
-                { mixes: { some: {} } },
-                { masters: { some: {} } },
-                { createdAt: { gte: new Date(Date.now() - 20 * 60 * 1000) } },
-              ],
-            }),
+        // NOTHING HIDDEN (owner 2026-07-22: "I can't find my song, it doesn't
+        // show — restore all songs everywhere"). The old default filtered the
+        // catalog to songs that already had audio (beats/mixes/masters) OR were
+        // <20 min old — so a song whose render FAILED (no audio, older than the
+        // fresh window) vanished from the default view entirely, even though it
+        // was never deleted or quarantined. That IS the "hidden real user data"
+        // the honesty law forbids. Now the default shows EVERY non-deleted,
+        // non-quarantined song; audio-less ones surface flagged (audioUrl:null →
+        // the card shows "no audio rendered yet — Recreate"), never gone.
       },
       orderBy: { createdAt: 'desc' },
       take: 100,
