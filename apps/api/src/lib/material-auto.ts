@@ -204,9 +204,20 @@ export async function finishAutoMaterialBeat(
     }
   );
   const coverage = materialCoverage(picks);
-  if (!coverage.ready) {
+  if (!picks.length) {
+    // ZERO material is the only honest stop — there is nothing to assemble.
     throw new Error(
-      `auto material build is incomplete after forging (beds=${coverage.beds}, rhythm=${coverage.rhythm}, low-end=${coverage.lowEnd}, tonal=${coverage.tonal})`
+      "auto material build produced no usable material — forge loops for this genre first"
+    );
+  }
+  if (!coverage.ready) {
+    // NEVER-DIES LAW (last remaining hard-throw, audit 2026-07-19): a thin bed
+    // ships sparse with an honest note instead of failing the whole build — the
+    // child assembler (processAssembleBeat) already sparse-renders and the
+    // parent gates were converted the same way. Only zero material stops.
+    app.log.warn(
+      { workspaceId, genre: options.genre, beds: coverage.beds, rhythm: coverage.rhythm, lowEnd: coverage.lowEnd, tonal: coverage.tonal },
+      "[material-auto] sparse bed after forging — assembling anyway (never-dies)"
     );
   }
 
