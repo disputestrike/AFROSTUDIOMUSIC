@@ -47,6 +47,34 @@ export function influenceStyleToken(influence?: string | null): string | null {
 }
 
 /**
+ * MOOD STEERING — the mood colour, from the SAME home as the influence steering
+ * (this module's contract). Before this, mood was honoured only on the OWN
+ * engine (moodMelodyPhrase, below, threaded into the melody prompt) while the
+ * provider prompt got no mood token — the request's mood reached a black-box
+ * engine only INDIRECTLY, coloured into the Sound-DNA brief. These two helpers
+ * make mood engine-agnostic: the provider style prompt (composeStyleTags) front-
+ * loads moodStyleToken so MiniMax / Suno / ACE-Step / Eleven all carry the mood,
+ * and the own engine keeps moodMelodyPhrase — one home, every engine.
+ */
+
+/** The mood colour as a compact, front-loadable STYLE token for the provider
+ *  prompt (composeStyleTags), parallel to influenceStyleToken. Front-loaded so
+ *  it survives the style-prompt char cap. Returns null when no mood given. */
+export function moodStyleToken(mood?: string | null): string | null {
+  const m = mood?.trim();
+  if (!m) return null;
+  return `mood: ${m} — carry this emotional tone in the melody, harmony, energy and delivery`;
+}
+
+/** The mood colour as the own-engine melody-prompt phrase ("<mood> mood"). Kept
+ *  here so mood steering has ONE source across the own engine and the provider
+ *  path. Returns null when no mood given. */
+export function moodMelodyPhrase(mood?: string | null): string | null {
+  const m = mood?.trim();
+  return m ? `${m} mood` : null;
+}
+
+/**
  * Build the own engine's ENRICHED melody prompt: the lane's signature melody
  * brief FIRST (genre identity), then the mood colour, the artist-influence
  * directive and any free-text vibe — so the reference the owner actually picked
@@ -60,7 +88,7 @@ export function enrichedOwnMelodyPrompt(opts: {
   influence?: string | null;
   vibePrompt?: string | null;
 }): string {
-  const moodText = opts.mood?.trim() ? `${opts.mood.trim()} mood` : null;
+  const moodText = moodMelodyPhrase(opts.mood);
   const vibe = opts.vibePrompt?.trim() || null;
   return [
     genreSignature(opts.genre).melodyPrompt,

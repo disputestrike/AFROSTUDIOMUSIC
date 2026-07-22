@@ -22,7 +22,7 @@ import {
   type MusicAdapterResolution,
   type RouteLane,
 } from '../music-license';
-import { getGenreKit, influenceStyleToken } from '@afrohit/shared';
+import { getGenreKit, influenceStyleToken, moodStyleToken } from '@afrohit/shared';
 import { detectAfricanLanguage, annotateLyricsForSinging } from '../african-g2p';
 
 function provider(): string {
@@ -351,6 +351,11 @@ export function composeStyleTags(
   // path buried it at the tail of a 160-char vibe where it was truncated away.
   // STYLE only: influenceStyleToken() bakes in the never-a-voice-clone guard.
   const influenceToken = influenceStyleToken(input.influence);
+  // MOOD (engine-agnostic lift): the request's emotional tone as its OWN front-
+  // loaded token, from the shared reference-steering home so it conditions EVERY
+  // engine (the own engine already threads mood via its melody prompt). Without
+  // this the mood reached a black-box provider only indirectly (Sound-DNA colour).
+  const moodToken = moodStyleToken(input.mood);
   // SWING / MICRO-TIMING (item 3): front-load the measured per-genre pocket token
   // so the engine is pulled off a stiff Western 4/4 onto the correct African feel.
   const swingToken = swingPocketToken(input.genre);
@@ -375,6 +380,7 @@ export function composeStyleTags(
     swingToken,
     instrumentation,
     influenceToken,
+    moodToken,
     melodyContour,
     toneNotes,
     afro ? afro.signature : null,

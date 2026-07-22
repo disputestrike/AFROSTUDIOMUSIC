@@ -1756,6 +1756,10 @@ async function createBeatJob(
         // stays the user's own text.
         vibePrompt: a.vibePrompt || undefined,
         influence: a.influence,
+        // MOOD is engine-agnostic (parity with influence above): composeStyleTags
+        // front-loads it as its own `mood:` token so the SELECTED provider engine
+        // carries the emotional tone, not just the own engine's melody prompt.
+        mood: a.mood,
         durationS:
           a.durationS ??
           blueprint?.totalDurationS ??

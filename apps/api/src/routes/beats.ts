@@ -732,6 +732,10 @@ export default async function beats(app: FastifyInstance) {
             // where it was routinely truncated. vibePrompt stays the user's text.
             vibePrompt: input.vibePrompt || undefined,
             influence: input.influence,
+            // MOOD is engine-agnostic (parity with influence): composeStyleTags
+            // front-loads it as its own `mood:` token so the SELECTED provider
+            // engine carries the emotional tone, matching the own-engine path.
+            mood: input.mood,
             artistTone: project.artist.vocalTone,
             languages: langs,
             dnaTags: finalDnaTags,

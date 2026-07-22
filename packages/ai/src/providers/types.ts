@@ -37,6 +37,17 @@ export interface MusicGenerationInput {
    * it before it reaches ElevenLabs (artist-imitation policy).
    */
   influence?: string;
+  /**
+   * MOOD / EMOTIONAL TONE ("luxury", "melancholic", "triumphant"). ENGINE-
+   * AGNOSTIC: composeStyleTags front-loads it as its own `mood:` token so the
+   * SELECTED engine (MiniMax default, or Suno / ACE-Step / Eleven) carries the
+   * mood in the STYLE PROMPT — parity with the own engine, which already threads
+   * mood through its melody prompt. Before this the request mood reached a
+   * provider only indirectly (coloured into the Sound-DNA brief); now it is a
+   * first-class style lever on every engine. Shares one home with influence
+   * (packages/shared reference-steering: moodStyleToken / moodMelodyPhrase).
+   */
+  mood?: string;
   withStems: boolean;
   artistTone?: string[];
   languages?: string[];
