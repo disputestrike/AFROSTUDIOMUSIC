@@ -190,6 +190,23 @@ export const queuePlugin = fp(async function (app) {
         },
       });
     }
+    // STALE DEAD-LETTER: a healthy row dispatches within one 15s tick. A row
+    // still undispatched MANY HOURS later is effectively dead — a poison payload,
+    // or a queue that never came up. Retire rows older than 6h so they stop
+    // retrying forever and inflating the backlog (the "10 stuck for 22h" that no
+    // reaper of live jobs will ever clear). Stable BullMQ jobIds make retiring a
+    // maybe-half-dispatched row harmless.
+    await prisma.jobOutbox.updateMany({
+      where: {
+        status: { in: ['PENDING', 'FAILED'] },
+        createdAt: { lt: new Date(Date.now() - 6 * 60 * 60_000) },
+      },
+      data: {
+        status: 'DISPATCHED',
+        dispatchedAt: new Date(),
+        lastError: 'reaped: stale (undispatched > 6h)',
+      },
+    });
     return dispatched;
   };
   app.decorate('dispatchPendingJobs', dispatchPendingJobs);
