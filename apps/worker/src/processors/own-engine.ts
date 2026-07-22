@@ -855,6 +855,21 @@ export async function processOwnEngine(p: OwnEnginePayload): Promise<void> {
       }
     }
 
+    // GUARANTEE THE SINGING STEP (owner #1 complaint: "it didn't sing"). For a
+    // withVocals song the VOCAL is the product; the forged bed is only an
+    // upgrade. The ONE legitimate no-sing case is the singing route being OFF
+    // (AFROONE_SINGING_ENABLED not armed) — renderAfroOneSinging throws
+    // 'afroone_singing_disabled' when the flag is unset. Surface it CLEARLY and
+    // EARLY, before spending any forge time/credits on a render that can never
+    // sing, and NEVER let a withVocals request silently ship a silent
+    // instrumental labeled as a song. A reachable-but-transiently-failing singer
+    // still fails loudly at the singing branch below (also refuses to ship silent).
+    if (p.withVocals && process.env.AFROONE_SINGING_ENABLED !== "1") {
+      throw new Error(
+        "own-engine singing unavailable: withVocals was requested but the AfroOne singing route is off (AFROONE_SINGING_ENABLED not armed) — arm the singing route or create an instrumental; refusing to ship a silent instrumental as a sung song"
+      );
+    }
+
     // L1a — consume the rich collected shelf, then synthesize only missing
     // controllable foundation roles. Signature uploads/loops remain preferred.
     let picks = await pickKit(
@@ -1059,19 +1074,67 @@ export async function processOwnEngine(p: OwnEnginePayload): Promise<void> {
     );
     const realForged: string[] = [];
     if (engineConnected && forgeCap > 0) {
+      // FORGE-ONCE COOLDOWN (kill the every-song re-forge cost leak — the other
+      // half of the ~$0.80/song bill the owner saw). Reuse of SUCCESSFUL loops is
+      // already correct: a forged loop persists (source 'forged', readiness
+      // 'ready', qualityState 'passed', rightsBasis 'provider-generated'),
+      // pickKit re-selects it next render, so haveRoles covers it and richMissing
+      // (below) excludes it — pay once per lane, then reuse. The remaining leak is
+      // a role whose forge keeps FAILING QC: a rejected forge files a
+      // readiness:'rejected' row that pickKit EXCLUDES, so haveRoles never covers
+      // it and richMissing would re-forge — and re-fail — it on EVERY render,
+      // paying ~$0.08 each time. Skip a role with a recent rejected forge in this
+      // lane for a cooldown window (default 6h; OWN_ENGINE_FORGE_RETRY_COOLDOWN_MS=0
+      // disables), so a persistently-failing forge is attempted at most once per
+      // window, not once per song. A role with a USABLE loop is already excluded
+      // by haveRoles; the synth floor still covers that JOB in the meantime.
+      // Fail-open: any read error → empty set → forge exactly as before.
+      const forgeRetryCooldownMs = Math.max(
+        0,
+        Number(
+          process.env.OWN_ENGINE_FORGE_RETRY_COOLDOWN_MS ?? 6 * 60 * 60_000
+        ) || 6 * 60 * 60_000
+      );
+      const cooldownRoles = new Set<string>();
+      if (forgeRetryCooldownMs > 0) {
+        try {
+          const rejectedSince = new Date(Date.now() - forgeRetryCooldownMs);
+          const recentRejects = await prisma.materialAsset.findMany({
+            where: {
+              workspaceId: p.workspaceId,
+              source: "forged",
+              readiness: "rejected",
+              createdAt: { gte: rejectedSince },
+            },
+            select: { role: true, genre: true },
+          });
+          for (const row of recentRejects) {
+            if (materialGenreMatches(row.genre, p.genre))
+              cooldownRoles.add(row.role);
+          }
+        } catch {
+          // fail-open — a cost guard must never break a render
+        }
+      }
       // THE LANE'S CORE REAL KIT — requested roles first (an explicit ask leads),
       // then forgeKitFor priority (signature instruments before extra
       // percussion). Only beds the shelf does NOT already hold (no double-forge —
       // persisted loops are reused), only forgeable roles, 'fill' excluded (a
-      // transition the synth floor still makes), capped per render. This is the
-      // SAME candidate list pickKit re-selects with, so every landed loop is
-      // immediately pickable.
+      // transition the synth floor still makes), roles not in a rejected-forge
+      // cooldown, capped per render. This is the SAME candidate list pickKit
+      // re-selects with, so every landed loop is immediately pickable.
       const richMissing = [...requestedRoles, ...forgeKitFor(p.genre, 12)]
         .filter((role, i, arr) => arr.indexOf(role) === i)
         .filter(r => r !== "fill")
         .filter(r => !haveRoles.has(r))
         .filter(r => Boolean(forgePromptFor(r, p.genre, bpm, homeKey)))
+        .filter(r => !cooldownRoles.has(r))
         .slice(0, forgeCap);
+      if (cooldownRoles.size) {
+        notes.push(
+          `forge cooldown: skipped re-forging ${cooldownRoles.size} recently-rejected role(s) this render (${[...cooldownRoles].join("+")}) — synth floor covers the job; retries after cooldown`
+        );
+      }
       // FORGE FAN-OUT (SOUNDCORE item 3): each role is an independent multi-minute
       // provider render — run them through a bounded pool instead of strictly
       // serially, honoring the 429 backoff inside processForgeMaterial. BARRIER:
@@ -2444,6 +2507,20 @@ export async function processOwnEngine(p: OwnEnginePayload): Promise<void> {
       if (!melodyScore) {
         throw new Error("own-engine singing requested without a valid melody score");
       }
+      // BED PROVENANCE (owner: "over what bed did it sing?"). The vocal is the
+      // product and rides over whatever bed the render built — the FORGED real-
+      // instrument bed when any real (forged/collected/licensed) loop landed, or
+      // the SYNTH-FALLBACK bed when forging errored/was capped/landed nothing.
+      // Either way the singing step runs over `finalUrl` below: a forge failure
+      // NEVER skips the vocal (fail-soft forging → still sing). picks' roleEvidence
+      // is the effective evidence set by selectMaterialRows — anything other than
+      // 'synth-code' means a real instrument is in the bed.
+      const bedHasRealInstruments = picks.some(
+        pick => pick.roleEvidence !== "synth-code"
+      );
+      const bedProvenance = bedHasRealInstruments
+        ? "forged (real instruments)"
+        : "synth-fallback";
       const singingTargetDurationS = Math.max(
         totalS,
         melodyScoreDurationS(melodyScore)
@@ -2496,8 +2573,10 @@ export async function processOwnEngine(p: OwnEnginePayload): Promise<void> {
       if (completedSinging?.status !== "SUCCEEDED") {
         const message = (completedSinging?.errorJson as { message?: string } | null)
           ?.message;
+        // The vocal is the product — refuse to ship a silent instrumental as a
+        // sung song. Fail loudly with the bed we sang over and the singer's cause.
         throw new Error(
-          `own-engine singing failed${message ? `: ${message}` : ""}`
+          `own-engine singing failed over the ${bedProvenance} bed${message ? `: ${message}` : ""} — not shipping a silent instrumental as a sung song`
         );
       }
       const singingOutput = (completedSinging.outputJson ?? {}) as Record<
@@ -2506,15 +2585,18 @@ export async function processOwnEngine(p: OwnEnginePayload): Promise<void> {
       >;
       if (singingOutput.approved !== true) {
         throw new Error(
-          "own-engine singing failed: vocal or finished mix did not pass approval gates"
+          `own-engine singing failed over the ${bedProvenance} bed: vocal or finished mix did not pass approval gates — not shipping a silent instrumental as a sung song`
         );
       }
       singing = {
         jobId: singingJob.id,
         costUsd: completedSinging.cost?.toString() ?? null,
+        bed: bedProvenance,
         ...singingOutput,
       };
-      notes.push("singing: genuine vocal generated, verified, and mixed over the owned bed");
+      notes.push(
+        `singing: genuine vocal generated, verified, and mixed over the owned ${bedProvenance} bed (a forge failure never skips the vocal)`
+      );
     }
 
     await markSucceeded(p.jobId, {

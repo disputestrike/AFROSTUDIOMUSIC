@@ -362,6 +362,7 @@ async function runOfflineTests(): Promise<void> {
     ["SOUNDWAVE3 (trained tempo + Learn/Zap wiring)", "test-soundwave3.ts"],
     ["Own-engine auto-forge (floor rescue)", "test-own-engine-autoforge.ts"],
     ["FORGEON (real forge = automatic default)", "test-forgeon.ts"],
+    ["AfroOne reliable sing (forge once/reuse + guaranteed singing)", "test-afroone-reliable-sing.ts"],
     ["Bed-first streaming (synth preview -> forged -> master)", "test-bed-first-streaming.ts"],
     ["Material provenance + usage laws", "test-material-provenance.ts"],
     ["Training isolation (lane/pin/zap)", "test-training-isolation.ts"],
