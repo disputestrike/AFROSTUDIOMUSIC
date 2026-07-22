@@ -19,12 +19,13 @@ jobs:
         run: |
           sudo curl -o /usr/local/bin/cog -L https://github.com/replicate/cog/releases/latest/download/cog_$(uname -s)_$(uname -m)
           sudo chmod +x /usr/local/bin/cog
-      - name: Push trainer (private)
+      - name: Push trainer
         working-directory: services/music-trainer
         env:
+          # cog reads REPLICATE_API_TOKEN directly for r8.im pushes — no
+          # `cog login` (that wants a separate CLI auth token, not the API token).
           REPLICATE_API_TOKEN: ${{ secrets.REPLICATE_API_TOKEN }}
         run: |
-          echo "$REPLICATE_API_TOKEN" | cog login --token-stdin
           cog push r8.im/${{ github.event.inputs.owner }}/afrohit-music-trainer
       - name: Next steps
         run: |
