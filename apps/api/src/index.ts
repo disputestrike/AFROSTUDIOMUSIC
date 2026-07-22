@@ -634,3 +634,5 @@ bootstrap().catch(err => {
   console.error(err);
   process.exit(1);
 });
+
+// redeploy nonce 2026-07-22T21:05 (Railway skips no-change commits)

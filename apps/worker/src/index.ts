@@ -906,3 +906,5 @@ void (async () => {
 
 // A3-6 — LLM usage sink (worker side): radar/gloss/verify calls log tier + task
 // + brain + est cost as AnalyticsEvent 'llm.call' for /admin/economics.
+
+// redeploy nonce 2026-07-22T21:05 (Railway skips no-change commits)
