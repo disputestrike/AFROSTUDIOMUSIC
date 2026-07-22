@@ -26,6 +26,7 @@ import {
   MUSIC_TRAINING_AUDIO_METRICS_PREFIX,
   MUSIC_TRAINING_EVALUATION_PREFIX,
   MUSIC_TRAINING_WORKSPACE_ID,
+  activeProductionModelRef,
   buildMusicTrainingEvaluationReceipt,
   buildTrainerDataset,
   decideMusicCandidatePromotion,
@@ -225,9 +226,7 @@ export async function readDevMusicModelRoute(): Promise<MusicModelRouteState> {
  * is CC-BY-NC and may not back commercial renders, so it stops routing here
  * BY LAW, not by comment. A commercially-licensed promotion re-opens the tap. */
 export async function resolveActiveMusicModelRef(): Promise<string | null> {
-  const active = (await readActiveMusicModelRoute()).active;
-  if (!active) return null;
-  return active.lane === "production" ? active.modelRef : null;
+  return activeProductionModelRef(await readActiveMusicModelRoute());
 }
 
 /**

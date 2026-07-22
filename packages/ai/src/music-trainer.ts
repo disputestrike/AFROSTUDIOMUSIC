@@ -63,56 +63,40 @@ export interface MusicTrainerConfig {
   license: ModelLicense;
 }
 
-/** DEFAULT TRAINER — LIVE-VERIFIED on replicate.com 2026-07-19 (same precedent
- *  as voice-training.ts's pinned RVC trainer): sakemin/musicgen-fine-tuner —
- *  fine-tunes MusicGen (melody/small/medium/stereo) from a dataset zip
- *  (`dataset_path`, accepts .zip of .wav/.mp3/.flac), DESTINATION-based (the
- *  trained model lands in OUR Replicate account — our weights), ~$0.085/run on
- *  L40S, auto-labeling built in. Verified inputs: dataset_path,
- *  one_same_description, auto_labeling, drop_vocals, model_version, lr,
- *  epochs, batch_size. The owner's arming flag (MUSIC_TRAINER_ENABLED=1)
- *  remains the ONLY spend gate — a verified default is not an armed default. */
-const DEFAULT_TRAINER_MODEL = 'sakemin/musicgen-fine-tuner';
-const DEFAULT_TRAINER_VERSION = 'b1ec6490e57013463006e928abc7acd8d623fe3e8321d3092e1231bf006898b1';
-
-/** Operator-configurable trainer; falls back to the live-verified default so
- *  the operator errand is ONE flag (MUSIC_TRAINER_ENABLED=1). Env overrides
- *  swap trainers without a deploy. */
+/** NO DEFAULT TRAINER SHIPS — the license unlock, told honestly (audited
+ *  2026-07-21). Reaching the PRODUCTION lane requires an Apache-2.0 base
+ *  (ACE-Step / YuE). But there is NO turnkey ACE-Step/YuE LoRA fine-tuner
+ *  callable as a Replicate (or fal) model the way sakemin/musicgen-fine-tuner
+ *  is: ACE-Step and YuE fine-tuning is a SELF-HOSTED GPU run today (their
+ *  repo's trainer.py / one-click Gradio / ACE-Step's own hosted training
+ *  endpoint), and the ACE-Step we already serve for INFERENCE
+ *  (lucataco/ace-step on Replicate, fal-ai/ace-step) exposes no Train tab.
+ *  So we refuse two dishonest shortcuts:
+ *    1. shipping the CC-BY-NC MusicGen fine-tuner as the DEFAULT — its adapters
+ *       are license-capped to the isolated dev lane forever, so "approve the
+ *       training" can never change a production render (exactly the owner's bug);
+ *    2. fabricating an ACE-Step version hash and pretending it trains.
+ *  Instead the trainer stays UNCONFIGURED until the operator supplies a REAL
+ *  Apache-2.0 trainer ref via MUSIC_TRAINER_MODEL + MUSIC_TRAINER_VERSION. The
+ *  code is READY: an ace-step/yue trainer classifies apache-2.0
+ *  (music-license.ts), so decideMusicCandidatePromotion opens the production
+ *  lane the moment such a ref is set. The trainer ref is the ONE external
+ *  dependency; MUSIC_TRAINER_ENABLED=1 stays the only spend gate. The MusicGen
+ *  fine-tuner may still be set EXPLICITLY for dev-lane experiments — it simply
+ *  can't be the silent default that never reaches production. */
 export function musicTrainerConfig(): MusicTrainerConfig | null {
-  const model = process.env.MUSIC_TRAINER_MODEL?.trim() || DEFAULT_TRAINER_MODEL;
-  const version = process.env.MUSIC_TRAINER_VERSION?.trim() || DEFAULT_TRAINER_VERSION;
-  const usingDefault =
-    model === DEFAULT_TRAINER_MODEL && version === DEFAULT_TRAINER_VERSION;
-  let extraInput: Record<string, unknown> = usingDefault
-    ? {
-        // 32 kHz STEREO + MELODY-CONDITIONED default (trainlegal wave): the
-        // fine-tune that can actually carry a melodic lead. LEGAL REACH: the
-        // MusicGen base is CC-BY-NC, so every adapter this default produces is
-        // license-gated into the isolated DEV lane by
-        // decideMusicCandidatePromotion — it can never back a commercial
-        // render (see music-license.ts). Operators may override any value
-        // through MUSIC_TRAINER_EXTRA_INPUT.
-        model_version: 'stereo-melody',
-        // The trainer runs eight-way data parallelism and requires a multiple
-        // of eight; 8 is the smallest valid, lowest-memory batch.
-        batch_size: 8,
-        epochs: 1,
-        updates_per_epoch: 25,
-        auto_labeling: true,
-        // The corpus gate selects owned instrumentals/materials. Avoid loading
-        // Demucs inside the trainer when no vocal stripping is required.
-        drop_vocals: false,
-      }
-    : {};
+  const model = process.env.MUSIC_TRAINER_MODEL?.trim();
+  const version = process.env.MUSIC_TRAINER_VERSION?.trim();
+  // Unconfigured → refuse (no kickoff, no spend). We never ship an unverified
+  // version hash and pretend it trains (see the block above).
+  if (!model || !version) return null;
+  let extraInput: Record<string, unknown> = {};
   const raw = process.env.MUSIC_TRAINER_EXTRA_INPUT?.trim();
   if (raw) {
     try {
       const parsed = JSON.parse(raw) as unknown;
       if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
-        extraInput = {
-          ...extraInput,
-          ...(parsed as Record<string, unknown>),
-        };
+        extraInput = { ...(parsed as Record<string, unknown>) };
       }
     } catch {
       throw Object.assign(new Error('MUSIC_TRAINER_EXTRA_INPUT is not valid JSON'), { statusCode: 500 });
@@ -121,16 +105,17 @@ export function musicTrainerConfig(): MusicTrainerConfig | null {
   return {
     model,
     version,
-    // The verified default is a DESTINATION-based trainer (weights land in our
-    // account); explicit env still overrides for prediction-style trainers.
-    kind: process.env.MUSIC_TRAINER_KIND?.trim()
-      ? (process.env.MUSIC_TRAINER_KIND.trim() === 'training' ? 'training' : 'prediction')
-      : usingDefault ? 'training' : 'prediction',
-    datasetKey: process.env.MUSIC_TRAINER_DATASET_KEY?.trim() || (usingDefault ? 'dataset_path' : 'dataset_zip'),
+    // A real LoRA fine-tuner is a DESTINATION-based Replicate training (the
+    // trained weights land in OUR account); default to 'training'. A
+    // prediction-style trainer sets MUSIC_TRAINER_KIND=prediction.
+    kind: process.env.MUSIC_TRAINER_KIND?.trim() === 'prediction' ? 'prediction' : 'training',
+    datasetKey: process.env.MUSIC_TRAINER_DATASET_KEY?.trim() || 'dataset_zip',
     destination: process.env.MUSIC_TRAINER_DESTINATION?.trim() || undefined,
     extraInput,
-    // Fail-closed classification of the BASE model's weight license — the
-    // default MusicGen fine-tuner classifies cc-by-nc (dev lane only).
+    // Fail-closed classification of the BASE model's weight license. An
+    // ace-step/yue trainer classifies apache-2.0 → the promotion gate opens the
+    // production lane; anything unknown (or an explicitly-set cc-by-nc MusicGen
+    // trainer) stays dev-lane only.
     license: classifyModelLicense(model),
   };
 }
@@ -496,6 +481,21 @@ export function parseMusicModelRoute(raw: string | null | undefined): MusicModel
   } catch {
     return emptyMusicModelRoute();
   }
+}
+
+/**
+ * THE LANE-GATED PRODUCTION RESOLVER (pure, single-sourced). The active pointer
+ * backs a commercial render ONLY when it sits in the 'production' lane. A dev
+ * pointer, or a legacy entry that parses fail-closed to 'dev' (a pre-gate
+ * MusicGen fine-tune), returns null so a non-commercial-base adapter can never
+ * leak onto a paying render. The worker's DB-bound resolveActiveMusicModelRef
+ * reads the route, then calls THIS — so "does the trained layer reach
+ * production?" is answered by one function the offline gate can also prove.
+ */
+export function activeProductionModelRef(route: MusicModelRouteState): string | null {
+  const active = route.active;
+  if (!active) return null;
+  return active.lane === 'production' ? active.modelRef : null;
 }
 
 export function promoteMusicModelRoute(input: {

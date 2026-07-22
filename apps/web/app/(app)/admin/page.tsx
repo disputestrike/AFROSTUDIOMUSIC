@@ -462,13 +462,21 @@ function TrainingCandidatesCard() {
     if (!confirm(`Submit score ${value} for candidate ${row.candidateModelRef}?\n\nThe promotion gate runs immediately: it promotes only a measured win, otherwise the current model stays active.`)) return;
     setBusy(row.providerJobId); setErr(''); setVerdict('');
     try {
-      const r = await api.post<{ promoted: boolean; reason: string; activeModelRef: string | null }>(
+      const r = await api.post<{
+        promoted: boolean; reason: string; activeModelRef: string | null;
+        lane?: string; license?: string; licenseReceipt?: string; devModelRef?: string | null;
+      }>(
         '/admin/training/evaluation',
         { providerJobId: row.providerJobId, candidateScore: value, evaluator: evaluator.trim() }
       );
       setVerdict(r.promoted
-        ? `PROMOTED — ${r.reason}. Active model: ${r.activeModelRef ?? '—'}`
-        : `HELD — ${r.reason}. Active model unchanged (${r.activeModelRef ?? 'none'}).`);
+        ? `PROMOTED to production — ${r.reason}. Active model: ${r.activeModelRef ?? '—'}`
+        : r.lane === 'dev'
+          // The score WON — but the base model's license (non-commercial /
+          // unknown) confines it to the isolated dev lane; it can never back a
+          // paying render. This is why "approve did nothing" on a MusicGen base.
+          ? `BLOCKED from production — base model is ${r.license ?? 'non-commercial'}; the adapter won the isolated DEV lane (${r.devModelRef ?? '—'}) but a non-commercial base can NEVER back a production render. Set MUSIC_TRAINER_MODEL to an Apache-2.0 trainer (ACE-Step / YuE) to reach production. ${r.licenseReceipt ?? ''}`
+          : `HELD — ${r.reason}. Active model unchanged (${r.activeModelRef ?? 'none'}).`);
       await load();
     } catch (e) {
       setErr(`score failed: ${String((e as Error)?.message ?? e).slice(0, 200)}`);
@@ -497,6 +505,7 @@ function TrainingCandidatesCard() {
   const stateChip = (row: CandidateRow) => {
     if (row.active) return <span className="rounded-full bg-emerald-500/15 px-2 py-0.5 text-xs text-emerald-300">ACTIVE</span>;
     if (row.phase === 'promoted') return <span className="rounded-full bg-emerald-500/10 px-2 py-0.5 text-xs text-emerald-300/70">promoted</span>;
+    if (row.phase === 'promoted_dev') return <span title="won the isolated dev lane — a non-commercial base can never back a production render" className="rounded-full bg-amber-500/10 px-2 py-0.5 text-xs text-amber-300/80">dev lane only</span>;
     if (row.phase === 'rejected') return <span className="rounded-full bg-slate-500/15 px-2 py-0.5 text-xs text-slate-400">held</span>;
     return <span className="rounded-full bg-amber-500/15 px-2 py-0.5 text-xs text-amber-300">awaiting score</span>;
   };
@@ -562,7 +571,7 @@ function TrainingCandidatesCard() {
                         </button>
                       </div>
                     ) : (
-                      <span className="text-[11px] text-slate-600">{row.phase === 'promoted' || row.active ? 'gate passed' : 'gate held the incumbent'}</span>
+                      <span className="text-[11px] text-slate-600">{row.phase === 'promoted' || row.active ? 'gate passed' : row.phase === 'promoted_dev' ? 'dev lane only — non-commercial base' : 'gate held the incumbent'}</span>
                     )}
                   </td>
                 </tr>

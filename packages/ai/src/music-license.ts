@@ -44,6 +44,7 @@ export const MODEL_LICENSES: Readonly<Record<string, ModelLicense>> = {
   musicgen: 'cc-by-nc',
   'ace-step': 'apache-2.0',
   ace_step: 'apache-2.0',
+  acestep: 'apache-2.0', // hyphen-less trainer slugs (e.g. owner/acestep-1.5-lora)
   yue: 'apache-2.0',
 };
 

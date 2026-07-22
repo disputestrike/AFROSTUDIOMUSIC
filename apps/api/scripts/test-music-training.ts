@@ -20,20 +20,26 @@ assert.equal(musicTrainerEnabled(), false, 'trainer is off unless explicitly arm
 process.env.MUSIC_TRAINER_ENABLED = '1';
 assert.equal(musicTrainerEnabled(), true, 'arming flag enables the lifecycle');
 
-// One pinned, live-verified default; explicit environment overrides still win.
+// NO fabricated default: unconfigured → null (honest refusal). The operator
+// supplies a REAL Apache-2.0 trainer ref to reach production.
 delete process.env.MUSIC_TRAINER_MODEL;
 delete process.env.MUSIC_TRAINER_VERSION;
 assert.equal(
-  musicTrainerConfig()?.model,
-  'sakemin/musicgen-fine-tuner',
-  'no override uses the pinned default trainer'
+  musicTrainerConfig(),
+  null,
+  'no MODEL/VERSION → the trainer is unconfigured (no fake default that never reaches production)'
 );
-process.env.MUSIC_TRAINER_MODEL = 'someorg/musicgen-fine-tuner';
+process.env.MUSIC_TRAINER_MODEL = 'someorg/ace-step-lora-trainer';
 process.env.MUSIC_TRAINER_VERSION = 'abc123';
 assert.equal(
   musicTrainerConfig()?.model,
-  'someorg/musicgen-fine-tuner',
-  'explicit trainer override wins'
+  'someorg/ace-step-lora-trainer',
+  'an explicit Apache-2.0 trainer configures the run'
+);
+assert.equal(
+  musicTrainerConfig()?.license,
+  'apache-2.0',
+  'the ace-step trainer classifies apache-2.0 (production-lane eligible)'
 );
 
 // Rights re-validation rejects any poisoned eligible manifest.
