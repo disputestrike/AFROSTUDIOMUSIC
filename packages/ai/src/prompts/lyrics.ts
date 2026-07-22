@@ -1,7 +1,14 @@
 import type { ArtistDna, Brief } from '@afrohit/shared';
 import { writerTrainingBrief } from '@afrohit/shared';
 
-export const LYRIC_SYSTEM = `You are an Afrobeats/Afro-fusion lyricist. You write full songs around an approved hook.
+export const LYRIC_SYSTEM = `You are a hit lyricist. Afrobeats/Afro-fusion is your home base, but you WRITE TO THE BRIEF'S GENRE AND LANGUAGE — you are not always an Afro writer. You write full songs around an approved hook.
+
+GENRE & CULTURE LANE — READ THE CREATIVE_DIRECTION IN THE INPUT FIRST (this outranks the Afro defaults below):
+- Four things are SEPARATE, never collapsed into "Nigerian": LANGUAGE (the words only), GENRE (the world/themes), REGION/CULTURE (Lagos, Pidgin, talking drums, jollof, ethnic identity), and any ARTIST REFERENCE.
+- REGION/CULTURE enters ONLY when the brief licenses it — an African language in the words, an African genre (Afrobeats/amapiano/highlife/afro-*), or an explicit ask. English + hip_hop/trap/drill/rap/pop/R&B is American/global: write in that world with NO Lagos, NO Pidgin/Yoruba, NO African instruments or foods unless the CREATIVE_DIRECTION lists them. The Afro examples below are CRAFT lessons (emotion-first, hook economy, natural speech) — never a culture to force onto a non-African brief.
+- "Luxury" reads by genre: for rap/hip_hop it is the measurable win (wealth, cars, watches, real estate, business, investments, loyalty, the come-up) — NOT romance or fashion-only. For R&B it is intimacy; for gospel it is God's provision. Follow the CREATIVE_DIRECTION's include_themes.
+- An ARTIST REFERENCE ("like Drake") is a LANE (structure, flow, feel, themes, audience) — write an original song in that lane, never copy a line, never inject a different culture, never a real person's voice.
+- The current CREATIVE_DIRECTION brief OVERRIDES any learned habit or past preference — even a house default of "this artist usually makes Nigerian/Afro music". Follow the genre and language in front of you.
 
 LANGUAGE — HIGHEST PRIORITY (above every craft rule below):
 - Write in the languages given by the input's "primary_language" and "language_mix". The HOOK and the MAJORITY of every verse MUST be in the PRIMARY language.
@@ -179,6 +186,10 @@ export function lyricUserPrompt(opts: {
    *  Every new song must take a DIFFERENT story/angle/scene from ALL of these —
    *  the same theme is allowed only with a visibly different story. */
   storiesTold?: string[];
+  /** The creative-director direction block (genre/language/culture lane +
+   *  include_themes + forbidden elements). Read FIRST — it sets whether African
+   *  context is licensed so English rap gets American themes, not forced Lagos. */
+  creativeDirection?: string;
 }): string {
   // Determine the PRIMARY language: strongest weight in the mix, else the requested
   // languages, else the artist default. This is what the writer must deliver in.
@@ -193,6 +204,8 @@ export function lyricUserPrompt(opts: {
 
   return JSON.stringify({
     task: 'write the full song around the approved hook',
+    // Creative-director lane FIRST — genre/language/culture + themes + forbidden.
+    CREATIVE_DIRECTION_read_first: opts.creativeDirection || undefined,
     // Front-loaded so the model reads the language rule first.
     primary_language: primary,
     primary_language_name: primaryName,

@@ -19,6 +19,9 @@ const bodySchema = z.object({
   mood: z.string().max(40).optional(),
   languages: z.array(z.string().min(2).max(12)).max(5).optional(),
   fusionGenres: z.array(z.string().max(40)).max(2).optional(),
+  // Artist reference ("like Drake") — lane steering for the creative-director
+  // layer (production/writing feel only, never a voice clone).
+  influence: z.string().max(80).optional(),
 });
 
 export default async function producer(app: FastifyInstance) {
@@ -59,10 +62,10 @@ export default async function producer(app: FastifyInstance) {
       projectId: project.id,
       kind: 'music',
       provider: 'afrohit-producer',
-      inputJson: { produce: true, songId: song.id, theme: input.theme, genre: input.genre, bpm: input.bpm, mood: input.mood, languages: input.languages, fusion: input.fusionGenres },
+      inputJson: { produce: true, songId: song.id, theme: input.theme, genre: input.genre, bpm: input.bpm, mood: input.mood, languages: input.languages, fusion: input.fusionGenres, influence: input.influence },
       charge,
       idempotencyKey,
-      payload: (jobId) => ({ jobId, workspaceId, projectId: project.id, songId: song.id, theme: input.theme, genre: input.genre, bpm: input.bpm, mood: input.mood, languages: input.languages, fusion: input.fusionGenres }),
+      payload: (jobId) => ({ jobId, workspaceId, projectId: project.id, songId: song.id, theme: input.theme, genre: input.genre, bpm: input.bpm, mood: input.mood, languages: input.languages, fusion: input.fusionGenres, influence: input.influence }),
     });
 
     reply.code(202);

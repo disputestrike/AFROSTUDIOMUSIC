@@ -383,6 +383,7 @@ async function runOfflineTests(): Promise<void> {
     ["Trained layer (training in the sound)", "test-trained-layer.ts"],
     ["Trainlegal (license lanes+FAD/WER+AfroRef+routes)", "test-trainlegal.ts"],
     ["Genre canon (the 4/12 -> 11/12 flip)", "test-genre-canon.ts"],
+    ["Creative-director layer (lang≠genre≠culture, luxury=wealth, brief>preference)", "test-creative-brief.ts"],
     ["Aggregate harness timeout/progress", "test-harness-timeout.ts"],
     ["Security boundaries", "test-security-boundaries.ts"],
     ["Durable jobs + billing receipts", "test-durable-workflows.ts"],

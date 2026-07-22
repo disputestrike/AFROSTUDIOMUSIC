@@ -15,6 +15,7 @@ import { prisma } from '@afrohit/db';
 import {
   produceBeatDna, reviewLanguage, produceVocal, scoreForAR, titleTooClose,
   directConcept, generateJson, prompts, type ConceptResult,
+  buildCreativeDirectorBrief, type CreativeDirectorBrief,
 } from '@afrohit/ai';
 import {
   composeMelody, lyricQaCheck, normalizeLyricBody, pickLawfulTitle,
@@ -39,6 +40,8 @@ interface ProducePayload {
   mood?: string;
   languages?: string[];
   fusion?: string[];
+  /** Artist reference ("like Drake") — lane steering only, never a clone. */
+  influence?: string;
 }
 
 const OVERUSED = ['shine', 'hustle', 'street', 'grind', 'gbedu', 'log', 'night', 'rise', 'throne', 'haters', 'vibe', 'fire'];
@@ -106,11 +109,24 @@ export async function processProduce(p: ProducePayload): Promise<void> {
     const sim = await cataloguePrecheck(p.workspaceId);
     state = advanceState(state, { catalogueSimilarity: sim }, { stage: 'catalogue_precheck', by: 'executive-producer', changed: 'forbidden list', why: sim.note });
 
+    // CREATIVE-DIRECTOR LAYER (owner directive 2026-07-21): set the lane BEFORE
+    // any concept/lyric work so the WORDS stop defaulting to Afro/Nigerian.
+    // Separates LANGUAGE ≠ GENRE ≠ REGION/CULTURE ≠ ARTIST-REFERENCE and decides
+    // whether African context is licensed at all (English + hip_hop + "like
+    // Drake" = American themes, no forced Lagos; Pidgin/afrobeats keep it).
+    const cdBrief: CreativeDirectorBrief = buildCreativeDirectorBrief({
+      genre: p.genre,
+      languages: p.languages,
+      influence: p.influence,
+      mood: p.mood,
+      themeText: p.theme,
+    });
+
     // Stage 0.5 — HIT CONCEPT & ARTIST IDENTITY GATE (owner directive 2026-07-13:
     // the danfo/pepper-soup/"gbe body" failures were UPSTREAM of the lyricist —
     // scenery-first premises, not feelings). Kill a scenery-dependent concept
     // BEFORE any production, before a single credit is spent on a beat or melody.
-    const concept = await directConcept({ idea: p.theme, genre: p.genre, mood: p.mood });
+    const concept = await directConcept({ idea: p.theme, genre: p.genre, mood: p.mood, brief: cdBrief });
     if (!concept.approved) {
       state = advanceState(state, { decision: 'REJECT_CONCEPT_SCENERY_DEPENDENT' }, { stage: 'creative_brief', by: 'concept-director', changed: `concept "${concept.title}" REJECTED`, why: concept.reason });
       await prisma.song.update({ where: { id: p.songId }, data: { title: concept.title || 'Rejected concept', quarantined: true, quarantineReason: concept.reason, proofPack: state as never } }).catch(() => {});
@@ -183,6 +199,11 @@ export async function processProduce(p: ProducePayload): Promise<void> {
       const fit = await generateJson<{ title?: string; body?: string; hookCell?: string; languageMix?: Record<string, number> }>({
         tier: attempt === 0 ? 'bulk' : 'judgment', task: 'lyric-fitting', system: FIT_SYSTEM,
         user: JSON.stringify({
+          // Creative-director lane FIRST — themes + forbidden + override.
+          CREATIVE_DIRECTION: cdBrief.directive,
+          include_themes: cdBrief.includeThemes,
+          FORBIDDEN_unless_listed: cdBrief.forbiddenElements,
+          brief_overrides_learned_preference: true,
           brief, primary_language: (p.languages ?? ['pcm'])[0], languages_allowed: p.languages ?? ['pcm', 'en'],
           hook_cell_spine: cell, syllable_budget: mrm.syllableSlots, held_vowel_slots: mrm.heldVowelSlots, breaths: mrm.breaths,
           forbidden_vocab: sim.forbiddenVocab, lyric_mode: brief.lyricMode,
@@ -217,7 +238,7 @@ export async function processProduce(p: ProducePayload): Promise<void> {
       scoreForAR({ title, sungLyric: body, hookCell: cell, genre: p.genre, languages: p.languages }).catch(() => null),
     ]);
     state = advanceState(state, { languageReview: lang.entries }, { stage: 'language_review', by: 'language-agent', changed: `${lang.entries.length} phrases`, why: lang.blocksRelease ? 'HUMAN_NATIVE_REVIEW_REQUIRED' : 'clear' });
-    const vp = await produceVocal({ sungLyric: body, hookCell: cell, melodyRhythmMap: mrm, languages: p.languages }).catch(() => null);
+    const vp = await produceVocal({ sungLyric: body, hookCell: cell, melodyRhythmMap: mrm, languages: p.languages, culturalDirective: cdBrief.forbiddenElements.length ? `Perform ONLY what the lyric already says — do NOT add ad-libs, chants or slang from a culture the words are not in. Forbidden unless already present: ${cdBrief.forbiddenElements.join('; ')}.` : undefined }).catch(() => null);
     if (vp?.rejected) {
       state = rejectToStage(state, 'vocal_production', vp.rejectReasons.join('; '), 'vocal-producer');
       state = advanceState(state, { adlibOptions: vp.adlibOptions, decision: 'REVISE_FROM_STAGE_X' }, { stage: 'vocal_production', by: 'vocal-producer', why: vp.rejectReasons.join('; ') });
