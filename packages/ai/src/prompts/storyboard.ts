@@ -96,12 +96,14 @@ THE STAR + NO-REPETITION LAW (the two defects that ruin AI music videos):
 STRUCTURE LAW:
 - Output exactly one sequence per input section, carrying that section's index
   in "sectionIndex". Each sequence: intent (what this passage does
-  emotionally), setting (a DISTINCT location — no two sequences share one), 2-5
-  representative shots, and continuity notes that bind it to the whole.
-- Shots are representative beats of the passage, not a second-by-second edit.
-  Each shot: prompt (detailed, model-ready), durationS (2-8 seconds), motion,
-  lighting, subjects, negativePrompt, and lipSync (true when the lead performs
-  the words to camera).
+  emotionally), setting (a DISTINCT location — no two sequences share one),
+  shots, and continuity notes that bind it to the whole.
+- FULL-COVERAGE LAW: give each sequence ENOUGH shots that their durationS sums
+  to roughly the section length (endS-startS), so the finished cut covers the
+  WHOLE song with UNIQUE footage. A cut that loops the same clips a second time
+  to reach full length is the top defect — never plan for it. Each shot: prompt
+  (detailed, model-ready), durationS (2-8 seconds), motion, lighting, subjects,
+  negativePrompt, and lipSync (true when the lead performs the words to camera).
 
 TEASER LAW:
 - End with teaserCut: the socials clip derived FROM this treatment — never a
