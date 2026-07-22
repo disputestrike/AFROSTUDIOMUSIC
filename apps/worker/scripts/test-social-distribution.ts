@@ -89,7 +89,10 @@ async function main() {
     { kind: "clip" as const, url: "https://cdn/c1.mp4", durationS: 15 },
     { kind: "clip" as const, url: "https://cdn/c2.mp4", durationS: 30 },
   ];
-  const posts = buildSocialPosts({ accounts, kit, media, title: "Song", releaseUrl: "https://afrohit/r/x", now });
+  const posts = buildSocialPosts({
+    accounts, kit, media, title: "Song", releaseUrl: "https://afrohit/r/x",
+    posterUrl: "https://cdn/poster.jpg", now,
+  });
 
   check(posts.length === 2, "one post per CONNECTED account (pending excluded)");
   const tt = posts.find(p => p.platform === "tiktok")!;
@@ -106,6 +109,11 @@ async function main() {
     "media = the music video first, then the clips",
   );
   check(tt.mediaKind === "music_video", "primary media kind is the music video");
+  check(tt.posterUrl === "https://cdn/poster.jpg", "the branded poster rides every post as its thumbnail");
+  check(
+    posts.every(p => p.posterUrl === "https://cdn/poster.jpg"),
+    "every connected account's post carries the branded poster",
+  );
   check(!!tt.scheduledAt && new Date(tt.scheduledAt) > now, "tiktok scheduled from the calendar");
   check(posts.find(p => p.platform === "youtube")!.scheduledAt === null, "youtube posts now (no calendar entry)");
 
@@ -119,6 +127,7 @@ async function main() {
       now,
     });
     check(vposts[0]?.mediaKind === "visualizer", "visualizer is the fallback primary when there's no video");
+    check(vposts[0]?.posterUrl === null, "no poster supplied → posterUrl is null (aggregator uses its own frame)");
   }
 
   // ---- publishReleaseToSocials — fail-soft --------------------------------

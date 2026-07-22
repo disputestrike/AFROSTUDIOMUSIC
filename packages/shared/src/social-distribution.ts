@@ -141,6 +141,10 @@ export interface SocialPostPayload {
   hashtags: string[];
   /** Public media URLs — the music video (or visualizer) first, then clips. */
   mediaUrls: string[];
+  /** The BRANDED POSTER image (cover + big "AFRO" mark) — the post's thumbnail,
+   *  so a shared video/link carries the AfroHits identity. Null when no poster
+   *  is available (the aggregator then uses its own default frame). */
+  posterUrl: string | null;
   /** ISO time to schedule the post, or null to post immediately. */
   scheduledAt: string | null;
   /** The aggregator's profile reference for this platform's account. */
@@ -237,6 +241,9 @@ export interface BuildSocialPostsInput {
   title: string;
   /** Optional public release-page URL appended to the caption. */
   releaseUrl?: string | null;
+  /** The branded poster image (a public URL the caller already presigned) —
+   *  attached to every post as its thumbnail. Null → no poster available. */
+  posterUrl?: string | null;
   now?: Date;
   maxClips?: number;
 }
@@ -295,6 +302,7 @@ export function buildSocialPosts(input: BuildSocialPostsInput): SocialPostPayloa
       caption,
       hashtags,
       mediaUrls: baseMediaUrls,
+      posterUrl: input.posterUrl ?? null,
       scheduledAt,
       externalRef: account.externalRef ?? null,
       mediaKind: primary?.kind ?? null,

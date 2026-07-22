@@ -20,6 +20,9 @@ interface Release {
   artist: string;
   genre: string;
   coverUrl: string | null;
+  /** The branded before-play still (cover + big "AFRO" mark) — the OG/Twitter
+   *  image and the video's poster. Falls back to the cover server-side. */
+  posterUrl: string | null;
   audioUrl: string | null;
   musicVideoUrl: string | null;
   visualizerUrl: string | null;
@@ -50,7 +53,11 @@ export async function generateMetadata({ params }: { params: Promise<{ id: strin
 
   const title = `${r.title} — ${r.artist}`;
   const description = r.story ?? `${r.title} by ${r.artist}. Listen and watch the full ${r.genre} release.`;
-  const images = r.coverUrl ? [{ url: r.coverUrl, width: 1200, height: 1200, alt: `${r.title} cover art` }] : [];
+  // The branded poster is the link-preview image so a shared release always
+  // previews with the "AFRO" brand mark (VEVO-style), not a bare cover. It is a
+  // 16:9 still, ideal for the large-image card; it falls back to the cover.
+  const ogImage = r.posterUrl ?? r.coverUrl;
+  const images = ogImage ? [{ url: ogImage, width: 1280, height: 720, alt: `${r.title} — AfroHits` }] : [];
 
   return {
     title,
@@ -66,7 +73,7 @@ export async function generateMetadata({ params }: { params: Promise<{ id: strin
       card: 'summary_large_image',
       title,
       description,
-      images: r.coverUrl ? [r.coverUrl] : [],
+      images: ogImage ? [ogImage] : [],
     },
   };
 }
@@ -92,6 +99,9 @@ export default async function PublicReleasePage({ params }: { params: Promise<{ 
 
   const primaryVisual = r.musicVideoUrl ?? r.visualizerUrl;
   const primaryLabel = r.musicVideoUrl ? 'Music video' : 'Visualizer';
+  // The branded poster stands in before any video plays (the video's thumbnail),
+  // exactly like a VEVO still in a feed; falls back to the cover.
+  const videoPoster = r.posterUrl ?? r.coverUrl;
 
   return (
     <main className="mx-auto max-w-2xl px-5 pb-24 pt-6 sm:px-6">
@@ -125,7 +135,7 @@ export default async function PublicReleasePage({ params }: { params: Promise<{ 
       {/* Primary visual — music video, else visualizer */}
       {primaryVisual && (
         <section className="mt-10">
-          <PrimaryVisual src={primaryVisual} poster={r.coverUrl} label={primaryLabel} />
+          <PrimaryVisual src={primaryVisual} poster={videoPoster} label={primaryLabel} />
         </section>
       )}
 
@@ -138,7 +148,7 @@ export default async function PublicReleasePage({ params }: { params: Promise<{ 
               <figure className="w-40 flex-shrink-0 snap-start sm:w-44">
                 <video
                   src={r.lyricVideoUrl}
-                  poster={r.coverUrl ?? undefined}
+                  poster={videoPoster ?? undefined}
                   controls
                   playsInline
                   preload="none"
@@ -151,7 +161,7 @@ export default async function PublicReleasePage({ params }: { params: Promise<{ 
               <figure key={clip.id} className="w-40 flex-shrink-0 snap-start sm:w-44">
                 <video
                   src={clip.url}
-                  poster={r.coverUrl ?? undefined}
+                  poster={videoPoster ?? undefined}
                   controls
                   playsInline
                   preload="none"

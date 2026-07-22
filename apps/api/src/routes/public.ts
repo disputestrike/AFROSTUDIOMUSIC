@@ -180,15 +180,22 @@ export default async function publicRoutes(app: FastifyInstance) {
       }
     }
 
-    // The auto-visuals (lyric video + audio-reactive visualizer) built off the
-    // master audio + lyrics + cover — the shareables that exist without a video.
+    // The auto-visuals (lyric video + audio-reactive visualizer + the branded
+    // poster) built off the master audio + lyrics + cover — the shareables that
+    // exist without a video.
     const visuals = await prisma.songVisual.findMany({
       where: { songId: song.id },
       orderBy: { createdAt: 'desc' },
-      select: { kind: true, url: true },
+      select: { kind: true, url: true, meta: true },
     });
     const visualizerRef = visuals.find((v) => v.kind === 'visualizer')?.url ?? null;
     const lyricVideoRef = visuals.find((v) => v.kind === 'lyric_video')?.url ?? null;
+    // The BRANDED POSTER (VEVO-style before-play still): the canonical pointer on
+    // the song wins; a legacy song with no pinned poster falls back to the
+    // poster-marked thumbnail, then (below) to the bare cover.
+    const posterVisualRef =
+      visuals.find((v) => v.kind === 'thumbnail' && asRecord(v.meta).poster === true)?.url ?? null;
+    const posterRef = song.posterUrl ?? posterVisualRef;
 
     // A few hook-first vertical clips for the Watch strip — shortest first.
     const clipRows = await prisma.songClip.findMany({
@@ -216,12 +223,13 @@ export default async function publicRoutes(app: FastifyInstance) {
     const lyrics = song.kind === 'song' && song.lyric?.body ? song.lyric.body : null;
 
     // Presign every asset in parallel — a storage URI must never reach the page.
-    const [coverUrl, audioUrl, musicVideoUrl, visualizerUrl, lyricVideoUrl, clips] = await Promise.all([
+    const [coverUrl, posterUrl, audioUrl, musicVideoUrl, visualizerUrl, lyricVideoUrl, clips] = await Promise.all([
       song.coverUrl
         ? presignAssetRef(song.coverUrl, 900)
         : cover?.url
           ? presignAssetRef(cover.url, 900)
           : null,
+      posterRef ? presignAssetRef(posterRef, 900) : null,
       playable?.url ? presignAssetRef(playable.url, 900) : null,
       musicVideoRef ? presignAssetRef(musicVideoRef, 900) : null,
       visualizerRef ? presignAssetRef(visualizerRef, 900) : null,
@@ -247,6 +255,9 @@ export default async function publicRoutes(app: FastifyInstance) {
       artist: song.displayArtist ?? song.project.artist.stageName,
       genre: song.project.genre,
       coverUrl,
+      // The branded poster (VEVO-style before-play still) — the OG/Twitter image,
+      // the video's poster, and the social post image. Falls back to the cover.
+      posterUrl: posterUrl ?? coverUrl,
       audioUrl,
       musicVideoUrl,
       visualizerUrl,

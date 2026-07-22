@@ -136,6 +136,11 @@ export interface ThumbnailVariant {
   textPos: ThumbTextPos;
   /** A colored accent bar behind the text — one variant carries it for punch. */
   accent: boolean;
+  /** The BRANDED POSTER (owner, VEVO reference): the clean cover + the big "AFRO"
+   *  mark, no title clutter — the PERMANENT still shown before playback and the
+   *  canonical poster/OG/social image. Exactly one variant carries this, and it
+   *  is ALWAYS produced (never sliced off) so every song has its branded poster. */
+  poster: boolean;
 }
 
 /** Collapse + trim a title/hook to a short, punchy thumbnail line. Never
@@ -150,9 +155,11 @@ export function thumbnailText(raw: string | null | undefined, maxChars = 40): st
 }
 
 /**
- * Plan 3-5 thumbnail variants. The title anchors most of them; the hook (when
- * present and distinct) gives one variant a different line. A text-free "clean
- * cover" variant is always included so the artist has a pure-art option too.
+ * Plan 3-5 thumbnail variants. The BRANDED POSTER leads and is ALWAYS produced
+ * (the canonical still shown before playback, used as the poster/OG/social
+ * image). The title anchors the CTR variants; the hook (when present and
+ * distinct) gives one variant a different line. Every returned set therefore
+ * carries exactly one `poster` variant, no matter the count.
  */
 export function planThumbnailVariants(opts: {
   title: string;
@@ -164,14 +171,15 @@ export function planThumbnailVariants(opts: {
   const hook = hookRaw && hookRaw.toLowerCase() !== title.toLowerCase() ? hookRaw : "";
   const count = Math.max(3, Math.min(5, opts.count ?? 5));
 
-  // The full considered set, in priority order — the title-forward CTR options
-  // first, then the hook option, then the clean cover.
+  // The BRANDED POSTER is first so a smaller count can never drop it — every
+  // song's permanent branded still is guaranteed. Then the title-forward CTR
+  // options, then the hook option.
   const all: ThumbnailVariant[] = [
-    { id: "title-bottom", text: title, crop: "center", textPos: "bottom", accent: false },
-    { id: "title-top", text: title, crop: "bottom", textPos: "top", accent: true },
-    { id: "hook-center", text: hook || title, crop: "top", textPos: "center", accent: false },
-    { id: "title-bottom-accent", text: title, crop: "top", textPos: "bottom", accent: true },
-    { id: "clean-cover", text: "", crop: "center", textPos: "none", accent: false },
+    { id: "branded-poster", text: "", crop: "center", textPos: "none", accent: false, poster: true },
+    { id: "title-bottom", text: title, crop: "center", textPos: "bottom", accent: false, poster: false },
+    { id: "title-top", text: title, crop: "bottom", textPos: "top", accent: true, poster: false },
+    { id: "hook-center", text: hook || title, crop: "top", textPos: "center", accent: false, poster: false },
+    { id: "title-bottom-accent", text: title, crop: "top", textPos: "bottom", accent: true, poster: false },
   ];
   return all.slice(0, count);
 }
