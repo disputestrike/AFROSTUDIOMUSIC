@@ -1,0 +1,27 @@
+# Print the latest pushed version hash of the music trainer (the value for
+# MUSIC_TRAINER_VERSION on the Railway worker). Read-only; runs in seconds.
+name: trainer-version
+on:
+  workflow_dispatch:
+jobs:
+  version:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Fetch latest trainer version
+        env:
+          REPLICATE_API_TOKEN: ${{ secrets.REPLICATE_API_TOKEN }}
+        run: |
+          OWNER=$(curl -s -H "Authorization: Bearer $REPLICATE_API_TOKEN" https://api.replicate.com/v1/account | jq -r .username)
+          MODEL=$(curl -s -H "Authorization: Bearer $REPLICATE_API_TOKEN" "https://api.replicate.com/v1/models/$OWNER/afrohit-music-trainer")
+          VERSION=$(echo "$MODEL" | jq -r '.latest_version.id // empty')
+          if [ -z "$VERSION" ]; then
+            echo "::error::no version found — has the push-music-trainer workflow gone green?"
+            echo "$MODEL" | head -c 400
+            exit 1
+          fi
+          echo "=============================================="
+          echo "Railway WORKER service variables:"
+          echo "  MUSIC_TRAINER_ENABLED=1"
+          echo "  MUSIC_TRAINER_MODEL=$OWNER/afrohit-music-trainer"
+          echo "  MUSIC_TRAINER_VERSION=$VERSION"
+          echo "=============================================="
