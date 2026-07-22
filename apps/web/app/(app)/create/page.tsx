@@ -2224,6 +2224,11 @@ function VideoDoorPanel() {
         title: songTitle,
         autoMaster: true,
         masterPreset: 'afro_stream_-9',
+        // The "I own or control this recording" checkbox (gated above via
+        // `attested`) IS the rights confirmation the API requires — send it in
+        // the shape ownedAudioRightsConfirmationSchema wants. Was omitted, so
+        // every upload 400'd with "rightsConfirmation: Required".
+        rightsConfirmation: { version: 1, confirmed: true },
       });
       router.push('/catalog');
     } catch (e) {
