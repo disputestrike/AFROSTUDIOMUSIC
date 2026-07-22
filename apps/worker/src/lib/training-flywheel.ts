@@ -134,7 +134,7 @@ function record(value: unknown): JsonRecord {
 }
 
 function stableSourceFamilyId(input: {
-  kind: "material" | "beat" | "vocal";
+  kind: "material" | "beat" | "vocal" | "soundref";
   id: string;
   songId?: string | null;
   meta?: unknown;
@@ -450,6 +450,29 @@ async function liveManifest(): Promise<{
       },
       take,
     });
+  // Learn-My-Sound references (live incident 2026-07-22: the owner's Listen-page
+  // uploads landed here and the sweep never looked). DB-level belt: only rights
+  // bases that can EVER train; referenceToProvenance is the suspenders. zap:
+  // rows are facts-only so the basis filter already excludes them, and the
+  // sourceUrl guard below keeps a mislabeled external pointer out of the zip.
+  const references = (
+    await prisma.soundReference.findMany({
+      where: {
+        active: true,
+        rightsBasis: { in: ["user-attested", "self-generated"] },
+        analysisState: { not: "failed" },
+      },
+      select: {
+        id: true,
+        rightsBasis: true,
+        sourceUrl: true,
+        contentHash: true,
+        workspaceId: true,
+        createdAt: true,
+      },
+      take,
+    })
+  ).filter(row => /^https?:\/\//i.test(row.sourceUrl));
   const granted = await consentedWorkspaceIds();
 
   const ingredientIds = [...new Set(beats.flatMap(row => beatIngredientIds(row.meta)))];
@@ -476,6 +499,7 @@ async function liveManifest(): Promise<{
   const materialSplit = split(materials, row => row.workspaceId);
   const beatSplit = split(enrichedBeats, row => row.project?.workspaceId);
   const vocalSplit = split(vocals, row => row.project?.workspaceId);
+  const referenceSplit = split(references, row => row.workspaceId);
 
   const outsideRenderLearning = await isOutsideRenderLearningEnabled();
   if (outsideRenderLearning) {
@@ -489,12 +513,12 @@ async function liveManifest(): Promise<{
   const policy = { allowThirdPartyRenders: false };
   const manifest = mergeManifests(
     manifestFromCatalog(
-      { materials: materialSplit.yes, beats: beatSplit.yes, vocals: vocalSplit.yes },
+      { materials: materialSplit.yes, beats: beatSplit.yes, vocals: vocalSplit.yes, references: referenceSplit.yes },
       true,
       policy
     ),
     manifestFromCatalog(
-      { materials: materialSplit.no, beats: beatSplit.no, vocals: vocalSplit.no },
+      { materials: materialSplit.no, beats: beatSplit.no, vocals: vocalSplit.no, references: referenceSplit.no },
       false,
       policy
     )
@@ -538,6 +562,15 @@ async function liveManifest(): Promise<{
         id: row.id,
         songId: row.songId,
       }),
+      createdAt: row.createdAt,
+    });
+  }
+  for (const row of references) {
+    sources.set(`soundref:${row.id}`, {
+      workspaceId: row.workspaceId,
+      url: row.sourceUrl,
+      contentFingerprint: row.contentHash?.trim() || row.sourceUrl,
+      sourceFamilyId: stableSourceFamilyId({ kind: "soundref", id: row.id }),
       createdAt: row.createdAt,
     });
   }

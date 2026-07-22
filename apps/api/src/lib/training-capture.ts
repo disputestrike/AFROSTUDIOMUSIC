@@ -17,6 +17,7 @@ export {
   materialToProvenance,
   beatToProvenance,
   vocalToProvenance,
+  referenceToProvenance,
   manifestFromCatalog,
 } from '@afrohit/shared';
 export type { CaptureInput } from '@afrohit/shared';
@@ -36,7 +37,7 @@ export async function buildWorkspaceTrainingManifest(opts: {
   const wsWhere = opts.workspaceId ? { workspaceId: opts.workspaceId } : {};
   const consentGranted = (opts.resolveConsent ?? (() => false))(opts.workspaceId);
 
-  const [materials, beats, vocals] = await Promise.all([
+  const [materials, beats, vocals, references] = await Promise.all([
     prisma.materialAsset.findMany({
       where: { ...wsWhere, readiness: 'ready', qualityState: { notIn: ['failed', 'duplicate'] } },
       select: { id: true, source: true, rightsBasis: true },
@@ -56,6 +57,20 @@ export async function buildWorkspaceTrainingManifest(opts: {
         ? { project: { workspaceId: opts.workspaceId }, approved: true }
         : { approved: true },
       select: { id: true, performanceSource: true },
+      take,
+    }),
+    // Learn-My-Sound references (live 2026-07-22: the owner's Listen-page
+    // uploads landed ONLY here, so the console counter never moved). Same
+    // rights belt as the flywheel: only bases that can ever train; zap/chart
+    // rows are facts-only and stay out.
+    prisma.soundReference.findMany({
+      where: {
+        ...wsWhere,
+        active: true,
+        rightsBasis: { in: ['user-attested', 'self-generated'] },
+        analysisState: { not: 'failed' },
+      },
+      select: { id: true, rightsBasis: true },
       take,
     }),
   ]);
@@ -82,6 +97,6 @@ export async function buildWorkspaceTrainingManifest(opts: {
   // When ON, third-party renders classify eligible but KEEP their
   // 'third-party-render' origin label — provenance is never laundered.
   const allowThirdPartyRenders = await isOutsideRenderLearningEnabled();
-  const manifest = manifestFromCatalog({ materials, beats: enrichedBeats, vocals }, consentGranted, { allowThirdPartyRenders });
+  const manifest = manifestFromCatalog({ materials, beats: enrichedBeats, vocals, references }, consentGranted, { allowThirdPartyRenders });
   return { ...manifest, scannedWorkspace: opts.workspaceId ?? 'ALL' };
 }

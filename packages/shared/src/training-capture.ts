@@ -107,10 +107,35 @@ export function vocalToProvenance(row: {
   return { id: `vocal:${row.id}`, performanceSource: row.performanceSource, consentGranted: row.consentGranted };
 }
 
+/** SoundReference (Learn-My-Sound owned upload) → provenance. The Listen-page
+ *  door stamps rightsBasis at creation: 'user-attested' (the artist's own
+ *  recordings, ownership vouched at upload) and 'self-generated' are fuel;
+ *  'facts-only' (zap/chart analysis of OTHER PEOPLE'S records — numbers we may
+ *  study, audio we may never train on) and 'unknown' fail closed. Live incident
+ *  2026-07-22: the owner added 10 masters through Listen and the trainable
+ *  counter sat at 104 — this table simply wasn't swept. */
+export function referenceToProvenance(row: {
+  id: string;
+  rightsBasis?: string | null;
+  consentGranted?: boolean;
+}): AssetProvenance {
+  const basis = (row.rightsBasis ?? '').trim().toLowerCase();
+  if (basis === 'user-attested') {
+    return { id: `soundref:${row.id}`, materialSource: 'upload', rightsBasis: 'user-attested', consentGranted: row.consentGranted };
+  }
+  if (basis === 'self-generated') {
+    return { id: `soundref:${row.id}`, rightsBasis: 'self-generated', consentGranted: row.consentGranted };
+  }
+  // facts-only / unknown carry NO trainable vocabulary → the gate refuses.
+  return { id: `soundref:${row.id}`, consentGranted: row.consentGranted };
+}
+
 export interface CaptureInput {
   materials: Array<{ id: string; source?: string | null; rightsBasis?: string | null }>;
   beats: Array<{ id: string; provider?: string | null; meta?: unknown; ingredientRights?: Array<string | null | undefined> }>;
   vocals: Array<{ id: string; performanceSource?: string | null }>;
+  /** Learn-My-Sound references (optional — older callers keep compiling). */
+  references?: Array<{ id: string; rightsBasis?: string | null }>;
 }
 
 /** The ingredient MaterialAsset ids an assembled bed was built from
@@ -139,6 +164,7 @@ export function manifestFromCatalog(
     ...input.materials.map((m) => materialToProvenance({ ...m, consentGranted })),
     ...input.beats.map((b) => beatToProvenance({ ...b, consentGranted })),
     ...input.vocals.map((v) => vocalToProvenance({ ...v, consentGranted })),
+    ...(input.references ?? []).map((r) => referenceToProvenance({ ...r, consentGranted })),
   ];
   return buildTrainingManifest(rows, policy);
 }
