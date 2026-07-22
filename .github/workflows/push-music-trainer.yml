@@ -25,8 +25,12 @@ jobs:
           sudo docker image prune -af || true
           df -h /
       - name: Install cog
+        # PINNED v0.9.8 — the version Replicate's own setup-cog action uses in CI.
+        # It's the line that accepts the API token via `cog login --token-stdin`;
+        # newer cogs (0.21+) demand a separate browser-issued CLI auth token and
+        # reject API tokens, which killed two full 30-min builds at the registry.
         run: |
-          sudo curl -o /usr/local/bin/cog -L https://github.com/replicate/cog/releases/latest/download/cog_$(uname -s)_$(uname -m)
+          sudo curl -o /usr/local/bin/cog -L https://github.com/replicate/cog/releases/download/v0.9.8/cog_$(uname -s)_$(uname -m)
           sudo chmod +x /usr/local/bin/cog
       - name: Resolve account + ensure model page exists
         id: model
