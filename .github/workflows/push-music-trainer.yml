@@ -15,6 +15,15 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Free disk space
+        # The torch + CUDA 12.1 + cuDNN + ACE-Step image is ~20GB; the default
+        # runner only has ~14GB free. Reclaim ~25GB of preinstalled toolchains.
+        run: |
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android \
+                      /usr/local/share/boost /opt/hostedtoolcache \
+                      /usr/local/lib/node_modules /usr/share/swift || true
+          sudo docker image prune -af || true
+          df -h /
       - name: Install cog
         run: |
           sudo curl -o /usr/local/bin/cog -L https://github.com/replicate/cog/releases/latest/download/cog_$(uname -s)_$(uname -m)
