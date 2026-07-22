@@ -28,6 +28,34 @@ jobs:
         run: |
           sudo curl -o /usr/local/bin/cog -L https://github.com/replicate/cog/releases/latest/download/cog_$(uname -s)_$(uname -m)
           sudo chmod +x /usr/local/bin/cog
+      - name: Resolve account + ensure model page exists
+        id: model
+        env:
+          REPLICATE_API_TOKEN: ${{ secrets.REPLICATE_API_TOKEN }}
+        # r8.im rejects pushes to a model page that doesn't exist (it surfaces as
+        # "authorization failed"). Resolve the token's REAL username and create
+        # the private model page via API before pushing — no guessing, no errand.
+        run: |
+          ACCOUNT_JSON=$(curl -s -H "Authorization: Bearer $REPLICATE_API_TOKEN" https://api.replicate.com/v1/account)
+          OWNER=$(echo "$ACCOUNT_JSON" | jq -r '.username // empty')
+          if [ -z "$OWNER" ]; then
+            echo "::error::REPLICATE_API_TOKEN is invalid — /v1/account returned: $ACCOUNT_JSON"
+            echo "Recreate the repo secret with a fresh token from replicate.com/account/api-tokens"
+            exit 1
+          fi
+          echo "Token belongs to Replicate account: $OWNER (workflow input said: ${{ github.event.inputs.owner }})"
+          CREATE=$(curl -s -o /tmp/create.json -w "%{http_code}" -X POST https://api.replicate.com/v1/models \
+            -H "Authorization: Bearer $REPLICATE_API_TOKEN" -H "Content-Type: application/json" \
+            -d "{\"owner\":\"$OWNER\",\"name\":\"afrohit-music-trainer\",\"visibility\":\"private\",\"hardware\":\"gpu-l40s\",\"description\":\"AfroHit private ACE-Step v1 LoRA music trainer\"}")
+          if [ "$CREATE" = "201" ]; then
+            echo "Created private model page $OWNER/afrohit-music-trainer"
+          elif grep -qi "already exists" /tmp/create.json; then
+            echo "Model page $OWNER/afrohit-music-trainer already exists — good"
+          else
+            echo "::error::model creation failed (HTTP $CREATE): $(cat /tmp/create.json)"
+            exit 1
+          fi
+          echo "owner=$OWNER" >> "$GITHUB_OUTPUT"
       - name: Push trainer
         working-directory: services/music-trainer
         env:
@@ -35,11 +63,11 @@ jobs:
           # `cog login` (that wants a separate CLI auth token, not the API token).
           REPLICATE_API_TOKEN: ${{ secrets.REPLICATE_API_TOKEN }}
         run: |
-          cog push r8.im/${{ github.event.inputs.owner }}/afrohit-music-trainer
+          cog push r8.im/${{ steps.model.outputs.owner }}/afrohit-music-trainer
       - name: Next steps
         run: |
           echo "Trainer pushed. Now on the Railway WORKER service set:"
           echo "  MUSIC_TRAINER_ENABLED=1"
-          echo "  MUSIC_TRAINER_MODEL=${{ github.event.inputs.owner }}/afrohit-music-trainer"
+          echo "  MUSIC_TRAINER_MODEL=${{ steps.model.outputs.owner }}/afrohit-music-trainer"
           echo "  MUSIC_TRAINER_VERSION=<version hash from the push output above>"
           echo "The nightly flywheel fires on the next nightly-compound run."
