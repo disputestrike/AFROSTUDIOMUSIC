@@ -23,4 +23,8 @@ build:
     # --no-deps: every dependency is already pinned in requirements.txt above
     # (cuda-matched torch included); this only wires `import acestep` onto the path.
     - "pip install -e /src/ACE-Step --no-deps"
+# cog 0.9.8 refuses to push without a predict entry — and ours is real: render
+# a song via ACE-Step v1, optionally through a trained AfroHit LoRA (the first
+# cut of the serving path). Training (the nightly flywheel path) uses train.
+predict: "predict.py:Predictor"
 train: "train.py:train"
