@@ -179,14 +179,27 @@ function assertOwnEngineRoutingIsLossless(): void {
     trainingReferenceCount?: number;
     expected: string;
   }> = [
+    // mood / influence / vibePrompt / durationS are HONORED by the own engine
+    // since reference-steering (2026-07-21) — they are no longer unsupported.
+    // Only the controls the own worker genuinely cannot honor remain here.
     { input: { fusionGenres: ["amapiano"], withStems: false }, expected: "fusionGenres" },
-    { input: { mood: "joyful", withStems: false }, expected: "mood" },
-    { input: { influence: "live highlife pocket", withStems: false }, expected: "influence" },
     { input: { keySignature: "F# minor", withStems: false }, expected: "keySignature" },
     { input: { pinnedReferenceId: "old-pin", withStems: false }, expected: "pinnedReferenceId" },
     { input: { withStems: false }, trainingReferenceCount: 1, expected: "trainingReferences" },
-    { input: { vibePrompt: "dry live room", withStems: false }, expected: "vibePrompt" },
   ];
+
+  // The now-honored controls must NOT block auto-routing to the own engine.
+  for (const honored of [
+    { mood: "joyful", withStems: false },
+    { influence: "live highlife pocket", withStems: false },
+    { vibePrompt: "dry live room", withStems: false },
+  ]) {
+    assert.equal(
+      resolveOwnEngineRouting(honored, 0).mode,
+      "auto-candidate",
+      `honored control ${Object.keys(honored)[0]} must stay auto-routable to the own engine`,
+    );
+  }
 
   for (const testCase of unsupportedCases) {
     const automatic = resolveOwnEngineRouting(
