@@ -411,10 +411,14 @@ const workers = [
                   await processDeepMeasure(job.data as never);
                 else if (job.name === "analyze-audio")
                   await processAnalyze(job.data as never);
-                else if (job.name === "nightly-compound")
+                else if (job.name === "nightly-compound") {
+                  const data = job.data as { force?: boolean; scheduled?: boolean } | undefined;
+                  // force = the owner's tap; scheduled = the once-a-day cron.
+                  // Both outrank the cooldown — only deploy-boot spam stays guarded.
                   await processNightlyCompound({
-                    force: (job.data as { force?: boolean } | undefined)?.force === true,
+                    force: data?.force === true || data?.scheduled === true,
                   });
+                }
                 else if (job.name === "material-harvest")
                   await processMaterialHarvest();
                 else if (job.name === "measure-backfill")
@@ -612,9 +616,16 @@ async function registerCron() {
   await cronQueue
     .removeRepeatable("zap-radar", { pattern: "0 3 * * *" })
     .catch(() => undefined);
+  // THE SCHEDULED NIGHTLY ALWAYS RUNS (live miss 2026-07-23 02:45: the owner's
+  // forced evening run reset the 20h cooldown and the real nightly SKIPPED —
+  // no flywheel, no training). The cooldown's only purpose is deploy spam;
+  // the once-a-day cron carries scheduled:true and bypasses it by design.
+  await cronQueue
+    .removeRepeatable("nightly-compound", { pattern: "45 2 * * *" })
+    .catch(() => undefined);
   await cronQueue.add(
     "nightly-compound",
-    {},
+    { scheduled: true },
     { repeat: { pattern: "45 2 * * *" } }
   );
   // ZERO-TAP: run the compound suite ~90s after EVERY deploy too (once per day —
