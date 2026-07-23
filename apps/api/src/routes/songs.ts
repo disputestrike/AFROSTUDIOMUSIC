@@ -152,13 +152,63 @@ export default async function songs(app: FastifyInstance) {
   });
 
   // ---- List (with per-asset ids/urls so the UI can target the right file) ----
-  app.get<{ Querystring: { all?: string } }>('/', async (req) => {
+  app.get<{ Querystring: { all?: string } }>('/', async (req, reply) => {
     const { workspaceId } = requireAuth(req);
+    try {
+      return await buildCatalogList(req, workspaceId, (req.query as { all?: string }).all === '1');
+    } catch (err) {
+      // NEVER 'API isn't reachable' (owner incident 2026-07-23): if the rich
+      // catalog build fails for ANY reason, fall back to a dead-simple list so
+      // the page ALWAYS loads. The cards show title/audio; the rich extras
+      // (video, cover, master report) are simply absent until the real cause
+      // is fixed. A blank-but-loading catalog beats a red error every time.
+      req.log.error({ err }, 'catalog rich build failed — serving minimal fallback list');
+      const showAll = (req.query as { all?: string }).all === '1';
+      const rows = await prisma.song.findMany({
+        where: { workspaceId, ...(showAll ? {} : { quarantined: false, deletedAt: null }) },
+        orderBy: { createdAt: 'desc' },
+        take: 1000,
+        select: {
+          id: true, title: true, status: true, createdAt: true, projectId: true,
+          displayArtist: true, hitScore: true, viralScore: true, instrumentalUrl: true,
+          deletedAt: true, quarantined: true,
+          masters: { orderBy: { createdAt: 'desc' }, take: 1, select: { url: true } },
+          project: { select: { title: true, genre: true, bpm: true, artist: { select: { stageName: true } } } },
+          lyric: { select: { title: true } },
+        },
+      });
+      reply.header('x-catalog-fallback', '1');
+      return rows.map((s) => ({
+        id: s.id,
+        title: s.lyric?.title || s.title,
+        kind: 'song',
+        status: s.status,
+        artist: s.displayArtist || s.project?.artist?.stageName || 'Unknown Artist',
+        projectId: s.projectId,
+        projectTitle: s.project?.title ?? null,
+        genre: s.project?.genre ?? null,
+        bpm: s.project?.bpm ?? null,
+        audioUrl: s.masters[0]?.url ?? null,
+        masterUrl: s.masters[0]?.url ?? null,
+        hasInstrumental: !!s.instrumentalUrl,
+        hasLyrics: !!s.lyric,
+        hitScore: s.hitScore,
+        viralScore: s.viralScore,
+        video: null,
+        videoScenesReady: 0,
+        coverUrl: null,
+        createdAt: s.createdAt,
+        deleted: !!s.deletedAt,
+        quarantined: s.quarantined,
+      }));
+    }
+  });
+
+  async function buildCatalogList(req: FastifyRequest, workspaceId: string, showAll: boolean) {
     // NOTHING IS EVER LOST: default = songs with real audio (or fresh ones still
     // cooking, < 20 min). ?all=1 ALSO returns the hidden ones — lyric-only shells
     // whose render failed/never ran — so "lost versions" are always recoverable
     // from the UI (flagged via audioUrl:null), never silently vanished.
-    const showAll = (req.query as { all?: string }).all === '1';
     const rows = await prisma.song.findMany({
       where: {
         workspaceId,
@@ -395,7 +445,7 @@ export default async function songs(app: FastifyInstance) {
         return [];
       }
     });
-  });
+  }
 
   // ---- Detail: everything about one song ----
   app.get<{ Params: { id: string } }>('/:id', async (req, reply) => {
