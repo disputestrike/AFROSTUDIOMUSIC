@@ -273,6 +273,7 @@ const LAKE_TASKS = [
   { task: 'reset-data-lake', label: 'RESET the data lake', what: 'ZERO everything learned — all references, materials, trends, usage; only your user-attested uploads survive as the new foundation' },
   { task: 'purge-seeded-materials', label: 'Purge seeded materials', what: 'DELETE every synth/forged material — the shelf rebuilds from real songs only (owner order)' },
   { task: 'restore-all-songs', label: 'Restore ALL songs', what: 'un-delete + un-quarantine every song ever made, platform-wide' },
+  { task: 'consolidate-to-operator', label: 'Bring ALL songs to operator', what: 'MOVE every song/project/artist/album from the test workspaces into the operator studio so the catalog shows them all' },
   { task: 'material-harvest', label: 'Material harvest (real loops)', what: 'cut real drums/bass/chords loops from YOUR uploaded masters via stem separation — harvested loops outrank synth on every shelf' },
   { task: 'measure-backfill', label: 'Measure backfill', what: 'deep-measure owned references + beats the ear missed' },
   { task: 'learn-backfill', label: 'Learn backfill', what: 'learn uploaded songs that never got a listen' },

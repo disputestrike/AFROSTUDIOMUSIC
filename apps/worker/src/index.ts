@@ -75,7 +75,7 @@ import { processSynthMaterial } from "./processors/synth-material";
 import { processAssetCleanup } from "./processors/asset-cleanup";
 import { processReleaseKit } from "./lib/release-kit";
 import { processMaterialHarvest } from "./processors/material-harvest";
-import { purgeSeededMaterials, resetDataLake, restoreAllSongs } from "./processors/material-purge";
+import { consolidateSongsToOperator, purgeSeededMaterials, resetDataLake, restoreAllSongs } from "./processors/material-purge";
 import { processGenerateClips } from "./processors/generate-clips";
 import { processGenerateVisuals } from "./processors/generate-visuals";
 import { processSocialPublish } from "./processors/social-publish";
@@ -159,6 +159,7 @@ const LAKE_JOBS = new Set([
   "purge-seeded-materials",
   "reset-data-lake",
   "restore-all-songs",
+  "consolidate-to-operator",
   "measure-backfill",
   "learn-backfill",
   "listen-back",
@@ -431,6 +432,8 @@ const workers = [
                   await resetDataLake();
                 else if (job.name === "restore-all-songs")
                   await restoreAllSongs();
+                else if (job.name === "consolidate-to-operator")
+                  await consolidateSongsToOperator();
                 else if (job.name === "measure-backfill")
                   await processMeasureBackfill();
                 else if (job.name === "learn-backfill")
@@ -658,6 +661,10 @@ async function registerCron() {
   await enqueueJob("lake", "restore-all-songs", {}, {
     jobId: `restore-songs-${new Date().toISOString().slice(0, 10)}`,
     delayMs: 45_000,
+  }).catch(() => undefined);
+  await enqueueJob("lake", "consolidate-to-operator", {}, {
+    jobId: `consolidate-op-${new Date().toISOString().slice(0, 10)}`,
+    delayMs: 75_000,
   }).catch(() => undefined);
   await enqueueJob("lake", "material-harvest", {}, {
     jobId: `boot-harvest-${new Date().toISOString().slice(0, 10)}`,

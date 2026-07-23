@@ -53,6 +53,50 @@ export async function purgeSeededMaterials(): Promise<{ deleted: number; kept: n
   return { deleted, kept };
 }
 
+/** CONSOLIDATE TO OPERATOR (owner order, repeated: "ALL songs that have been
+ *  created from the start should be returned to the operator account… the
+ *  catalogue was only a hundred, it should be way more"). restoreAllSongs only
+ *  UN-HID songs within each workspace; the ~200 missing ones live in the owner's
+ *  own probe/test workspaces and never appear in the operator catalog (scoped by
+ *  workspaceId). This MOVES every song + project + artist + album from every
+ *  other workspace into the operator's, so the catalog finally shows them all.
+ *  Beats/vocals follow their project (projectId-scoped). Idempotent; fails LOUD
+ *  if the operator workspace can't be resolved (never dumps data into a guess). */
+export async function consolidateSongsToOperator(): Promise<void> {
+  const adminEmail = (process.env.ADMIN_EMAILS ?? "").split(",")[0]?.trim().toLowerCase();
+  if (!adminEmail) { console.warn("[consolidate] no ADMIN_EMAILS set — cannot resolve operator; aborting"); return; }
+  const user = await prisma.user.findFirst({
+    where: { email: { equals: adminEmail, mode: "insensitive" } },
+    select: { id: true },
+  });
+  if (!user) { console.warn(`[consolidate] no user for ${adminEmail} — aborting`); return; }
+  const memberships = await prisma.workspaceMember.findMany({
+    where: { userId: user.id },
+    select: { workspaceId: true },
+  });
+  if (!memberships.length) { console.warn("[consolidate] operator has no workspace — aborting"); return; }
+  // The operator's REAL studio = their membership workspace holding the most
+  // songs (avoids picking an empty system workspace).
+  let operatorWs = memberships[0]!.workspaceId;
+  let best = -1;
+  for (const m of memberships) {
+    const n = await prisma.song.count({ where: { workspaceId: m.workspaceId } });
+    if (n > best) { best = n; operatorWs = m.workspaceId; }
+  }
+  const before = await prisma.song.count({ where: { workspaceId: operatorWs } });
+  const total = await prisma.song.count();
+  const other = { workspaceId: { not: operatorWs } } as const;
+  const s = await prisma.song.updateMany({ where: other, data: { workspaceId: operatorWs } });
+  const p = await prisma.project.updateMany({ where: other, data: { workspaceId: operatorWs } });
+  const a = await prisma.artist.updateMany({ where: other, data: { workspaceId: operatorWs } });
+  const al = await prisma.album.updateMany({ where: other, data: { workspaceId: operatorWs } });
+  const after = await prisma.song.count({ where: { workspaceId: operatorWs } });
+  console.log(
+    `[consolidate] operator ${operatorWs}: catalog ${before} -> ${after} song(s) of ${total} platform-wide ` +
+    `(moved ${s.count} song, ${p.count} project, ${a.count} artist, ${al.count} album from the test workspaces)`
+  );
+}
+
 export async function restoreAllSongs(): Promise<{ restored: number; unquarantined: number }> {
   const { count: restored } = await prisma.song.updateMany({
     where: { deletedAt: { not: null } },

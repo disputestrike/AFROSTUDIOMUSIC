@@ -419,7 +419,7 @@ export default async function admin(app: FastifyInstance) {
   });
 
   // One-tap compounding: run the lake jobs NOW instead of waiting for tonight.
-  const runSchema = z.object({ task: z.enum(['nightly-compound', 'material-harvest', 'purge-seeded-materials', 'reset-data-lake', 'restore-all-songs', 'measure-backfill', 'learn-backfill', 'listen-back', 'refile-references', 'mine-lexicon', 'lexicon-research', 'wiktionary-harvest', 'wiktionary-burst', 'lexicon-gloss', 'lexicon-verify', 'recert-sweep']) });
+  const runSchema = z.object({ task: z.enum(['nightly-compound', 'material-harvest', 'purge-seeded-materials', 'reset-data-lake', 'restore-all-songs', 'consolidate-to-operator', 'measure-backfill', 'learn-backfill', 'listen-back', 'refile-references', 'mine-lexicon', 'lexicon-research', 'wiktionary-harvest', 'wiktionary-burst', 'lexicon-gloss', 'lexicon-verify', 'recert-sweep']) });
   app.post('/run', { schema: { body: runSchema } }, async (req, reply) => {
     await requireAdmin(req);
     const { workspaceId } = requireAuth(req);
