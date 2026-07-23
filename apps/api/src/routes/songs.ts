@@ -190,11 +190,16 @@ export default async function songs(app: FastifyInstance) {
       // that cap WAS the "only 100" the owner saw. Per-song includes stay
       // bounded (take:20 each) so the payload is still safe.
       take: 1000,
+      // LIST-ONLY INCLUDES (owner incident 2026-07-23: raising the cap to show
+      // all ~356 songs made the OLD take:20-each-with-stems query time out ->
+      // "catalog isn't reachable"). The card mapper below only ever reads
+      // masters[0] / mixes[0] / beats[0], so the list loads just the latest of
+      // each. The detail route (GET /:id) keeps the full take:20 history.
       include: {
         project: { select: { id: true, title: true, genre: true, bpm: true, artist: { select: { stageName: true } } } },
-        masters: { orderBy: { createdAt: 'desc' }, take: 20 },
-        mixes: { orderBy: { createdAt: 'desc' }, take: 20 },
-        beats: { orderBy: { createdAt: 'desc' }, take: 20, include: { stems: true } },
+        masters: { orderBy: { createdAt: 'desc' }, take: 1 },
+        mixes: { orderBy: { createdAt: 'desc' }, take: 1 },
+        beats: { orderBy: { createdAt: 'desc' }, take: 1, include: { stems: { select: { id: true } } } },
         lyric: { select: { id: true, title: true } },
       },
     });
