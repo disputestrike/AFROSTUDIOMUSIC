@@ -14,7 +14,8 @@ import {
   materializeStemAudio,
   resolveMusicStemSources,
 } from '../lib/demucs-local';
-import { genreSignature, planFills, scoreLaneCompliance, scoreLyricAudioAlignment, engineAdequacy, structureMatch, blueprintFromMeasured, isFirstPartyWorkspace, resolveEngineForWorkspace, promotionEligible, selectMaterialRows, materialGenreMatches, normalizeMaterialGenre, type LaneComplianceScore, type LyricAudioAlignmentScore, type MeasuredAnalysis, type SongBlueprint } from '@afrohit/shared';
+import { genreSignature, planFills, scoreLaneCompliance, scoreLyricAudioAlignment, engineAdequacy, engineClass, structureMatch, blueprintFromMeasured, isFirstPartyWorkspace, resolveEngineForWorkspace, promotionEligible, selectMaterialRows, materialGenreMatches, normalizeMaterialGenre, type LaneComplianceScore, type LyricAudioAlignmentScore, type MeasuredAnalysis, type SongBlueprint } from '@afrohit/shared';
+import { processOwnEngine } from './own-engine';
 import { enqueueJob } from '../lib/enqueue';
 import { enqueueReleaseKit } from '../lib/release-kit';
 import { enqueueGenerateVisuals } from '../lib/visuals';
@@ -225,6 +226,37 @@ export async function processMusic(p: MusicPayload) {
       console.log(`[wall] flagship route blocked for customer workspace ${p.workspaceId}; rendering on ${resolved.engine}`);
     }
     const engine = resolved.engine;
+    // OWN-FIRST DELEGATION (live P0, 2026-07-23: the drop lane died with
+    // "music provider 'own_engine' is unsupported" — the registry only knows
+    // RENTED engines; OUR engine is a pipeline, not an adapter). An own-class
+    // resolution hands this exact job to the own-engine renderer, which owns
+    // its receipts, singing and never-dies from here. Same jobId, no re-queue.
+    if (engineClass(engine) === 'own') {
+      const input = p.input as typeof p.input & {
+        genre?: string; bpm?: number; durationS?: number; mood?: string;
+        vibePrompt?: string; lyrics?: string; language?: string | null;
+      };
+      const genre = input.genre
+        ?? (await prisma.project.findUnique({ where: { id: p.projectId }, select: { genre: true } }))?.genre
+        ?? 'afrobeats';
+      console.log(`[music] own-first: delegating ${p.jobId} (${genre}) to the own-engine pipeline`);
+      await processOwnEngine({
+        jobId: p.jobId,
+        workspaceId: p.workspaceId,
+        projectId: p.projectId,
+        songId: p.songId ?? null,
+        genre,
+        ...(input.bpm ? { bpm: input.bpm } : {}),
+        ...(input.durationS ? { durationS: input.durationS } : {}),
+        ...(input.mood ? { mood: input.mood } : {}),
+        ...(input.vibePrompt ? { vibePrompt: input.vibePrompt } : {}),
+        withVocals: wantsVocals,
+        ...(input.lyrics ? { lyrics: input.lyrics } : {}),
+        ...(input.language !== undefined ? { language: input.language } : {}),
+        withStems: true,
+      });
+      return;
+    }
     const engineKey = credentialForEngine(engine, credentials);
     const adapter = musicAdapter(engine, engineKey);
     await prisma.providerJob.updateMany({
