@@ -155,7 +155,15 @@ export default async function songs(app: FastifyInstance) {
   app.get<{ Querystring: { all?: string } }>('/', async (req, reply) => {
     const { workspaceId } = requireAuth(req);
     try {
-      return await buildCatalogList(req, workspaceId, (req.query as { all?: string }).all === '1');
+      // HANG-PROOF (owner incident 2026-07-23): the rich build over 356
+      // consolidated songs ran past the edge timeout and the browser saw
+      // "API isn't reachable" — a HANG, not a throw, so the catch below never
+      // fired. Race it against a 7s budget; on timeout we throw and serve the
+      // fast fallback instead of letting the request die at the proxy.
+      return await Promise.race([
+        buildCatalogList(req, workspaceId, (req.query as { all?: string }).all === '1'),
+        new Promise<never>((_, rej) => setTimeout(() => rej(new Error('catalog_build_timeout')), 7000)),
+      ]);
     } catch (err) {
       // NEVER 'API isn't reachable' (owner incident 2026-07-23): if the rich
       // catalog build fails for ANY reason, fall back to a dead-simple list so
