@@ -620,6 +620,14 @@ async function registerCron() {
   // ZERO-TAP: run the compound suite ~90s after EVERY deploy too (once per day —
   // the dated jobId dedupes). Uploads get measured, the bank grows, profiles
   // count themselves. Nobody presses anything, ever.
+  // ZERO-TAP HARVEST (owner 2026-07-22, "get it running automatically"): drain
+  // the real-loop harvest ~2 min after EVERY deploy — dated jobId = once per
+  // day; idempotent per source forever, so re-runs cost nothing. The nightly
+  // pass tops up new uploads at 02:45. Nobody presses anything, ever.
+  await enqueueJob("lake", "material-harvest", {}, {
+    jobId: `boot-harvest-${new Date().toISOString().slice(0, 10)}`,
+    delayMs: 120_000,
+  }).catch(() => undefined);
   await cronQueue
     .add(
       "nightly-compound",
