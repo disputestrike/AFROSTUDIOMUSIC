@@ -74,6 +74,7 @@ import { processSongEdit } from "./processors/song-edit";
 import { processSynthMaterial } from "./processors/synth-material";
 import { processAssetCleanup } from "./processors/asset-cleanup";
 import { processReleaseKit } from "./lib/release-kit";
+import { processMaterialHarvest } from "./processors/material-harvest";
 import { processGenerateClips } from "./processors/generate-clips";
 import { processGenerateVisuals } from "./processors/generate-visuals";
 import { processSocialPublish } from "./processors/social-publish";
@@ -153,6 +154,7 @@ const secretsReady = process.env.ENCRYPTION_KEY
 const LAKE_JOBS = new Set([
   "deep-measure",
   "nightly-compound",
+  "material-harvest",
   "measure-backfill",
   "learn-backfill",
   "listen-back",
@@ -413,6 +415,8 @@ const workers = [
                   await processNightlyCompound({
                     force: (job.data as { force?: boolean } | undefined)?.force === true,
                   });
+                else if (job.name === "material-harvest")
+                  await processMaterialHarvest();
                 else if (job.name === "measure-backfill")
                   await processMeasureBackfill();
                 else if (job.name === "learn-backfill")

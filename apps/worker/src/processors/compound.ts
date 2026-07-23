@@ -2130,6 +2130,11 @@ export async function processNightlyCompound(opts?: { force?: boolean }): Promis
       await ensureSignatureKits();
       await processReportCard();
       await processLearnBackfill({ limit: 5 });
+      // MATERIAL HARVEST (owner 2026-07-22): real loops from the owned catalog
+      // replace synth as the shelf's spine — 2 sources a night, idempotent.
+      await (await import("./material-harvest")).processMaterialHarvest({ limit: 2 }).catch(err =>
+        console.warn("[harvest] nightly pass failed:", (err as Error).message?.slice(0, 120))
+      );
       await processRefileReferences({ limit: 25 });
       await processListenBack({ limit: 20 });
       await processMeasureBackfill({ refLimit: 20, beatLimit: 8 });
