@@ -13,6 +13,10 @@
  *    deletedAt + quarantined on EVERY song, platform-wide, with counts.
  */
 import { prisma } from "@afrohit/db";
+import {
+  ASSET_WORKSPACE_ALIASES_SETTING_KEY,
+  mergeAssetWorkspaceAliases,
+} from "@afrohit/shared";
 
 /** Sources that came from REAL audio a human owns — everything else was seeded. */
 const REAL_SOURCES = ["artist_stem", "provider_stem", "upload", "import", "artist_upload"];
@@ -85,15 +89,52 @@ export async function consolidateSongsToOperator(): Promise<void> {
   }
   const before = await prisma.song.count({ where: { workspaceId: operatorWs } });
   const total = await prisma.song.count();
+  const sourceWorkspaces = await prisma.workspace.findMany({
+    where: {
+      OR: [
+        { songs: { some: {} } },
+        { projects: { some: {} } },
+        { artists: { some: {} } },
+        { albums: { some: {} } },
+      ],
+    },
+    select: { id: true },
+  });
   const other = { workspaceId: { not: operatorWs } } as const;
-  const s = await prisma.song.updateMany({ where: other, data: { workspaceId: operatorWs } });
-  const p = await prisma.project.updateMany({ where: other, data: { workspaceId: operatorWs } });
-  const a = await prisma.artist.updateMany({ where: other, data: { workspaceId: operatorWs } });
-  const al = await prisma.album.updateMany({ where: other, data: { workspaceId: operatorWs } });
+  const { s, p, a, al } = await prisma.$transaction(async (tx) => {
+    const currentAliases = await tx.systemSetting.findUnique({
+      where: { key: ASSET_WORKSPACE_ALIASES_SETTING_KEY },
+      select: { value: true },
+    });
+    await tx.systemSetting.upsert({
+      where: { key: ASSET_WORKSPACE_ALIASES_SETTING_KEY },
+      create: {
+        key: ASSET_WORKSPACE_ALIASES_SETTING_KEY,
+        value: mergeAssetWorkspaceAliases(
+          currentAliases?.value,
+          operatorWs,
+          sourceWorkspaces.map((workspace) => workspace.id),
+        ),
+      },
+      update: {
+        value: mergeAssetWorkspaceAliases(
+          currentAliases?.value,
+          operatorWs,
+          sourceWorkspaces.map((workspace) => workspace.id),
+        ),
+      },
+    });
+    const s = await tx.song.updateMany({ where: other, data: { workspaceId: operatorWs } });
+    const p = await tx.project.updateMany({ where: other, data: { workspaceId: operatorWs } });
+    const a = await tx.artist.updateMany({ where: other, data: { workspaceId: operatorWs } });
+    const al = await tx.album.updateMany({ where: other, data: { workspaceId: operatorWs } });
+    return { s, p, a, al };
+  });
   const after = await prisma.song.count({ where: { workspaceId: operatorWs } });
   console.log(
     `[consolidate] operator ${operatorWs}: catalog ${before} -> ${after} song(s) of ${total} platform-wide ` +
-    `(moved ${s.count} song, ${p.count} project, ${a.count} artist, ${al.count} album from the test workspaces)`
+    `(moved ${s.count} song, ${p.count} project, ${a.count} artist, ${al.count} album from the test workspaces; ` +
+    `preserved ${sourceWorkspaces.length} historical asset prefix(es))`
   );
 }
 
