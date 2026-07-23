@@ -309,7 +309,13 @@ export default async function songs(app: FastifyInstance) {
     }
     await Promise.all(
       [...videoBySong.entries()].map(async ([songId, v]) => {
-        videoBySong.set(songId, { ...v, url: await presignAssetRef(v.url, 3600) });
+        // A single malformed video URL must not reject the whole Promise.all
+        // (that 500'd the catalog for the operator's 356-song account).
+        try {
+          videoBySong.set(songId, { ...v, url: await presignAssetRef(v.url, 3600) });
+        } catch {
+          videoBySong.delete(songId);
+        }
       }),
     );
 
@@ -325,13 +331,22 @@ export default async function songs(app: FastifyInstance) {
       rows
         .filter((s: CatalogRow) => !!s.coverUrl)
         .map(async (s: CatalogRow) => {
-          coverBySong.set(s.id, await presignAssetRef(s.coverUrl!, 3600));
+          // A bad cover ref must not reject the whole list (falls back to the
+          // project cover / null in the mapper).
+          try {
+            coverBySong.set(s.id, await presignAssetRef(s.coverUrl!, 3600));
+          } catch { /* skip — mapper uses coverByProject / null */ }
         }),
     );
 
-    return rows.map((s: CatalogRow) => {
+    // PER-ROW RESILIENCE (owner incident 2026-07-23: after consolidating 356
+    // songs into the operator account the catalog 500'd — one row with a null
+    // project/artist threw and killed the WHOLE list -> "API isn't reachable").
+    // Each card is built in isolation; a bad row is skipped, never fatal.
+    return rows.flatMap((s: CatalogRow) => {
+      try {
       const currentAudio = currentPlayableAsset(s);
-      return {
+      return [{
         id: s.id,
         title: s.lyric?.title || s.title,
         versionLabel: s.versionLabel,
@@ -343,12 +358,13 @@ export default async function songs(app: FastifyInstance) {
         // findable under the same 🎹 chip.
         hasInstrumental: !!s.instrumentalUrl,
         status: s.status,
-        // PER-SONG DISPLAY ARTIST wins; NULL falls back to the workspace artist.
-        artist: s.displayArtist || s.project.artist.stageName,
+        // PER-SONG DISPLAY ARTIST wins; NULL falls back to the workspace artist
+        // (null-safe: a consolidated row may have lost its artist relation).
+        artist: s.displayArtist || s.project?.artist?.stageName || 'Unknown Artist',
         projectId: s.projectId,
-        projectTitle: s.project.title,
-        genre: s.project.genre,
-        bpm: s.project.bpm,
+        projectTitle: s.project?.title ?? null,
+        genre: s.project?.genre ?? null,
+        bpm: s.project?.bpm ?? null,
         audioUrl: currentAudio?.url ?? null,
         currentAudio: playableAssetRef(currentAudio),
         masterUrl: s.masters[0]?.url ?? null,
@@ -373,7 +389,11 @@ export default async function songs(app: FastifyInstance) {
         deletedReason: s.deletedReason,
         quarantined: s.quarantined,
         quarantineReason: s.quarantineReason,
-      };
+      }];
+      } catch (err) {
+        req.log.warn({ err, songId: s.id }, 'catalog: skipped a malformed row (never fails the whole list)');
+        return [];
+      }
     });
   });
 
