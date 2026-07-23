@@ -18,6 +18,12 @@ build:
   python_requirements: requirements.txt
   run:
     - "apt-get update && apt-get install -y ffmpeg git && rm -rf /var/lib/apt/lists/*"
+    # TORCH 2.4 OVERRIDE (run 0m92r5h7: ACE-Step's model uses nn.RMSNorm, a
+    # torch-2.4 API; cog 0.9.8's matrix caps requirements at 2.3). requirements
+    # keeps torch==2.3.0 to satisfy cog's build-time check; this step then
+    # replaces it IN /dep (where the runtime resolves) with the real cu121
+    # 2.4.1 wheels from PyTorch's own index.
+    - "pip install --no-cache-dir --target /dep --upgrade torch==2.4.1 torchvision==0.19.1 torchaudio==2.4.1 --index-url https://download.pytorch.org/whl/cu121"
     # Pin the official MIT repo at build time (shallow — we only need HEAD).
     - "git clone --depth 1 https://github.com/ace-step/ACE-Step /src/ACE-Step"
     # --no-deps: every dependency is already pinned in requirements.txt above
