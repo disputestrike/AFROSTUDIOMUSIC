@@ -2127,7 +2127,13 @@ export async function processNightlyCompound(opts?: { force?: boolean }): Promis
         }
       }
       console.log("[nightly-compound] start");
-      await ensureSignatureKits();
+      // SEEDED FORGING RETIRED (owner order 2026-07-23: "delete everything that
+      // was seeded and build the material all over" from real songs — the
+      // nightly kit-forge re-planted 14 synth loops the very night of the
+      // purge). Lanes now fill from Material harvest (real stems) alone; the
+      // in-render last-resort forge remains ONLY as the never-dies bridge until
+      // every lane has harvested loops, then it goes too.
+      console.log("[kits] nightly seeded forging RETIRED — shelves fill from the owned catalog only");
       await processReportCard();
       await processLearnBackfill({ limit: 5 });
       // MATERIAL HARVEST (owner 2026-07-22): real loops from the owned catalog
