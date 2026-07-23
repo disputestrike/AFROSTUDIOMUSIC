@@ -158,7 +158,9 @@ function recipeString(recipe: unknown, ...paths: string[][]): string | null {
 }
 
 export async function processMaterialHarvest(opts?: { limit?: number }): Promise<HarvestSummary> {
-  const limit = Math.max(1, Math.min(10, opts?.limit ?? 3));
+  // Manual tap = DRAIN (owner 2026-07-22: "automate it immediately") — one tap
+  // sweeps every eligible source in the scan window; the nightly stays gentle.
+  const limit = Math.max(1, Math.min(30, opts?.limit ?? 30));
   const summary: HarvestSummary = { scanned: 0, harvestedSources: 0, loopsCreated: 0, skipped: [] };
 
   const sources = await prisma.soundReference.findMany({
