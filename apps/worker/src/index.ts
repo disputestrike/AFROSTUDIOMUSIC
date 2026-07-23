@@ -662,10 +662,9 @@ async function registerCron() {
     jobId: `restore-songs-${new Date().toISOString().slice(0, 10)}-v2`,
     delayMs: 45_000,
   }).catch(() => undefined);
-  await enqueueJob("lake", "consolidate-to-operator", {}, {
-    jobId: `consolidate-op-${new Date().toISOString().slice(0, 10)}-v2`,
-    delayMs: 75_000,
-  }).catch(() => undefined);
+  // Tenant consolidation is an explicit, destructive ownership operation.
+  // It remains available behind the admin action, but must never re-run just
+  // because the worker deployed or the calendar date changed.
   await enqueueJob("lake", "material-harvest", {}, {
     jobId: `boot-harvest-${new Date().toISOString().slice(0, 10)}`,
     delayMs: 120_000,

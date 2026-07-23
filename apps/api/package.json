@@ -59,7 +59,8 @@
     "test:release-kit": "tsx scripts/test-release-kit.mjs",
     "test:release-page": "tsx scripts/test-release-page.mjs",
     "test:release-action": "tsx scripts/test-release-action.mjs",
-    "test:scene-edit-propagation": "tsx scripts/test-scene-edit-propagation.mjs"
+    "test:scene-edit-propagation": "tsx scripts/test-scene-edit-propagation.mjs",
+    "test:asset-workspace-aliases": "tsx scripts/test-asset-workspace-aliases.ts"
   },
   "dependencies": {
     "@afrohit/ai": "workspace:*",

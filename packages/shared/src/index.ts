@@ -61,3 +61,4 @@ export * from "./singing-evidence";
 export * from "./rbac";
 export * from "./cover-prompt";
 export * from "./social-distribution";
+export * from "./asset-workspace-alias";
