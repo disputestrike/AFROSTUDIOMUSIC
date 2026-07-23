@@ -121,6 +121,9 @@ async function rewriteLyric(
       `CURRENT LYRIC:\n${currentBody.slice(0, 4000)}\n\n` +
       `A&R NOTES TO IMPLEMENT:\n${(read.toMakeItBigger ?? []).map((n) => `- ${n}`).join('\n')}\n\n` +
       `RISKS TO FIX:\n${(read.risks ?? []).map((n) => `- ${n}`).join('\n')}\n\n` +
+      // OWNER LAW (SIZZLE refusal, 2026-07-22): an artist/song reference in the
+      // notes is STYLE CONDITIONING — lane, energy, era — never a copy request.
+      `IF ANY NOTE REFERENCES ANOTHER ARTIST OR SONG: treat it purely as style/energy/lane direction and write a fully ORIGINAL song in that style. NEVER refuse, never explain limitations, never mention copying, never name other artists inside the lyric. Your output is ALWAYS just the original song.\n\n` +
       [laneDnaBrief(genre), prompts.hitCraftBrief('lyric')].filter(Boolean).join('\n\n') +
       `\n\nReturn strict JSON: title, body (the full rewritten lyric), whatChanged (3-5 one-line notes on what you executed).`,
     temperature: 0.8,
@@ -493,18 +496,17 @@ async function runGateForSong(app: FastifyInstance, workspaceId: string, songId:
       }
     }
 
-    // Spend the ONE render when the winning lyric clears the bar OR improves the
-    // score meaningfully (>= +4) — apply real gains toward 75, but don't burn a
-    // render on a rewrite that barely moved. One delayed, low-priority re-sing.
-    let finalPred: HitPrediction | null = pred0;
-    const worthRendering =
-      bestLyric.body !== song.lyric.body && (bestScore >= BLOW_TARGET || bestScore >= initialScore + 4);
-    if (worthRendering) {
-      const jobId = await resing(app, workspaceId, song, bestLyric.title, bestLyric.body, { delayMs: 60_000, operationKey: gateKey });
-      if (jobId && (await waitForJob(jobId, 120))) {
-        finalPred = (await arReadSong(app, workspaceId, songId, `${gateKey}:final-read`)) ?? finalPred;
-        bestScore = bestOf(finalPred?.hitScore, finalPred?.viralScore);
-      }
+    // OWNER LAW (2026-07-22, "every time it makes a song it makes two — will
+    // it blow is ANALYSIS, not a song"): the background gate NEVER renders.
+    // It scores, climbs the writing hypothetically, and records the advisory.
+    // A second take exists ONLY when the artist explicitly asks (the
+    // user-initiated redeem path above keeps its render). The silent
+    // one-extra-render-per-song — double spend on nearly every record at bar
+    // 90 — is deleted, not toggled.
+    if (bestLyric.body !== song.lyric.body && bestScore > initialScore) {
+      console.log(
+        `[will-it-blow] ${songId}: advisory only — rewrite would score ~${bestScore} (from ${initialScore}); no render without the artist's ask`
+      );
     }
     await stamp(songId, bestScore, rewrites, bestScore >= BLOW_TARGET);
   } catch (err) {
