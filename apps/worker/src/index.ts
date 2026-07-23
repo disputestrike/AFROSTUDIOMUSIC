@@ -651,19 +651,19 @@ async function registerCron() {
   // OWNER ORDERS 2026-07-23 (one-shot, dated = once): purge every seeded
   // material + restore every hidden song. Receipts land in this log.
   await enqueueJob("lake", "reset-data-lake", {}, {
-    jobId: `lake-reset-${new Date().toISOString().slice(0, 10)}`,
+    jobId: `lake-reset-${new Date().toISOString().slice(0, 10)}-v2`,
     delayMs: 30_000,
   }).catch(() => undefined);
   await enqueueJob("lake", "purge-seeded-materials", {}, {
-    jobId: `purge-seeded-${new Date().toISOString().slice(0, 10)}`,
+    jobId: `purge-seeded-${new Date().toISOString().slice(0, 10)}-v2`,
     delayMs: 60_000,
   }).catch(() => undefined);
   await enqueueJob("lake", "restore-all-songs", {}, {
-    jobId: `restore-songs-${new Date().toISOString().slice(0, 10)}`,
+    jobId: `restore-songs-${new Date().toISOString().slice(0, 10)}-v2`,
     delayMs: 45_000,
   }).catch(() => undefined);
   await enqueueJob("lake", "consolidate-to-operator", {}, {
-    jobId: `consolidate-op-${new Date().toISOString().slice(0, 10)}`,
+    jobId: `consolidate-op-${new Date().toISOString().slice(0, 10)}-v2`,
     delayMs: 75_000,
   }).catch(() => undefined);
   await enqueueJob("lake", "material-harvest", {}, {

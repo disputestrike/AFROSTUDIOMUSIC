@@ -184,7 +184,12 @@ export default async function songs(app: FastifyInstance) {
         // the card shows "no audio rendered yet — Recreate"), never gone.
       },
       orderBy: { createdAt: 'desc' },
-      take: 100,
+      // 100 -> 1000 (owner 2026-07-23: "the catalogue was only a hundred, it
+      // should be way more"). The old cap silently hid everything past the
+      // newest 100 — after consolidating all songs into the operator account
+      // that cap WAS the "only 100" the owner saw. Per-song includes stay
+      // bounded (take:20 each) so the payload is still safe.
+      take: 1000,
       include: {
         project: { select: { id: true, title: true, genre: true, bpm: true, artist: { select: { stageName: true } } } },
         masters: { orderBy: { createdAt: 'desc' }, take: 20 },
