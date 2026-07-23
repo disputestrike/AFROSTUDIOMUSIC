@@ -47,3 +47,24 @@ export async function restoreAllSongs(): Promise<{ restored: number; unquarantin
   );
   return { restored, unquarantined };
 }
+
+/** TOTAL LAKE RESET (owner 2026-07-23: "this page should have ZERO of
+ * everything — start over"). Deletes ALL learned conditioning: every reference
+ * (self-training, zap, unknown, minimax-derived), every material, every trend
+ * snapshot, the whole usage ledger. ONE exception, per the owner's own words
+ * ("with music we're adding"): user-attested uploads survive — they are the
+ * new foundation, and the harvest re-cuts the shelf from them alone. */
+export async function resetDataLake(): Promise<void> {
+  const { count: usages } = await prisma.referenceUsage.deleteMany({});
+  const { count: refs } = await prisma.soundReference.deleteMany({
+    where: { rightsBasis: { not: "user-attested" } },
+  });
+  const kept = await prisma.soundReference.count();
+  const { count: mats } = await prisma.materialAsset.deleteMany({});
+  const { count: trends } = await prisma.systemSetting.deleteMany({
+    where: { key: { startsWith: "trends:" } },
+  });
+  console.log(
+    `[lake-reset] ZEROED: ${refs} reference(s), ${mats} material(s), ${trends} trend snapshot(s), ${usages} usage row(s) — kept ${kept} user-attested upload(s) as the new foundation`
+  );
+}
