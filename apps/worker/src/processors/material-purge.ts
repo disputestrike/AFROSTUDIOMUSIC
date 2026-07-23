@@ -17,14 +17,34 @@ import { prisma } from "@afrohit/db";
 /** Sources that came from REAL audio a human owns — everything else was seeded. */
 const REAL_SOURCES = ["artist_stem", "provider_stem", "upload", "import", "artist_upload"];
 
+/** FK GUARD (the bug that silently defeated every material delete): MaterialUsage
+ *  points at MaterialAsset with onDelete: Restrict, and AfroRefClip holds an
+ *  optional materialId — so deleting a referenced material throws P2003 and the
+ *  whole delete rolls back untouched. Clear the dependents FIRST, for the exact
+ *  ids we're about to remove. */
+async function clearMaterialDependents(materialIds: string[]): Promise<void> {
+  if (!materialIds.length) return;
+  const u = await prisma.materialUsage.deleteMany({ where: { materialId: { in: materialIds } } });
+  const a = await prisma.afroRefClip.updateMany({
+    where: { materialId: { in: materialIds } },
+    data: { materialId: null },
+  });
+  console.log(`[purge] cleared ${u.count} MaterialUsage + unlinked ${a.count} AfroRefClip before delete`);
+}
+
 export async function purgeSeededMaterials(): Promise<{ deleted: number; kept: number }> {
   const before = await prisma.materialAsset.groupBy({ by: ["source"], _count: { _all: true } });
   console.log(
     "[purge-seeded] shelf before:",
     before.map(r => `${r.source}=${r._count._all}`).join(" ")
   );
-  const { count: deleted } = await prisma.materialAsset.deleteMany({
+  const doomed = await prisma.materialAsset.findMany({
     where: { source: { notIn: REAL_SOURCES } },
+    select: { id: true },
+  });
+  await clearMaterialDependents(doomed.map(m => m.id));
+  const { count: deleted } = await prisma.materialAsset.deleteMany({
+    where: { id: { in: doomed.map(m => m.id) } },
   });
   const kept = await prisma.materialAsset.count();
   console.log(
@@ -59,12 +79,18 @@ export async function resetDataLake(): Promise<void> {
   const { count: refs } = await prisma.soundReference.deleteMany({
     where: { rightsBasis: { not: "user-attested" } },
   });
-  const kept = await prisma.soundReference.count();
+  const keptRefs = await prisma.soundReference.count();
+  // FK-SAFE MATERIAL WIPE (the delete that kept silently failing on P2003):
+  // clear every MaterialUsage + unlink every AfroRefClip FIRST, then delete
+  // ALL materials. Each step logs so a failure can never hide again.
+  const allMats = await prisma.materialAsset.findMany({ select: { id: true } });
+  await clearMaterialDependents(allMats.map(m => m.id));
   const { count: mats } = await prisma.materialAsset.deleteMany({});
+  const remainingMats = await prisma.materialAsset.count();
   const { count: trends } = await prisma.systemSetting.deleteMany({
     where: { key: { startsWith: "trends:" } },
   });
   console.log(
-    `[lake-reset] ZEROED: ${refs} reference(s), ${mats} material(s), ${trends} trend snapshot(s), ${usages} usage row(s) — kept ${kept} user-attested upload(s) as the new foundation`
+    `[lake-reset] ZEROED: ${refs} reference(s), ${mats} material(s), ${trends} trend snapshot(s), ${usages} usage row(s) — kept ${keptRefs} user-attested upload(s); ${remainingMats} material(s) remain (must be 0)`
   );
 }
