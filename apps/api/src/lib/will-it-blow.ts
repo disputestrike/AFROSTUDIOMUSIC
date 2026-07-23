@@ -89,6 +89,20 @@ function loadSong(workspaceId: string, songId: string) {
   });
 }
 
+/** GARBAGE GUARD (owner receipt, SIZZLE 2026-07-22): a refusal preamble — "I
+ * can't write a song that copies Rema's Calm Down…" — plus web-citation debris
+ * shipped AS THE SONG'S LYRIC on a "bigger" take. Any rewrite that isn't
+ * recognizably a lyric is DISCARDED: the original stays current and no render
+ * money is spent on garbage. */
+function looksLikeLyric(body: string): boolean {
+  const t = body.trim();
+  if (t.length < 120) return false;
+  if (/\b(i can'?t|i cannot|i'?m unable to|i am unable to)\b[^\n]{0,80}\b(write|create|copy|reproduce|help)/i.test(t)) return false;
+  if (/\(\[[A-Za-z]+\]\[\d+\]\)|\[\d+\]\(https?:/.test(t)) return false; // ([Qobuz][1]) style citations
+  if (/as an ai\b|language model|\*\*title:/i.test(t)) return false; // meta/markdown scaffolding
+  return true;
+}
+
 /** Rewrite the lyric implementing the A&R notes — returns the new lyric TEXT only.
  * Does NOT persist or render. Cheap: one Claude call. */
 async function rewriteLyric(
@@ -112,7 +126,7 @@ async function rewriteLyric(
     temperature: 0.8,
     maxTokens: 4000,
   });
-  if (!out?.body) return null;
+  if (!out?.body || !looksLikeLyric(out.body)) return null;
   // PASS 2 — the SAME critic-polish the create path runs (HIT-ENGINE laws + the
   // FINAL HUMAN SONGWRITER AUDIT). This is what was missing: redeem/rewrite did a
   // single pass and couldn't lift a song to the bar. Now it critiques + rewrites
@@ -127,7 +141,7 @@ async function rewriteLyric(
       maxTokens: 4500,
       timeoutMs: 90_000,
     }).catch(() => null);
-    if (polished?.body && polished.body.length > 200) {
+    if (polished?.body && polished.body.length > 200 && looksLikeLyric(polished.body)) {
       return { title: polished.title || out.title, body: polished.body, whatChanged: [...(out.whatChanged ?? []).slice(0, 3), ...(polished.whatChanged ?? []).slice(0, 3)] };
     }
   }
