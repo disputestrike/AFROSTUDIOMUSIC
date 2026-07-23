@@ -8,43 +8,25 @@ export default async function CatalogPage() {
   // bugs for hours behind a red "API isn't reachable" banner. Say the true
   // thing and give the one-click way out.
   let songs: SongRow[] | null = null;
-  let expired = false;
   try {
     songs = await apiServer<SongRow[]>('/songs');
-  } catch (err) {
-    if ((err as { status?: number })?.status === 401) expired = true;
+  } catch {
+    songs = null;
   }
 
-  if (expired) {
-    return (
-      <div className="mx-auto max-w-6xl px-6 py-10">
-        <h1 className="font-display text-4xl">Catalog</h1>
-        <div className="mt-8 rounded-2xl border border-amber-500/30 bg-amber-500/10 p-8 text-center">
-          <p className="text-sm text-amber-200">
-            Your session expired — your music is all still here. Sign in again to see it.
-          </p>
-          <a
-            href="/signin"
-            className="mt-4 inline-block rounded-full bg-brand-gradient px-5 py-2 text-sm font-medium text-ink"
-          >
-            Sign in
-          </a>
-        </div>
-      </div>
-    );
-  }
+  // CLIENT-LOAD FALLBACK (the real architecture fix, owner outage 2026-07-23):
+  // the session cookie is set on the API domain, which the browser NEVER sends
+  // to the web domain — so this server render can't authenticate and 401s,
+  // which we were showing as "the studio API isn't reachable". The BROWSER can
+  // authenticate (cross-site cookie, SameSite=None), so when the server render
+  // comes back empty-handed we hand off and let the grid fetch it client-side.
+  const ssrFailed = songs === null;
 
   return (
     <div className="mx-auto max-w-6xl px-6 py-10">
       <h1 className="font-display text-4xl">Catalog</h1>
       <p className="mt-2 text-sm text-slate-400">Every song you&apos;ve started — newest first. Hover a card to delete.</p>
-      {songs === null ? (
-        <div className="mt-8 rounded-2xl border border-red-500/30 bg-red-500/10 p-8 text-center text-sm text-red-300">
-          Couldn&apos;t load your songs — the studio API isn&apos;t reachable right now. Your music is safe; refresh in a moment.
-        </div>
-      ) : (
-        <CatalogGrid initial={songs} />
-      )}
+      <CatalogGrid initial={songs ?? []} loadOnMount={ssrFailed} />
     </div>
   );
 }

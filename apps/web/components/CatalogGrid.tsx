@@ -505,11 +505,34 @@ interface VersionsResp {
   }>;
 }
 
-export default function CatalogGrid({ initial }: { initial: SongRow[] }) {
+export default function CatalogGrid({ initial, loadOnMount = false }: { initial: SongRow[]; loadOnMount?: boolean }) {
   const [chatFor, setChatFor] = useState<string | null>(null);
   const api = useApi();
   const router = useRouter();
   const [songs, setSongs] = useState<SongRow[]>(initial);
+  // CLIENT-LOAD HANDOFF (owner outage 2026-07-23): the server render can't
+  // authenticate — the session cookie lives on the API domain and the browser
+  // never sends it to the web domain — so a 401 there used to become a red
+  // "API isn't reachable". The BROWSER holds the right cookie, so when the
+  // server came back empty we fetch the catalog here instead.
+  const [selfLoading, setSelfLoading] = useState(loadOnMount);
+  const [selfLoadError, setSelfLoadError] = useState('');
+  useEffect(() => {
+    if (!loadOnMount) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const rows = await api.get<SongRow[]>('/songs');
+        if (!cancelled) setSongs(rows);
+      } catch (e) {
+        if (!cancelled) setSelfLoadError(String((e as Error)?.message ?? e).slice(0, 160));
+      } finally {
+        if (!cancelled) setSelfLoading(false);
+      }
+    })();
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loadOnMount]);
   // CATALOG BY TYPE (owner: "should I create my catalog based on type?
   // right now everything is in my catalog"): one chip row, pure client-side
   // filter over the typed rows the API now returns.
@@ -2754,6 +2777,30 @@ export default function CatalogGrid({ initial }: { initial: SongRow[] }) {
     } finally {
       setBusy("");
     }
+  }
+
+  // Honest states while the browser loads the catalog itself (never a blank
+  // page, never a false "no songs" when we simply haven't fetched yet).
+  if (selfLoading) {
+    return (
+      <div className="mt-8 rounded-2xl border border-slate-800 bg-slate-900/40 p-10 text-center text-sm text-slate-400">
+        Loading your catalog…
+      </div>
+    );
+  }
+  if (selfLoadError) {
+    return (
+      <div className="mt-8 rounded-2xl border border-amber-500/30 bg-amber-500/10 p-8 text-center">
+        <p className="text-sm text-amber-200">
+          {/^40[13]\b/.test(selfLoadError)
+            ? 'Your session expired — your music is all still here. Sign in again to see it.'
+            : `Couldn't load your catalog: ${selfLoadError}`}
+        </p>
+        <a href="/signin" className="mt-4 inline-block rounded-full bg-brand-gradient px-5 py-2 text-sm font-medium text-ink">
+          Sign in
+        </a>
+      </div>
+    );
   }
 
   if (songs.length === 0) {
