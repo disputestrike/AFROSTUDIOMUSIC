@@ -26,7 +26,7 @@
   },
   "dependencies": {
     "@afrohit/shared": "workspace:*",
-    "@prisma/client": "^5.22.0"
+    "@prisma/client": "^7.8.0"
   },
   "devDependencies": {
     "prisma": "^5.22.0",

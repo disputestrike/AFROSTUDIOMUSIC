@@ -25,15 +25,15 @@
     "@afrohit/ai": "workspace:*",
     "@afrohit/db": "workspace:*",
     "@afrohit/shared": "workspace:*",
-    "@aws-sdk/client-s3": "^3.696.0",
-    "@aws-sdk/s3-request-presigner": "^3.696.0",
-    "@sentry/node": "^10.55.0",
-    "bullmq": "^5.31.1",
-    "dotenv": "^16.4.7",
-    "ioredis": "^5.4.1",
+    "@aws-sdk/client-s3": "^3.1090.0",
+    "@aws-sdk/s3-request-presigner": "^3.1090.0",
+    "@sentry/node": "^10.66.0",
+    "bullmq": "^5.80.9",
+    "dotenv": "^17.4.2",
+    "ioredis": "^5.11.1",
     "jszip": "^3.10.1",
-    "nanoid": "^5.0.9",
-    "pino": "^9.5.0"
+    "nanoid": "^6.0.0",
+    "pino": "^10.3.1"
   },
   "devDependencies": {
     "@types/node": "^22.9.0",
