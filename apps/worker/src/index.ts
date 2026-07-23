@@ -75,6 +75,7 @@ import { processSynthMaterial } from "./processors/synth-material";
 import { processAssetCleanup } from "./processors/asset-cleanup";
 import { processReleaseKit } from "./lib/release-kit";
 import { processMaterialHarvest } from "./processors/material-harvest";
+import { purgeSeededMaterials, restoreAllSongs } from "./processors/material-purge";
 import { processGenerateClips } from "./processors/generate-clips";
 import { processGenerateVisuals } from "./processors/generate-visuals";
 import { processSocialPublish } from "./processors/social-publish";
@@ -155,6 +156,8 @@ const LAKE_JOBS = new Set([
   "deep-measure",
   "nightly-compound",
   "material-harvest",
+  "purge-seeded-materials",
+  "restore-all-songs",
   "measure-backfill",
   "learn-backfill",
   "listen-back",
@@ -421,6 +424,10 @@ const workers = [
                 }
                 else if (job.name === "material-harvest")
                   await processMaterialHarvest();
+                else if (job.name === "purge-seeded-materials")
+                  await purgeSeededMaterials();
+                else if (job.name === "restore-all-songs")
+                  await restoreAllSongs();
                 else if (job.name === "measure-backfill")
                   await processMeasureBackfill();
                 else if (job.name === "learn-backfill")
@@ -635,6 +642,16 @@ async function registerCron() {
   // the real-loop harvest ~2 min after EVERY deploy — dated jobId = once per
   // day; idempotent per source forever, so re-runs cost nothing. The nightly
   // pass tops up new uploads at 02:45. Nobody presses anything, ever.
+  // OWNER ORDERS 2026-07-23 (one-shot, dated = once): purge every seeded
+  // material + restore every hidden song. Receipts land in this log.
+  await enqueueJob("lake", "purge-seeded-materials", {}, {
+    jobId: `purge-seeded-${new Date().toISOString().slice(0, 10)}`,
+    delayMs: 60_000,
+  }).catch(() => undefined);
+  await enqueueJob("lake", "restore-all-songs", {}, {
+    jobId: `restore-songs-${new Date().toISOString().slice(0, 10)}`,
+    delayMs: 45_000,
+  }).catch(() => undefined);
   await enqueueJob("lake", "material-harvest", {}, {
     jobId: `boot-harvest-${new Date().toISOString().slice(0, 10)}`,
     delayMs: 120_000,

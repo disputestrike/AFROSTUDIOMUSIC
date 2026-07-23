@@ -270,6 +270,8 @@ function AdminPageInner() {
  */
 const LAKE_TASKS = [
   { task: 'nightly-compound', label: 'Nightly compound (train now)', what: 'the full nightly pass INCLUDING the training flywheel — sweep rights-clean catalog, zip, fire the fine-tune' },
+  { task: 'purge-seeded-materials', label: 'Purge seeded materials', what: 'DELETE every synth/forged material — the shelf rebuilds from real songs only (owner order)' },
+  { task: 'restore-all-songs', label: 'Restore ALL songs', what: 'un-delete + un-quarantine every song ever made, platform-wide' },
   { task: 'material-harvest', label: 'Material harvest (real loops)', what: 'cut real drums/bass/chords loops from YOUR uploaded masters via stem separation — harvested loops outrank synth on every shelf' },
   { task: 'measure-backfill', label: 'Measure backfill', what: 'deep-measure owned references + beats the ear missed' },
   { task: 'learn-backfill', label: 'Learn backfill', what: 'learn uploaded songs that never got a listen' },
