@@ -68,6 +68,32 @@ async function main(): Promise<void> {
   );
   assert.notEqual(manifest(43).scoreHash, first.scoreHash);
 
+  const yorubaLyrics = `[Hook]
+Ọkàn mi n jo, jẹ́ ká lọ
+Ṣe o gbọ́ ohùn mi?`;
+  const yorubaSections = parseLyricSections(yorubaLyrics).map(section => ({
+    name: section.name,
+    kind: section.kind,
+    lines: section.lines,
+  }));
+  const yorubaScore = composeMelody({
+    genre: 'afrobeats',
+    bpm: 103,
+    key: 'A minor',
+    seed: 808,
+    sections: yorubaSections,
+  });
+  assert.doesNotThrow(
+    () =>
+      createAfroOneSingingManifest({
+        lyrics: yorubaLyrics,
+        melodyScore: yorubaScore,
+        genre: 'afrobeats',
+        language: 'yo',
+      }),
+    'accented Yoruba lyrics and their composed score must share one syllable contract'
+  );
+
   const longLyrics = `[Verse 1]\nOne two three four\nFive six seven eight\nNine ten eleven twelve\nHold the line tonight\n[Hook]\nRaise it to the sky\nRaise it to the sky\nWe never let it die\nRaise it to the sky\n[Verse 2]\nMove it through the city\nCarry all the feeling\nEvery body ready\nBring the rhythm home`;
   const longSections = parseLyricSections(longLyrics)
     .filter(section => section.lines.length > 0)

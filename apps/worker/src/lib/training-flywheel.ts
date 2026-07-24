@@ -86,6 +86,8 @@ interface TrainingSource {
   contentFingerprint: string;
   sourceFamilyId: string;
   createdAt: Date;
+  promptText?: string;
+  lyricsText?: string;
 }
 
 interface TrainingConsentSnapshot {
@@ -131,6 +133,28 @@ function record(value: unknown): JsonRecord {
   return value && typeof value === "object" && !Array.isArray(value)
     ? value as JsonRecord
     : {};
+}
+
+interface LearningLaneSummary {
+  songModel: number;
+  loopInstrumentAdapter: number;
+  voiceSingingModel: number;
+  factsAndEvaluation: number;
+  provenanceRepair: number;
+}
+
+function recipeValue(value: unknown, ...paths: string[][]): string | null {
+  for (const path of paths) {
+    let current: unknown = value;
+    for (const key of path)
+      current = record(current)[key];
+    if (
+      (typeof current === "string" || typeof current === "number") &&
+      String(current).trim()
+    )
+      return String(current).trim();
+  }
+  return null;
 }
 
 function stableSourceFamilyId(input: {
@@ -404,6 +428,7 @@ async function liveManifest(): Promise<{
   manifest: TrainingManifest;
   sources: Map<string, Omit<TrainingSource, "id" | "origin">>;
   consents: Map<string, TrainingConsentSnapshot>;
+  learningLanes: LearningLaneSummary;
 }> {
   const take = 5_000;
   // Keep this scan sequential. The flywheel runs off-peak and reliability is
@@ -424,7 +449,11 @@ async function liveManifest(): Promise<{
       take,
     });
   const beats = await prisma.beatAsset.findMany({
-      where: { approved: true },
+      where: {
+        approved: true,
+        songId: { not: null },
+        qualityState: { not: "failed" },
+      },
       select: {
         id: true,
         provider: true,
@@ -432,8 +461,24 @@ async function liveManifest(): Promise<{
         url: true,
         contentHash: true,
         songId: true,
+        assetKind: true,
+        bpm: true,
+        keySignature: true,
         createdAt: true,
-        project: { select: { workspaceId: true } },
+        project: {
+          select: {
+            workspaceId: true,
+            genre: true,
+            bpm: true,
+            keySignature: true,
+          },
+        },
+        song: {
+          select: {
+            title: true,
+            lyric: { select: { body: true } },
+          },
+        },
       },
       take,
     });
@@ -450,29 +495,28 @@ async function liveManifest(): Promise<{
       },
       take,
     });
-  // Learn-My-Sound references (live incident 2026-07-22: the owner's Listen-page
-  // uploads landed here and the sweep never looked). DB-level belt: only rights
-  // bases that can EVER train; referenceToProvenance is the suspenders. zap:
-  // rows are facts-only so the basis filter already excludes them, and the
-  // sourceUrl guard below keeps a mislabeled external pointer out of the zip.
-  const references = (
-    await prisma.soundReference.findMany({
-      where: {
-        active: true,
-        rightsBasis: { in: ["user-attested", "self-generated"] },
-        analysisState: { not: "failed" },
-      },
-      select: {
-        id: true,
-        rightsBasis: true,
-        sourceUrl: true,
-        contentHash: true,
-        workspaceId: true,
-        createdAt: true,
-      },
-      take,
-    })
-  ).filter(row => /^https?:\/\//i.test(row.sourceUrl));
+  // Account for every Learn/Zap reference. The shared provenance gate routes
+  // consented owned audio to weights and keeps facts-only/provider references
+  // in the measured evaluation lane. Private storage refs are valid inputs;
+  // downloadToBuffer resolves them when an eligible archive is built.
+  const references = await prisma.soundReference.findMany({
+    where: {
+      active: true,
+      analysisState: { not: "failed" },
+    },
+    select: {
+      id: true,
+      title: true,
+      genre: true,
+      recipe: true,
+      rightsBasis: true,
+      sourceUrl: true,
+      contentHash: true,
+      workspaceId: true,
+      createdAt: true,
+    },
+    take,
+  });
   const granted = await consentedWorkspaceIds();
 
   const ingredientIds = [...new Set(beats.flatMap(row => beatIngredientIds(row.meta)))];
@@ -523,6 +567,27 @@ async function liveManifest(): Promise<{
       policy
     )
   );
+  const learningLanes: LearningLaneSummary = {
+    songModel: manifest.eligible.filter(
+      asset =>
+        asset.id.startsWith("beat:") || asset.id.startsWith("soundref:")
+    ).length,
+    loopInstrumentAdapter: manifest.eligible.filter(asset =>
+      asset.id.startsWith("material:")
+    ).length,
+    voiceSingingModel: manifest.eligible.filter(asset =>
+      asset.id.startsWith("vocal:")
+    ).length,
+    factsAndEvaluation: manifest.rejected.filter(
+      asset =>
+        asset.origin === "third-party-render" ||
+        asset.id.startsWith("soundref:")
+    ).length,
+    provenanceRepair: manifest.rejected.filter(
+      asset =>
+        asset.origin === "unknown" && !asset.id.startsWith("soundref:")
+    ).length,
+  };
 
   const sources = new Map<string, Omit<TrainingSource, "id" | "origin">>();
   for (const row of materials) {
@@ -539,6 +604,15 @@ async function liveManifest(): Promise<{
     });
   }
   for (const row of beats) {
+    const bpm = row.bpm ?? row.project?.bpm;
+    const key = row.keySignature ?? row.project?.keySignature;
+    const tags = [
+      row.project?.genre,
+      bpm ? `${bpm} bpm` : null,
+      key,
+      row.assetKind === "full_mix" ? "song with lead vocal" : "instrumental",
+      row.song?.title ? `title: ${row.song.title}` : null,
+    ].filter((value): value is string => Boolean(value));
     sources.set(`beat:${row.id}`, {
       workspaceId: row.project?.workspaceId ?? null,
       url: row.url,
@@ -550,6 +624,11 @@ async function liveManifest(): Promise<{
         meta: row.meta,
       }),
       createdAt: row.createdAt,
+      promptText: tags.join(", "),
+      lyricsText:
+        row.assetKind === "full_mix" && row.song?.lyric?.body?.trim()
+          ? row.song.lyric.body.trim()
+          : "[instrumental]",
     });
   }
   for (const row of vocals) {
@@ -566,18 +645,63 @@ async function liveManifest(): Promise<{
     });
   }
   for (const row of references) {
+    const tempo = recipeValue(
+      row.recipe,
+      ["measured", "tempo"],
+      ["measured", "bpm"],
+      ["tempo"],
+      ["bpm"]
+    );
+    const key = recipeValue(
+      row.recipe,
+      ["measured", "key"],
+      ["key"],
+      ["keySignature"]
+    );
+    const lyrics = recipeValue(row.recipe, ["lyrics"], ["transcript"]);
     sources.set(`soundref:${row.id}`, {
       workspaceId: row.workspaceId,
       url: row.sourceUrl,
       contentFingerprint: row.contentHash?.trim() || row.sourceUrl,
       sourceFamilyId: stableSourceFamilyId({ kind: "soundref", id: row.id }),
       createdAt: row.createdAt,
+      promptText: [
+        row.genre,
+        tempo ? `${tempo} bpm` : null,
+        key,
+        row.title ? `title: ${row.title}` : null,
+      ]
+        .filter((value): value is string => Boolean(value))
+        .join(", "),
+      lyricsText: lyrics ?? "[instrumental]",
     });
   }
   console.log(
-    `[flywheel] consent door: ${granted.size} workspace(s) granted; eligible ${manifest.eligible.length} of ${manifest.counts.total}`
+    `[flywheel] consent door: ${granted.size} workspace(s) granted; eligible ${manifest.eligible.length} of ${manifest.counts.total}; lanes=${JSON.stringify(learningLanes)}`
   );
-  return { manifest, sources, consents: granted };
+  await prisma.systemSetting.upsert({
+    where: { key: "music.training.learningLanes.v1" },
+    create: {
+      key: "music.training.learningLanes.v1",
+      value: JSON.stringify({
+        schemaVersion: 1,
+        ...learningLanes,
+        totalAssets: manifest.counts.total,
+        trainableAssets: manifest.counts.eligible,
+        measuredAt: new Date().toISOString(),
+      }),
+    },
+    update: {
+      value: JSON.stringify({
+        schemaVersion: 1,
+        ...learningLanes,
+        totalAssets: manifest.counts.total,
+        trainableAssets: manifest.counts.eligible,
+        measuredAt: new Date().toISOString(),
+      }),
+    },
+  });
+  return { manifest, sources, consents: granted, learningLanes };
 }
 
 function manifestForAssets(
@@ -1156,18 +1280,20 @@ export async function runTrainingFlywheel(): Promise<FlywheelResult> {
   }
   await ensureTrainingWorkspace();
 
-  const { manifest, sources, consents } = await liveManifest();
+  const { manifest, sources, consents, learningLanes } = await liveManifest();
   const holdout = await loadEarHoldoutPolicy();
   const heldOut = (asset: TrainingSource): boolean =>
     holdout.exclusions.sourceAssetIds.has(asset.id.toLowerCase()) ||
     holdout.exclusions.sourceFamilyIds.has(asset.sourceFamilyId.toLowerCase()) ||
     holdout.exclusions.contentHashes.has(asset.contentFingerprint.toLowerCase());
   const selected: TrainingSource[] = manifest.eligible
-    // NO LOOPS IN THE SONG TRAINER (live run 7bjtwdrh…): 17 of 21 zipped files
-    // were 5-second synth loops the trainer skips as too short — they only
-    // crowd out full-length songs. Materials stay rights-accounted in the
-    // manifest; they just never ride the song-model zip.
-    .filter(asset => !asset.id.startsWith("material:"))
+    // Complete rights-clean songs and consented Learn uploads train the general
+    // song model. Loops and isolated vocals are counted in their specialized
+    // adapter lanes instead of being discarded or distorting this model.
+    .filter(
+      asset =>
+        asset.id.startsWith("beat:") || asset.id.startsWith("soundref:")
+    )
     .map(asset => {
       const source = sources.get(asset.id);
       return source ? { ...asset, ...source } : null;
@@ -1238,7 +1364,16 @@ export async function runTrainingFlywheel(): Promise<FlywheelResult> {
         console.warn(`[flywheel] excluded frozen holdout bytes from ${asset.id}`);
         continue;
       }
-      zip.file(`dataset/${asset.id.replace(/[^a-zA-Z0-9_-]+/g, "_")}.wav`, bytes);
+      const datasetName = asset.id.replace(/[^a-zA-Z0-9_-]+/g, "_");
+      zip.file(`dataset/${datasetName}.wav`, bytes);
+      zip.file(
+        `dataset/${datasetName}.prompt.txt`,
+        asset.promptText?.trim() || "music"
+      );
+      zip.file(
+        `dataset/${datasetName}.lyrics.txt`,
+        asset.lyricsText?.trim() || "[instrumental]"
+      );
       zippedAssets.push({ ...asset, audioHash });
     } catch (error) {
       console.warn(`[flywheel] skipped ${asset.id}: ${(error as Error)?.message?.slice(0, 80)}`);
@@ -1366,6 +1501,7 @@ export async function runTrainingFlywheel(): Promise<FlywheelResult> {
           eligible: manifest.eligible.length,
           zipped: zippedAssets.length,
           trainingAssets,
+          learningLanes,
           holdoutManifestHash: holdout.manifestHash,
           trainingConsentSnapshot,
           consentSnapshotHash,

@@ -19,7 +19,19 @@ import {
 } from "@afrohit/shared";
 
 /** Sources that came from REAL audio a human owns — everything else was seeded. */
-const REAL_SOURCES = ["artist_stem", "provider_stem", "upload", "import", "artist_upload"];
+const SONG_DERIVED_SOURCES = new Set(["artist_stem", "self_stem"]);
+
+export function isSongDerivedMaterial(material: {
+  source: string;
+  meta?: unknown;
+}): boolean {
+  if (!SONG_DERIVED_SOURCES.has(material.source)) return false;
+  const meta =
+    material.meta && typeof material.meta === "object"
+      ? (material.meta as Record<string, unknown>)
+      : null;
+  return typeof meta?.fromSongId === "string" && meta.fromSongId.trim().length > 0;
+}
 
 /** FK GUARD (the bug that silently defeated every material delete): MaterialUsage
  *  points at MaterialAsset with onDelete: Restrict, and AfroRefClip holds an
@@ -42,17 +54,17 @@ export async function purgeSeededMaterials(): Promise<{ deleted: number; kept: n
     "[purge-seeded] shelf before:",
     before.map(r => `${r.source}=${r._count._all}`).join(" ")
   );
-  const doomed = await prisma.materialAsset.findMany({
-    where: { source: { notIn: REAL_SOURCES } },
-    select: { id: true },
+  const shelf = await prisma.materialAsset.findMany({
+    select: { id: true, source: true, meta: true },
   });
+  const doomed = shelf.filter(material => !isSongDerivedMaterial(material));
   await clearMaterialDependents(doomed.map(m => m.id));
   const { count: deleted } = await prisma.materialAsset.deleteMany({
     where: { id: { in: doomed.map(m => m.id) } },
   });
   const kept = await prisma.materialAsset.count();
   console.log(
-    `[purge-seeded] DELETED ${deleted} seeded material(s); ${kept} real-song material(s) remain — the shelf now rebuilds from the owned catalog only`
+    `[purge-seeded] DELETED ${deleted} non-song material row(s); ${kept} song-derived material(s) remain - source songs and source audio bytes were not changed`
   );
   return { deleted, kept };
 }

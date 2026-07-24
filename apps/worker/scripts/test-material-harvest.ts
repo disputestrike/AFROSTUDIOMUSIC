@@ -11,7 +11,13 @@
  *   HARVEST_TEST_FILE="...\City Shout - audio.wav" npx tsx scripts/test-material-harvest.ts
  */
 import { execFileSync } from "node:child_process";
-import { planLoopOffsets, cutLoopWav } from "../src/processors/material-harvest";
+import {
+  classifySongHarvestCandidate,
+  planLoopOffsets,
+  cutLoopWav,
+  type SongHarvestCandidateInput,
+} from "../src/processors/material-harvest";
+import { isSongDerivedMaterial } from "../src/processors/material-purge";
 
 function assert(cond: unknown, msg: string): asserts cond {
   if (!cond) { console.error(`FAIL: ${msg}`); process.exit(1); }
@@ -32,7 +38,108 @@ assert(planLoopOffsets(20, bpm, 8, 2).length === 0, "too-short source must yield
 assert(planLoopOffsets(30, 0, 8, 2).length === 0, "bpm 0 must yield NO offsets");
 console.log(`offsets OK: ${offsets.map(o => o.toFixed(2)).join(", ")} (bar-aligned 8-bar @110bpm)`);
 
-// ---- 2. real cut when a local file is supplied ----
+// ---- 2. rights-clean song source classification ----
+const source: SongHarvestCandidateInput = {
+  songId: "song-1",
+  workspaceId: "workspace-1",
+  title: "Owned Song",
+  genre: "afrobeats",
+  projectBpm: 104,
+  projectKeySignature: "A minor",
+  beat: {
+    id: "beat-1",
+    url: "s3://owned/song.wav",
+    provider: "upload",
+    bpm: 104,
+    keySignature: "A minor",
+    qualityState: "passed",
+    meta: { rightsBasis: "user-attested" },
+  },
+};
+assert(
+  classifySongHarvestCandidate(source).accepted,
+  "artist upload linked to a song must be accepted"
+);
+assert(
+  classifySongHarvestCandidate({
+    ...source,
+    beat: {
+      ...source.beat,
+      provider: "afrohit-own",
+      meta: {
+        assemblyLog: [
+          { rightsBasis: "self-generated" },
+          { rightsBasis: "code-generated" },
+        ],
+        melodyLayer: { engine: "score-synth" },
+      },
+    },
+  }).accepted,
+  "fully receipted clean AfroOne song must be accepted"
+);
+for (const [name, candidate] of [
+  [
+    "provider song",
+    { ...source, beat: { ...source.beat, provider: "minimax" } },
+  ],
+  [
+    "provider ingredient",
+    {
+      ...source,
+      beat: {
+        ...source.beat,
+        provider: "afrohit-own",
+        meta: { assemblyLog: [{ rightsBasis: "provider-generated" }] },
+      },
+    },
+  ],
+  [
+    "opaque own render",
+    {
+      ...source,
+      beat: { ...source.beat, provider: "material", meta: {} },
+    },
+  ],
+  [
+    "third-party melody",
+    {
+      ...source,
+      beat: {
+        ...source.beat,
+        provider: "material",
+        meta: {
+          assemblyLog: [{ rightsBasis: "self-generated" }],
+          melodyLayer: { engine: "musicgen" },
+        },
+      },
+    },
+  ],
+] as const) {
+  assert(
+    !classifySongHarvestCandidate(candidate).accepted,
+    `${name} must fail closed`
+  );
+}
+assert(
+  isSongDerivedMaterial({
+    source: "artist_stem",
+    meta: { fromSongId: "song-1" },
+  }),
+  "song-derived material must survive purge"
+);
+assert(
+  !isSongDerivedMaterial({
+    source: "provider_stem",
+    meta: { fromSongId: "song-1" },
+  }),
+  "provider stems must never survive purge"
+);
+assert(
+  !isSongDerivedMaterial({ source: "artist_stem", meta: {} }),
+  "legacy stem without song lineage must be purged"
+);
+
+// ---- 3. real cut when a local file is supplied ----
 async function liveCut(): Promise<void> {
   const file = process.env.HARVEST_TEST_FILE;
   if (!file) {
