@@ -43,6 +43,7 @@ import { processSingConvert } from "./processors/voice-sing";
 import { processAfroOneSinging } from "./processors/afroone-singing";
 import { processVoiceCleanup } from "./processors/voice-cleanup";
 import { processVoiceRehost } from "./processors/voice-rehost";
+import { repairLegacyVoiceLineage } from "./processors/voice-lineage-repair";
 import {
   processVocalInspect,
   processVocalQcBackfill,
@@ -156,6 +157,8 @@ const LAKE_JOBS = new Set([
   "deep-measure",
   "nightly-compound",
   "material-harvest",
+  "rebuild-song-materials",
+  "repair-legacy-voice-lineage",
   "purge-seeded-materials",
   "reset-data-lake",
   "restore-all-songs",
@@ -426,6 +429,19 @@ const workers = [
                 }
                 else if (job.name === "material-harvest")
                   await processMaterialHarvest();
+                else if (job.name === "rebuild-song-materials") {
+                  const purge = await purgeSeededMaterials();
+                  const harvest = await processMaterialHarvest({ limit: 30 });
+                  console.log(
+                    `[rebuild-song-materials] purged=${purge.deleted} kept=${purge.kept} harvested=${harvest.harvestedSources} loops=${harvest.loopsCreated}`
+                  );
+                }
+                else if (job.name === "repair-legacy-voice-lineage") {
+                  const data = job.data as { workspaceId?: string } | undefined;
+                  await repairLegacyVoiceLineage({
+                    workspaceId: data?.workspaceId,
+                  });
+                }
                 else if (job.name === "purge-seeded-materials")
                   await purgeSeededMaterials();
                 else if (job.name === "reset-data-lake")
@@ -648,20 +664,9 @@ async function registerCron() {
   // the real-loop harvest ~2 min after EVERY deploy — dated jobId = once per
   // day; idempotent per source forever, so re-runs cost nothing. The nightly
   // pass tops up new uploads at 02:45. Nobody presses anything, ever.
-  // OWNER ORDERS 2026-07-23 (one-shot, dated = once): purge every seeded
-  // material + restore every hidden song. Receipts land in this log.
-  await enqueueJob("lake", "reset-data-lake", {}, {
-    jobId: `lake-reset-${new Date().toISOString().slice(0, 10)}-v2`,
-    delayMs: 30_000,
-  }).catch(() => undefined);
-  await enqueueJob("lake", "purge-seeded-materials", {}, {
-    jobId: `purge-seeded-${new Date().toISOString().slice(0, 10)}-v2`,
-    delayMs: 60_000,
-  }).catch(() => undefined);
-  await enqueueJob("lake", "restore-all-songs", {}, {
-    jobId: `restore-songs-${new Date().toISOString().slice(0, 10)}-v2`,
-    delayMs: 45_000,
-  }).catch(() => undefined);
+  // Destructive resets, material purges, and song restoration are explicit
+  // admin actions. A deployment must never mutate catalog ownership or erase
+  // the learning shelf. The boot harvest below is additive and idempotent.
   // Tenant consolidation is an explicit, destructive ownership operation.
   // It remains available behind the admin action, but must never re-run just
   // because the worker deployed or the calendar date changed.

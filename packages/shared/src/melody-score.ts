@@ -248,17 +248,21 @@ export function isMelismaToken(token: string): boolean {
 /** Fold a sung token back to its comparable word: melisma collapses, punctuation goes. */
 function foldWord(token: string): string {
   return token
+    .normalize('NFKD')
+    .replace(/\p{M}+/gu, '')
     .toLowerCase()
     .replace(/([aeiouy])(?:-\1)+/g, '$1')
-    .replace(/[^a-z]/g, '');
+    .replace(/[^\p{L}]/gu, '');
 }
 
 function tokensOf(line: string): string[] {
   return line
+    .normalize('NFKD')
+    .replace(/\p{M}+/gu, '')
     .replace(/\([^)]*\)/g, ' ') // parentheticals are the backing layer, not the lead melody
     .split(/\s+/)
-    .map((t) => t.replace(/^[^a-zA-Z']+/, '').replace(/[^a-zA-Z']+$/, ''))
-    .filter((t) => /[a-zA-Z]/.test(t));
+    .map((t) => t.replace(/^[^\p{L}']+/u, '').replace(/[^\p{L}'-]+$/u, ''))
+    .filter((t) => /\p{L}/u.test(t));
 }
 
 interface SylUnit {
@@ -282,6 +286,20 @@ function lineUnits(line: string, anchorSet: Set<string>): SylUnit[] {
     }
   }
   return units;
+}
+
+/**
+ * Exact lyric sequence emitted by the deterministic composer, including one
+ * entry per melisma note. Singing validation imports this instead of keeping a
+ * second tokenizer that can drift on accented African-language lyrics.
+ */
+export function melodyLyricSyllables(lines: readonly string[]): string[] {
+  const noAnchors = new Set<string>();
+  return lines.flatMap(line =>
+    lineUnits(line, noAnchors).flatMap(unit =>
+      Array.from({ length: unit.notes }, () => unit.syllable)
+    )
+  );
 }
 
 // ---------------------------------------------------------------------------

@@ -1,8 +1,7 @@
 import { createHash } from 'node:crypto';
 import {
-  isMelismaToken,
+  melodyLyricSyllables,
   parseLyricSections,
-  syllabify,
   type MelodyScore,
 } from '@afrohit/shared';
 
@@ -166,26 +165,7 @@ function normalizedWord(value: string): string {
     .replace(/\p{M}+/gu, '')
     .toLowerCase()
     .replace(/([aeiouy])(?:-\1)+/g, '$1')
-    .replace(/[^a-z0-9]/g, '');
-}
-
-function lyricSyllables(lines: readonly string[]): string[] {
-  const tokens = lines
-    .join(' ')
-    .normalize('NFKD')
-    .replace(/\p{M}+/gu, '')
-    .replace(/\([^)]*\)/g, ' ')
-    .split(/\s+/)
-    .map((token) => token.replace(/^[^a-zA-Z']+/, '').replace(/[^a-zA-Z'-]+$/, ''))
-    .filter((token) => /[a-zA-Z]/.test(token));
-
-  return tokens.flatMap((token) => {
-    if (isMelismaToken(token)) {
-      const repeats = Math.min(3, Math.max(2, token.split('-').length));
-      return Array.from({ length: repeats }, () => normalizedWord(token));
-    }
-    return syllabify(token).map(normalizedWord);
-  });
+    .replace(/[^\p{L}0-9]/gu, '');
 }
 
 function assertFiniteNumber(
@@ -251,7 +231,7 @@ export function createAfroOneSingingManifest(input: {
       throw new Error(`afroone_singing_empty_section:${sectionIndex}`);
     }
 
-    const expected = lyricSyllables(written.lines);
+    const expected = melodyLyricSyllables(written.lines).map(normalizedWord);
     const actual: string[] = [];
     let previousStart = -1;
     scored.notes.forEach((note, noteIndex) => {

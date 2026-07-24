@@ -1,44 +1,24 @@
 /**
- * MATERIAL HARVEST (owner approval 2026-07-22 night: "could we get real
- * materials from the songs that we have?") — seed every lane's shelf from the
- * OWNED catalog instead of numpy synthesis.
+ * Rebuild AfroOne's material shelf from the rights-clean song catalog.
  *
- * WHY: the shelf was seeded by code, not music (synth primitives), and the
- * receipts show it — City Shout assembled 7 materials, all rhythm/bass, empty
- * midrange (LRA 1.0, mids ~8 dB under the bass). Real loops carry real timbre,
- * groove and HARMONY the synth vocabulary simply does not have.
- *
- * PIPELINE (per eligible source, batch-capped per run):
- *   SoundReference (user-attested / self-generated, measured tempo)
- *     → separateStemsRouted (drums / bass / other; vocals SKIPPED in v1)
- *     → bar-aligned 8-bar slices at the MEASURED bpm (2 per stem, spread
- *       across the song), conformed 44.1k stereo WAV
- *     → silence gate (a muted stem section never becomes a "loop")
- *     → MaterialAsset rows with source 'artist_stem' → roleEvidence
- *       'stem-separated' = rank 0 in the picker, so harvested loops OUTRANK
- *       synth (rank-3 bridge material) everywhere, automatically.
- *
- * RIGHTS: only user-attested / self-generated sources are queried (the same
- * belt as training); the created rows carry the source's rightsBasis so the
- * ingredient law and the training manifest classify them honestly. zap /
- * facts-only rows can never enter (basis filter + http guard).
- *
- * HONESTY: a source without a measured tempo is SKIPPED with a log (bar math
- * on a guessed grid produces junk loops); a failed separation skips the
- * source, never fabricates; every row's meta records exactly where each loop
- * came from (harvestedFrom + stem + offset).
+ * The source songs and their audio are immutable inputs here. This processor
+ * only separates eligible song audio, cuts bar-aligned loops, and creates
+ * derived MaterialAsset rows with exact song and asset lineage.
  */
+import { createHash } from "node:crypto";
+import { execFile } from "node:child_process";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createHash } from "node:crypto";
 import { prisma } from "@afrohit/db";
 import { separateStemsRouted } from "../lib/demucs-local";
-import { downloadToBuffer, uploadBytes } from "../lib/storage";
+import {
+  deleteObjectByUrl,
+  downloadToBuffer,
+  uploadBytes,
+} from "../lib/storage";
 import { runFfmpeg } from "../lib/ffmpeg";
 
-/** stem role → shelf role. 'other' is the tonal bucket — exactly the missing
- *  midrange (chords/keys/melody). vocals stay out of beds in v1. */
 const STEM_ROLE: Record<string, string> = {
   drums: "drums",
   bass: "bass",
@@ -47,8 +27,172 @@ const STEM_ROLE: Record<string, string> = {
 
 const LOOP_BARS = 8;
 const LOOPS_PER_STEM = 2;
-/** Loops quieter than this are dead stem sections, not material. */
 const MIN_LOOP_RMS_DB = -45;
+const CLEAN_RIGHTS_BASES = new Set([
+  "code-generated",
+  "self-generated",
+  "user-attested",
+  "licensed",
+]);
+const OWN_BEAT_PROVIDERS = new Set(["afrohit-own", "material"]);
+const UPLOAD_BEAT_PROVIDERS = new Set([
+  "upload",
+  "import",
+  "artist_upload",
+]);
+
+function objectValue(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {};
+}
+
+export interface SongHarvestCandidateInput {
+  songId: string;
+  workspaceId: string;
+  title: string;
+  genre: string | null;
+  projectBpm: number | null;
+  projectKeySignature: string | null;
+  beat: {
+    id: string;
+    url: string;
+    provider: string;
+    bpm: number | null;
+    keySignature: string | null;
+    qualityState: string;
+    meta: unknown;
+  };
+}
+
+export interface SongHarvestCandidate {
+  songId: string;
+  workspaceId: string;
+  title: string;
+  genre: string;
+  bpm: number;
+  keySignature: string | null;
+  assetId: string;
+  assetKind: "beat";
+  url: string;
+  source: "artist_stem" | "self_stem";
+  rightsBasis: "user-attested" | "self-generated";
+  marker: string;
+}
+
+export type SongHarvestCandidateDecision =
+  | { accepted: true; candidate: SongHarvestCandidate }
+  | { accepted: false; reason: string };
+
+/**
+ * Accept artist-owned upload/import audio. AfroOne/material renders are
+ * accepted only when every assembled ingredient has clean rights and any
+ * melody layer was produced locally. Opaque or provider-derived audio fails
+ * closed and cannot enter the material or training corpus.
+ */
+export function classifySongHarvestCandidate(
+  input: SongHarvestCandidateInput
+): SongHarvestCandidateDecision {
+  const { beat } = input;
+  if (!input.songId) return { accepted: false, reason: "missing song id" };
+  if (!beat.url) return { accepted: false, reason: "missing playable audio" };
+  if (beat.qualityState === "failed")
+    return { accepted: false, reason: "audio quality failed" };
+
+  const genre = input.genre?.trim().toLowerCase();
+  if (!genre) return { accepted: false, reason: "missing song genre" };
+  const bpm = beat.bpm ?? input.projectBpm;
+  if (!bpm || !Number.isFinite(bpm) || bpm < 40 || bpm > 220)
+    return { accepted: false, reason: "missing measured song tempo" };
+
+  const provider = beat.provider.trim().toLowerCase();
+  const marker = `song:${input.songId}:beat:${beat.id}`;
+  const meta = objectValue(beat.meta);
+  const base = {
+    songId: input.songId,
+    workspaceId: input.workspaceId,
+    title: input.title,
+    genre,
+    bpm,
+    keySignature: beat.keySignature ?? input.projectKeySignature,
+    assetId: beat.id,
+    assetKind: "beat" as const,
+    url: beat.url,
+    marker,
+  };
+
+  if (UPLOAD_BEAT_PROVIDERS.has(provider)) {
+    const sourceMeta = objectValue(meta.sourceMeta);
+    const attested =
+      meta.rightsBasis === "user-attested" ||
+      sourceMeta.rightsBasis === "user-attested";
+    if (!attested) {
+      return {
+        accepted: false,
+        reason: "upload/import has no explicit user-attested rights receipt",
+      };
+    }
+    return {
+      accepted: true,
+      candidate: {
+        ...base,
+        source: "artist_stem",
+        rightsBasis: "user-attested",
+      },
+    };
+  }
+  if (!OWN_BEAT_PROVIDERS.has(provider)) {
+    return {
+      accepted: false,
+      reason: `provider ${provider || "unknown"} is not a rights-clean song source`,
+    };
+  }
+
+  const assemblyLog = Array.isArray(meta.assemblyLog) ? meta.assemblyLog : [];
+  if (!assemblyLog.length) {
+    return {
+      accepted: false,
+      reason: "own render has no complete ingredient receipt",
+    };
+  }
+  const badIngredient = assemblyLog.find(entry => {
+    const rightsBasis = String(objectValue(entry).rightsBasis ?? "")
+      .trim()
+      .toLowerCase();
+    return !CLEAN_RIGHTS_BASES.has(rightsBasis);
+  });
+  if (badIngredient) {
+    return {
+      accepted: false,
+      reason: `ingredient rights ${String(
+        objectValue(badIngredient).rightsBasis ?? "unknown"
+      )} are not training-safe`,
+    };
+  }
+
+  const melodyLayer = objectValue(meta.melodyLayer);
+  const melodyEngine = String(melodyLayer.engine ?? "").trim().toLowerCase();
+  if (
+    melodyEngine &&
+    !["afroone", "local", "score-synth", "code-generated"].includes(
+      melodyEngine
+    )
+  ) {
+    return {
+      accepted: false,
+      reason: `third-party melody layer ${melodyEngine} is not training-safe`,
+    };
+  }
+
+  return {
+    accepted: true,
+    candidate: {
+      ...base,
+      source: "self_stem",
+      rightsBasis: "self-generated",
+    },
+  };
+}
 
 export interface HarvestSummary {
   scanned: number;
@@ -57,9 +201,6 @@ export interface HarvestSummary {
   skipped: Array<{ id: string; reason: string }>;
 }
 
-/** PURE: bar-aligned slice offsets spread across the song (skip the very
- *  start/end — intros and outros are the least loopable bars). Exported for
- *  the offline test. */
 export function planLoopOffsets(
   durationS: number,
   bpm: number,
@@ -68,19 +209,36 @@ export function planLoopOffsets(
 ): number[] {
   const barS = (60 / bpm) * 4;
   const loopS = barS * bars;
-  if (!Number.isFinite(loopS) || loopS <= 0 || durationS < loopS * 1.5) return [];
+  if (!Number.isFinite(loopS) || loopS <= 0 || durationS < loopS * 1.5)
+    return [];
   const usable = durationS - loopS;
   const anchors = count === 1 ? [0.35] : [0.3, 0.6, 0.8].slice(0, count);
   const offsets: number[] = [];
-  for (const a of anchors) {
-    const snapped = Math.max(0, Math.floor((usable * a) / barS) * barS);
-    if (!offsets.some(o => Math.abs(o - snapped) < loopS)) offsets.push(snapped);
+  for (const anchor of anchors) {
+    const snapped = Math.max(
+      0,
+      Math.floor((usable * anchor) / barS) * barS
+    );
+    if (!offsets.some(offset => Math.abs(offset - snapped) < loopS))
+      offsets.push(snapped);
   }
   return offsets;
 }
 
-/** Cut one bar-aligned loop → conformed 44.1k stereo WAV bytes, with a
- *  measured RMS receipt. Exported for the offline test. */
+async function runFfmpegCapture(args: string[]): Promise<string> {
+  return await new Promise<string>((resolve, reject) => {
+    execFile(
+      "ffmpeg",
+      ["-hide_banner", ...args],
+      { maxBuffer: 8 * 1024 * 1024 },
+      (error, _stdout, stderr) => {
+        if (error && !stderr) reject(error);
+        else resolve(String(stderr ?? ""));
+      }
+    );
+  });
+}
+
 export async function cutLoopWav(opts: {
   sourcePath: string;
   offsetS: number;
@@ -92,195 +250,267 @@ export async function cutLoopWav(opts: {
   try {
     const out = join(dir, "loop.wav");
     await runFfmpeg([
-      "-ss", opts.offsetS.toFixed(4),
-      "-t", durationS.toFixed(4),
-      "-i", opts.sourcePath,
-      "-ar", "44100",
-      "-ac", "2",
-      "-af", "astats=measure_overall=RMS_level:measure_perchannel=none:metadata=1",
+      "-ss",
+      opts.offsetS.toFixed(4),
+      "-t",
+      durationS.toFixed(4),
+      "-i",
+      opts.sourcePath,
+      "-ar",
+      "44100",
+      "-ac",
+      "2",
+      "-af",
+      "astats=measure_overall=RMS_level:measure_perchannel=none:metadata=1",
       out,
     ]);
     const bytes = await readFile(out);
-    // RMS via a second, cheap stats pass on the cut bytes (astats metadata is
-    // per-frame; the overall read from a file receipt keeps this simple).
     let rmsDb: number | null = null;
     try {
       const probe = await runFfmpegCapture([
-        "-i", out,
-        "-af", "astats=measure_overall=RMS_level:measure_perchannel=none",
-        "-f", "null", "-",
+        "-i",
+        out,
+        "-af",
+        "astats=measure_overall=RMS_level:measure_perchannel=none",
+        "-f",
+        "null",
+        "-",
       ]);
-      const m = probe.match(/RMS level dB:\s*(-?[0-9.]+)/);
-      rmsDb = m ? Number(m[1]) : null;
-    } catch { /* stats are a receipt, not a gate on ffmpeg itself */ }
+      const match = probe.match(/RMS level dB:\s*(-?[0-9.]+)/);
+      rmsDb = match ? Number(match[1]) : null;
+    } catch {
+      // The audio cut is still valid when the optional RMS receipt fails.
+    }
     return { bytes, durationS, rmsDb };
   } finally {
-    await rm(dir, { recursive: true, force: true }).catch(() => {});
+    await rm(dir, { recursive: true, force: true }).catch(() => undefined);
   }
 }
 
-/** ffmpeg with captured stderr (runFfmpeg discards it; astats prints there). */
-async function runFfmpegCapture(args: string[]): Promise<string> {
-  const { execFile } = await import("node:child_process");
-  return await new Promise<string>((resolve, reject) => {
-    execFile("ffmpeg", ["-hide_banner", ...args], { maxBuffer: 8 * 1024 * 1024 }, (err, _stdout, stderr) => {
-      if (err && !stderr) reject(err);
-      else resolve(String(stderr ?? ""));
-    });
-  });
-}
-
-function recipeNumber(recipe: unknown, ...paths: string[][]): number | null {
-  const root = recipe && typeof recipe === "object" ? (recipe as Record<string, unknown>) : null;
-  if (!root) return null;
-  for (const path of paths) {
-    let node: unknown = root;
-    for (const key of path) {
-      node = node && typeof node === "object" ? (node as Record<string, unknown>)[key] : undefined;
-    }
-    const n = typeof node === "string" ? Number(node) : node;
-    if (typeof n === "number" && Number.isFinite(n) && n > 40 && n < 220) return n;
-  }
-  return null;
-}
-
-function recipeString(recipe: unknown, ...paths: string[][]): string | null {
-  const root = recipe && typeof recipe === "object" ? (recipe as Record<string, unknown>) : null;
-  if (!root) return null;
-  for (const path of paths) {
-    let node: unknown = root;
-    for (const key of path) {
-      node = node && typeof node === "object" ? (node as Record<string, unknown>)[key] : undefined;
-    }
-    if (typeof node === "string" && node.trim()) return node.trim();
-  }
-  return null;
-}
-
-export async function processMaterialHarvest(opts?: { limit?: number }): Promise<HarvestSummary> {
-  // Manual tap = DRAIN (owner 2026-07-22: "automate it immediately") — one tap
-  // sweeps every eligible source in the scan window; the nightly stays gentle.
+export async function processMaterialHarvest(opts?: {
+  limit?: number;
+}): Promise<HarvestSummary> {
   const limit = Math.max(1, Math.min(30, opts?.limit ?? 30));
-  const summary: HarvestSummary = { scanned: 0, harvestedSources: 0, loopsCreated: 0, skipped: [] };
+  const summary: HarvestSummary = {
+    scanned: 0,
+    harvestedSources: 0,
+    loopsCreated: 0,
+    skipped: [],
+  };
 
-  const sources = await prisma.soundReference.findMany({
-    where: {
-      active: true,
-      rightsBasis: { in: ["user-attested", "self-generated"] },
-      analysisState: { in: ["measured", "inferred"] },
+  const songs = await prisma.song.findMany({
+    where: { deletedAt: null, quarantined: false },
+    select: {
+      id: true,
+      workspaceId: true,
+      title: true,
+      project: {
+        select: { genre: true, bpm: true, keySignature: true },
+      },
+      beats: {
+        where: { qualityState: { not: "failed" } },
+        select: {
+          id: true,
+          url: true,
+          provider: true,
+          bpm: true,
+          keySignature: true,
+          qualityState: true,
+          meta: true,
+        },
+        orderBy: { createdAt: "desc" },
+        take: 12,
+      },
     },
-    select: { id: true, workspaceId: true, sourceUrl: true, title: true, genre: true, recipe: true, rightsBasis: true },
     orderBy: { createdAt: "desc" },
-    take: 60,
+    take: 500,
   });
 
-  for (const src of sources) {
+  for (const song of songs) {
     if (summary.harvestedSources >= limit) break;
-    summary.scanned++;
-    if (!/^https?:\/\//i.test(src.sourceUrl)) {
-      summary.skipped.push({ id: src.id, reason: "non-http source" });
+    summary.scanned += 1;
+
+    let selected: SongHarvestCandidate | null = null;
+    const rejected: string[] = [];
+    for (const beat of song.beats) {
+      const decision = classifySongHarvestCandidate({
+        songId: song.id,
+        workspaceId: song.workspaceId,
+        title: song.title,
+        genre: song.project.genre,
+        projectBpm: song.project.bpm,
+        projectKeySignature: song.project.keySignature,
+        beat,
+      });
+      if (decision.accepted) {
+        selected = decision.candidate;
+        break;
+      }
+      rejected.push(decision.reason);
+    }
+    if (!selected) {
+      summary.skipped.push({
+        id: song.id,
+        reason: rejected[0] ?? "song has no eligible rights-clean audio",
+      });
       continue;
     }
+    const src = selected;
+
     const already = await prisma.materialAsset.findFirst({
-      where: { meta: { path: ["harvestedFrom"], equals: `soundref:${src.id}` } },
+      where: { meta: { path: ["harvestedFrom"], equals: src.marker } },
       select: { id: true },
     });
-    if (already) continue; // idempotent — one harvest per source, ever
-    const bpm = recipeNumber(src.recipe, ["measured", "tempo"], ["tempo"], ["bpm"], ["measured", "bpm"]);
-    if (!bpm) {
-      summary.skipped.push({ id: src.id, reason: "no measured tempo — run Learn first (bar math on a guess makes junk loops)" });
-      continue;
-    }
-    const genre = (src.genre ?? recipeString(src.recipe, ["lane"], ["genre"]))?.toLowerCase() ?? null;
-    if (!genre) {
-      summary.skipped.push({ id: src.id, reason: "no genre/lane on record — shelf rows need a lane" });
-      continue;
-    }
-    const keySignature = recipeString(src.recipe, ["measured", "key"], ["key"], ["keySignature"]);
+    if (already) continue;
 
-    let stems;
+    let stems: Awaited<ReturnType<typeof separateStemsRouted>>;
     try {
       stems = await separateStemsRouted({
-        audioUrl: src.sourceUrl,
-        mode: "full", // 4-stem: drums / bass / other / vocals
+        audioUrl: src.url,
+        mode: "full",
         workspaceId: src.workspaceId,
-        purpose: "measure", // prefer the free local path
+        purpose: "measure",
       });
-    } catch (err) {
-      summary.skipped.push({ id: src.id, reason: `stem separation failed: ${(err as Error).message.slice(0, 80)}` });
+    } catch (error) {
+      summary.skipped.push({
+        id: src.songId,
+        reason: `stem separation failed: ${(error as Error).message.slice(
+          0,
+          80
+        )}`,
+      });
       continue;
     }
 
     let loopsForSource = 0;
-    for (const stem of stems.stems ?? []) {
-      const role = STEM_ROLE[stem.role?.toLowerCase?.() ?? ""];
-      if (!role || !stem.url) continue;
-      let stemPath: string | null = null;
-      const dir = await mkdtemp(join(tmpdir(), "afh-stem-"));
-      try {
-        const stemBytes = await downloadToBuffer(stem.url);
-        stemPath = join(dir, "stem.bin");
-        await writeFile(stemPath, stemBytes);
-        const probe = await runFfmpegCapture(["-i", stemPath, "-f", "null", "-"]);
-        const dm = probe.match(/Duration:\s*(\d+):(\d+):([\d.]+)/);
-        const durationS = dm ? Number(dm[1]) * 3600 + Number(dm[2]) * 60 + Number(dm[3]) : 0;
-        for (const offsetS of planLoopOffsets(durationS, bpm, LOOP_BARS, LOOPS_PER_STEM)) {
-          const loop = await cutLoopWav({ sourcePath: stemPath, offsetS, bpm, bars: LOOP_BARS });
-          if (loop.rmsDb !== null && loop.rmsDb < MIN_LOOP_RMS_DB) continue; // dead air, not material
-          const url = await uploadBytes({
-            workspaceId: src.workspaceId,
-            kind: "material-harvest",
-            bytes: loop.bytes,
-            contentType: "audio/wav",
-            ext: "wav",
-          });
-          await prisma.materialAsset.create({
-            data: {
-              workspaceId: src.workspaceId,
-              kind: "loop",
-              role,
-              genre,
-              bpm,
-              keySignature: keySignature ?? null,
+    try {
+      for (const stem of stems.stems ?? []) {
+        const role = STEM_ROLE[stem.role?.toLowerCase?.() ?? ""];
+        if (!role || !stem.url) continue;
+        const dir = await mkdtemp(join(tmpdir(), "afh-stem-"));
+        try {
+          const stemBytes = await downloadToBuffer(stem.url);
+          const stemPath = join(dir, "stem.bin");
+          await writeFile(stemPath, stemBytes);
+          const probe = await runFfmpegCapture([
+            "-i",
+            stemPath,
+            "-f",
+            "null",
+            "-",
+          ]);
+          const durationMatch = probe.match(
+            /Duration:\s*(\d+):(\d+):([\d.]+)/
+          );
+          const durationS = durationMatch
+            ? Number(durationMatch[1]) * 3600 +
+              Number(durationMatch[2]) * 60 +
+              Number(durationMatch[3])
+            : 0;
+
+          for (const offsetS of planLoopOffsets(
+            durationS,
+            src.bpm,
+            LOOP_BARS,
+            LOOPS_PER_STEM
+          )) {
+            const loop = await cutLoopWav({
+              sourcePath: stemPath,
+              offsetS,
+              bpm: src.bpm,
               bars: LOOP_BARS,
-              durationS: loop.durationS,
-              url,
-              source: "artist_stem", // → roleEvidence 'stem-separated' → picker rank 0
-              roleEvidence: "stem-separated",
-              rightsBasis: src.rightsBasis,
-              readiness: "ready",
-              qualityState: "passed",
-              contentHash: createHash("sha256").update(loop.bytes).digest("hex"),
-              verifiedAt: new Date(),
-              meta: {
-                harvestedFrom: `soundref:${src.id}`,
-                sourceTitle: src.title,
-                stem: stem.role,
-                offsetS,
-                rmsDb: loop.rmsDb,
+            });
+            if (loop.rmsDb !== null && loop.rmsDb < MIN_LOOP_RMS_DB) continue;
+            const contentHash = createHash("sha256")
+              .update(loop.bytes)
+              .digest("hex");
+            const duplicate = await prisma.materialAsset.findFirst({
+              where: { workspaceId: src.workspaceId, contentHash },
+              select: { id: true },
+            });
+            if (duplicate) continue;
+
+            const url = await uploadBytes({
+              workspaceId: src.workspaceId,
+              kind: "material-harvest",
+              bytes: loop.bytes,
+              contentType: "audio/wav",
+              ext: "wav",
+            });
+            await prisma.materialAsset.create({
+              data: {
+                workspaceId: src.workspaceId,
+                kind: "loop",
+                role,
+                genre: src.genre,
+                bpm: src.bpm,
+                keySignature: src.keySignature,
+                bars: LOOP_BARS,
+                durationS: loop.durationS,
+                url,
+                source: src.source,
+                roleEvidence: "stem-separated",
+                rightsBasis: src.rightsBasis,
+                readiness: "ready",
+                qualityState: "passed",
+                contentHash,
+                verifiedAt: new Date(),
+                meta: {
+                  harvestedFrom: src.marker,
+                  fromSongId: src.songId,
+                  fromAssetKind: src.assetKind,
+                  fromAssetId: src.assetId,
+                  sourceTitle: src.title,
+                  stem: stem.role,
+                  separationEngine: stems.engine ?? "unknown",
+                  offsetS,
+                  rmsDb: loop.rmsDb,
+                },
               },
-            },
-          });
-          summary.loopsCreated++;
-          loopsForSource++;
+            });
+            summary.loopsCreated += 1;
+            loopsForSource += 1;
+          }
+        } catch (error) {
+          console.warn(
+            `[harvest] ${src.songId}/${stem.role}: ${(error as Error).message.slice(
+              0,
+              100
+            )}`
+          );
+        } finally {
+          await rm(dir, { recursive: true, force: true }).catch(
+            () => undefined
+          );
         }
-      } catch (err) {
-        console.warn(`[harvest] ${src.id}/${stem.role}: ${(err as Error).message.slice(0, 100)}`);
-      } finally {
-        await rm(dir, { recursive: true, force: true }).catch(() => {});
       }
+    } finally {
+      await Promise.all(
+        (stems.stems ?? []).map(stem =>
+          stem.url
+            ? deleteObjectByUrl(stem.url).catch(() => undefined)
+            : Promise.resolve()
+        )
+      );
     }
+
     if (loopsForSource > 0) {
-      summary.harvestedSources++;
-      console.log(`[harvest] "${src.title ?? src.id}" (${genre} @${bpm}) → ${loopsForSource} real loop(s) on the shelf`);
+      summary.harvestedSources += 1;
+      console.log(
+        `[harvest] "${src.title}" (${src.genre} @${src.bpm}) -> ${loopsForSource} song-derived loop(s)`
+      );
     } else {
-      summary.skipped.push({ id: src.id, reason: "separation returned no usable stem audio" });
+      summary.skipped.push({
+        id: src.songId,
+        reason: "separation returned no new usable stem audio",
+      });
     }
   }
 
   console.log(
-    `[harvest] done: ${summary.loopsCreated} loops from ${summary.harvestedSources} source(s) (scanned ${summary.scanned}, skipped ${summary.skipped.length})`
+    `[harvest] done: ${summary.loopsCreated} loops from ${summary.harvestedSources} song(s) (scanned ${summary.scanned}, skipped ${summary.skipped.length})`
   );
-  for (const s of summary.skipped.slice(0, 8)) console.log(`[harvest] skipped ${s.id}: ${s.reason}`);
+  for (const skipped of summary.skipped.slice(0, 8))
+    console.log(`[harvest] skipped ${skipped.id}: ${skipped.reason}`);
   return summary;
 }

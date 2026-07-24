@@ -192,7 +192,10 @@ export function trainingDatasetHash(
 /** Minimum corpus before a fine-tune is worth spending on (operator-tunable). */
 export function minCorpusSize(): number {
   const n = Number.parseInt(process.env.MUSIC_TRAINER_MIN_CORPUS ?? '', 10);
-  return Number.isFinite(n) && n > 0 ? n : 20;
+  // ACE-Step's wrapper requires at least three usable 30s+ song segments.
+  // Small early corpora may train a candidate, but measured evaluation still
+  // blocks promotion unless that candidate beats the incumbent.
+  return Number.isFinite(n) && n > 0 ? n : 3;
 }
 
 /**

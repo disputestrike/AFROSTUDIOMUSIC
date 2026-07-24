@@ -92,7 +92,14 @@ def _conform(src: Path, data_dir: Path, index: int, max_seg_s: int = 110) -> int
 
 def _run(cmd: list[str], what: str) -> None:
     print(f"[trainer] {what}: {' '.join(cmd)}", flush=True)
-    proc = subprocess.run(cmd, env={**os.environ, "PYTHONPATH": f"{ACE}:{os.environ.get('PYTHONPATH', '')}"})
+    compat = Path(__file__).parent
+    proc = subprocess.run(
+        cmd,
+        env={
+            **os.environ,
+            "PYTHONPATH": f"{compat}:{ACE}:{os.environ.get('PYTHONPATH', '')}",
+        },
+    )
     if proc.returncode != 0:
         raise RuntimeError(
             f"{what} exited {proc.returncode} — see log above. If the ACE-Step v1 CLI moved, "

@@ -192,6 +192,7 @@ async function pickKit(
   const rows = shelf
     .filter((row: { genre: string | null }) => materialGenreMatches(row.genre, genre))
     .filter((row: { id: string }) => !locked.size || locked.has(row.id))
+    .filter(row => !SONG_MATERIAL_ONLY || isSongDerivedShelfRow(row))
     // Exclude preview-only synth loops from the real forged bed (see param note).
     .filter(
       (row: { meta?: unknown }) =>
@@ -214,7 +215,9 @@ async function pickKit(
   // OTHER-AGENT-FILLS: populate laneSampleKit(genre) with the lane's licensed
   // loops; sampleKitFloorRows prepends them here as rights-clean, auto-assemblable
   // 'licensed' rows that selectMaterialRows prefers over the synth primitive.
-  const licensedFloor = sampleKitFloorRows(laneSampleKit(genre));
+  const licensedFloor = SONG_MATERIAL_ONLY
+    ? []
+    : sampleKitFloorRows(laneSampleKit(genre));
   // Rich signature roles lead; deterministic synth primitives remain the
   // controllable foundation when a lane's collected shelf is still shallow.
   const roles = withCoarseMaterialRoles([
@@ -248,6 +251,25 @@ const TRAINED_LAYER_GAIN = 0.6;
  *  but never louder than the voice that will ride on top. Between chords (~0.7)
  *  and the old stock-musicgen topping (0.85). */
 const MELODY_LEAD_GAIN = 0.7;
+
+/**
+ * Default-on corpus safety. AfroOne may arrange only material derived from a
+ * catalog song with explicit lineage. The opt-out exists for isolated legacy
+ * recovery only; production must leave it enabled.
+ */
+const SONG_MATERIAL_ONLY = process.env.AFROONE_SONG_MATERIAL_ONLY !== "0";
+
+function isSongDerivedShelfRow(row: {
+  source?: string | null;
+  meta?: unknown;
+}): boolean {
+  if (row.source !== "artist_stem" && row.source !== "self_stem") return false;
+  const meta =
+    row.meta && typeof row.meta === "object"
+      ? (row.meta as Record<string, unknown>)
+      : null;
+  return typeof meta?.fromSongId === "string" && meta.fromSongId.trim().length > 0;
+}
 
 /** Bounded fan-out width for the two forge loops (SOUNDCORE item 3). Forge
  *  renders are I/O-bound Replicate polls (submit → prefer:wait → poll), NOT CPU
@@ -881,6 +903,11 @@ export async function processOwnEngine(p: OwnEnginePayload): Promise<void> {
       requestedRoles,
       p.lockedMaterialIds ?? []
     );
+    if (SONG_MATERIAL_ONLY) {
+      notes.push(
+        "material policy: catalog-song-derived stems only (no forged, provider, seeded, or synth shelf material)"
+      );
+    }
     const replayLocked = Boolean(p.lockedMaterialIds?.length);
     if (replayLocked) {
       const pickedIds = new Set(picks.map(pick => pick.id));
@@ -907,7 +934,7 @@ export async function processOwnEngine(p: OwnEnginePayload): Promise<void> {
     // synth primitive is ever layered under the real instruments. Replay-locked
     // renders never preview (they must reproduce exactly). NEVER fatal: any
     // failure falls straight back to the barrier path with a disclosed note.
-    if (bedFirstStreaming && !replayLocked) {
+    if (bedFirstStreaming && !replayLocked && !SONG_MATERIAL_ONLY) {
       let previewPicks: Awaited<ReturnType<typeof pickKit>> = [];
       const preview = await runSynthBedPreview(jobStartedAt, {
         synthFullKit: async () => {
@@ -1064,6 +1091,7 @@ export async function processOwnEngine(p: OwnEnginePayload): Promise<void> {
     // the operator's house token OR the workspace's own Replicate key.
     const forgeReachable = Boolean(replicateToken()) || Boolean(workspaceForgeKey);
     const engineConnected =
+      !SONG_MATERIAL_ONLY &&
       !replayLocked &&
       process.env.OWN_ENGINE_AUTOFORGE !== "0" &&
       process.env.OWN_ENGINE_REAL_FORGE !== "0" &&
@@ -1242,7 +1270,7 @@ export async function processOwnEngine(p: OwnEnginePayload): Promise<void> {
     const synthTargets = [
       ...new Set([...synthKitFor(p.genre), ...requestedRoles]),
     ];
-    const missing = replayLocked
+    const missing = replayLocked || SONG_MATERIAL_ONLY
       ? []
       : synthTargets.filter(role => {
           if (haveRoles.has(role)) return false; // already on the shelf (forged/collected)
@@ -1273,7 +1301,9 @@ export async function processOwnEngine(p: OwnEnginePayload): Promise<void> {
     // every render, how many REAL instrument loops were forged vs synth
     // gap-fillers — and why real forging did or did not run.
     const forgeOffReason =
-      process.env.OWN_ENGINE_AUTOFORGE === "0"
+      SONG_MATERIAL_ONLY
+        ? "catalog-song-only material policy"
+        : process.env.OWN_ENGINE_AUTOFORGE === "0"
         ? "all forging disabled (OWN_ENGINE_AUTOFORGE=0)"
         : process.env.OWN_ENGINE_REAL_FORGE === "0"
           ? "real forge disabled (OWN_ENGINE_REAL_FORGE=0)"
@@ -1310,6 +1340,7 @@ export async function processOwnEngine(p: OwnEnginePayload): Promise<void> {
     const autoForgedRoles: string[] = [];
     if (
       !coverage.ready &&
+      !SONG_MATERIAL_ONLY &&
       !replayLocked &&
       process.env.OWN_ENGINE_AUTOFORGE !== "0"
     ) {
@@ -1458,7 +1489,9 @@ export async function processOwnEngine(p: OwnEnginePayload): Promise<void> {
       // broken. The ONLY hard stop left is literally zero usable material.
       if (!picks.length) {
         throw new Error(
-          "own-engine: the shelf has no usable material at all for this lane — synth pass produced nothing"
+          SONG_MATERIAL_ONLY
+            ? "own-engine: no rights-clean song-derived material is ready for this lane - run rebuild-song-materials after adding eligible owned songs"
+            : "own-engine: the shelf has no usable material at all for this lane - synth pass produced nothing"
         );
       }
       notes.push(
