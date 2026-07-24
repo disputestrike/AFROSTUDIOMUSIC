@@ -11,7 +11,7 @@ Flow (per ACE-Step v1 TRAIN_INSTRUCTION.md — the documented, buildable path):
         <key>.mp3  +  <key>_prompt.txt (tags)  +  <key>_lyrics.txt
   3. convert2hf_dataset.py -> HuggingFace dataset dir
   4. trainer.py -> LoRA adapter (base model + MERT/mHuBERT auto-download from HF)
-  5. harvest the PEFT adapter (adapter_model.safetensors + adapter_config.json)
+  5. harvest the Diffusers PEFT adapter (pytorch_lora_weights.safetensors)
      from {logger_dir}/.../checkpoints/*_lora/, zip it, return it
 
 HONESTY: every step runs the real ACE-Step v1 code. Empty dataset, thin corpus,
@@ -28,6 +28,11 @@ import tempfile
 import zipfile
 from pathlib import Path
 from patch_ace_trainer import patch_trainer
+from adapter_contract import (
+    LORA_WEIGHT_NAME,
+    find_lora_directory,
+    validate_lora_config,
+)
 
 
 class TrainingOutput(BaseModel):
@@ -160,6 +165,30 @@ def train(
     if kept < 3:
         raise RuntimeError(f"only {kept} usable 30s+ segments after conforming — corpus too thin to train honestly")
     print(f"[trainer] {kept} conformed segment(s) ready")
+    vocal_rows = [
+        prompt_path
+        for prompt_path in data.glob("*_prompt.txt")
+        if "voice-singing-model" in prompt_path.read_text(
+            encoding="utf-8", errors="ignore"
+        ).lower()
+        and prompt_path.with_name(
+            prompt_path.name.replace("_prompt.txt", "_lyrics.txt")
+        )
+        .read_text(encoding="utf-8", errors="ignore")
+        .strip()
+        .lower()
+        not in {"", "[instrumental]"}
+    ]
+    if not vocal_rows:
+        raise RuntimeError(
+            "corpus contains no rights-cleared voice-singing-model row with "
+            "lyrics — refusing to claim that this adapter can learn singing"
+        )
+    print(
+        f"[trainer] verified {len(vocal_rows)} lyric-conditioned isolated-vocal "
+        "segment(s) for singing",
+        flush=True,
+    )
 
     # 3. convert to the HuggingFace dataset the trainer consumes
     repeat = repeat_count or max(1, min(2000, round(2000 / kept)))
@@ -173,9 +202,10 @@ def train(
     # Cog copies repository source after build.run, so apply the pinned,
     # fail-closed upstream patch here when every runtime file is present.
     patch_trainer(ACE)
-    cfg = ACE / "config" / "zh_rap_lora_config.json"  # genre-agnostic LoRA hyperparams
+    cfg = Path(__file__).with_name("afroone_lora_config.json")
     if not cfg.exists():
-        raise RuntimeError(f"missing LoRA config {cfg} — repin the build ref in cog.yaml")
+        raise RuntimeError(f"missing AfroOne LoRA config {cfg}")
+    validate_lora_config(cfg)
     _run([sys.executable, str(ACE / "trainer.py"),
           "--dataset_path", str(hf),
           "--exp_name", exp_name,
@@ -189,11 +219,18 @@ def train(
           "--logger_dir", str(out)],
          "trainer")
 
-    # 5. harvest the newest PEFT adapter dir (adapter_model.safetensors + adapter_config.json)
-    adapters = sorted(out.rglob("adapter_model.safetensors"), key=lambda p: p.stat().st_mtime)
+    # 5. Harvest the exact Diffusers adapter filename ACE-Step writes and reads.
+    adapters = sorted(
+        out.rglob(LORA_WEIGHT_NAME),
+        key=lambda p: p.stat().st_mtime,
+    )
     if not adapters:
-        raise RuntimeError("trainer exited 0 but wrote no adapter_model.safetensors — refusing to ship an empty adapter")
+        raise RuntimeError(
+            f"trainer exited 0 but wrote no {LORA_WEIGHT_NAME} — "
+            "refusing to ship an empty adapter"
+        )
     adapter_dir = adapters[-1].parent
+    find_lora_directory(adapter_dir)
     files = [p for p in adapter_dir.rglob("*") if p.is_file()]
     weights_zip = work / "weights.zip"
     with zipfile.ZipFile(weights_zip, "w", zipfile.ZIP_DEFLATED) as z:

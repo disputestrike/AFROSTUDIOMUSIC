@@ -97,55 +97,30 @@ def patch_trainer(root: Path) -> None:
     def on_before_optimizer_step(self, optimizer):
         if getattr(self, "_afroone_grad_verified", False):
             return
-        saw_speaker_gradient = False
         saw_transformer_gradient = False
+        saw_lyric_gradient = False
         for name, parameter in self.transformers.named_parameters():
             if not parameter.requires_grad or parameter.grad is None:
                 continue
             if not torch.isfinite(parameter.grad).all():
                 raise RuntimeError(f"AfroOne LoRA produced a non-finite gradient at {name}")
             if parameter.grad.detach().abs().max().item() > 0:
-                if "speaker_embedder" in name:
-                    saw_speaker_gradient = True
-                elif "transformer_blocks." in name:
+                if "transformer_blocks." in name:
                     saw_transformer_gradient = True
-
-        gradient_check = getattr(self, "_afroone_grad_checks", 0) + 1
-        self._afroone_grad_checks = gradient_check
-        self._afroone_speaker_grad_seen = (
-            getattr(self, "_afroone_speaker_grad_seen", False)
-            or saw_speaker_gradient
-        )
-        self._afroone_transformer_grad_seen = (
-            getattr(self, "_afroone_transformer_grad_seen", False)
-            or saw_transformer_gradient
-        )
-        if gradient_check == 1 and not self._afroone_transformer_grad_seen:
+                elif "lyric_encoder." in name:
+                    saw_lyric_gradient = True
+        if not saw_transformer_gradient:
             raise RuntimeError(
                 "AfroOne first step did not reach transformer-block LoRA parameters"
             )
-        if (
-            gradient_check >= 20
-            and not self._afroone_speaker_grad_seen
-        ):
+        if not saw_lyric_gradient:
             raise RuntimeError(
-                "AfroOne speaker LoRA received no nonzero gradient in 20 steps"
+                "AfroOne first step did not reach lyric-encoder LoRA parameters"
             )
-        if not (
-            self._afroone_speaker_grad_seen
-            and self._afroone_transformer_grad_seen
-        ):
-            if gradient_check == 1:
-                print(
-                    "[afroone] verified finite nonzero transformer LoRA gradient; "
-                    "awaiting a speaker-conditioned batch",
-                    flush=True,
-                )
-            return
         self._afroone_grad_verified = True
         print(
             "[afroone] verified finite nonzero LoRA gradients "
-            "(speaker + transformer)",
+            "(lyric encoder + music transformer)",
             flush=True,
         )
 
