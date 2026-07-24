@@ -16,6 +16,17 @@ def replace_once(source: str, old: str, new: str, label: str) -> str:
 def patch_trainer(root: Path) -> None:
     trainer = root / "trainer.py"
     source = trainer.read_text(encoding="utf-8")
+    required = (
+        "noisy_image.requires_grad_(True)",
+        "verified {trainable_count:,} trainable LoRA parameters",
+        "verified nonzero LoRA gradient",
+    )
+    present = [marker in source for marker in required]
+    if all(present):
+        print(f"[afroone] pinned ACE-Step trainer already patched at {trainer}")
+        return
+    if any(present):
+        raise RuntimeError("ACE-Step trainer contains a partial AfroOne patch")
 
     source = replace_once(
         source,
@@ -91,11 +102,6 @@ def patch_trainer(root: Path) -> None:
     trainer.write_text(source, encoding="utf-8")
 
     verified = trainer.read_text(encoding="utf-8")
-    required = (
-        "noisy_image.requires_grad_(True)",
-        "verified {trainable_count:,} trainable LoRA parameters",
-        "verified nonzero LoRA gradient",
-    )
     missing = [marker for marker in required if marker not in verified]
     if missing:
         raise RuntimeError(f"ACE-Step trainer patch verification failed: {missing}")
