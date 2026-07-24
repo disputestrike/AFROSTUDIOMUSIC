@@ -191,10 +191,19 @@ export function referenceToProvenance(row: {
   id: string;
   rightsBasis?: string | null;
   recipe?: unknown;
+  sourceUrl?: string | null;
   consentGranted?: boolean;
 }): AssetProvenance {
   const basis = (row.rightsBasis ?? '').trim().toLowerCase();
   const license = explicitTrainingLicense(row.recipe);
+  const sourceUrl = (row.sourceUrl ?? '').trim();
+  const hasAudioBytes = /^s3:\/\//i.test(sourceUrl) || /^https?:\/\//i.test(sourceUrl);
+  if (!hasAudioBytes) {
+    // Learn/Zap lyric, trend, and facts markers remain available to the facts,
+    // evaluation, clearance, and owned-recreation lanes. They cannot enter an
+    // audio weight archive until a real owned/licensed audio URL is attached.
+    return { id: `soundref:${row.id}`, consentGranted: row.consentGranted };
+  }
   if (basis === 'training-licensed' && license.granted) {
     return {
       id: `soundref:${row.id}`,
@@ -244,6 +253,7 @@ export interface CaptureInput {
     id: string;
     rightsBasis?: string | null;
     recipe?: unknown;
+    sourceUrl?: string | null;
   }>;
 }
 
