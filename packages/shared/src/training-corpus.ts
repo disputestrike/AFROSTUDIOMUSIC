@@ -6,12 +6,11 @@
  * module turns the catalog we already store into a rights-clean training
  * manifest, so nothing evaporates and the model compounds as content arrives.
  *
- * THE ONE LINE WE DO NOT CROSS (it protects us, it does not slow us):
- *   Third-party-engine renders (MiniMax / Suno bridge / ACE-step / MusicGen)
- *   are REJECTED as training fuel. That is MiniMax's and Suno's own ToS — their
- *   outputs may not train a competing model — not our preference. Training on
- *   them hands them a lawsuit and poisons the "rights-clean weights" claim that
- *   makes the model sellable. See lora-dataset.ts (ADDENDUM W-5).
+ * THE ONE LINE WE DO NOT CROSS (it protects us without discarding learning):
+ *   Third-party-engine bytes enter weights only after an asset-level agreement
+ *   explicitly grants commercial model-training rights. Before clearance they
+ *   remain learning candidates for facts, evaluation, preference labels,
+ *   provenance repair, licensing, and owned AfroOne recreation.
  *
  * THE UNLOCK (how user content legitimately trains us):
  *   1. USER-ORIGINAL uploads (their own voice/master/stem/video) are trainable
@@ -32,8 +31,8 @@ import { validateDatasetTrack, type DatasetTrackOrigin } from './lora-dataset';
 export type TrainingOrigin =
   | DatasetTrackOrigin // 'own-master' | 'licensed-catalog' | 'live-session' — the clean three
   | 'user-original' // user-uploaded original work — trainable ONLY with consent
-  | 'third-party-render' // MiniMax/Suno/ACE-step/MusicGen output — NEVER trainable (their ToS)
-  | 'unknown'; // provenance not established — refused (fail-closed)
+  | 'third-party-render' // provider output — trainable after explicit license evidence
+  | 'unknown'; // provenance not established — retained for repair
 
 /** Engines whose OUTPUT we may train on because we own/synthesize it. */
 const OWN_ENGINES = new Set(['own', 'own_engine', 'afrohit-own', 'lora', 'forged', 'synth']);
@@ -68,6 +67,10 @@ export interface AssetProvenance {
   performanceSource?: string | null;
   /** Did the uploader grant a training-license? (ToS/consent — operator-set, never inferred.) */
   consentGranted?: boolean | null;
+  /** Does an asset-level agreement explicitly permit commercial model training? */
+  trainingLicenseGranted?: boolean | null;
+  /** Agreement/receipt id retained with the asset for audit. */
+  trainingLicenseId?: string | null;
 }
 
 /**
@@ -85,37 +88,40 @@ export function deriveTrainingOrigin(a: AssetProvenance): TrainingOrigin {
   const rights = (a.rightsBasis ?? '').trim().toLowerCase();
   const perf = (a.performanceSource ?? '').trim().toLowerCase();
 
-  // 1. A third-party ENGINE stamp is dispositive — the audio is theirs. A
+  // 1. An explicit asset-level model-training license is dispositive. This is
+  // the legal path for provider/Zap/catalog bytes; a global toggle is not.
+  if (a.trainingLicenseGranted === true && typeof a.trainingLicenseId === 'string' && a.trainingLicenseId.trim()) {
+    return 'licensed-catalog';
+  }
+
+  // 2. A third-party ENGINE stamp is dispositive — the audio is theirs. A
   //    'provider-generated' material rights-basis means a third-party generator
   //    produced it, same rule.
   if (THIRD_PARTY_ENGINES.has(engine)) return 'third-party-render';
   if (rights === 'provider-generated') return 'third-party-render';
 
-  // 2. Own / synthesized origin — we own the audio. Includes our own render
+  // 3. Own / synthesized origin — we own the audio. Includes our own render
   //    engine, forged synth loops, code/self-generated material, and our OWN
   //    voice model's conversion of a consented voice (own-model output).
   if (OWN_ENGINES.has(engine) || src === 'forged') return 'own-master';
   if (rights === 'code-generated' || rights === 'self-generated') return 'own-master';
   if (perf === 'voice_conversion' || perf === 'score_synth') return 'own-master';
 
-  // 3. Licensed catalog — commercial license on file.
+  // 4. Licensed catalog — commercial license on file.
   if (rights === 'licensed') return 'licensed-catalog';
 
-  // 4. Live session recording.
+  // 5. Live session recording.
   if (src === 'live-session' || src === 'live') return 'live-session';
 
-  // 5. User-uploaded ORIGINAL work (their stem / master / recording / voice).
+  // 6. User-uploaded ORIGINAL work (their stem / master / recording / voice).
   //    Trainable ONLY with consent — the gate below enforces that; here we only
   //    classify. A vocal the artist uploaded/imported is their original work.
   if (perf === 'artist_upload' || perf === 'artist_import') return 'user-original';
-  if (
-    (src === 'artist_stem' || src === 'upload' || src === 'user') &&
-    rights === 'user-attested'
-  ) {
+  if ((src === 'artist_stem' || src === 'upload' || src === 'user') && rights === 'user-attested') {
     return 'user-original';
   }
 
-  // 6. Anything else (incl. stem_separation off an unknown mix): fail closed.
+  // 7. Anything else (incl. stem_separation off an unknown mix): fail closed.
   return 'unknown';
 }
 
@@ -126,18 +132,9 @@ export interface EligibilityVerdict {
 }
 
 /**
- * OPERATOR TRAINING POLICY (owner order 2026-07-19: "our engine has to learn —
- * slacken the no-outside-learning rule, I need to turn it on and off").
- *
- * `allowThirdPartyRenders` admits third-party-engine output as training fuel.
- * It ships OFF and is an EXPLICIT operator decision (admin console toggle,
- * SystemSetting-backed, audit-logged) — never an env default, never inferred.
- * The risk is the operator's, stated on the switch: MiniMax/Suno ToS forbid
- * training competing models on their output, and a model cannot UNLEARN after
- * the fact — flipping OFF later stops new fuel but does not purge weights.
- * Provenance is never laundered: an admitted third-party render keeps its
- * 'third-party-render' origin label in every manifest, so what trained the
- * weights stays provable either way.
+ * Legacy policy shape retained for API compatibility. A global operator switch
+ * no longer admits provider bytes into weights. Outside-render learning controls
+ * analysis and owned recreation; raw weights require asset-level license proof.
  */
 export interface TrainingPolicy {
   allowThirdPartyRenders?: boolean;
@@ -149,6 +146,7 @@ export interface TrainingPolicy {
  * with a plain reason (nothing is silently dropped).
  */
 export function trainingEligibility(a: AssetProvenance, policy?: TrainingPolicy): EligibilityVerdict {
+  void policy;
   const origin = deriveTrainingOrigin(a);
   switch (origin) {
     case 'own-master':
@@ -156,9 +154,7 @@ export function trainingEligibility(a: AssetProvenance, policy?: TrainingPolicy)
     case 'live-session': {
       // Defer to the existing W-5 gate so there is ONE source of truth.
       const gate = validateDatasetTrack({ id: a.id, origin });
-      return gate.ok
-        ? { eligible: true, origin }
-        : { eligible: false, origin, reason: gate.reason };
+      return gate.ok ? { eligible: true, origin } : { eligible: false, origin, reason: gate.reason };
     }
     case 'user-original':
       return a.consentGranted === true
@@ -169,24 +165,17 @@ export function trainingEligibility(a: AssetProvenance, policy?: TrainingPolicy)
             reason: `track ${a.id}: user-original content needs an explicit training-license grant (consentGranted) before it can train our weights`,
           };
     case 'third-party-render':
-      if (policy?.allowThirdPartyRenders === true) {
-        return {
-          eligible: true,
-          origin, // label survives — the manifest shows exactly what this is
-          reason: `track ${a.id}: admitted by OPERATOR OVERRIDE (outside-render learning ON) — third-party-engine output, ToS risk accepted by the operator`,
-        };
-      }
       return {
         eligible: false,
         origin,
-        reason: `track ${a.id}: third-party-engine output (MiniMax/Suno/ACE-step/MusicGen) — their ToS forbids training a competing model on it; render on our OWN engine to make it trainable (or the operator flips outside-render learning ON)`,
+        reason: `track ${a.id}: provider bytes are pending an explicit commercial model-training license; retain facts/evaluations and create an owned AfroOne recreation for immediate weight training`,
       };
     case 'unknown':
     default:
       return {
         eligible: false,
         origin,
-        reason: `track ${a.id}: provenance not established — refused (fail-closed); stamp engine + rightsBasis to classify it`,
+        reason: `track ${a.id}: provenance repair is pending; preserve the asset, recover its source/rights receipt, or create a documented owned recreation`,
       };
   }
 }
@@ -264,7 +253,12 @@ export function buildTrainingManifest(rows: AssetProvenance[], policy?: Training
     const v = trainingEligibility(row, policy);
     byOrigin[v.origin] = (byOrigin[v.origin] ?? 0) + 1;
     if (v.eligible) eligible.push({ id: row.id, origin: v.origin });
-    else rejected.push({ id: row.id, origin: v.origin, reason: v.reason ?? 'ineligible' });
+    else
+      rejected.push({
+        id: row.id,
+        origin: v.origin,
+        reason: v.reason ?? 'ineligible',
+      });
   }
   return {
     eligible,

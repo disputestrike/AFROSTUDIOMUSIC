@@ -6,10 +6,9 @@
  * the corpus gate implements that EXACTLY:
  *   - own-engine / licensed / live / consented-user-original  → TRAINABLE
  *   - user-original WITHOUT consent                            → refused
- *   - MiniMax / Suno / ACE-step / MusicGen renders             → refused (ToS)
- *   - unknown provenance                                       → refused (fail-closed)
- * and that a MiniMax render is refused EVEN when its lyrics rights look clean
- * (the engine stamp is dispositive — the instrumental is theirs).
+ *   - provider renders without model-training permission       → pending license
+ *   - provider renders with explicit asset license evidence    → TRAINABLE
+ *   - unknown provenance                                       → pending repair
  */
 import assert from 'node:assert/strict';
 import {
@@ -68,16 +67,21 @@ assert.equal(withConsent.eligible, true, 'user-original WITH consent is trainabl
 // the guard that protects the company (default: switch OFF)
 const mm = trainingEligibility({ id: 'm1', engine: 'minimax' });
 assert.equal(mm.eligible, false, 'MiniMax render is not trainable while the outside switch is OFF (the default)');
-assert.match(mm.reason ?? '', /ToS|third-party|own engine/i, 'refusal explains WHY + the own-engine path');
+assert.match(mm.reason ?? '', /license|recreation/i, 'pending verdict explains both legal weight paths');
 assert.equal(trainingEligibility({ id: 'z' }).eligible, false, 'unknown provenance refused (fail-closed)');
 
-// ── OUTSIDE-RENDER LEARNING (owner switch, 2026-07-19) ──────────────────────
-// ON admits third-party renders — but the origin LABEL survives (provenance is
-// never laundered) and the verdict names the operator override.
+// A global analysis switch cannot authorize weight training. Only an explicit
+// asset-level model-training agreement can do that.
 const mmOn = trainingEligibility({ id: 'm2', engine: 'minimax' }, { allowThirdPartyRenders: true });
-assert.equal(mmOn.eligible, true, 'switch ON admits a third-party render');
-assert.equal(mmOn.origin, 'third-party-render', 'admitted render KEEPS its third-party-render label');
-assert.match(mmOn.reason ?? '', /operator|override/i, 'admission names the operator override');
+assert.equal(mmOn.eligible, false, 'analysis switch cannot admit provider bytes to weights');
+const mmLicensed = trainingEligibility({
+  id: 'm3',
+  engine: 'minimax',
+  trainingLicenseGranted: true,
+  trainingLicenseId: 'agreement-2026-001',
+});
+assert.equal(mmLicensed.eligible, true, 'explicit provider model-training license admits the bytes');
+assert.equal(mmLicensed.origin, 'licensed-catalog', 'licensed provider bytes get a legal trainable origin');
 // The switch slackens ONLY the third-party line — everything else stays law:
 assert.equal(
   trainingEligibility({ id: 'z2' }, { allowThirdPartyRenders: true }).eligible,
@@ -93,7 +97,7 @@ const manifestOn = buildTrainingManifest(
   [{ id: 'mm', engine: 'minimax' }, { id: 'huh2', engine: 'mystery-box' }],
   { allowThirdPartyRenders: true }
 );
-assert.equal(manifestOn.eligible.length, 1, 'manifest with switch ON admits only the third-party render, not the unknown');
+assert.equal(manifestOn.eligible.length, 0, 'global analysis switch admits no uncleared bytes');
 assert.equal(manifestOn.counts.byOrigin['third-party-render'], 1, 'byOrigin still counts it as third-party-render');
 
 // ── manifest: eligible + rejected both reported, nothing silently dropped ────
@@ -115,7 +119,7 @@ assert.equal(manifest.eligible.length + manifest.rejected.length, manifest.count
 assert.ok(manifest.rejected.every((r) => !!r.reason), 'every rejection carries a reason');
 assert.equal(manifest.counts.byOrigin['third-party-render'], 2, 'both third-party renders counted');
 
-console.log('training-corpus gate: masters/licensed/live/consented-user TRAIN; MiniMax/Suno/unknown/unconsented REFUSED with reasons — nothing silently dropped.');
+console.log('training-corpus gate: cleared assets TRAIN now; pending assets keep legal next actions — nothing silently dropped.');
 console.log(JSON.stringify(manifest.counts, null, 2));
 
 // ── TRAINING-LICENSE CONSENT (ToS-on-signup, versioned + hashed) ─────────────

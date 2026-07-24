@@ -51,40 +51,48 @@ The corrected policy is:
   configured margin, carry a commercial-compatible base license, and appear in
   the render receipt as the mixed trained layer.
 
-## Every Asset Has a Legal Learning Lane
+## Every Asset Reaches Weights Legally
 
-Nothing should be thrown away or ignored. Not every byte may legally enter the
-same commercial weights, so every asset is assigned a specific lane.
+Nothing is thrown away, ignored, or permanently classified as "facts only."
+Every asset stays in the learning ledger. Rights-clean assets enter weights now;
+the others move through consent, explicit licensing, provenance repair, or an
+owned AfroOne recreation until their legal weight path is complete.
 
-| Asset | Legal use now | Weight lane |
-| --- | --- | --- |
-| Owned catalog song | Audio training, evaluation, material separation | General song model |
-| Consented Learn upload | Audio training, analysis, evaluation | General song model |
-| Rights-clean material loop | Role, groove, timbre, and loop generation | Loop/instrument adapter |
-| Consented isolated vocal | Diction, phrasing, singing, timbre | Singing/voice model |
-| Zap reference | Tempo, groove, structure, instrumentation, trend facts | Facts and evaluation only |
-| MiniMax/provider render | Measured labels, benchmark pair, failure analysis | Facts/evaluation unless an explicit training license is obtained |
-| Opaque old AfroOne render | Lineage reconstruction and quarantine | Eligible only after provenance repair |
-| Licensed catalog recording | Uses allowed by its exact license | Licensed lane only |
+| Asset                      | Learning now                                                           | Legal path into weights                                                                                               |
+| -------------------------- | ---------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------- |
+| Owned catalog song         | Audio, arrangement, lyrics, evaluation, material separation            | General song model immediately                                                                                        |
+| Learn upload               | Analysis, evaluation, writing and production labels                    | General song model after creator training consent                                                                     |
+| Material loop              | Role, groove, timbre, tempo and key behavior                           | Unified adapter now; dedicated loop/instrument adapter as the corpus grows                                            |
+| Isolated vocal             | Diction, phrasing, melody and timbre                                   | Unified adapter plus consent-bound singing/voice model                                                                |
+| Zap reference              | Tempo, groove, structure, instrumentation, trend and preference labels | Explicit source/model-training license, or an originality-checked AfroOne recreation rendered from owned materials    |
+| MiniMax/provider render    | Measured labels, benchmark pair, preference and failure analysis       | Asset-level provider model-training license, or an originality-checked owned AfroOne recreation                       |
+| Opaque old AfroOne render  | Analysis and lineage reconstruction                                    | Provenance repair; if lineage cannot be proven, recreate through the current owned engine and train on the recreation |
+| Licensed catalog recording | Analysis and every contractually allowed use                           | Attach the agreement receipt with explicit commercial model-training scope                                            |
 
-Provider audio must not be copied into competing commercial weights merely
-because it is useful. Legal ways to obtain more value are:
+Provider audio is not abandoned, but generic commercial-use permission is not
+silently treated as model-training permission. Its legal weight routes are:
 
-1. negotiate an explicit model-training license;
+1. negotiate an explicit commercial model-training license;
 2. use provider outputs as blind benchmarks and preference labels;
 3. extract non-audio facts such as BPM, key, structure, density, and role maps;
-4. recreate the underlying musical decision with owned instruments and render
-   it through AfroOne;
-5. train on the owned recreation and retain the comparison receipt.
+4. have AfroOne create a new, originality-checked realization of the high-level
+   musical facts using owned/consented instruments and performances;
+5. train on that owned recreation while retaining both provenance and
+   similarity-check receipts.
+
+The admin license endpoint is `POST /admin/training/assets/license`. It requires
+asset type/id, licensor, agreement id, HTTPS evidence URL, grant date, territory,
+and explicit `commercial-model-training` scope. There is no global legal bypass.
 
 ## Training Flywheel
 
 ### Nightly inputs
 
-1. Scan songs, Learn references, clean materials, and consented vocals.
+1. Scan songs, Learn/Zap references, materials, vocals, and provider renders.
 2. Resolve current training consent by workspace.
 3. classify provenance and rights.
-4. assign every asset to a learning lane.
+4. assign every asset to train-now, consent, license, provenance-repair, or
+   owned-recreation status.
 5. persist `music.training.learningLanes.v1` with lane counts.
 6. freeze evaluation holdouts so training never sees test audio.
 7. hash exact audio bytes, prompts, lyrics, consent snapshot, and source family.
@@ -92,7 +100,8 @@ because it is useful. Legal ways to obtain more value are:
 ### General song model
 
 The first production-capable base is ACE-Step under its commercial-compatible
-license. Each archive item includes:
+license. The current unified archive includes every rights-cleared song, Learn
+upload, material loop, and isolated vocal. Each archive item includes:
 
 - conformed song audio;
 - genre and sub-lane;
@@ -118,8 +127,11 @@ learns drums, bass/log-drum relationships, percussion hierarchy, harmony,
 melody, fills, and sound effects. It must produce role-isolated, tempo-locked,
 key-aware assets with a deterministic seed.
 
-This model is separate from the full-song adapter so short loops do not distort
-long-form arrangement learning.
+Clean loops enter the current unified ACE-Step run now with an explicit
+`loop-instrument-adapter` prompt tag. Clips below 25 seconds are tempo-preserving
+repetitions to the trainer's 30-second floor rather than being skipped. A
+dedicated adapter becomes the promotion target when the loop corpus can support
+independent evaluation.
 
 ### Singing and personal voice
 
@@ -152,8 +164,10 @@ Writing learns from permissioned lyrics as structured craft, not copied lines:
 - topic, image, and emotional progression;
 - pronunciation and native-review feedback.
 
-Provider/reference lyrics may supply evaluation labels or public linguistic
-facts, but do not enter weights without permission.
+Provider/reference lyrics remain in the learning ledger. They enter writing
+weights through explicit permission, public-domain status, creator consent, or
+new owned examples generated from non-protectable craft measurements and
+cleared by similarity checks.
 
 ## Evidence Required Per Release
 
@@ -195,8 +209,8 @@ video model on everything.
 - Owned footage: shot planning, motion, editing, and generation.
 - Consented likeness footage: private per-artist identity adapter.
 - Licensed stock: only the uses allowed by its license.
-- Provider-generated video: benchmark, prompt/shot evaluation, and edit input;
-  raw training only with explicit provider permission.
+- Provider-generated video: benchmark, prompt/shot evaluation, edit input, and
+  a license-or-owned-recreation queue for eventual weight training.
 - Public trends: facts such as shot duration, camera move, framing, palette,
   transition type, and platform performance.
 - Movie references: scene-language analysis and evaluation, never copied frames

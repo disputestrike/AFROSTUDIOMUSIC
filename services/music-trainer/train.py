@@ -61,8 +61,8 @@ def _conform(src: Path, data_dir: Path, index: int, max_seg_s: int = 110) -> int
     except ValueError:
         print(f"[trainer] skipping unreadable audio: {src.name}", file=sys.stderr)
         return 0
-    if duration < 25:
-        print(f"[trainer] skipping too-short clip ({duration:.0f}s): {src.name}", file=sys.stderr)
+    if duration < 2:
+        print(f"[trainer] skipping unusably short clip ({duration:.1f}s): {src.name}", file=sys.stderr)
         return 0
 
     lyrics = _sidecar(src, ".lyrics.txt", "_lyrics.txt") or "[instrumental]"
@@ -76,13 +76,36 @@ def _conform(src: Path, data_dir: Path, index: int, max_seg_s: int = 110) -> int
         print(f"[trainer] WARN no prompt/tags sidecar for {src.name} — using generic "
               f"'{prompt}'. Enrich buildTrainingManifest to emit real tags.", file=sys.stderr)
 
-    n_segs = max(1, int(duration // max_seg_s) + (1 if duration % max_seg_s >= 30 else 0))
+    short_clip = duration < 25
+    n_segs = 1 if short_clip else max(
+        1, int(duration // max_seg_s) + (1 if duration % max_seg_s >= 30 else 0)
+    )
     written = 0
     for s in range(n_segs):
         key = f"track{index:03d}_{s:02d}"
         mp3 = data_dir / f"{key}.mp3"
-        cmd = ["ffmpeg", "-v", "error", "-y", "-ss", str(s * max_seg_s), "-t", str(max_seg_s),
-               "-i", str(src), "-ar", "44100", "-ac", "2", "-b:a", "320k", str(mp3)]
+        if short_clip and "loop-instrument-adapter" in prompt.lower():
+            # Repeat rights-cleared loops to ACE-Step's 30-second floor while
+            # preserving exact tempo and phase.
+            cmd = [
+                "ffmpeg", "-v", "error", "-y", "-stream_loop", "-1",
+                "-i", str(src), "-t", "30", "-ar", "44100", "-ac", "2",
+                "-b:a", "320k", str(mp3),
+            ]
+        elif short_clip:
+            # Keep short isolated vocals/takes without creating a fake repeated
+            # phrase. Silence-pad the tail to the trainer's duration floor.
+            cmd = [
+                "ffmpeg", "-v", "error", "-y", "-i", str(src),
+                "-af", "apad=pad_dur=30", "-t", "30", "-ar", "44100",
+                "-ac", "2", "-b:a", "320k", str(mp3),
+            ]
+        else:
+            cmd = [
+                "ffmpeg", "-v", "error", "-y", "-ss", str(s * max_seg_s),
+                "-t", str(max_seg_s), "-i", str(src), "-ar", "44100",
+                "-ac", "2", "-b:a", "320k", str(mp3),
+            ]
         if subprocess.run(cmd).returncode == 0 and mp3.exists() and mp3.stat().st_size > 4096:
             (data_dir / f"{key}_prompt.txt").write_text(prompt, encoding="utf-8")
             (data_dir / f"{key}_lyrics.txt").write_text(lyrics, encoding="utf-8")
