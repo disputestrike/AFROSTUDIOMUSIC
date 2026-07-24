@@ -23,10 +23,6 @@ build:
     # Pin the exact official revision proven by this wrapper. HEAD drift in the
     # upstream trainer must never change a production training run silently.
     - "git init /src/ACE-Step && git -C /src/ACE-Step remote add origin https://github.com/ace-step/ACE-Step && git -C /src/ACE-Step fetch --depth 1 origin 1bee4c9f5b43e30995f8d4d33b3919197ce1bd68 && git -C /src/ACE-Step checkout --detach FETCH_HEAD && test \"$(git -C /src/ACE-Step rev-parse HEAD)\" = \"1bee4c9f5b43e30995f8d4d33b3919197ce1bd68\""
-    # The pinned upstream LoRA trainer needs a graph-connected latent under
-    # gradient checkpointing. This patch also fails the run if LoRA receives
-    # no real gradient, preventing a hollow "successful" adapter.
-    - "python /src/patch_ace_trainer.py /src/ACE-Step"
     # --no-deps: every dependency is already pinned in requirements.txt above
     # (cuda-matched torch included); this only wires `import acestep` onto the path.
     - "pip install -e /src/ACE-Step --no-deps"

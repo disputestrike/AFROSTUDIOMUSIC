@@ -27,6 +27,7 @@ import sys
 import tempfile
 import zipfile
 from pathlib import Path
+from patch_ace_trainer import patch_trainer
 
 
 class TrainingOutput(BaseModel):
@@ -169,6 +170,9 @@ def train(
         raise RuntimeError("convert2hf_dataset produced no dataset arrow — aborting before a hollow train")
 
     # 4. train LoRA (base ACE-Step-v1-3.5B + MERT/mHuBERT auto-download from HF at runtime)
+    # Cog copies repository source after build.run, so apply the pinned,
+    # fail-closed upstream patch here when every runtime file is present.
+    patch_trainer(ACE)
     cfg = ACE / "config" / "zh_rap_lora_config.json"  # genre-agnostic LoRA hyperparams
     if not cfg.exists():
         raise RuntimeError(f"missing LoRA config {cfg} — repin the build ref in cog.yaml")
