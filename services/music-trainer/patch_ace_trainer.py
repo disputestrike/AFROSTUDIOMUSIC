@@ -143,6 +143,17 @@ def patch_trainer(root: Path) -> None:
         "single-GPU trainer strategy",
     )
 
+    source = apply_exact_patch(
+        source,
+        "            or torch.distributed.get_rank() != 0\n",
+        """            or (
+                torch.distributed.is_initialized()
+                and torch.distributed.get_rank() != 0
+            )
+""",
+        "single-GPU plot rank guard",
+    )
+
     transformer_source = apply_exact_patch(
         original_transformer,
         """                hidden_states = torch.utils.checkpoint.checkpoint(
