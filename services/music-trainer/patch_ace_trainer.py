@@ -97,7 +97,6 @@ def patch_trainer(root: Path) -> None:
     def on_before_optimizer_step(self, optimizer):
         if getattr(self, "_afroone_grad_verified", False):
             return
-        saw_gradient = False
         saw_speaker_gradient = False
         saw_transformer_gradient = False
         for name, parameter in self.transformers.named_parameters():
@@ -106,19 +105,43 @@ def patch_trainer(root: Path) -> None:
             if not torch.isfinite(parameter.grad).all():
                 raise RuntimeError(f"AfroOne LoRA produced a non-finite gradient at {name}")
             if parameter.grad.detach().abs().max().item() > 0:
-                saw_gradient = True
                 if "speaker_embedder" in name:
                     saw_speaker_gradient = True
                 elif "transformer_blocks." in name:
                     saw_transformer_gradient = True
-        if not saw_gradient:
+
+        gradient_check = getattr(self, "_afroone_grad_checks", 0) + 1
+        self._afroone_grad_checks = gradient_check
+        self._afroone_speaker_grad_seen = (
+            getattr(self, "_afroone_speaker_grad_seen", False)
+            or saw_speaker_gradient
+        )
+        self._afroone_transformer_grad_seen = (
+            getattr(self, "_afroone_transformer_grad_seen", False)
+            or saw_transformer_gradient
+        )
+        if gradient_check == 1 and not self._afroone_transformer_grad_seen:
             raise RuntimeError(
-                "AfroOne LoRA parameters received no nonzero gradient on the first step"
+                "AfroOne first step did not reach transformer-block LoRA parameters"
             )
-        if not saw_speaker_gradient or not saw_transformer_gradient:
+        if (
+            gradient_check >= 20
+            and not self._afroone_speaker_grad_seen
+        ):
             raise RuntimeError(
-                "AfroOne first step did not reach both speaker and transformer LoRA paths"
+                "AfroOne speaker LoRA received no nonzero gradient in 20 steps"
             )
+        if not (
+            self._afroone_speaker_grad_seen
+            and self._afroone_transformer_grad_seen
+        ):
+            if gradient_check == 1:
+                print(
+                    "[afroone] verified finite nonzero transformer LoRA gradient; "
+                    "awaiting a speaker-conditioned batch",
+                    flush=True,
+                )
+            return
         self._afroone_grad_verified = True
         print(
             "[afroone] verified finite nonzero LoRA gradients "
@@ -208,6 +231,18 @@ def patch_trainer(root: Path) -> None:
                 )
 """,
         "reentrant transformer checkpoint",
+    )
+
+    transformer_source = apply_exact_patch(
+        transformer_source,
+        "            if self.training and self.gradient_checkpointing:\n",
+        """            if (
+                self.training
+                and self.gradient_checkpointing
+                and torch.is_grad_enabled()
+            ):
+""",
+        "gradient-only transformer checkpoint",
     )
 
     write_patched_pair(
