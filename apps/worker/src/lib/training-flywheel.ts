@@ -9,7 +9,7 @@
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
-import { isOutsideRenderLearningEnabled, Prisma, prisma } from "@afrohit/db";
+import { Prisma, prisma } from "@afrohit/db";
 import JSZip from "jszip";
 import {
   beatIngredientIds,
@@ -141,6 +141,10 @@ interface LearningLaneSummary {
   voiceSingingModel: number;
   factsAndEvaluation: number;
   provenanceRepair: number;
+  trainableNow: number;
+  pendingLicense: number;
+  pendingConsent: number;
+  ownedRecreation: number;
 }
 
 function recipeValue(value: unknown, ...paths: string[][]): string | null {
@@ -440,6 +444,11 @@ async function liveManifest(): Promise<{
         id: true,
         source: true,
         rightsBasis: true,
+        role: true,
+        genre: true,
+        bpm: true,
+        keySignature: true,
+        bars: true,
         url: true,
         contentHash: true,
         meta: true,
@@ -487,11 +496,20 @@ async function liveManifest(): Promise<{
       select: {
         id: true,
         performanceSource: true,
+        role: true,
+        language: true,
+        meta: true,
         url: true,
         contentHash: true,
         songId: true,
         createdAt: true,
         project: { select: { workspaceId: true } },
+        song: {
+          select: {
+            title: true,
+            lyric: { select: { body: true } },
+          },
+        },
       },
       take,
     });
@@ -545,37 +563,26 @@ async function liveManifest(): Promise<{
   const vocalSplit = split(vocals, row => row.project?.workspaceId);
   const referenceSplit = split(references, row => row.workspaceId);
 
-  const outsideRenderLearning = await isOutsideRenderLearningEnabled();
-  if (outsideRenderLearning) {
-    console.log(
-      "[flywheel] outside-render learning is ON for reference analysis; third-party render bytes remain excluded from model training"
-    );
-  }
-  // Provider output can teach metadata and evaluation, never model weights.
-  // The final trainer gate already enforces this; keeping the manifest equally
-  // strict prevents an operator setting from creating a contradictory corpus.
-  const policy = { allowThirdPartyRenders: false };
   const manifest = mergeManifests(
     manifestFromCatalog(
       { materials: materialSplit.yes, beats: beatSplit.yes, vocals: vocalSplit.yes, references: referenceSplit.yes },
-      true,
-      policy
+      true
     ),
     manifestFromCatalog(
       { materials: materialSplit.no, beats: beatSplit.no, vocals: vocalSplit.no, references: referenceSplit.no },
-      false,
-      policy
+      false
     )
   );
+  const allAssets = [...manifest.eligible, ...manifest.rejected];
   const learningLanes: LearningLaneSummary = {
-    songModel: manifest.eligible.filter(
+    songModel: allAssets.filter(
       asset =>
         asset.id.startsWith("beat:") || asset.id.startsWith("soundref:")
     ).length,
-    loopInstrumentAdapter: manifest.eligible.filter(asset =>
+    loopInstrumentAdapter: allAssets.filter(asset =>
       asset.id.startsWith("material:")
     ).length,
-    voiceSingingModel: manifest.eligible.filter(asset =>
+    voiceSingingModel: allAssets.filter(asset =>
       asset.id.startsWith("vocal:")
     ).length,
     factsAndEvaluation: manifest.rejected.filter(
@@ -586,6 +593,18 @@ async function liveManifest(): Promise<{
     provenanceRepair: manifest.rejected.filter(
       asset =>
         asset.origin === "unknown" && !asset.id.startsWith("soundref:")
+    ).length,
+    trainableNow: manifest.eligible.length,
+    pendingLicense: manifest.rejected.filter(
+      asset => asset.origin === "third-party-render"
+    ).length,
+    pendingConsent: manifest.rejected.filter(
+      asset => asset.origin === "user-original"
+    ).length,
+    ownedRecreation: manifest.rejected.filter(
+      asset =>
+        asset.origin === "third-party-render" ||
+        asset.origin === "unknown"
     ).length,
   };
 
@@ -601,6 +620,17 @@ async function liveManifest(): Promise<{
         meta: row.meta,
       }),
       createdAt: row.createdAt,
+      promptText: [
+        "training lane: loop-instrument-adapter",
+        row.genre,
+        row.role,
+        row.bpm ? `${row.bpm} bpm` : null,
+        row.keySignature,
+        row.bars ? `${row.bars} bars` : null,
+      ]
+        .filter((value): value is string => Boolean(value))
+        .join(", "),
+      lyricsText: "[instrumental]",
     });
   }
   for (const row of beats) {
@@ -642,6 +672,16 @@ async function liveManifest(): Promise<{
         songId: row.songId,
       }),
       createdAt: row.createdAt,
+      promptText: [
+        "training lane: voice-singing-model",
+        "isolated vocal",
+        row.role,
+        row.language,
+        row.song?.title ? `title: ${row.song.title}` : null,
+      ]
+        .filter((value): value is string => Boolean(value))
+        .join(", "),
+      lyricsText: row.song?.lyric?.body?.trim() || "[vocalise]",
     });
   }
   for (const row of references) {
@@ -1287,13 +1327,8 @@ export async function runTrainingFlywheel(): Promise<FlywheelResult> {
     holdout.exclusions.sourceFamilyIds.has(asset.sourceFamilyId.toLowerCase()) ||
     holdout.exclusions.contentHashes.has(asset.contentFingerprint.toLowerCase());
   const selected: TrainingSource[] = manifest.eligible
-    // Complete rights-clean songs and consented Learn uploads train the general
-    // song model. Loops and isolated vocals are counted in their specialized
-    // adapter lanes instead of being discarded or distorting this model.
-    .filter(
-      asset =>
-        asset.id.startsWith("beat:") || asset.id.startsWith("soundref:")
-    )
+    // Every rights-cleared byte participates. Sidecar lane tags let ACE-Step
+    // learn full songs, loops/instruments, and isolated singing.
     .map(asset => {
       const source = sources.get(asset.id);
       return source ? { ...asset, ...source } : null;

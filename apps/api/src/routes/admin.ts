@@ -31,6 +31,7 @@ import { createQueuedProviderJob, scopedRequestKey } from '../lib/queued-job';
 import { operationErrorBody, runIdempotentOperation } from '../lib/idempotent-operation';
 import { assertOwnedKey, assertWorkspaceAsset, publicUrlFor } from '../lib/storage';
 import { buildWorkspaceTrainingManifest } from '../lib/training-capture';
+import { registerTrainingAssetLicenseRoutes } from '../lib/training-asset-license';
 import {
   ECONOMICS_RECONCILIATION_SETTING_KEY,
   loadEconomicsReadinessReport,
@@ -234,30 +235,31 @@ export default async function admin(app: FastifyInstance) {
       consentApplied,
       consent: { ...recorded, ...(preview ? { previewOverride: true } : {}) },
       outsideRenderLearning: await isOutsideRenderLearningEnabled(),
+      outsideRenderAnalysis: await isOutsideRenderLearningEnabled(),
       trainableNow: manifest.eligible.length,
+      pendingClearance: manifest.rejected.length,
       counts: manifest.counts,
+      pendingSample: manifest.rejected.slice(0, 25),
       rejectedSample: manifest.rejected.slice(0, 25),
     });
   });
 
-  /**
-   * OUTSIDE-RENDER LEARNING TOGGLE (owner order 2026-07-19: "our engine has to
-   * learn — slacken the no-outside rule, I need to turn it on and off"). ON
-   * admits third-party-engine renders as training fuel. The risk is the
-   * operator's and is stated on the switch: MiniMax/Suno ToS forbid training a
-   * competing model on their output, and a later OFF stops new fuel but cannot
-   * make trained weights unlearn. Ships OFF; every flip is audit-logged with
-   * the acting admin; manifests keep the third-party-render label either way.
-   */
+  /** Outside-render analysis produces measurements, evaluation labels, and
+   * owned recreations. It never bypasses asset-level model-training rights. */
   const outsideLearningSchema = z.object({ enabled: z.boolean() });
   app.post('/training/outside-learning', { schema: { body: outsideLearningSchema } }, async (req, reply) => {
     await requireAdmin(req);
     const { userId } = requireAuth(req);
     const { enabled } = outsideLearningSchema.parse(req.body);
-    req.log.warn({ adminUserId: userId, enabled }, '[admin] OUTSIDE-RENDER LEARNING flipped');
+    req.log.info({ adminUserId: userId, enabled }, '[admin] outside-render analysis flipped');
     await setOutsideRenderLearning(enabled);
-    return reply.send({ outsideRenderLearning: enabled });
+    return reply.send({
+      outsideRenderLearning: enabled,
+      rawWeightTrainingRequiresAssetLicense: true,
+    });
   });
+
+  registerTrainingAssetLicenseRoutes(app, requireAdmin);
 
   /**
    * GRANT the training license for a workspace (the consent door). Records the

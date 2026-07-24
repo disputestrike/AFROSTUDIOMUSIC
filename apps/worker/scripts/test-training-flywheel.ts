@@ -44,12 +44,12 @@ assert(minCorpusSize() >= 1, 'corpus minimum present');
 const manifest = manifestFromCatalog({
   materials: [
     { id: 'm1', source: 'forged', rightsBasis: 'code-generated' }, // own → fuel
-    { id: 'm2', source: 'forged', rightsBasis: 'provider-generated' }, // 3rd-party → refuse
+    { id: 'm2', source: 'forged', rightsBasis: 'provider-generated' }, // provider → license/recreate
   ],
   beats: [
     { id: 'b1', provider: 'afrohit-own' }, // pure own bed → fuel
-    { id: 'b2', provider: 'afrohit-own', meta: { melodyLayer: { engine: 'musicgen' } } }, // topped → refuse
-    { id: 'b3', provider: 'minimax' }, // provider render → refuse
+    { id: 'b2', provider: 'afrohit-own', meta: { melodyLayer: { engine: 'musicgen' } } }, // license/recreate
+    { id: 'b3', provider: 'minimax' }, // provider render → license/recreate
   ],
   vocals: [],
 }, false);

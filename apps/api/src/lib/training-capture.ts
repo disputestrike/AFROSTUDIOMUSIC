@@ -10,7 +10,7 @@
  * record exists the resolver fails closed, so user-original shows as
  * pending-consent rather than being silently treated as trainable.
  */
-import { isOutsideRenderLearningEnabled, prisma } from '@afrohit/db';
+import { prisma } from '@afrohit/db';
 import { beatIngredientIds, manifestFromCatalog, type TrainingManifest } from '@afrohit/shared';
 
 export {
@@ -18,6 +18,7 @@ export {
   beatToProvenance,
   vocalToProvenance,
   referenceToProvenance,
+  explicitTrainingLicense,
   manifestFromCatalog,
 } from '@afrohit/shared';
 export type { CaptureInput } from '@afrohit/shared';
@@ -40,7 +41,7 @@ export async function buildWorkspaceTrainingManifest(opts: {
   const [materials, beats, vocals, references] = await Promise.all([
     prisma.materialAsset.findMany({
       where: { ...wsWhere, readiness: 'ready', qualityState: { notIn: ['failed', 'duplicate'] } },
-      select: { id: true, source: true, rightsBasis: true },
+      select: { id: true, source: true, rightsBasis: true, meta: true },
       take,
     }),
     prisma.beatAsset.findMany({
@@ -56,21 +57,20 @@ export async function buildWorkspaceTrainingManifest(opts: {
       where: opts.workspaceId
         ? { project: { workspaceId: opts.workspaceId }, approved: true }
         : { approved: true },
-      select: { id: true, performanceSource: true },
+      select: { id: true, performanceSource: true, meta: true },
       take,
     }),
     // Learn-My-Sound references (live 2026-07-22: the owner's Listen-page
     // uploads landed ONLY here, so the console counter never moved). Same
-    // rights belt as the flywheel: only bases that can ever train; zap/chart
-    // rows are facts-only and stay out.
+    // Every active reference is represented: cleared rows train immediately;
+    // all others stay visible in the clearance/recreation queue.
     prisma.soundReference.findMany({
       where: {
         ...wsWhere,
         active: true,
-        rightsBasis: { in: ['user-attested', 'self-generated'] },
         analysisState: { not: 'failed' },
       },
-      select: { id: true, rightsBasis: true },
+      select: { id: true, rightsBasis: true, recipe: true },
       take,
     }),
   ]);
@@ -93,10 +93,9 @@ export async function buildWorkspaceTrainingManifest(opts: {
       : row;
   });
 
-  // OUTSIDE-RENDER LEARNING: operator toggle (SystemSetting, fail-closed).
-  // When ON, third-party renders classify eligible but KEEP their
-  // 'third-party-render' origin label — provenance is never laundered.
-  const allowThirdPartyRenders = await isOutsideRenderLearningEnabled();
-  const manifest = manifestFromCatalog({ materials, beats: enrichedBeats, vocals, references }, consentGranted, { allowThirdPartyRenders });
+  const manifest = manifestFromCatalog(
+    { materials, beats: enrichedBeats, vocals, references },
+    consentGranted
+  );
   return { ...manifest, scannedWorkspace: opts.workspaceId ?? 'ALL' };
 }

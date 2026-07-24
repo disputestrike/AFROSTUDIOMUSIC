@@ -92,8 +92,16 @@ async function main() {
     /rememberLastDataset/,
     "kickoff does not mark a dataset completed before provider success"
   );
-  assert.match(source, /const policy = \{ allowThirdPartyRenders: false \}/);
-  assert.doesNotMatch(source, /allowThirdPartyRenders:\s*await/);
+  assert.doesNotMatch(
+    source,
+    /allowThirdPartyRenders/,
+    "nightly weight training cannot be opened by a global provider override"
+  );
+  assert.match(
+    source,
+    /const selected: TrainingSource\[\] = manifest\.eligible/,
+    "every rights-cleared asset type reaches the training archive"
+  );
   assert.doesNotMatch(
     source,
     /\[materials, beats, vocals, granted\]\s*=\s*await Promise\.all/,
