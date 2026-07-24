@@ -9,7 +9,7 @@ def apply_exact_patch(source: str, old: str, new: str, label: str) -> str:
     new_count = source.count(new)
     if old_count == 1 and new_count == 0:
         return source.replace(old, new, 1)
-    if old_count == 0 and new_count == 1:
+    if new_count == 1 and old_count in {0, 1}:
         return source
     raise RuntimeError(
         f"ACE-Step patch '{label}' has invalid state "
@@ -17,35 +17,32 @@ def apply_exact_patch(source: str, old: str, new: str, label: str) -> str:
     )
 
 
-def write_patched_pair(
-    trainer: Path,
-    trainer_source: str,
-    original_trainer: str,
-    transformer: Path,
-    transformer_source: str,
-    original_transformer: str,
-) -> None:
-    trainer_tmp = trainer.with_name(f".{trainer.name}.afroone.tmp")
-    transformer_tmp = transformer.with_name(f".{transformer.name}.afroone.tmp")
+def write_patched_files(files: list[tuple[Path, str, str]]) -> None:
+    temporary_files = [
+        path.with_name(f".{path.name}.afroone.tmp")
+        for path, _, _ in files
+    ]
     try:
-        trainer_tmp.write_text(trainer_source, encoding="utf-8")
-        transformer_tmp.write_text(transformer_source, encoding="utf-8")
-        trainer_tmp.replace(trainer)
-        transformer_tmp.replace(transformer)
+        for temporary, (_, patched, _) in zip(temporary_files, files):
+            temporary.write_text(patched, encoding="utf-8")
+        for temporary, (path, _, _) in zip(temporary_files, files):
+            temporary.replace(path)
     except Exception:
-        trainer.write_text(original_trainer, encoding="utf-8")
-        transformer.write_text(original_transformer, encoding="utf-8")
+        for path, _, original in files:
+            path.write_text(original, encoding="utf-8")
         raise
     finally:
-        trainer_tmp.unlink(missing_ok=True)
-        transformer_tmp.unlink(missing_ok=True)
+        for temporary in temporary_files:
+            temporary.unlink(missing_ok=True)
 
 
 def patch_trainer(root: Path) -> None:
     trainer = root / "trainer.py"
     transformer = root / "acestep" / "models" / "ace_step_transformer.py"
+    dataset = root / "acestep" / "text2music_dataset.py"
     original_trainer = trainer.read_text(encoding="utf-8")
     original_transformer = transformer.read_text(encoding="utf-8")
+    original_dataset = dataset.read_text(encoding="utf-8")
 
     source = apply_exact_patch(
         original_trainer,
@@ -88,6 +85,44 @@ def patch_trainer(root: Path) -> None:
 
     source = apply_exact_patch(
         source,
+        """            lyric_mask = torch.where(
+                full_cfg_condition_mask.unsqueeze(1).bool(),
+                lyric_mask,
+                torch.zeros_like(lyric_mask),
+            )
+
+        return (
+""",
+        """            lyric_mask = torch.where(
+                full_cfg_condition_mask.unsqueeze(1).bool(),
+                lyric_mask,
+                torch.zeros_like(lyric_mask),
+            )
+
+            # Dedicated vocal rows must always exercise the lyric-conditioning
+            # path; the base trainer's random CFG dropout makes proof probabilistic.
+            afroone_vocal_rows = batch["afroone_vocal_conditions"].to(
+                device=device,
+                dtype=torch.bool,
+            )
+            lyric_token_ids = torch.where(
+                afroone_vocal_rows.unsqueeze(1),
+                batch["lyric_token_ids"],
+                lyric_token_ids,
+            )
+            lyric_mask = torch.where(
+                afroone_vocal_rows.unsqueeze(1),
+                batch["lyric_masks"],
+                lyric_mask,
+            )
+
+        return (
+""",
+        "deterministic vocal lyric conditioning",
+    )
+
+    source = apply_exact_patch(
+        source,
         """        return [optimizer], [{"scheduler": lr_scheduler, "interval": "step"}]
 
     def train_dataloader(self):
@@ -97,61 +132,94 @@ def patch_trainer(root: Path) -> None:
     def on_before_optimizer_step(self, optimizer):
         if getattr(self, "_afroone_grad_verified", False):
             return
-        saw_speaker_gradient = False
         saw_transformer_gradient = False
+        saw_lyric_gradient = False
         for name, parameter in self.transformers.named_parameters():
             if not parameter.requires_grad or parameter.grad is None:
                 continue
             if not torch.isfinite(parameter.grad).all():
                 raise RuntimeError(f"AfroOne LoRA produced a non-finite gradient at {name}")
             if parameter.grad.detach().abs().max().item() > 0:
-                if "speaker_embedder" in name:
-                    saw_speaker_gradient = True
-                elif "transformer_blocks." in name:
+                if "transformer_blocks." in name:
                     saw_transformer_gradient = True
-
-        gradient_check = getattr(self, "_afroone_grad_checks", 0) + 1
-        self._afroone_grad_checks = gradient_check
-        self._afroone_speaker_grad_seen = (
-            getattr(self, "_afroone_speaker_grad_seen", False)
-            or saw_speaker_gradient
-        )
-        self._afroone_transformer_grad_seen = (
-            getattr(self, "_afroone_transformer_grad_seen", False)
-            or saw_transformer_gradient
-        )
-        if gradient_check == 1 and not self._afroone_transformer_grad_seen:
+                elif "lyric_encoder." in name:
+                    saw_lyric_gradient = True
+        if not saw_transformer_gradient:
             raise RuntimeError(
                 "AfroOne first step did not reach transformer-block LoRA parameters"
             )
-        if (
-            gradient_check >= 20
-            and not self._afroone_speaker_grad_seen
-        ):
+        if not getattr(self, "_afroone_current_vocal_condition", False):
             raise RuntimeError(
-                "AfroOne speaker LoRA received no nonzero gradient in 20 steps"
+                "AfroOne first step was not a verified vocal-conditioned batch"
             )
-        if not (
-            self._afroone_speaker_grad_seen
-            and self._afroone_transformer_grad_seen
-        ):
-            if gradient_check == 1:
-                print(
-                    "[afroone] verified finite nonzero transformer LoRA gradient; "
-                    "awaiting a speaker-conditioned batch",
-                    flush=True,
-                )
-            return
+        if not saw_lyric_gradient:
+            raise RuntimeError(
+                "AfroOne vocal-conditioned first step did not reach "
+                "lyric-encoder LoRA parameters"
+            )
         self._afroone_grad_verified = True
         print(
-            "[afroone] verified finite nonzero LoRA gradients "
-            "(speaker + transformer)",
+            "[afroone] verified finite nonzero vocal-conditioned LoRA "
+            "gradients (lyric encoder + music transformer)",
             flush=True,
         )
 
     def train_dataloader(self):
 """,
         "first-step gradient assertion",
+    )
+
+    source = apply_exact_patch(
+        source,
+        """        return DataLoader(
+            self.train_dataset,
+            shuffle=True,
+            num_workers=self.hparams.num_workers,
+            pin_memory=True,
+            collate_fn=self.train_dataset.collate_fn,
+        )
+""",
+        """        tags = self.train_dataset.pretrain_ds["tags"]
+        vocal_indices = [
+            index
+            for index, row_tags in enumerate(tags)
+            if "voice-singing-model" in " ".join(row_tags).lower()
+        ]
+        if not vocal_indices:
+            raise RuntimeError(
+                "AfroOne training dataset has no voice-singing-model row"
+            )
+        generator = torch.Generator().manual_seed(0)
+        indices = torch.randperm(len(self.train_dataset), generator=generator).tolist()
+        first_vocal = vocal_indices[0]
+        indices.remove(first_vocal)
+        indices.insert(0, first_vocal)
+        return DataLoader(
+            self.train_dataset,
+            sampler=indices,
+            num_workers=self.hparams.num_workers,
+            pin_memory=True,
+            collate_fn=self.train_dataset.collate_fn,
+        )
+""",
+        "deterministic vocal-first sampler",
+    )
+
+    source = apply_exact_patch(
+        source,
+        """        ) = self.preprocess(batch)
+
+        target_image = target_latents
+""",
+        """        ) = self.preprocess(batch)
+        self._afroone_current_vocal_condition = (
+            torch.any(batch["afroone_vocal_conditions"]).item()
+            and torch.count_nonzero(lyric_mask).item() > 0
+        )
+
+        target_image = target_latents
+""",
+        "vocal-conditioned batch evidence",
     )
 
     source = apply_exact_patch(
@@ -168,6 +236,41 @@ def patch_trainer(root: Path) -> None:
 
     source = apply_exact_patch(
         source,
+        """    trainer.fit(
+        model,
+        ckpt_path=args.ckpt_path,
+    )
+
+
+if __name__ == "__main__":
+""",
+        """    trainer.fit(
+        model,
+        ckpt_path=args.ckpt_path,
+    )
+    final_checkpoint_dir = os.path.join(
+        logger_callback.log_dir,
+        "checkpoints",
+        f"final-step={trainer.global_step}_lora",
+    )
+    os.makedirs(final_checkpoint_dir, exist_ok=True)
+    model.transformers.save_lora_adapter(
+        final_checkpoint_dir,
+        adapter_name=model.adapter_name,
+    )
+    print(
+        f"[afroone] saved exact final-step adapter at {final_checkpoint_dir}",
+        flush=True,
+    )
+
+
+if __name__ == "__main__":
+""",
+        "exact final-step adapter",
+    )
+
+    source = apply_exact_patch(
+        source,
         "            or torch.distributed.get_rank() != 0\n",
         """            or (
                 torch.distributed.is_initialized()
@@ -175,6 +278,65 @@ def patch_trainer(root: Path) -> None:
             )
 """,
         "single-GPU plot rank guard",
+    )
+
+    dataset_source = apply_exact_patch(
+        original_dataset,
+        """            "structured_tags": [],
+            "prompts": [],
+            "speaker_embs": [],
+""",
+        """            "structured_tags": [],
+            "prompts": [],
+            "afroone_vocal_conditions": [],
+            "speaker_embs": [],
+""",
+        "stable vocal condition batch field",
+    )
+
+    dataset_source = apply_exact_patch(
+        dataset_source,
+        """        # Process prompt/tags
+        prompt = item["tags"]
+""",
+        """        # Preserve vocal identity before tags are shuffled and the
+        # display prompt is truncated.
+        afroone_vocal_condition = any(
+            "voice-singing-model" in tag.lower()
+            for tag in item["tags"]
+        )
+
+        # Process prompt/tags
+        prompt = item["tags"]
+""",
+        "stable vocal identity",
+    )
+
+    dataset_source = apply_exact_patch(
+        dataset_source,
+        """            "prompt": prompt,
+            "speaker_emb": speaker_emb,
+""",
+        """            "prompt": prompt,
+            "afroone_vocal_condition": afroone_vocal_condition,
+            "speaker_emb": speaker_emb,
+""",
+        "stable vocal identity feature",
+    )
+
+    dataset_source = apply_exact_patch(
+        dataset_source,
+        """            elif k in ["wav_lengths"]:
+                # Convert to LongTensor
+                padded_input_list = torch.LongTensor(v)
+""",
+        """            elif k in ["afroone_vocal_conditions"]:
+                padded_input_list = torch.tensor(v, dtype=torch.bool)
+            elif k in ["wav_lengths"]:
+                # Convert to LongTensor
+                padded_input_list = torch.LongTensor(v)
+""",
+        "stable vocal identity collation",
     )
 
     transformer_source = apply_exact_patch(
@@ -245,16 +407,16 @@ def patch_trainer(root: Path) -> None:
         "gradient-only transformer checkpoint",
     )
 
-    write_patched_pair(
-        trainer,
-        source,
-        original_trainer,
-        transformer,
-        transformer_source,
-        original_transformer,
+    write_patched_files(
+        [
+            (trainer, source, original_trainer),
+            (transformer, transformer_source, original_transformer),
+            (dataset, dataset_source, original_dataset),
+        ]
     )
     print(f"[afroone] patched pinned ACE-Step trainer at {trainer}")
     print(f"[afroone] patched pinned ACE-Step transformer at {transformer}")
+    print(f"[afroone] patched pinned ACE-Step dataset at {dataset}")
 
 
 if __name__ == "__main__":
