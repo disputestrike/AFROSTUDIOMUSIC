@@ -22,6 +22,7 @@ import cog
 from cog import BaseModel, Input
 import math
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -30,7 +31,11 @@ from pathlib import Path
 from patch_ace_trainer import patch_trainer
 from adapter_contract import (
     LORA_WEIGHT_NAME,
+    MAX_DATASET_MEMBERS,
+    MAX_DATASET_UNCOMPRESSED_BYTES,
+    extract_zip_archive,
     find_lora_directory,
+    materialize_path,
     validate_lora_config,
 )
 
@@ -41,6 +46,8 @@ class TrainingOutput(BaseModel):
 
 AUDIO_EXTS = {".wav", ".mp3", ".flac", ".ogg", ".opus", ".m4a"}
 ACE = Path("/src/ACE-Step")
+MIN_VOCAL_SEGMENTS = 3
+MIN_VOCAL_ACTIVE_SECONDS = 10.0
 
 
 def _sidecar(src: Path, *suffixes: str) -> str | None:
@@ -136,6 +143,86 @@ def _run(cmd: list[str], what: str) -> None:
         )
 
 
+def _max_volume_db(audio_path: Path) -> float | None:
+    """Return ffmpeg's measured peak volume, or None for unreadable audio."""
+    probe = subprocess.run(
+        [
+            "ffmpeg",
+            "-nostdin",
+            "-v",
+            "info",
+            "-i",
+            str(audio_path),
+            "-af",
+            "volumedetect",
+            "-f",
+            "null",
+            "-",
+        ],
+        capture_output=True,
+        text=True,
+    )
+    matches = re.findall(
+        r"max_volume:\s*(-?(?:inf|\d+(?:\.\d+)?))\s*dB",
+        probe.stderr,
+        flags=re.IGNORECASE,
+    )
+    if probe.returncode != 0 or not matches:
+        return None
+    if matches[-1].lower() == "-inf":
+        return float("-inf")
+    return float(matches[-1])
+
+
+def _active_audio_seconds(audio_path: Path) -> float | None:
+    """Estimate active signal duration using ffmpeg's silence detector."""
+    duration_probe = subprocess.run(
+        [
+            "ffprobe",
+            "-v",
+            "error",
+            "-show_entries",
+            "format=duration",
+            "-of",
+            "csv=p=0",
+            str(audio_path),
+        ],
+        capture_output=True,
+        text=True,
+    )
+    try:
+        duration = float(duration_probe.stdout.strip())
+    except ValueError:
+        return None
+    silence_probe = subprocess.run(
+        [
+            "ffmpeg",
+            "-nostdin",
+            "-v",
+            "info",
+            "-i",
+            str(audio_path),
+            "-af",
+            "silencedetect=noise=-45dB:d=0.3",
+            "-f",
+            "null",
+            "-",
+        ],
+        capture_output=True,
+        text=True,
+    )
+    if silence_probe.returncode != 0:
+        return None
+    silence_durations = [
+        float(value)
+        for value in re.findall(
+            r"silence_duration:\s*(\d+(?:\.\d+)?)",
+            silence_probe.stderr,
+        )
+    ]
+    return max(0.0, duration - sum(silence_durations))
+
+
 def train(
     dataset_zip: cog.Path = Input(description="Zip of rights-clean training audio (flywheel manifest zip)"),
     exp_name: str = Input(description="Adapter name", default="afrohit"),
@@ -152,9 +239,13 @@ def train(
     for d in (raw, data, hf, out):
         d.mkdir(parents=True, exist_ok=True)
 
-    # 1. unzip
-    with zipfile.ZipFile(str(dataset_zip)) as z:
-        z.extractall(raw)
+    # 1. unzip within explicit resource limits
+    extract_zip_archive(
+        materialize_path(dataset_zip),
+        raw,
+        max_members=MAX_DATASET_MEMBERS,
+        max_uncompressed_bytes=MAX_DATASET_UNCOMPRESSED_BYTES,
+    )
     audio = sorted(p for p in raw.rglob("*") if p.suffix.lower() in AUDIO_EXTS)
     if not audio:
         raise RuntimeError("dataset_zip contained no audio files — refusing to fake a training run")
@@ -165,28 +256,46 @@ def train(
     if kept < 3:
         raise RuntimeError(f"only {kept} usable 30s+ segments after conforming — corpus too thin to train honestly")
     print(f"[trainer] {kept} conformed segment(s) ready")
-    vocal_rows = [
-        prompt_path
-        for prompt_path in data.glob("*_prompt.txt")
-        if "voice-singing-model" in prompt_path.read_text(
+    vocal_rows: list[tuple[Path, float]] = []
+    for prompt_path in data.glob("*_prompt.txt"):
+        if "voice-singing-model" not in prompt_path.read_text(
             encoding="utf-8", errors="ignore"
-        ).lower()
-        and prompt_path.with_name(
+        ).lower():
+            continue
+        lyrics_path = prompt_path.with_name(
             prompt_path.name.replace("_prompt.txt", "_lyrics.txt")
         )
-        .read_text(encoding="utf-8", errors="ignore")
-        .strip()
-        .lower()
-        not in {"", "[instrumental]"}
-    ]
-    if not vocal_rows:
+        if lyrics_path.read_text(
+            encoding="utf-8", errors="ignore"
+        ).strip().lower() in {"", "[instrumental]"}:
+            continue
+        audio_path = prompt_path.with_name(
+            prompt_path.name.replace("_prompt.txt", ".mp3")
+        )
+        max_volume = _max_volume_db(audio_path)
+        active_seconds = _active_audio_seconds(audio_path)
+        if (
+            max_volume is not None
+            and max_volume > -45
+            and active_seconds is not None
+            and active_seconds >= 1.5
+        ):
+            vocal_rows.append((prompt_path, active_seconds))
+    total_vocal_seconds = sum(active_seconds for _, active_seconds in vocal_rows)
+    if (
+        len(vocal_rows) < MIN_VOCAL_SEGMENTS
+        or total_vocal_seconds < MIN_VOCAL_ACTIVE_SECONDS
+    ):
         raise RuntimeError(
-            "corpus contains no rights-cleared voice-singing-model row with "
-            "lyrics — refusing to claim that this adapter can learn singing"
+            "corpus requires at least "
+            f"{MIN_VOCAL_SEGMENTS} audible rights-cleared voice-singing-model "
+            f"rows and {MIN_VOCAL_ACTIVE_SECONDS:.0f}s active signal; found "
+            f"{len(vocal_rows)} rows and {total_vocal_seconds:.1f}s"
         )
     print(
-        f"[trainer] verified {len(vocal_rows)} lyric-conditioned isolated-vocal "
-        "segment(s) for singing",
+        f"[trainer] accepted {len(vocal_rows)} audible, metadata-declared "
+        f"isolated-vocal segment(s) with {total_vocal_seconds:.1f}s active "
+        "signal and lyric conditioning",
         flush=True,
     )
 
@@ -220,16 +329,17 @@ def train(
          "trainer")
 
     # 5. Harvest the exact Diffusers adapter filename ACE-Step writes and reads.
-    adapters = sorted(
-        out.rglob(LORA_WEIGHT_NAME),
-        key=lambda p: p.stat().st_mtime,
+    final_adapters = sorted(
+        adapter
+        for adapter in out.rglob(LORA_WEIGHT_NAME)
+        if adapter.parent.name.startswith("final-step=")
     )
-    if not adapters:
+    if len(final_adapters) != 1:
         raise RuntimeError(
-            f"trainer exited 0 but wrote no {LORA_WEIGHT_NAME} — "
-            "refusing to ship an empty adapter"
+            "trainer must write exactly one final-step AfroOne adapter; found "
+            f"{len(final_adapters)} {LORA_WEIGHT_NAME} file(s)"
         )
-    adapter_dir = adapters[-1].parent
+    adapter_dir = final_adapters[0].parent
     find_lora_directory(adapter_dir)
     files = [p for p in adapter_dir.rglob("*") if p.is_file()]
     weights_zip = work / "weights.zip"

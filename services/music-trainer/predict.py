@@ -13,6 +13,7 @@ training is unaffected either way.
 """
 import cog
 from cog import BasePredictor, Input
+import shutil
 import tempfile
 from pathlib import Path
 from adapter_contract import extract_lora_archive, materialize_path
@@ -50,28 +51,41 @@ class Predictor(BasePredictor):
         seed: int = Input(description="Random seed (-1 = random)", default=-1),
     ) -> cog.Path:
         lora_path = self.trained_lora_path
-        if lora_weights_zip is not None:
-            extracted = Path(tempfile.mkdtemp(prefix="afh-request-lora-"))
-            lora_path = str(
-                extract_lora_archive(
-                    materialize_path(lora_weights_zip),
-                    extracted,
-                )
+        output_dir = Path(tempfile.mkdtemp(prefix="afh-out-"))
+        out = output_dir / "output.wav"
+
+        def render(active_lora_path: str) -> None:
+            # Param names per the v1 pipeline __call__.
+            self.pipeline(
+                prompt=tags,
+                lyrics=lyrics,
+                audio_duration=duration,
+                infer_step=infer_steps,
+                guidance_scale=guidance_scale,
+                manual_seeds=[seed] if seed >= 0 else None,
+                lora_name_or_path=active_lora_path,
+                save_path=str(out),
             )
 
-        out = Path(tempfile.mkdtemp(prefix="afh-out-")) / "output.wav"
-        # Param names per the v1 pipeline __call__ (README/gui + ZH_RAP_LORA.md).
-        # If the repo's signature moved, this raises a loud TypeError — repin here.
-        self.pipeline(
-            prompt=tags,
-            lyrics=lyrics,
-            audio_duration=duration,
-            infer_step=infer_steps,
-            guidance_scale=guidance_scale,
-            manual_seeds=[seed] if seed >= 0 else None,
-            lora_name_or_path=lora_path,
-            save_path=str(out),
-        )
-        if not out.exists() or out.stat().st_size < 44100:
-            raise RuntimeError("pipeline returned no audio — refusing to fake a render")
+        try:
+            if lora_weights_zip is None:
+                render(lora_path)
+            else:
+                with tempfile.TemporaryDirectory(
+                    prefix="afh-request-lora-"
+                ) as extracted:
+                    lora_path = str(
+                        extract_lora_archive(
+                            materialize_path(lora_weights_zip),
+                            Path(extracted),
+                        )
+                    )
+                    render(lora_path)
+            if not out.exists() or out.stat().st_size < 44100:
+                raise RuntimeError(
+                    "pipeline returned no audio — refusing to fake a render"
+                )
+        except Exception:
+            shutil.rmtree(output_dir, ignore_errors=True)
+            raise
         return cog.Path(str(out))

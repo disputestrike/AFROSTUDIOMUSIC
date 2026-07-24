@@ -3,11 +3,18 @@
 from __future__ import annotations
 
 import json
+import shutil
+import stat
 import zipfile
 from pathlib import Path
 
 
 LORA_WEIGHT_NAME = "pytorch_lora_weights.safetensors"
+MAX_ADAPTER_MEMBERS = 64
+MAX_ADAPTER_UNCOMPRESSED_BYTES = 1024 * 1024 * 1024
+MAX_DATASET_MEMBERS = 10_000
+MAX_DATASET_UNCOMPRESSED_BYTES = 16 * 1024 * 1024 * 1024
+MAX_COMPRESSION_RATIO = 200
 REQUIRED_TARGETS = {
     "linear_q",
     "linear_k",
@@ -66,20 +73,78 @@ def find_lora_directory(root: Path) -> Path:
     return weights[0].parent
 
 
+def extract_zip_archive(
+    archive: Path,
+    destination: Path,
+    *,
+    max_members: int,
+    max_uncompressed_bytes: int,
+    max_compression_ratio: int = MAX_COMPRESSION_RATIO,
+) -> Path:
+    """Extract a bounded ZIP archive without traversal, links, or zip bombs."""
+    if not archive.is_file():
+        raise RuntimeError(f"AfroOne archive does not exist: {archive}")
+    destination.mkdir(parents=True, exist_ok=True)
+    root = destination.resolve()
+    try:
+        with zipfile.ZipFile(archive) as bundle:
+            members = bundle.infolist()
+            if len(members) > max_members:
+                raise RuntimeError(
+                    f"AfroOne archive has {len(members)} members; limit is {max_members}"
+                )
+
+            total_size = 0
+            for member in members:
+                if member.flag_bits & 0x1:
+                    raise RuntimeError(
+                        f"AfroOne archive contains an encrypted member: {member.filename}"
+                    )
+                file_type = (member.external_attr >> 16) & 0o170000
+                if file_type == stat.S_IFLNK:
+                    raise RuntimeError(
+                        f"AfroOne archive contains a symbolic link: {member.filename}"
+                    )
+                target = (destination / member.filename).resolve()
+                if root != target and root not in target.parents:
+                    raise RuntimeError(
+                        f"AfroOne archive contains an unsafe path: {member.filename}"
+                    )
+                if member.is_dir():
+                    continue
+
+                total_size += member.file_size
+                if total_size > max_uncompressed_bytes:
+                    raise RuntimeError(
+                        "AfroOne archive uncompressed size exceeds "
+                        f"{max_uncompressed_bytes} bytes"
+                    )
+                if (
+                    member.file_size >= 1024 * 1024
+                    and member.file_size / max(member.compress_size, 1)
+                    > max_compression_ratio
+                ):
+                    raise RuntimeError(
+                        "AfroOne archive member compression ratio exceeds "
+                        f"{max_compression_ratio}: {member.filename}"
+                    )
+            bundle.extractall(destination)
+    except Exception:
+        shutil.rmtree(destination, ignore_errors=True)
+        raise
+    return destination
+
+
 def extract_lora_archive(archive: Path, destination: Path) -> Path:
     if archive.is_dir():
         return find_lora_directory(archive)
     if not archive.is_file():
         raise RuntimeError(f"AfroOne LoRA archive does not exist: {archive}")
 
-    destination.mkdir(parents=True, exist_ok=True)
-    root = destination.resolve()
-    with zipfile.ZipFile(archive) as bundle:
-        for member in bundle.infolist():
-            target = (destination / member.filename).resolve()
-            if root != target and root not in target.parents:
-                raise RuntimeError(
-                    f"AfroOne LoRA archive contains an unsafe path: {member.filename}"
-                )
-        bundle.extractall(destination)
-    return find_lora_directory(destination)
+    extracted = extract_zip_archive(
+        archive,
+        destination,
+        max_members=MAX_ADAPTER_MEMBERS,
+        max_uncompressed_bytes=MAX_ADAPTER_UNCOMPRESSED_BYTES,
+    )
+    return find_lora_directory(extracted)

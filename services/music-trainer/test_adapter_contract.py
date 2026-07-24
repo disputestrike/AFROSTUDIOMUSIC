@@ -6,6 +6,7 @@ from pathlib import Path
 
 from adapter_contract import (
     LORA_WEIGHT_NAME,
+    MAX_ADAPTER_MEMBERS,
     extract_lora_archive,
     materialize_path,
     validate_lora_config,
@@ -38,6 +39,30 @@ class AdapterContractTest(unittest.TestCase):
             with zipfile.ZipFile(archive, "w") as bundle:
                 bundle.writestr("../outside.safetensors", b"x" * 2048)
             with self.assertRaisesRegex(RuntimeError, "unsafe path"):
+                extract_lora_archive(archive, root / "extracted")
+            self.assertFalse((root / "extracted").exists())
+
+    def test_archive_rejects_excessive_member_count_and_cleans_up(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            archive = root / "weights.zip"
+            with zipfile.ZipFile(archive, "w") as bundle:
+                for index in range(MAX_ADAPTER_MEMBERS + 1):
+                    bundle.writestr(f"member-{index}.txt", b"x")
+            destination = root / "extracted"
+            with self.assertRaisesRegex(RuntimeError, "members"):
+                extract_lora_archive(archive, destination)
+            self.assertFalse(destination.exists())
+
+    def test_archive_rejects_excessive_compression_ratio(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            archive = root / "weights.zip"
+            with zipfile.ZipFile(
+                archive, "w", compression=zipfile.ZIP_DEFLATED
+            ) as bundle:
+                bundle.writestr(LORA_WEIGHT_NAME, b"x" * (2 * 1024 * 1024))
+            with self.assertRaisesRegex(RuntimeError, "compression ratio"):
                 extract_lora_archive(archive, root / "extracted")
 
     def test_cog_lazy_url_path_is_materialized(self):
