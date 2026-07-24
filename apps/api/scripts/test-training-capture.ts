@@ -8,6 +8,7 @@ import {
   materialToProvenance,
   beatToProvenance,
   explicitTrainingLicense,
+  referenceToProvenance,
   vocalToProvenance,
   manifestFromCatalog,
 } from '../src/lib/training-capture';
@@ -47,6 +48,46 @@ assert.equal(
   beatToProvenance({ id: 'b-licensed', provider: 'minimax', meta: providerLicense }).trainingLicenseGranted,
   true,
   'provider render carries asset-level license evidence'
+);
+assert.equal(
+  referenceToProvenance({
+    id: 'lyrics-only',
+    rightsBasis: 'user-attested',
+    sourceUrl: 'lyric:learned:receipt-1',
+    consentGranted: true,
+  }).materialSource,
+  undefined,
+  'metadata-only Learn references remain learning inputs but never masquerade as audio'
+);
+assert.equal(
+  referenceToProvenance({
+    id: 'owned-audio',
+    rightsBasis: 'user-attested',
+    sourceUrl: 's3://owned-bucket/reference.wav',
+    consentGranted: true,
+  }).materialSource,
+  'upload',
+  'consented audio-backed Learn references remain weight-trainable'
+);
+assert.equal(
+  referenceToProvenance({
+    id: 'licensed-zap-audio',
+    rightsBasis: 'training-licensed',
+    sourceUrl: 'https://assets.example/zap-reference.wav',
+    recipe: providerLicense,
+  }).trainingLicenseGranted,
+  true,
+  'licensed Zap audio enters weights after real audio and agreement evidence exist'
+);
+assert.equal(
+  referenceToProvenance({
+    id: 'licensed-zap-marker',
+    rightsBasis: 'training-licensed',
+    sourceUrl: 'zap:chart:receipt-2',
+    recipe: providerLicense,
+  }).trainingLicenseGranted,
+  undefined,
+  'a licensed metadata marker still waits for actual audio bytes'
 );
 
 // RIGHTS LINE (owner incident 2026-07-19): an "afrohit-own" bed that carries a

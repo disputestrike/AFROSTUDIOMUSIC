@@ -70,7 +70,7 @@ export async function buildWorkspaceTrainingManifest(opts: {
         active: true,
         analysisState: { not: 'failed' },
       },
-      select: { id: true, rightsBasis: true, recipe: true },
+      select: { id: true, rightsBasis: true, recipe: true, sourceUrl: true },
       take,
     }),
   ]);
